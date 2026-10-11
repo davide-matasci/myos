@@ -21,7 +21,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use fatvol::{Fat, Kind, SectorDriver};
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatInfo, MYOS_TIME_OMIT};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
@@ -167,6 +167,21 @@ unsafe extern "C" fn fat_stat<const S: usize>(path: *const u8, path_len: usize, 
     0
 }
 
+unsafe extern "C" fn fat_statfs<const S: usize>(out: *mut VfsStatFs) -> i32 {
+    let Some(Ok(u)) = with_fs::<S, _>(|fs| fs.usage()) else { return -1 };
+    unsafe {
+        *out = VfsStatFs {
+            bsize: u64::from(u.cluster_size),
+            blocks: u64::from(u.clusters),
+            bfree: u64::from(u.free_clusters),
+            bavail: u64::from(u.free_clusters),
+            namemax: 255,
+            ..VfsStatFs::default()
+        }
+    };
+    0
+}
+
 unsafe extern "C" fn fat_listdir<const S: usize>(
     path: *const u8,
     path_len: usize,
@@ -299,6 +314,7 @@ fn ops<const S: usize>() -> ModuleVfsOps {
         set_size_ino: None,
         file_id: None,
         set_times_ino: None,
+        statfs: Some(fat_statfs::<S>),
     }
 }
 

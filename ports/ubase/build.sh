@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build ubase getty + login with newlib + myos libgloss.
+# Cross-build ubase getty, login and df with newlib + myos libgloss.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

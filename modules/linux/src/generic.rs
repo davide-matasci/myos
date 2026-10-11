@@ -18,6 +18,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),
         29 => ret(sys::ioctl(a[0], a[1], a[2])),
+        43 => ret(sys::statfs(a[0], a[1])),
+        44 => ret(sys::fstatfs(a[0], a[1])),
         32 => ret(sys::flock(a[0], a[1])),
         34 => ret(sys::mkdirat(a[0], a[1])),
         35 => ret(sys::unlinkat(a[0], a[1], a[2])),

@@ -104,6 +104,7 @@ pub fn mount() -> i32 {
         set_size_ino: None,
         file_id: None,
         set_times_ino: None,
+        statfs: None,
     };
     api().vfs_mount("kbd", "dev/console/kbd", &ops)
 }

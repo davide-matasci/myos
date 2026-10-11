@@ -422,3 +422,38 @@ fn format_fat32() {
     let out = Command::new("mtype").args(["-i"]).arg(&path).arg("::/boot/kernel").output().expect("mtools");
     assert!(out.status.success() && out.stdout == data, "mtype read back something else");
 }
+
+/// `fsck.fat -nv`'s count of the clusters in use and in all
+/// (`img: 3 files, 5/130811 clusters`).
+fn fsck_clusters(path: &Path) -> (u32, u32) {
+    let out = Command::new("fsck.fat").arg("-nv").arg(path).output().expect("fsck.fat (dosfstools)");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.ends_with(" clusters")).expect("cluster count");
+    let counts = line.rsplit(", ").next().unwrap().trim_end_matches(" clusters");
+    let (used, all) = counts.split_once('/').unwrap();
+    (used.parse().unwrap(), all.parse().unwrap())
+}
+
+#[test]
+fn usage_follows_the_volume() {
+    both(|bits| {
+        let img = image("usage", bits);
+        let mut fs = mount(&img);
+        let start = fs.usage().unwrap();
+        let (used, all) = fsck_clusters(&img);
+        assert_eq!((start.clusters, start.clusters - start.free_clusters), (all, used), "FAT{bits}");
+        // A 1 MiB file takes 1 MiB of clusters.
+        fs.create("f").unwrap();
+        fs.write("f", 0, &content(1, 1 << 20)).unwrap();
+        let full = fs.usage().unwrap();
+        assert_eq!(start.free_clusters - full.free_clusters, (1 << 20) / full.cluster_size, "FAT{bits}");
+        fs.unmount().unwrap();
+        assert_eq!(fsck_clusters(&img).0, full.clusters - full.free_clusters, "FAT{bits}");
+        let mut fs = mount(&img);
+        assert_eq!(fs.usage().unwrap(), full, "FAT{bits}");
+        fs.unlink("f").unwrap();
+        assert_eq!(fs.usage().unwrap(), start, "FAT{bits}");
+        fs.unmount().unwrap();
+        check(&img);
+    });
+}

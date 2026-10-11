@@ -17,10 +17,12 @@
  * for a damaged cache); a rename does not wait for a process reading the
  * console (which held the filesystem tree until the next key); lseek and
  * ftello give offsets past 2 GiB whole (the scratch disk's 4 GiB), and a
- * file on a disk keeps a size past 4 GiB.
+ * file on a disk keeps a size past 4 GiB; statvfs and fstatvfs report the
+ * space a file takes and gives back, the image read-only and full.
  *
  * `fileio_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it
- * on the scratch disk. `fileio_smoke child FD...` is the exec'd program: FD
+ * on the scratch disk. `fileio_smoke space DIR` checks only statvfs in DIR
+ * (the FAT test). `fileio_smoke child FD...` is the exec'd program: FD
  * prefixed with `-` must be closed, plain FD open. `fileio_smoke append
  * FILE` is run by a user the policy lets `append` to FILE but not `write`
  * (user/tests/kernel.sh): an O_APPEND fd takes writes at the end only and
@@ -35,6 +37,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -583,12 +586,56 @@ static void big_offsets(void) {
     }
 }
 
+/* statvfs: the space of DIR's filesystem adds up, a 1 MiB file takes about
+ * 1 MiB of it and gives it back once removed, and fstatvfs of the file
+ * reports the same filesystem. */
+static void space(void) {
+    static char mib[1 << 20];
+    const char *f = in_dir("space");
+    struct statvfs before, during, after, of_fd;
+    unsigned long blocks;
+    int fd;
+
+    if (statvfs(dir, &before) != 0) {
+        check(0, "statvfs");
+        return;
+    }
+    check(before.f_frsize > 0 && before.f_blocks > 0 && before.f_bfree <= before.f_blocks
+              && before.f_bavail <= before.f_bfree && before.f_namemax >= 12 && !(before.f_flag & ST_RDONLY),
+          "statvfs's numbers");
+    blocks = sizeof mib / before.f_frsize;
+    memset(mib, 7, sizeof mib);
+    fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0 && write(fd, mib, sizeof mib) == (ssize_t)sizeof mib, "write 1 MiB");
+    check(fstatvfs(fd, &of_fd) == 0 && of_fd.f_blocks == before.f_blocks && of_fd.f_frsize == before.f_frsize,
+          "fstatvfs");
+    close(fd);
+    check(statvfs(dir, &during) == 0 && before.f_bfree >= during.f_bfree + blocks * 7 / 8,
+          "a 1 MiB file takes its space");
+    check(unlink(f) == 0 && statvfs(dir, &after) == 0 && after.f_bfree >= during.f_bfree + blocks * 7 / 8,
+          "a removed file gives its space back");
+}
+
+/* The image is read-only and full, and a missing path is on no filesystem. */
+static void root_space(void) {
+    struct statvfs st;
+    check(statvfs("/", &st) == 0 && (st.f_flag & ST_RDONLY) && st.f_blocks > 0 && st.f_bfree == 0,
+          "statvfs of the image");
+    errno = 0;
+    check(statvfs("/no/such/file", &st) == -1 && errno == ENOENT, "statvfs of a missing path");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return child(argc, argv);
     }
     if (argc == 3 && strcmp(argv[1], "append") == 0) {
         return append_only(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "space") == 0) {
+        snprintf(dir, sizeof dir, "%s", argv[2]);
+        space();
+        return failures != 0;
     }
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     excl();
@@ -598,9 +645,11 @@ int main(int argc, char **argv) {
     locks();
     inodes();
     whole_reads();
+    space();
     if (argc == 1) {
         console_reader();
         big_offsets();
+        root_space();
     } else {
         big_file();
     }

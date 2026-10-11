@@ -99,6 +99,15 @@ pub struct Stat {
     pub id: u32,
 }
 
+/// How full the volume is ([`Fat::usage`], `statvfs`): its data clusters
+/// of `cluster_size` bytes. FAT has no inodes to count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub cluster_size: u32,
+    pub clusters: u32,
+    pub free_clusters: u32,
+}
+
 /// What [`Fat::write`] and [`Fat::set_size`] write zeros with.
 const ZEROS: [u8; 4096] = [0; 4096];
 
@@ -152,6 +161,15 @@ impl<D: SectorDriver> Fat<D> {
         if let Some(v) = self.vol.as_mut() {
             v.set_time(timestamp(now));
         }
+    }
+
+    /// How full the volume is: the free clusters counted in the allocation
+    /// table (or FSInfo's count, kept current, when it had one).
+    pub fn usage(&mut self) -> Result<Usage> {
+        let vol = self.vol()?;
+        let (cluster_size, clusters) = (vol.cluster_bytes(), vol.geometry().cluster_count);
+        let free_clusters = vol.free_clusters().map_err(err)?;
+        Ok(Usage { cluster_size, clusters, free_clusters })
     }
 
     /// Write back everything cached: the allocation table, FSInfo.

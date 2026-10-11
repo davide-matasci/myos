@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use crate::cache::Cache;
 use crate::inode::Inode;
 use crate::layout::*;
-use crate::{Device, Error, Kind, Result, Stat};
+use crate::{Device, Error, Kind, Result, Stat, Usage};
 
 pub struct Fs<D: Device> {
     pub(crate) cache: Cache<D>,
@@ -64,6 +64,17 @@ impl<D: Device> Fs<D> {
 
     pub fn device(&self) -> &D {
         &self.cache.dev
+    }
+
+    /// How full the filesystem is: the counts the superblock keeps.
+    pub fn usage(&self) -> Usage {
+        Usage {
+            block_size: self.geo.block_size as u32,
+            blocks: self.geo.blocks_count - self.geo.first_data_block,
+            free_blocks: get32(&self.sb, S_FREE_BLOCKS),
+            inodes: self.geo.inodes_count,
+            free_inodes: get32(&self.sb, S_FREE_INODES),
+        }
     }
 
     /// The device back (after a final flush).

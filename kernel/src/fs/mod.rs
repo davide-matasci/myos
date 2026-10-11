@@ -474,6 +474,7 @@ fn ro_ops(
         set_times: None,
         set_size: None,
         files: None,
+        statfs: None,
         waits: None,
         writable: false,
     }
@@ -514,6 +515,7 @@ fn rw_ops(
         set_times: None,
         set_size: None,
         files: None,
+        statfs: None,
         waits: None,
         writable: true,
     }
@@ -526,16 +528,19 @@ pub fn init() {
     vfs::mount(
         "rootfs",
         "",
-        ro_ops(
-            rootfs::lookup,
-            rootfs::stat,
-            rootfs::listdir_at,
-            rootfs::register,
-            rootfs::create,
-            rootfs::truncate,
-            rootfs::read,
-            rootfs::write,
-        ),
+        vfs::MountOps {
+            statfs: Some(rootfs::statfs),
+            ..ro_ops(
+                rootfs::lookup,
+                rootfs::stat,
+                rootfs::listdir_at,
+                rootfs::register,
+                rootfs::create,
+                rootfs::truncate,
+                rootfs::read,
+                rootfs::write,
+            )
+        },
     );
     vfs::mount(
         "tmpfs",
@@ -544,6 +549,7 @@ pub fn init() {
             set_times: Some(tmpfs::set_times),
             set_size: Some(tmpfs::set_size),
             files: Some(tmpfs::FILES),
+            statfs: Some(tmpfs::statfs),
             ..rw_ops(
                 tmpfs::lookup,
                 tmpfs::stat,

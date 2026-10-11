@@ -96,6 +96,7 @@ exec /bin/custom/netd -> netd
 |---|---|
 | `openat` | `read` and/or `write` (`append` with `O_APPEND`, `write` with `O_TRUNC`); a new file `create` too |
 | `statat` | any right (a file the caller has none on is not there for it); none for an fd's own file (`fstat`) |
+| `statfsat` | any right on the file named (as `statat`); none for an fd's own file (`fstatvfs`) |
 | `listdirat`, `chdirat`, `readlinkat` | `read` |
 | `mknodat`, `symlinkat` | `create` (on the new name) |
 | `unlinkat` | `remove` |

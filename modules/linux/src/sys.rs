@@ -339,6 +339,41 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
     put_stat(buf, &st)
 }
 
+/// `struct statfs`, the same on the three 64-bit arches: `f_type`,
+/// `f_bsize`, `f_blocks`, `f_bfree`, `f_bavail`, `f_files`, `f_ffree`,
+/// `f_fsid`, `f_namelen`, `f_frsize`, `f_flags` and four spare words. No
+/// filesystem magic in `f_type` (0): what musl's `statvfs` returns does not
+/// use it.
+fn put_statfs(buf: usize, st: &myos_abi::VfsStatFs) -> R {
+    const ST_VALID: u64 = 0x20;
+    let words = [0, st.bsize, st.blocks, st.bfree, st.bavail, st.files, st.ffree, 0, st.namemax, st.bsize, ST_VALID, 0, 0, 0, 0];
+    let mut b = [0u8; 120];
+    for (i, w) in words.iter().enumerate() {
+        b[i * 8..i * 8 + 8].copy_from_slice(&w.to_le_bytes());
+    }
+    put(buf, &b)?;
+    Ok(0)
+}
+
+pub fn statfs(path: usize, buf: usize) -> R {
+    let real = real_path(&path_at(AT_FDCWD, path)?)?;
+    put_statfs(buf, &fs::statfs(&real).ok_or(ENOENT)?)
+}
+
+/// `fstatfs`: a socket, terminal or pipe is on no filesystem that holds
+/// blocks.
+pub fn fstatfs(fd: usize, buf: usize) -> R {
+    if let Some(e) = files::get(fd) {
+        if let Some(st) = fs::statfs(&real_path(&e.path)?) {
+            return put_statfs(buf, &st);
+        }
+    }
+    if !is_socket(fd) {
+        task::fd_kind(fd).ok_or(EBADF)?;
+    }
+    put_statfs(buf, &myos_abi::VfsStatFs { bsize: 4096, namemax: 255, ..Default::default() })
+}
+
 pub fn fstat(fd: usize, buf: usize) -> R {
     if is_socket(fd) {
         put(buf, &super::arch::stat_bytes(0o140777, 0, fd as u64 + 1, 1, 0, 0, 0))?;

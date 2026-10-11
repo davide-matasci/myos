@@ -28,6 +28,15 @@ struct File {
 }
 
 static FILES: Mutex<Vec<File>> = Mutex::new(Vec::new());
+
+/// How full the image is (`statvfs`): its files, read-only, every block
+/// taken.
+pub fn statfs() -> myos_abi::VfsStatFs {
+    const BLOCK: u64 = 4096;
+    let files = FILES.lock();
+    let blocks = files.iter().map(|f| (f.data.len() as u64).div_ceil(BLOCK)).sum();
+    myos_abi::VfsStatFs { bsize: BLOCK, blocks, files: files.len() as u64, namemax: 255, ..Default::default() }
+}
 // Lazy-sort flag: registrations arrive in arbitrary order at boot; the first
 // read sorts once, after which every read path is binary search. A later
 // registration (a module's) unsorts it again.
