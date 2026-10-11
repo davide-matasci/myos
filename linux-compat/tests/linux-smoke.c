@@ -26,6 +26,7 @@
 #include <sys/mman.h>
 #include <sys/reboot.h>
 #include <sys/select.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -544,6 +545,43 @@ static void check_epoll(void) {
     close(ep);
 }
 
+/* signalfd (docs/events.md): a blocked signal makes the fd readable and a
+ * read takes it as a struct signalfd_siginfo; an empty nonblocking read is
+ * EAGAIN; a child's kill ends a blocked read; the mask changes. */
+static void check_signalfd(void) {
+    struct signalfd_siginfo si;
+    sigset_t set;
+    struct pollfd p;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    check(sigprocmask(SIG_BLOCK, &set, NULL) == 0, "signalfd: block SIGUSR1");
+    int fd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC);
+    check(fd >= 0, "signalfd");
+    p.fd = fd;
+    p.events = POLLIN;
+    check(poll(&p, 1, 0) == 0 && read(fd, &si, sizeof si) == -1 && errno == EAGAIN,
+          "signalfd: nothing pending, EAGAIN");
+    check(kill(getpid(), SIGUSR1) == 0 && poll(&p, 1, 1000) == 1 && (p.revents & POLLIN) &&
+              read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR1 && poll(&p, 1, 0) == 0,
+          "signalfd: a pending signal is read, not delivered");
+    fcntl(fd, F_SETFL, 0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        _exit(kill(getppid(), SIGUSR1) == 0 ? 0 : 1);
+    }
+    int status = 0;
+    check(read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR1 &&
+              waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "signalfd: a child's kill ends a blocked read");
+    sigaddset(&set, SIGUSR2);
+    check(sigprocmask(SIG_BLOCK, &set, NULL) == 0 && signalfd(fd, &set, 0) == fd && kill(getpid(), SIGUSR2) == 0 &&
+              read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR2,
+          "signalfd: the mask changes");
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+    close(fd);
+}
+
 /* `unix NAME`: connect to a server listening under NAME (a native one,
  * user/tests/kernel.sh; it may not listen yet: retried for 20 s), send a
  * line, read it back. */
@@ -629,6 +667,7 @@ static void check_toolchain_calls(char *self) {
     check_select();
     check_evfd();
     check_epoll();
+    check_signalfd();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;

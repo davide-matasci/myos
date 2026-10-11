@@ -40,6 +40,7 @@ label /dev/urandom           dev.common
 label /dev/event/**          dev.common
 label /dev/timer/**          dev.common
 label /dev/wait/**           dev.common
+label /dev/sig/**            dev.common
 label /proc/**               proc
 label /net/**                net
 

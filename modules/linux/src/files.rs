@@ -33,9 +33,12 @@ static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }
 struct Flags {
     cloexec: u64,
     nonblock: u64,
+    /// The signal fds (`sys::signalfd4`): a read of one is translated into
+    /// Linux's `struct signalfd_siginfo`.
+    sigfd: u64,
 }
 
-const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0 };
+const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, sigfd: 0 };
 
 static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([NO_FLAGS; MAX_TASKS]);
 
@@ -78,6 +81,17 @@ pub fn nonblock(fd: usize) -> bool {
     FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
 }
 
+pub fn set_sigfd(fd: usize, on: bool) {
+    let mut f = FLAGS.lock();
+    let e = &mut f[task::current_pid()];
+    let b = bit(fd);
+    e.sigfd = if on { e.sigfd | b } else { e.sigfd & !b };
+}
+
+pub fn sigfd(fd: usize) -> bool {
+    FLAGS.lock()[task::current_pid()].sigfd & bit(fd) != 0
+}
+
 
 /// A successful exec in `slot`: the fds to close now (and forget).
 pub fn take_cloexec(slot: usize) -> u64 {
@@ -114,6 +128,7 @@ pub fn remove(fd: usize) {
     PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
     set_cloexec(fd, false);
     set_nonblock(fd, false);
+    set_sigfd(fd, false);
 }
 
 /// `new` now refers to what `old` does (dup/dup2/F_DUPFD), without
@@ -126,6 +141,7 @@ pub fn dup(old: usize, new: usize) {
     }
     set_cloexec(new, false);
     set_nonblock(new, nb);
+    set_sigfd(new, sigfd(old));
 }
 
 pub fn set_pos(fd: usize, pos: usize) {

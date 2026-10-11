@@ -167,6 +167,9 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 1) {
         return Err(EAGAIN);
     }
+    if files::sigfd(fd) {
+        return signalfd_read(fd, buf, len);
+    }
     match files::get(fd) {
         Some(e) if e.dir => Err(EISDIR),
         Some(e) if e.sock.is_some() => net::recv(fd, false, io),
@@ -804,6 +807,56 @@ pub fn epoll_pwait(epfd: usize, events: usize, maxevents: usize, timeout_ms: isi
 pub fn epoll_pwait2(epfd: usize, events: usize, maxevents: usize, ts: usize) -> R {
     let timeout_ms = timespec_us(ts)?.map_or(-1, |us| us.div_ceil(1000).min(isize::MAX as u64) as isize);
     epoll_wait(epfd, events, maxevents, timeout_ms)
+}
+
+// ---- signalfd: signal fds (docs/events.md) ----------------------------------
+
+/// Linux's `struct signalfd_siginfo`.
+const SIGINFO_SIZE: usize = 128;
+/// The kernel's record: `{u32 signo, u32 code, i32 pid, u32 uid}`.
+const SIG_RECORD: usize = 16;
+
+/// `signalfd4(fd, mask, sizemask, flags)`: an fd on a kernel signal fd
+/// (`-1`), or a new mask for one. The mask is Linux's 64-bit set; the
+/// signals myos has are kept.
+pub fn signalfd4(fd: usize, mask: usize, sizemask: usize, flags: usize) -> R {
+    if sizemask != 8 || flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
+        return Err(EINVAL);
+    }
+    let native = super::abi::mask_from_linux(get_u64(mask)?);
+    let list: Vec<String> = (1..32).filter(|n| native & (1 << n) != 0).map(|n| alloc::format!("{n}")).collect();
+    let cmd = alloc::format!("mask {}", if list.is_empty() { String::from("none") } else { list.join(",") });
+    let (fd, dir) = if fd as isize == -1 {
+        let (fd, dir) = evfd_open("sig", flags)?;
+        files::set_sigfd(fd, true);
+        (fd, dir)
+    } else {
+        (fd, evfd_dir(fd, "sig")?)
+    };
+    fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).ok_or(EINVAL)?;
+    Ok(fd)
+}
+
+/// A read of a signal fd: the kernel's 16-byte records, read into the
+/// front of the caller's buffer, become `struct signalfd_siginfo`s (128
+/// bytes, `ssi_signo` Linux's number, the rest 0), filled from the back
+/// so none is overwritten before it is read.
+fn signalfd_read(fd: usize, buf: usize, len: usize) -> R {
+    let count = len / SIGINFO_SIZE;
+    if count == 0 {
+        return Err(EINVAL);
+    }
+    let n = native(user::sys_read(fd, buf, count * SIG_RECORD), EBADF)?;
+    let got = n / SIG_RECORD;
+    for i in (0..got).rev() {
+        let mut record = [0u8; SIG_RECORD];
+        get(buf + i * SIG_RECORD, &mut record)?;
+        let signo = u32::from_le_bytes(record[..4].try_into().unwrap());
+        let mut info = [0u8; SIGINFO_SIZE];
+        info[..4].copy_from_slice(&(super::abi::sig_to_linux(signo) as u32).to_le_bytes());
+        put(buf + i * SIGINFO_SIZE, &info)?;
+    }
+    Ok(got * SIGINFO_SIZE)
 }
 
 pub fn dup(fd: usize, min: usize) -> R {

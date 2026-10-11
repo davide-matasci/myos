@@ -167,10 +167,10 @@ starts, is one, so it cannot be typed at the console.
   (`/net/tcp/N`, `/net/unix/N`: `docs/sockets-curl.md`,
   `docs/sockets-unix.md`) belongs to the user whose process made it (an
   accepted connection to the listener's): only that user's processes open
-  its files. The event counters, timers and wait sets (`/dev/event/N`,
-  `/dev/timer/N`, `/dev/wait/N`: `docs/events.md`) are `dev.common`, every
-  user's to make, and belong the same way to the user whose process read
-  `clone`. The
+  its files. The event counters, timers, wait sets and signal fds
+  (`/dev/event/N`, `/dev/timer/N`, `/dev/wait/N`, `/dev/sig/N`:
+  `docs/events.md`) are `dev.common`, every user's to make, and belong the
+  same way to the user whose process read `clone`. The
   console keyboard itself (`/dev/console/kbd`) is `dev`: the
   administrator's, not every terminal user's.
 

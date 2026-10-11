@@ -1,16 +1,16 @@
-/* myos libgloss: eventfd(2), timerfd(2) and epoll(7) over the kernel's
- * event counters (/dev/event), timers (/dev/timer) and wait sets
- * (/dev/wait), docs/events.md.
+/* myos libgloss: eventfd(2), timerfd(2), epoll(7) and signalfd(2) over
+ * the kernel's event counters (/dev/event), timers (/dev/timer), wait sets
+ * (/dev/wait) and signal fds (/dev/sig), docs/events.md.
  *
- * Reading /dev/event/clone (or /dev/timer/clone, /dev/wait/clone) makes an
- * object and answers its number N; the fd a program holds is N/data, read
- * and written by the kernel as the Linux fd is. What Linux does in the
- * eventfd/timerfd/epoll calls themselves goes to N/ctl as text
- * (`semaphore`, `arm FIRST [INTERVAL] [abs] [realtime]`, `disarm`, `add FD
- * EVENTS COOKIE`, ...) and comes back from N/status; the fd's
- * /proc/self/fd link names the directory. A timerfd's clock is remembered
- * here, per fd: it matters only to TFD_TIMER_ABSTIME, and is forgotten by
- * exec. */
+ * Reading /dev/event/clone (or /dev/timer/clone, /dev/wait/clone,
+ * /dev/sig/clone) makes an object and answers its number N; the fd a
+ * program holds is N/data, read and written by the kernel as the Linux fd
+ * is. What Linux does in the eventfd/timerfd/epoll/signalfd calls
+ * themselves goes to N/ctl as text (`semaphore`, `arm FIRST [INTERVAL]
+ * [abs] [realtime]`, `disarm`, `add FD EVENTS COOKIE`, `mask N,N`, ...)
+ * and comes back from N/status; the fd's /proc/self/fd link names the
+ * directory. A timerfd's clock is remembered here, per fd: it matters only
+ * to TFD_TIMER_ABSTIME, and is forgotten by exec. */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/signalfd.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
@@ -433,4 +434,53 @@ int epoll_pwait(int epfd, struct epoll_event *events, int maxevents, int timeout
         errno = saved;
     }
     return r;
+}
+
+/* ---- signalfd --------------------------------------------------------- */
+
+/* `mask N,N,...` (or `mask none`) for a sigset_t (one bit per signal). */
+static void mask_cmd(char *cmd, const sigset_t *mask) {
+    int sig, any = 0;
+    strcpy(cmd, "mask ");
+    for (sig = 1; sig < 32; sig++) {
+        if (sigismember(mask, sig) == 1) {
+            if (any) {
+                strcat(cmd, ",");
+            }
+            put_dec(cmd + strlen(cmd), (unsigned long long)sig);
+            any = 1;
+        }
+    }
+    if (!any) {
+        strcat(cmd, "none");
+    }
+}
+
+int signalfd(int fd, const sigset_t *mask, int flags) {
+    char dir[EVFD_PATH];
+    char path[EVFD_PATH];
+    char cmd[128];
+    if (mask == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (flags & ~(SFD_CLOEXEC | SFD_NONBLOCK)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (fd == -1) {
+        fd = clone_open("sig", flags, dir);
+        if (fd < 0) {
+            return -1;
+        }
+    } else if (fd_dir(fd, "sig", dir) != 0) {
+        return -1;
+    }
+    mask_cmd(cmd, mask);
+    strcpy(path, dir);
+    strcat(path, "/ctl");
+    if (write_file(path, cmd) != 0) {
+        return -1;
+    }
+    return fd;
 }

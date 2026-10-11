@@ -563,7 +563,7 @@ pub const fn key_addr(pid: usize, addr: usize) -> usize {
 }
 
 /// Bumped on every wake (under TASKS, except `wake_any`'s fast path).
-static WAIT_SEQ: AtomicU64 = AtomicU64::new(0);
+pub(super) static WAIT_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Earliest `wake_at` of any Blocked task (u64::MAX = none).
 static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Number of tasks blocked with `WAIT_ANY` (lets producers skip the scan).
@@ -782,8 +782,8 @@ pub fn wake(key: usize) {
 }
 
 /// `wake` under `TASKS`: every task blocked on `key`, and the `WAIT_ANY`
-/// waiters; true when any was.
-fn wake_key_locked(tasks: &mut TaskTable, key: usize, kicks: &mut u64) -> bool {
+/// waiters; true when any was (the caller bumps `WAIT_SEQ` then).
+pub(super) fn wake_key_locked(tasks: &mut TaskTable, key: usize, kicks: &mut u64) -> bool {
     let any = ANY_WAITERS.load(Ordering::SeqCst) != 0;
     let mut woke = false;
     for i in 0..MAX_TASKS {

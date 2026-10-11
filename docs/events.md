@@ -1,13 +1,14 @@
-# Event counters, timers and wait sets
+# Event counters, timers, wait sets and signal fds
 
 An event counter is what Linux calls an eventfd, a timer what it calls a
-timerfd, a wait set what it calls an epoll instance: a kernel object a
-program holds as an fd, reads for what happened (a count, the expirations
-of a timer, the members of a set that are ready), polls for readiness,
-and hands to a `poll` with its sockets and pipes. myos serves all three
-from the kernel (`kernel/src/evfd.rs`), as directories under `/dev` the
-Plan 9 way (`kernel/src/fs/evfs.rs`), like the terminals (`docs/tty.md`)
-and the `/net` conversations (`docs/sockets-curl.md`):
+timerfd, a wait set what it calls an epoll instance, a signal fd what it
+calls a signalfd: a kernel object a program holds as an fd, reads for
+what happened (a count, the expirations of a timer, the members of a set
+that are ready, the signals that arrived), polls for readiness, and hands
+to a `poll` with its sockets and pipes. myos serves all four from the
+kernel (`kernel/src/evfd.rs`), as directories under `/dev` the Plan 9 way
+(`kernel/src/fs/evfs.rs`), like the terminals (`docs/tty.md`) and the
+`/net` conversations (`docs/sockets-curl.md`):
 
 ```
 /dev/event/clone         read: allocates an event counter, answers its number N
@@ -22,14 +23,19 @@ and the `/net` conversations (`docs/sockets-curl.md`):
 /dev/wait/N/data         the set: 16-byte reads take the ready members {u64 cookie, u32 events, u32 0}
 /dev/wait/N/ctl          commands: add FD EVENTS COOKIE | mod FD EVENTS COOKIE | del FD
 /dev/wait/N/status       members N, then one FD EVENTS COOKIE line per member
-/proc/self/fd/N          symlink: /dev/event/3/data for a counter, /dev/timer/0/data, /dev/wait/1/data
+/dev/sig/clone           read: allocates a signal fd, answers its number N
+/dev/sig/N/data          the fd: 16-byte reads take the reader's pending signals of the mask {u32 signo, u32 code, i32 pid, u32 uid}
+/dev/sig/N/ctl           commands: mask N,N,... | mask none
+/dev/sig/N/status        mask N,N,... | mask none
+/proc/self/fd/N          symlink: /dev/event/3/data for a counter, /dev/timer/0/data, /dev/wait/1/data, /dev/sig/0/data
 ```
 
 A program reads `clone` once (the number comes as text, `3\n`), opens
-`N/data` and keeps that fd: it is the eventfd, timerfd or epoll fd. The
-kernel knows the fd as its own kind (`FdEntry::Event`, `FdEntry::Timer`,
-`FdEntry::Wait` in `kernel/src/task/fd.rs`): `read`, `write` and `poll`
-on it are the kernel's,
+`N/data` and keeps that fd: it is the eventfd, timerfd, epoll fd or
+signalfd. The kernel knows the fd as its own kind (`FdEntry::Event`,
+`FdEntry::Timer`, `FdEntry::Wait`, `FdEntry::Sig` in
+`kernel/src/task/fd.rs`): `read`, `write` and `poll` on it are the
+kernel's,
 a `fork` or `dup` shares the object (a reference count frees it with the
 last fd), and `/proc/self/fd/N` names its directory, so a library holding
 only the fd finds `ctl` and `status`. An object belongs to the user whose
@@ -39,13 +45,14 @@ are `dev.common`, every user's).
 
 libgloss wraps the Linux calls over these files
 (`toolchain/newlib/libgloss/myos/evfd.c`, `<sys/eventfd.h>`,
-`<sys/timerfd.h>`, `<sys/epoll.h>`): `eventfd`, `eventfd_read`,
-`eventfd_write`, `timerfd_create`, `timerfd_settime`, `timerfd_gettime`,
-`epoll_create`, `epoll_create1`, `epoll_ctl`, `epoll_wait`, `epoll_pwait`.
-The Linux layer maps `eventfd2`, the `timerfd_*` and the `epoll_*`
-syscalls onto the same objects (`modules/linux/src/sys.rs`,
-`docs/linux-compat.md`), so a Linux program's eventfd or epoll fd is a
-native fd and the layer keeps no state for it.
+`<sys/timerfd.h>`, `<sys/epoll.h>`, `<sys/signalfd.h>`): `eventfd`,
+`eventfd_read`, `eventfd_write`, `timerfd_create`, `timerfd_settime`,
+`timerfd_gettime`, `epoll_create`, `epoll_create1`, `epoll_ctl`,
+`epoll_wait`, `epoll_pwait`, `signalfd`. The Linux layer maps `eventfd2`,
+the `timerfd_*`, the `epoll_*` and the `signalfd*` syscalls onto the same
+objects (`modules/linux/src/sys.rs`, `docs/linux-compat.md`), so a Linux
+program's eventfd, epoll fd or signalfd is a native fd and the layer
+keeps no state for it beyond a flag.
 
 ## Event counters
 
@@ -137,6 +144,27 @@ Linux (`fd_drop` in `kernel/src/task/fd.rs`). The set itself is shared
 with a fork, like Linux's: the child's `add` shows in the parent. A set
 holds 1024 members at most.
 
+## Signal fds
+
+A signal fd is a mask of signals (`ctl`: `mask N,N,...` by number, or
+`mask none`; `status` reads it back). A read takes the lowest pending
+signal of the mask from the *reading* process, one 16-byte record `{u32
+signo, u32 code, i32 pid, u32 uid}` per signal (as many as fit; `code`,
+`pid` and `uid` are 0: the kernel keeps no sender), instead of delivering
+it; with none pending it waits for one (`EAGAIN` with `O_NONBLOCK`), and
+ends with `EINTR` when a signal that acts (one outside the mask, or an
+unblocked one) comes first, like `sigwait`. `poll` says `POLLIN` while
+one is pending. As on Linux the signals should be blocked by the reader:
+an unblocked one is delivered before a read gets to it. The fd carries no
+process: a fork's child reads its own signals through it; a signal
+arriving at a process wakes its `sigwait`s, signal fd readers and pollers
+(`send_locked` in `kernel/src/task/signals.rs`).
+
+libgloss's `<sys/signalfd.h>` declares `struct signalfd_siginfo` as this
+16-byte record, with Linux's names for its fields; the Linux layer
+expands each record into Linux's 128-byte struct (`ssi_signo` Linux's
+number, the rest 0).
+
 ## From the shell
 
 ```
@@ -159,5 +187,8 @@ periodic timer, `gettime`, `disarm`, an absolute time.
 `user/c/epoll_smoke.c` (`t epoll`) runs the wait sets: pipes and an event
 counter as members, a timeout, a child's write ending a wait, `et`,
 `oneshot`, the errors, a member gone with its fd, a set in a set, the set
-shared with a fork. `linux-compat/tests/linux-smoke.c` does the same from
-a musl program through the Linux layer.
+shared with a fork. `user/c/sigfd_smoke.c` (`t sigfd`) runs the signal
+fds: a blocked signal read instead of delivered, one outside the mask
+delivered, `EAGAIN`, a child's kill ending a read, the mask changed, the
+fd in a wait set. `linux-compat/tests/linux-smoke.c` does the same from a
+musl program through the Linux layer.

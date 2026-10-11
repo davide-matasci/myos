@@ -36,6 +36,10 @@ t evfd /bin/etc/evfd_smoke
 # errors, a member gone with its fd, a set in a set, the set shared with a
 # fork (epoll_smoke.c).
 t epoll /bin/etc/epoll_smoke
+# Signal fds (docs/events.md): a blocked signal read instead of delivered,
+# one outside the mask delivered, EAGAIN, a child's kill ending a read, the
+# mask changed, the fd in a wait set (sigfd_smoke.c).
+t sigfd /bin/etc/sigfd_smoke
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t uio /bin/etc/uio_smoke

@@ -153,10 +153,15 @@ fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usiz
     tasks[id].sig_pending |= bit;
     // A signal that acts ends any blocking wait (EINTR / termination).
     if !blocked {
-        wake_task_locked(tasks, id)
-    } else {
-        0
+        return wake_task_locked(tasks, id);
     }
+    // A blocked one is for a `sigwait`, a `sigsuspend` or a signal fd
+    // (`crate::evfd`): their waiters look again, so do the pollers.
+    let mut kicks = 0;
+    if wake_key_locked(tasks, KEY_SIGNAL, &mut kicks) {
+        WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
+    }
+    kicks
 }
 
 /// True if a pending signal should break `id` out of a blocking wait: one

@@ -1,9 +1,10 @@
-//! Event counters, timers and wait sets: `/dev/event/N`, `/dev/timer/N`
-//! and `/dev/wait/N` (`docs/events.md`). An object comes from reading the
-//! directory's `clone`, which allocates it and answers its number;
-//! `N/data` opened is the fd a program holds (an event, timer or wait fd
-//! in [`crate::task`], whose reads and writes come here), `N/ctl` takes
-//! its commands as text and `N/status` describes it.
+//! Event counters, timers, wait sets and signal fds: `/dev/event/N`,
+//! `/dev/timer/N`, `/dev/wait/N` and `/dev/sig/N` (`docs/events.md`). An
+//! object comes from reading the directory's `clone`, which allocates it
+//! and answers its number; `N/data` opened is the fd a program holds (an
+//! event, timer, wait or signal fd in [`crate::task`], whose reads and
+//! writes come here), `N/ctl` takes its commands as text and `N/status`
+//! describes it.
 //!
 //! An event counter is a `u64` a write adds to and a read takes: the whole
 //! count (zeroed) or, as a semaphore, one at a time. A timer counts its
@@ -13,11 +14,13 @@
 //! hold something to take, which is what `poll` reports, so an event loop
 //! waits for them like for a pipe. A wait set holds other fds' objects
 //! and is readable while one of them is ready: a read gives their cookies
-//! and readiness, so an event loop waits for many fds in one read. Linux's
-//! `eventfd`, `timerfd` and `epoll` are these (libgloss `evfd.c`, the
-//! Linux layer).
+//! and readiness, so an event loop waits for many fds in one read. A
+//! signal fd is a mask of signals: readable while the reading process has
+//! one of them pending, a read takes it instead of its delivery. Linux's
+//! `eventfd`, `timerfd`, `epoll` and `signalfd` are these (libgloss
+//! `evfd.c`, the Linux layer).
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use alloc::boxed::Box;
@@ -699,4 +702,94 @@ pub fn wait_status(id: usize) -> Option<Vec<u8>> {
         text += &alloc::format!("{} {} {}{disabled}\n", m.fd, wait_events_text(m.events), m.cookie);
     }
     Some(text.into_bytes())
+}
+
+// ---- signal fds ------------------------------------------------------------
+
+/// A signal fd: the signals it takes, a bit per number. The signals are
+/// the reading process's (the fd carries no process: a fork's child reads
+/// its own), pending and normally blocked by it, as on Linux: an unblocked
+/// one is delivered before a read gets to it.
+pub struct Sig {
+    mask: AtomicU32,
+    refs: Refs,
+}
+
+static SIGS: Table<Sig> = Table::new();
+
+/// A new signal fd with an empty mask (`clone`): its id.
+pub fn sig_alloc() -> Option<usize> {
+    SIGS.alloc(Sig { mask: AtomicU32::new(0), refs: Refs::new() })
+}
+
+/// Whether signal fd `id` is there, for the current process's user.
+pub fn sig_exists(id: usize) -> bool {
+    SIGS.get(id).is_some_and(|s| s.refs.visible())
+}
+
+pub fn sig_id_bound() -> usize {
+    SIGS.bound()
+}
+
+pub fn sig_open(id: usize) -> bool {
+    SIGS.get(id).map(|s| refs_open(&s.refs)).is_some()
+}
+
+pub fn sig_ref(id: usize) {
+    if let Some(s) = SIGS.get(id) {
+        s.refs.fds.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// One fd referring to signal fd `id` closed; the last frees it (true then).
+pub fn sig_drop(id: usize) -> bool {
+    let last = SIGS.get(id).is_some_and(|s| refs_drop(&s.refs));
+    if last {
+        SIGS.free(id);
+    }
+    last
+}
+
+/// A command on signal fd `id`'s `ctl`: `mask N,N,...` (signal numbers,
+/// 1 to 31) or `mask none`. `None` refuses it.
+pub fn sig_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
+    let s = SIGS.get(id)?;
+    let line = core::str::from_utf8(trim(text)).ok()?;
+    let list = line.strip_prefix("mask ")?.trim();
+    let mut mask = 0u32;
+    if list != "none" {
+        for word in list.split(',') {
+            let n: u32 = word.trim().parse().ok()?;
+            if n == 0 || n > 31 {
+                return None;
+            }
+            mask |= 1 << n;
+        }
+    }
+    s.mask.store(mask, Ordering::SeqCst);
+    // The reading process may have one of the new signals pending.
+    crate::task::wake_any();
+    Some(text.len())
+}
+
+/// Signal fd `id`'s `status`: `mask N,N,...` or `mask none`.
+pub fn sig_status(id: usize) -> Option<Vec<u8>> {
+    let s = SIGS.get(id)?;
+    let mask = s.mask.load(Ordering::SeqCst);
+    let list: Vec<String> = (1..32).filter(|n| mask & (1 << n) != 0).map(|n| alloc::format!("{n}")).collect();
+    Some(alloc::format!("mask {}\n", if list.is_empty() { String::from("none") } else { list.join(",") }).into_bytes())
+}
+
+/// Whether the current task has a signal of fd `id`'s mask pending.
+pub fn sig_poll(id: usize) -> bool {
+    SIGS.get(id).is_some_and(|s| {
+        crate::task::signal_pending(crate::task::current_id()) & s.mask.load(Ordering::SeqCst) != 0
+    })
+}
+
+/// Take the lowest pending signal of fd `id`'s mask from the current task
+/// (it is not delivered); `None` when there is none.
+pub fn sig_take(id: usize) -> Option<u32> {
+    let s = SIGS.get(id)?;
+    crate::task::signal_take_from(crate::task::current_id(), s.mask.load(Ordering::SeqCst))
 }

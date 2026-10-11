@@ -659,12 +659,14 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
             }
         }
     }
-    // An event counter's, a timer's or a wait set's data (docs/events.md):
-    // the fd is of that kind, its I/O routed via crate::evfd.
+    // An event counter's, a timer's, a wait set's or a signal fd's data
+    // (docs/events.md): the fd is of that kind, its I/O routed via
+    // crate::evfd.
     for (kind, prefix) in [
         (fs::evfs::Kind::Event, "dev/event/"),
         (fs::evfs::Kind::Timer, "dev/timer/"),
         (fs::evfs::Kind::Wait, "dev/wait/"),
+        (fs::evfs::Kind::Sig, "dev/sig/"),
     ] {
         if let Some(rest) = path_rel.strip_prefix(prefix) {
             if let Some(id) = fs::evfs::data_id(kind, rest) {

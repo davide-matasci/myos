@@ -32,6 +32,9 @@ pub enum FdEntry {
     Timer(usize),
     /// A wait set (`/dev/wait/N/data`): reads take the ready members.
     Wait(usize),
+    /// A signal fd (`/dev/sig/N/data`): reads take the reader's pending
+    /// signals of its mask.
+    Sig(usize),
 }
 
 /// One open file description (POSIX): the node, the file offset and the
@@ -200,6 +203,10 @@ pub(super) fn fd_clone(entry: FdEntry) -> FdEntry {
             crate::evfd::wait_ref(id);
             entry
         }
+        FdEntry::Sig(id) => {
+            crate::evfd::sig_ref(id);
+            entry
+        }
         FdEntry::File(id) => {
             open_file_ref(id);
             entry
@@ -219,6 +226,7 @@ pub(super) fn fd_drop(entry: FdEntry) {
         FdEntry::Event(id) => crate::evfd::event_drop(id),
         FdEntry::Timer(id) => crate::evfd::timer_drop(id),
         FdEntry::Wait(id) => crate::evfd::wait_drop(id),
+        FdEntry::Sig(id) => crate::evfd::sig_drop(id),
         FdEntry::File(id) => match open_file_unref(id) {
             Some(node) => {
                 // The description's own locks go with it (`fs::lock`).
@@ -454,6 +462,7 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
         }
         FdEntry::Timer(id) => Some(u32::from(crate::evfd::timer_poll(id))),
         FdEntry::Wait(id) => Some(u32::from(crate::evfd::wait_ready(id).0)),
+        FdEntry::Sig(id) => Some(u32::from(crate::evfd::sig_poll(id))),
         _ => None,
     })
 }
@@ -534,6 +543,7 @@ pub fn entry_poll(entry: FdEntry) -> (u16, bool) {
             let (ready, tty) = crate::evfd::wait_ready(id);
             (if ready { POLLIN } else { 0 }, tty)
         }
+        FdEntry::Sig(id) => (if crate::evfd::sig_poll(id) { POLLIN } else { 0 }, false),
         FdEntry::File(id) => {
             // A module file (a socket's /net data) knows its readiness; any
             // other file is always readable and writable.
@@ -588,20 +598,22 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     out
 }
 
-/// Open `/dev/event/N/data`, `/dev/timer/N/data` or `/dev/wait/N/data`
-/// (`docs/events.md`): an fd on the object; `None` when there is no such
-/// object or no free fd.
+/// Open `/dev/event/N/data`, `/dev/timer/N/data`, `/dev/wait/N/data` or
+/// `/dev/sig/N/data` (`docs/events.md`): an fd on the object; `None` when
+/// there is no such object or no free fd.
 pub fn fd_open_evfd(kind: crate::fs::evfs::Kind, id: usize) -> Option<usize> {
     use crate::fs::evfs::Kind;
     let entry = match kind {
         Kind::Event => FdEntry::Event(id),
         Kind::Timer => FdEntry::Timer(id),
         Kind::Wait => FdEntry::Wait(id),
+        Kind::Sig => FdEntry::Sig(id),
     };
     let opened = match kind {
         Kind::Event => crate::evfd::event_open(id),
         Kind::Timer => crate::evfd::timer_open(id),
         Kind::Wait => crate::evfd::wait_open(id),
+        Kind::Sig => crate::evfd::sig_open(id),
     };
     if !opened {
         return None;
@@ -909,6 +921,35 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 }
                 return bytes.len();
             }
+            FdEntry::Sig(id) => {
+                // The pending signals of the mask, taken, as 16-byte
+                // records `{signo, code, pid, uid}` (the last three 0: the
+                // kernel keeps no sender), as many as fit; a shorter buffer
+                // is an error.
+                if len < 16 {
+                    return usize::MAX;
+                }
+                let seq = wait_seq();
+                let mut bytes = Vec::new();
+                while bytes.len() + 16 <= len.min(FILE_READ_TMP) {
+                    let Some(sig) = crate::evfd::sig_take(id) else { break };
+                    bytes.extend_from_slice(&sig.to_le_bytes());
+                    bytes.extend_from_slice(&[0u8; 12]);
+                }
+                if bytes.is_empty() {
+                    // A signal that acts (one outside the mask, or an
+                    // unblocked one) ends the wait, as `sigwait`'s.
+                    if signal_wakeable(current_id()) {
+                        return crate::signal::SYSERR_EINTR;
+                    }
+                    block_until(KEY_SIGNAL, seq, 0);
+                    continue;
+                }
+                if !user::copy_to_user(current_aspace(), buf, &bytes) {
+                    return usize::MAX;
+                }
+                return bytes.len();
+            }
             FdEntry::Empty | FdEntry::Console | FdEntry::PipeWrite(_) => return usize::MAX,
         }
     }
@@ -1109,9 +1150,12 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
         FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(_) => {
             FdKind::Tty
         }
-        FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) | FdEntry::Event(_) | FdEntry::Timer(_) | FdEntry::Wait(_) => {
-            FdKind::Pipe
-        }
+        FdEntry::PipeRead(_)
+        | FdEntry::PipeWrite(_)
+        | FdEntry::Event(_)
+        | FdEntry::Timer(_)
+        | FdEntry::Wait(_)
+        | FdEntry::Sig(_) => FdKind::Pipe,
         FdEntry::File(_) if fd_is_console_tty(entry) => FdKind::Tty,
         FdEntry::File(id) => FdKind::File {
             size: open_file_node(id).and_then(|node| crate::fs::size_of(&node)).unwrap_or(0),
@@ -1121,8 +1165,9 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
 
 /// What `fd` is open on, as `/proc/self/fd/N` names it: a path for a file
 /// or a terminal (`/dev/console/data`, `/dev/pts/N/data`, the master end as
-/// `/dev/pts/N/master`), an event, timer or wait set (`/dev/event/N/data`,
-/// `/dev/timer/N/data`, `/dev/wait/N/data`), `pipe:[N]` for a pipe end.
+/// `/dev/pts/N/master`), an event, timer, wait set or signal fd
+/// (`/dev/event/N/data`, `/dev/timer/N/data`, `/dev/wait/N/data`,
+/// `/dev/sig/N/data`), `pipe:[N]` for a pipe end.
 pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
     use alloc::format;
     use alloc::string::String;
@@ -1137,6 +1182,7 @@ pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
         FdEntry::Event(id) => format!("/dev/event/{id}/data"),
         FdEntry::Timer(id) => format!("/dev/timer/{id}/data"),
         FdEntry::Wait(id) => format!("/dev/wait/{id}/data"),
+        FdEntry::Sig(id) => format!("/dev/sig/{id}/data"),
     })
 }
 

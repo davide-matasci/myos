@@ -1,10 +1,11 @@
 //! evfs: the event counters at `/dev/event/…`, the timers at
-//! `/dev/timer/…` and the wait sets at `/dev/wait/…` (`docs/events.md`,
-//! [`crate::evfd`]). Reading `clone` allocates an object and answers its
-//! number; each live one is a directory `N/` with `data` (the fd a
-//! program holds: opened as an event, timer or wait fd in [`crate::task`],
-//! never read or written here), `ctl` (its commands, as text) and
-//! `status` (what it is doing).
+//! `/dev/timer/…`, the wait sets at `/dev/wait/…` and the signal fds at
+//! `/dev/sig/…` (`docs/events.md`, [`crate::evfd`]). Reading `clone`
+//! allocates an object and answers its number; each live one is a
+//! directory `N/` with `data` (the fd a program holds: opened as an
+//! event, timer, wait or signal fd in [`crate::task`], never read or
+//! written here), `ctl` (its commands, as text) and `status` (what it is
+//! doing).
 
 use crate::evfd;
 use crate::fs::StatInfo;
@@ -18,6 +19,7 @@ pub enum Kind {
     Event,
     Timer,
     Wait,
+    Sig,
 }
 
 impl Kind {
@@ -26,6 +28,7 @@ impl Kind {
             Kind::Event => evfd::event_exists(id),
             Kind::Timer => evfd::timer_exists(id),
             Kind::Wait => evfd::wait_exists(id),
+            Kind::Sig => evfd::sig_exists(id),
         }
     }
 
@@ -34,6 +37,7 @@ impl Kind {
             Kind::Event => evfd::event_id_bound(),
             Kind::Timer => evfd::timer_id_bound(),
             Kind::Wait => evfd::wait_id_bound(),
+            Kind::Sig => evfd::sig_id_bound(),
         }
     }
 
@@ -42,6 +46,7 @@ impl Kind {
             Kind::Event => evfd::event_alloc(),
             Kind::Timer => evfd::timer_alloc(),
             Kind::Wait => evfd::wait_alloc(),
+            Kind::Sig => evfd::sig_alloc(),
         }
     }
 
@@ -50,6 +55,7 @@ impl Kind {
             Kind::Event => evfd::event_status(id),
             Kind::Timer => evfd::timer_status(id),
             Kind::Wait => evfd::wait_status(id),
+            Kind::Sig => evfd::sig_status(id),
         }
     }
 
@@ -58,6 +64,7 @@ impl Kind {
             Kind::Event => evfd::event_ctl_write(id, text),
             Kind::Timer => evfd::timer_ctl_write(id, text),
             Kind::Wait => evfd::wait_ctl_write(id, text),
+            Kind::Sig => evfd::sig_ctl_write(id, text),
         }
     }
 }
@@ -238,3 +245,4 @@ macro_rules! backend {
 backend!(event, Kind::Event);
 backend!(timer, Kind::Timer);
 backend!(wait, Kind::Wait);
+backend!(sig, Kind::Sig);
