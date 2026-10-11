@@ -894,6 +894,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
         }
         crate::exception::user_fault_kill(
             if ec == 0x20 { "insn abort" } else { "data abort" },
+            elr,
             &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
         );
     }
@@ -903,6 +904,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     // instead of halting the machine (`aarch64_sync_abort` is fatal).
     crate::exception::user_fault_kill(
         "sync exception",
+        elr,
         &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
     );
 }

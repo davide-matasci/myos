@@ -770,6 +770,14 @@ int main(int argc, char **argv) {
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);
     }
+    /* `enosys`: a syscall no arch has gets ENOSYS (with the layer's trace
+     * on, user/tests/kernel.sh, it is also reported on the console). */
+    if (argc > 1 && strcmp(argv[1], "enosys") == 0) {
+        errno = 0;
+        int ok = syscall(4000, 1, 2, 3) == -1 && errno == ENOSYS;
+        out(ok ? "LINUX-ENOSYS OK\n" : "LINUX-ENOSYS FAIL\n");
+        return !ok;
+    }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root
      * (`linux --root`), where /dev is a bind of the system's. */
     if (argc > 1 && strcmp(argv[1], "evfd") == 0) {
