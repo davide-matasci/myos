@@ -51,6 +51,9 @@ static int read_status(int fd, char *buf, size_t cap) {
     int sfd;
     snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
     n = readlink(link, path, sizeof path - 8);
+    if (n > 0) {
+        path[n] = '\0';
+    }
     if (n <= 5 || strcmp(path + n - 5, "/data") != 0) {
         printf("readlink %s: %d\n", link, (int)n);
         return -1;
