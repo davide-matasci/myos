@@ -52,16 +52,19 @@ static int read_status(int fd, char *buf, size_t cap) {
     snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
     n = readlink(link, path, sizeof path - 8);
     if (n <= 5 || strcmp(path + n - 5, "/data") != 0) {
+        printf("readlink %s: %d\n", link, (int)n);
         return -1;
     }
     strcpy(path + n - 5, "/status");
     sfd = open(path, O_RDONLY);
     if (sfd < 0) {
+        printf("open %s failed\n", path);
         return -1;
     }
     n = read(sfd, buf, cap - 1);
     close(sfd);
     if (n < 0) {
+        printf("read %s failed\n", path);
         return -1;
     }
     buf[n] = '\0';
@@ -88,6 +91,7 @@ static int events(void) {
         return fail("write");
     }
     if (read_status(fd, status, sizeof status) != 0 || strncmp(status, "count 7\n", 8) != 0) {
+        printf("status: [%s]\n", status);
         return fail("status shows the count");
     }
     if (poll_bits(fd, 0) != (POLLIN | POLLOUT)) {
