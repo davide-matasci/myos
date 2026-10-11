@@ -1030,10 +1030,16 @@ lx_evfd_root() {
 }
 # The layer's trace switch (docs/linux-compat.md, Debugging): on, a call
 # it does not implement still gets ENOSYS (and is reported on the console);
-# off again; anything but 0 or 1 refused.
+# at 2 the call is kept with its answer; off again; anything else refused.
 lx_trace() {
 	echo 1 > /proc/linux_trace && [ "$(cat /proc/linux_trace)" = 1 ] || return 1
 	linux /bin/linux/linux-smoke enosys
+	rc=$?
+	[ $rc = 0 ] || return 1
+	# Level 2 keeps each thread's last calls, published by the next write.
+	echo 2 > /proc/linux_trace && linux /bin/linux/linux-smoke enosys || return 1
+	echo 2 > /proc/linux_trace
+	grep -q '^  4000 (0x1, 0x2, 0x3, 0x[0-9a-f]*) = -38$' /proc/linux_trace
 	rc=$?
 	echo 0 > /proc/linux_trace
 	[ $rc = 0 ] && [ "$(cat /proc/linux_trace)" = 0 ] || return 1

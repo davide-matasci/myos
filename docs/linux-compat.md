@@ -531,7 +531,7 @@ three, the kernel crate itself an hour. Known gaps:
 ## Debugging
 
 A program that exits without a word usually asked for something the layer
-does not have, or crashed. Two things say which:
+does not have, or crashed. These say which:
 
 - **The trace.** `echo 1 > /proc/linux_trace` (root: writing `/proc` is
   the policy's `proc {all}`, `docs/security.md`) makes the layer report
@@ -543,6 +543,23 @@ does not have, or crashed. Two things say which:
   linux: pid 7 syscall 4000 (0x1, 0x2, 0x3): ENOSYS
   ```
   `echo 0 > /proc/linux_trace` turns it off; it starts off.
+- **What a hung or spinning program is doing.** `echo 2 >
+  /proc/linux_trace` also keeps every thread's last 8 syscalls with
+  their answers and its count of calls, without printing them. Each
+  write publishes what was kept so far, after the level, so with the
+  program running in the background, write `2` again and read the file:
+  ```
+  2
+  tid 9 pid 9: 1520 calls
+    202 (0x7f1c0, 0x80, 0x0, 0x0) ...
+  tid 11 pid 9: 4800213 calls
+    24 (0x0, 0x0, 0x0, 0x0) = 0x0
+  ```
+  The thread whose count climbs between two reads is the busy one; a
+  call with `...` is still waiting (`202` is x86_64's `futex`, `24` its
+  `sched_yield`). A thread spinning without syscalls keeps its count
+  still: its last calls show what it last asked for. Each write keeps its copy of the
+  text (procfs files do not give theirs back), under 1 KiB per thread.
 - **Where a fault was.** The kernel's `user fault` line names the file
   and the ELF virtual address of the faulting instruction when it is in
   a file mapping, which is where a shared library's code is:
