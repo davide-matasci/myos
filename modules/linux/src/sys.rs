@@ -701,6 +701,7 @@ pub fn epoll_create1(flags: usize) -> R {
     Ok(fd)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn epoll_create(size: usize) -> R {
     if (size as isize) <= 0 {
         return Err(EINVAL);
