@@ -441,7 +441,10 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
     if fd >= MAX_FDS {
         return None;
     }
-    with_process_mut(|t| match t.fds[fd] {
+    // Outside TASKS: a signal fd's readiness is the task's pending set,
+    // read under it (`with_sig`), a wait set's its members'.
+    let entry = with_process_mut(|t| t.fds[fd]);
+    match entry {
         FdEntry::PipeRead(id) => {
             let mut bits = 0u32;
             // Readable when data is buffered, or the writer closed (EOF).
@@ -464,7 +467,7 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
         FdEntry::Wait(id) => Some(u32::from(crate::evfd::wait_ready(id).0)),
         FdEntry::Sig(id) => Some(u32::from(crate::evfd::sig_poll(id))),
         _ => None,
-    })
+    }
 }
 
 /// `poll(2)` bits (Linux values).
