@@ -530,6 +530,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             );
             crate::exception::user_fault_kill(
                 kind,
+                sepc,
                 &alloc::format!(
                     "stval={stval:#x} sepc={sepc:#x} sp={user_sp:#x}{}{stack}{map}",
                     crate::exception::task_ctx(),
@@ -552,6 +553,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             if from_user(frame) {
                 crate::exception::user_fault_kill(
                     "trap",
+                    sepc,
                     &alloc::format!("scause={code:#x} sepc={sepc:#x} stval={stval:#x}{}", crate::exception::task_ctx()),
                 );
             }

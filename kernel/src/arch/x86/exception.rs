@@ -38,6 +38,7 @@ pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! 
         // `[ FAIL ] exception` (cr2 in HHDM, code=0x5) instead of a child SEGV.
         user_fault_kill(
             "page fault",
+            rip,
             &format!("cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx} stack{stack}", ctx = task_ctx()),
         );
     }
@@ -80,6 +81,7 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64, user: boo
         // took the whole guest down with `[ FAIL ] exception`).
         user_fault_kill(
             "general protection",
+            rip,
             &format!(
                 "rip={rip:#x} rsp={rsp:#x} code={code:#x} insn=[{hex}]{ctx}",
                 ctx = task_ctx(),
@@ -99,7 +101,7 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64, user: boo
 /// the kernel it is fatal.
 pub fn x86_exception(name: &str, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
     if user {
-        user_fault_kill(name, &format!("rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}", ctx = task_ctx()));
+        user_fault_kill(name, rip, &format!("rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}", ctx = task_ctx()));
     }
     fatal_line(&format!("{name} rip={rip:#x} rsp={rsp:#x} code={code:#x} kernel{ctx}", ctx = task_ctx()));
 }
