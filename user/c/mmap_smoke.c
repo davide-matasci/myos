@@ -322,11 +322,53 @@ static void fault_around(void) {
     unlink(f);
 }
 
+/* More files mapped at once than the old limit of 64, the fds closed:
+ * each mapping is still paged in from its file (an untouched page reads
+ * what the file holds now), not a copy made when it was mapped. */
+static void many_files(void) {
+    enum { FILES = 100 };
+    static char *maps[FILES];
+    char name[32];
+    int ok = 1;
+    for (int i = 0; i < FILES && ok; i++) {
+        snprintf(name, sizeof name, "many%d", i);
+        int fd = open(in_dir(name), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        ok = fd >= 0 && pwrite(fd, "a", 1, PAGE - 1) == 1;
+        maps[i] = ok ? mmap(NULL, PAGE, PROT_READ, MAP_PRIVATE, fd, 0) : MAP_FAILED;
+        ok = ok && maps[i] != MAP_FAILED;
+        if (fd >= 0) {
+            close(fd);
+        }
+    }
+    check(ok, "100 files mapped at once");
+    for (int i = 0; ok && i < FILES; i++) {
+        snprintf(name, sizeof name, "many%d", i);
+        int fd = open(in_dir(name), O_WRONLY);
+        ok = fd >= 0 && pwrite(fd, "b", 1, 0) == 1;
+        if (fd >= 0) {
+            close(fd);
+        }
+    }
+    int paged = ok;
+    for (int i = 0; paged && i < FILES; i++) {
+        paged = maps[i][0] == 'b';
+    }
+    check(paged, "each of them is paged in from its file");
+    for (int i = 0; i < FILES; i++) {
+        if (maps[i] && maps[i] != MAP_FAILED) {
+            munmap(maps[i], PAGE);
+        }
+        snprintf(name, sizeof name, "many%d", i);
+        unlink(in_dir(name));
+    }
+}
+
 int main(int argc, char **argv) {
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     shared();
     protections();
     whole();
     fault_around();
+    many_files();
     return failures != 0;
 }
