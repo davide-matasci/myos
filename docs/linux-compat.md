@@ -212,7 +212,8 @@ requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
 `faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `timerfd_create`,
 `timerfd_settime`, `timerfd_gettime`, `epoll_create(1)`, `epoll_ctl`,
-`epoll_wait`, `epoll_pwait(2)`, `dup`, `dup2`, `dup3`, `fcntl`
+`epoll_wait`, `epoll_pwait(2)`, `signalfd(4)`, `dup`, `dup2`, `dup3`,
+`fcntl`
 (dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `fsync`,
 `fdatasync`, `chmod`, `chown` (and their `f`, `l`, `at` forms), `getcwd`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
@@ -446,7 +447,10 @@ three, the kernel crate itself an hour. Known gaps:
   semaphore mode and initial value, `timerfd_settime` / `timerfd_gettime`
   and `epoll_ctl` are the object's `ctl` and `status`, `epoll_wait` waits
   for the set's readiness and takes the ready members (`KernelApi::
-  wait_take`). `EPOLLET` reports a readiness once, and again only
+  wait_take`). A signalfd is a kernel signal fd (`/dev/sig/N/data`): the
+  layer flags the fd and turns each 16-byte record a read gives into a
+  `struct signalfd_siginfo` (`ssi_signo` Linux's number, the rest 0).
+  `EPOLLET` reports a readiness once, and again only
   once something happened since (`docs/events.md`); `EPOLLPRI`,
   `EPOLLRDHUP`, `EPOLLEXCLUSIVE` and the signal mask of `epoll_pwait` are
   ignored. Every Linux
