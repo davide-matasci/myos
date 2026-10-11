@@ -24,6 +24,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/reboot.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -32,6 +33,7 @@
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 static int failures;
@@ -352,6 +354,66 @@ static void check_unix_sockets(void) {
     close(ls);
 }
 
+/* select and pselect (musl: the select syscall on x86_64, pselect6 on
+ * aarch64 and riscv64; pselect is pselect6 everywhere), as FLTK's event
+ * loop waits: an empty pipe is not readable and a zero timeout returns at
+ * once with the sets cleared, a short timeout waits it out, a pipe's write
+ * end is writable, a byte makes the read end readable, a byte written by
+ * a child later wakes a select without a timeout, a socket's readiness is
+ * seen, and a closed fd is EBADF. */
+static void check_select(void) {
+    int p[2], sv[2];
+    char c = 'x';
+    fd_set r, w;
+    struct timeval tv = {0, 0};
+    check(pipe(p) == 0, "select: pipe");
+    FD_ZERO(&r);
+    FD_SET(p[0], &r);
+    check(select(p[0] + 1, &r, NULL, NULL, &tv) == 0 && !FD_ISSET(p[0], &r), "select: empty pipe, zero timeout");
+    struct timespec t0, t1, ts = {0, 50000000};
+    FD_ZERO(&r);
+    FD_SET(p[0], &r);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int n = pselect(p[0] + 1, &r, NULL, NULL, &ts, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    check(n == 0 && ms >= 40, "pselect: a 50 ms timeout waits");
+    FD_ZERO(&r);
+    FD_ZERO(&w);
+    FD_SET(p[0], &r);
+    FD_SET(p[1], &w);
+    check(select(p[1] + 1, &r, &w, NULL, &tv) == 1 && !FD_ISSET(p[0], &r) && FD_ISSET(p[1], &w),
+          "select: a pipe's write end is writable");
+    FD_ZERO(&r);
+    FD_SET(p[0], &r);
+    check(write(p[1], &c, 1) == 1 && select(p[0] + 1, &r, NULL, NULL, NULL) == 1 && FD_ISSET(p[0], &r) &&
+              read(p[0], &c, 1) == 1,
+          "select: a byte makes the read end readable");
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        _exit(write(p[1], &c, 1) == 1 ? 0 : 1);
+    }
+    FD_ZERO(&r);
+    FD_SET(p[0], &r);
+    n = select(p[0] + 1, &r, NULL, NULL, NULL);
+    int status = 0;
+    check(n == 1 && FD_ISSET(p[0], &r) && read(p[0], &c, 1) == 1 && waitpid(pid, &status, 0) == pid &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "select: a child's write wakes a select without a timeout");
+    FD_ZERO(&r);
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0 && write(sv[0], "s", 1) == 1, "select: socketpair");
+    FD_SET(sv[1], &r);
+    check(select(sv[1] + 1, &r, NULL, NULL, NULL) == 1 && FD_ISSET(sv[1], &r), "select: a socket is readable");
+    close(sv[0]);
+    close(sv[1]);
+    close(p[1]);
+    FD_ZERO(&r);
+    FD_SET(p[1], &r);
+    check(select(p[1] + 1, &r, NULL, NULL, &tv) == -1 && errno == EBADF, "select: a closed fd is EBADF");
+    close(p[0]);
+}
+
 /* `unix NAME`: connect to a server listening under NAME (a native one,
  * user/tests/kernel.sh; it may not listen yet: retried for 20 s), send a
  * line, read it back. */
@@ -434,6 +496,7 @@ static void check_toolchain_calls(char *self) {
     close(sv[0]);
     close(sv[1]);
     check_unix_sockets();
+    check_select();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;

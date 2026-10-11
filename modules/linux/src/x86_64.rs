@@ -49,6 +49,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         137 => ret(sys::statfs(a[0], a[1])),
         138 => ret(sys::fstatfs(a[0], a[1])),
         7 => ret(sys::poll(a[0], a[1], a[2] as i32 as isize)),
+        23 => ret(sys::select(a[0], a[1], a[2], a[3], a[4])),
         8 => ret(sys::lseek(a[0], a[1], a[2])),
         9 => ret(sys::mmap(a[0], a[1], a[2], a[3], a[4], a[5])),
         10 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),
@@ -155,6 +156,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         266 => ret(sys::symlinkat(a[0], a[1], a[2])),
         267 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         269 | 439 => ret(sys::faccessat(a[0], a[1])), // faccessat, faccessat2
+        270 => ret(sys::pselect6(a[0], a[1], a[2], a[3], a[4])),
         271 => ret(sys::ppoll(a[0], a[1], a[2])),
         273 => 0, // set_robust_list
         284 => ret(sys::eventfd2(a[0], 0)),

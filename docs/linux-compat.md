@@ -268,7 +268,11 @@ too. See Sockets below.
 Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
 `clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
 created and unlinked at once, as libgloss's; sealing is accepted and not
-done); `poll` (x86_64) and `ppoll`;
+done); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
+readiness: readable on `POLLIN`, `POLLHUP` or `POLLERR`, writable on
+`POLLOUT` or `POLLERR`, no exceptional conditions; the signal mask is not
+applied and `select` does not update its timeout), which FLTK's event loop
+waits in (dillo);
 `sched_getaffinity` (every online CPU, so cargo and rustc run their jobs in
 parallel) and `sched_setaffinity` (accepted; the core places tasks).
 
