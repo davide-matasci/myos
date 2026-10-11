@@ -10,9 +10,11 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -250,6 +253,123 @@ static void check_shared_memory(void) {
     }
 }
 
+/* A `sockaddr_un` for `name` (a leading '@': abstract) and its length. */
+static socklen_t un_addr(struct sockaddr_un *a, const char *name) {
+    memset(a, 0, sizeof *a);
+    a->sun_family = AF_UNIX;
+    strcpy(a->sun_path, name);
+    if (name[0] == '@') {
+        a->sun_path[0] = '\0';
+        return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(name));
+    }
+    return (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(name) + 1);
+}
+
+static int un_listener(const char *name) {
+    struct sockaddr_un a;
+    socklen_t len = un_addr(&a, name);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd >= 0 && (bind(fd, (struct sockaddr *)&a, len) < 0 || listen(fd, 4) < 0)) {
+        int e = errno;
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    return fd;
+}
+
+static int un_connect(const char *name) {
+    struct sockaddr_un a;
+    socklen_t len = un_addr(&a, name);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd >= 0 && connect(fd, (struct sockaddr *)&a, len) < 0) {
+        int e = errno;
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    return fd;
+}
+
+/* Whether `fd`'s name (`peer`: its peer's) is `name`. */
+static int un_named(int fd, int peer, const char *name) {
+    struct sockaddr_un a, want;
+    socklen_t len = sizeof a, wlen = un_addr(&want, name);
+    int r = peer ? getpeername(fd, (struct sockaddr *)&a, &len) : getsockname(fd, (struct sockaddr *)&a, &len);
+    return r == 0 && len == wlen && memcmp(&a, &want, wlen) == 0;
+}
+
+/* AF_UNIX listeners and clients (/net/unix): a second listener of a name
+ * and a connect to an unknown one are refused, a nonblocking accept with
+ * nothing queued says EAGAIN, poll sees a queued connection; a forked
+ * client and the accepted socket exchange a greeting and see each other's
+ * names; an abstract name works too. */
+static void check_unix_sockets(void) {
+    const char *name = "/tmp/.linux-smoke";
+    int ls = un_listener(name);
+    check(ls >= 0 && un_named(ls, 0, name), "AF_UNIX bind, listen, getsockname");
+    check(un_listener(name) < 0 && errno == EADDRINUSE, "AF_UNIX listen: EADDRINUSE");
+    check(un_connect("/tmp/.linux-smoke-none") < 0 && errno == ECONNREFUSED, "AF_UNIX connect: ECONNREFUSED");
+    int fl = fcntl(ls, F_GETFL);
+    check(fcntl(ls, F_SETFL, fl | O_NONBLOCK) == 0 && accept(ls, NULL, NULL) < 0 && errno == EAGAIN &&
+              fcntl(ls, F_SETFL, fl) == 0,
+          "AF_UNIX nonblocking accept: EAGAIN");
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        char b[5];
+        int fd = un_connect(name);
+        int ok = fd >= 0 && un_named(fd, 1, name) && write(fd, "hello", 5) == 5 && read(fd, b, 5) == 5 &&
+                 memcmp(b, "world", 5) == 0;
+        _exit(ok ? 0 : 1);
+    }
+    struct pollfd p = {.fd = ls, .events = POLLIN};
+    struct sockaddr_un peer;
+    socklen_t plen = sizeof peer;
+    char b[5];
+    check(poll(&p, 1, 10000) == 1 && (p.revents & POLLIN), "AF_UNIX poll: a connection is queued");
+    int fd = accept4(ls, (struct sockaddr *)&peer, &plen, SOCK_CLOEXEC);
+    check(fd >= 0 && plen == sizeof(sa_family_t) && (fcntl(fd, F_GETFD) & FD_CLOEXEC) && un_named(fd, 0, name),
+          "AF_UNIX accept4: an unnamed peer, the listener's name");
+    check(read(fd, b, 5) == 5 && memcmp(b, "hello", 5) == 0 && write(fd, "world", 5) == 5, "AF_UNIX exchange");
+    int status = 0;
+    check(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "AF_UNIX client");
+    close(fd);
+    close(ls);
+    check((ls = un_listener(name)) >= 0, "AF_UNIX: a closed listener's name is free again");
+    close(ls);
+
+    ls = un_listener("@linux-smoke");
+    fd = un_connect("@linux-smoke");
+    int sfd = ls < 0 ? -1 : accept(ls, NULL, NULL);
+    check(ls >= 0 && fd >= 0 && sfd >= 0 && un_named(ls, 0, "@linux-smoke") && un_named(fd, 1, "@linux-smoke") &&
+              write(fd, "x", 1) == 1 && read(sfd, b, 1) == 1 && b[0] == 'x',
+          "AF_UNIX abstract name");
+    close(sfd);
+    close(fd);
+    close(ls);
+}
+
+/* `unix NAME`: connect to a server listening under NAME (a native one,
+ * user/tests/kernel.sh; it may not listen yet: retried for 20 s), send a
+ * line, read it back. */
+static int unix_client(const char *name) {
+    char b[16];
+    int fd = -1;
+    for (int i = 0; i < 200 && (fd = un_connect(name)) < 0; i++) {
+        usleep(100000);
+    }
+    int ok = fd >= 0 && un_named(fd, 1, name) && write(fd, "linux-unix\n", 11) == 11;
+    for (int got = 0, n; ok && got < 11; got += n) {
+        n = read(fd, b + got, 11 - got);
+        ok = n > 0;
+    }
+    ok = ok && memcmp(b, "linux-unix\n", 11) == 0;
+    out(ok ? "LINUX-UNIX OK\n" : "LINUX-UNIX FAIL\n");
+    return ok ? 0 : 1;
+}
+
 static void check_toolchain_calls(char *self) {
     /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
     pid_t c;
@@ -312,6 +432,7 @@ static void check_toolchain_calls(char *self) {
           "socketpair");
     close(sv[0]);
     close(sv[1]);
+    check_unix_sockets();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;
@@ -372,6 +493,9 @@ int main(int argc, char **argv) {
     if (argc > 2 && strcmp(argv[1], "mtime") == 0) {
         struct stat st;
         return stat(argv[2], &st) == 0 && st.st_mtime > 1000000000 ? 0 : 1;
+    }
+    if (argc > 2 && strcmp(argv[1], "unix") == 0) {
+        return unix_client(argv[2]);
     }
 
     struct utsname u;

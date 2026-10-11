@@ -9,6 +9,10 @@
  * frees its name. An end takes 60000 bytes before anyone reads (more than
  * the 8 KiB it once held), and 48 conversations are open at once (more
  * than the 32 there once were). Prints [ OK ] unix.
+ *
+ * `unix_smoke echo NAME`: listen under NAME, echo one connection's bytes
+ * back until it ends, exit 0 (a native server for the Linux layer's
+ * clients, user/tests/kernel.sh).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -154,10 +158,33 @@ static int many(void) {
     return 0;
 }
 
-int main(void) {
+/* `echo NAME`: one connection, its bytes back until EOF. */
+static int echo(const char *name) {
+    char buf[256];
+    ssize_t n;
+    int ls = listener(name);
+    int fd = ls < 0 ? -1 : accept(ls, NULL, NULL);
+    if (fd < 0) {
+        return fail("echo: listen/accept");
+    }
+    while ((n = read(fd, buf, sizeof buf)) > 0) {
+        if (write_full(fd, buf, (size_t)n) < 0) {
+            return fail("echo: write");
+        }
+    }
+    close(fd);
+    close(ls);
+    return n < 0 ? fail("echo: read") : 0;
+}
+
+int main(int argc, char **argv) {
     static char bulk[BULK];
     char buf[8];
     int sv[2];
+
+    if (argc > 2 && strcmp(argv[1], "echo") == 0) {
+        return echo(argv[2]);
+    }
 
     /* socketpair: both directions, then EOF once one end closes. */
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {

@@ -91,8 +91,11 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         174..=177 => 0, // getuid, geteuid, getgid, getegid
         198 => ret(net::socket(a[0], a[1])),
         199 => ret(net::socketpair(a[0], a[1], a[3])),
-        200 | 208 => ret(net::ignored(a[0])),             // bind, setsockopt
-        201 | 202 | 242 => ret(net::no_listen(a[0])),     // listen, accept, accept4
+        200 => ret(net::bind(a[0], a[1], a[2])),
+        201 => ret(net::listen(a[0])),
+        202 => ret(net::accept(a[0], a[1], a[2], 0)),
+        242 => ret(net::accept(a[0], a[1], a[2], a[3])), // accept4
+        208 => ret(net::ignored(a[0])),                  // setsockopt
         203 => ret(net::connect(a[0], a[1], a[2])),
         204 => ret(net::getsockname(a[0], a[1], a[2])),
         205 => ret(net::getpeername(a[0], a[1], a[2])),
