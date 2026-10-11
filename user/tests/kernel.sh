@@ -250,6 +250,23 @@ proc_exe() {
 }
 t proc_exe proc_exe
 
+# /proc/self/fd listed while a file is open (here fd 7): its entry's path
+# takes the mount table's lock, which the listing held, and the system froze
+# (`find /`, its directories open, under the bind of /proc that
+# `linux --root` makes). Listed directly and through a bind, by ls and find.
+proc_fd_listing() {
+	exec 7< /etc/policy
+	ls /proc/self/fd | grep -qx 7 || return 1
+	find /proc/self/fd > /dev/null || return 1
+	mkdir -p /tmp/proc-bind && mount /proc /tmp/proc-bind bind || return 1
+	ls /tmp/proc-bind/self/fd | grep -qx 7 && find /tmp/proc-bind/self > /dev/null
+	r=$?
+	umount /tmp/proc-bind
+	exec 7<&-
+	return $r
+}
+t proc_fd_listing proc_fd_listing
+
 # A pty comes from /dev/pts/clone: the fd it returns is /dev/pts/N/master,
 # the pair's directory lists master, data and ctl, its window size is set
 # through ctl, master is not openable by name, and the pair goes away with

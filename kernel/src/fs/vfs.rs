@@ -1075,21 +1075,25 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     let Some((idx, ref rel)) = resolve_index(path) else {
         return 0;
     };
-    let mounts = MOUNTS.lock();
-    let Some(m) = mounts.get(idx) else {
+    // The backend lists without the mount table locked: procfs answers
+    // `self/fd` with the paths of the caller's open files (vnode_path), which
+    // take that lock, so a listing that held it spun forever on the second
+    // take (`find /proc`, with its directories open, froze the system).
+    let Some((backend, prefix)) = MOUNTS.lock().get(idx).map(|m| (m.backend, m.prefix.clone())) else {
         return 0;
     };
-    let n = backend_listdir(m, rel, buf);
+    let n = backend_listdir(backend, rel, buf);
     let mut n = without_hidden(buf, n);
+    let mounts = MOUNTS.lock();
     // Surface mount points that live below the listed directory, so the tree
     // is browsable even though mount prefixes are virtual (issue #79): `/` shows
     // top-level mounts (`bin`, …), `/bin` the port categories, `/dev/console`
     // the console module's `kbd`.
     let rel = if rel == "." { "" } else { rel.trim_end_matches('/') };
-    let dir = match (m.prefix.is_empty(), rel.is_empty()) {
+    let dir = match (prefix.is_empty(), rel.is_empty()) {
         (true, _) => String::from(rel),
-        (false, true) => m.prefix.clone(),
-        (false, false) => alloc::format!("{}/{}", m.prefix, rel),
+        (false, true) => prefix,
+        (false, false) => alloc::format!("{prefix}/{rel}"),
     };
     for other in mounts.iter() {
         if other.prefix.is_empty() || other.gone() {
@@ -1439,8 +1443,8 @@ fn file_forget(idx: usize, id: u64) {
     }
 }
 
-fn backend_listdir(m: &Mount, rel: &str, buf: &mut [u8]) -> usize {
-    match m.backend {
+fn backend_listdir(backend: MountBackend, rel: &str, buf: &mut [u8]) -> usize {
+    match backend {
         MountBackend::Kernel(ops) => (ops.listdir)(rel, buf),
         MountBackend::Module(ops) => module_listdir(&ops, rel, buf),
     }
