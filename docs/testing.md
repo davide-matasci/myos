@@ -133,7 +133,7 @@ is back, so an AP's lagging echo never garbles the line), then watches:
   (mini) or 10 minutes (full), and the whole run has its budget. A stall
   ends with every CPU's registers from the QEMU monitor (`info registers
   -a`): where the guest spins or halts, by `addr2line` on the kernel;
-- the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] scheduler`,
+- the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] dma pages`, `[ OK ] scheduler`,
   the drivers, the VFS checks of `/bin/custom/ok`), which init prints
   before the login prompt: required whatever the tests say. `ok` runs on
   every boot, so it writes to a disk (`mkfs.ext2` on `/dev/nvme0n1/data`) and
