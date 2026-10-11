@@ -98,6 +98,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         60 => thread::exit(a[0]),
         231 => task::user_exit(a[0] as u8), // exit_group
         61 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
+        247 => ret(sys::waitid(a[0], a[1], a[2], a[3], a[4])),
         62 => ret(sys::kill(a[0], a[1])),
         63 => ret(sys::uname(a[0])),
         169 => ret(sys::reboot(a[0], a[1], a[2])),
@@ -143,6 +144,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
         228 => ret(sys::clock_gettime(a[1])),
+        229 => ret(sys::clock_getres(a[1])),
         230 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
         257 => ret(sys::openat(a[0], a[1], a[2])),
@@ -159,14 +161,25 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         270 => ret(sys::pselect6(a[0], a[1], a[2], a[3], a[4])),
         271 => ret(sys::ppoll(a[0], a[1], a[2])),
         273 => 0, // set_robust_list
+        213 => ret(sys::epoll_create(a[0])),
+        232 => ret(sys::epoll_wait(a[0], a[1], a[2], a[3] as isize)),
+        233 => ret(sys::epoll_ctl(a[0], a[1], a[2], a[3])),
+        281 => ret(sys::epoll_pwait(a[0], a[1], a[2], a[3] as isize)),
+        282 => ret(sys::signalfd4(a[0], a[1], a[2], 0)),
+        283 => ret(sys::timerfd_create(a[0], a[1])),
         284 => ret(sys::eventfd2(a[0], 0)),
+        286 => ret(sys::timerfd_settime(a[0], a[1], a[2], a[3])),
+        287 => ret(sys::timerfd_gettime(a[0], a[1])),
+        289 => ret(sys::signalfd4(a[0], a[1], a[2], a[3])),
         290 => ret(sys::eventfd2(a[0], a[1])),
+        291 => ret(sys::epoll_create1(a[0])),
         292 => ret(sys::dup3(a[0], a[1], false, a[2])),
         293 => ret(sys::pipe2(a[0], a[1])),
         296 | 328 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         302 => ret(sys::prlimit(a[1], a[3])),
         318 => ret(sys::getrandom(a[0], a[1])),
         319 => ret(sys::memfd_create(a[0], a[1])),
+        441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
         _ => err(ENOSYS),
     }
 }

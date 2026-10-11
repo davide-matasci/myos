@@ -3,6 +3,7 @@
 pub mod cpio;
 mod devfs;
 pub mod ptsfs;
+pub mod evfs;
 mod fstype;
 pub mod lock;
 mod node;
@@ -522,7 +523,8 @@ fn rw_ops(
 }
 
 /// Mount rootfs at `/` (the image's files, read-only), tmpfs at `/tmp/`,
-/// devfs at `/dev/` with ptsfs at `/dev/pts/`, procfs at `/proc/`; bind
+/// devfs at `/dev/` with ptsfs at `/dev/pts/` and evfs at `/dev/event/`,
+/// `/dev/timer/`, `/dev/wait/` and `/dev/sig/`, procfs at `/proc/`; bind
 /// `/dev/shm`.
 pub fn init() {
     vfs::mount(
@@ -604,6 +606,90 @@ pub fn init() {
             ptsfs::truncate,
             ptsfs::read,
             ptsfs::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    // The event counters, the timers, the wait sets and the signal fds
+    // (docs/events.md): /dev/event, /dev/timer, /dev/wait and /dev/sig,
+    // each clone and N/{data,ctl,status}; fds on data route via
+    // crate::task like a pty's.
+    vfs::mount(
+        "evfs",
+        "dev/event",
+        rw_ops(
+            evfs::event::lookup,
+            evfs::event::stat,
+            evfs::event::listdir_at,
+            evfs::event::register,
+            evfs::event::create,
+            evfs::event::truncate,
+            evfs::event::read,
+            evfs::event::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    vfs::mount(
+        "evfs",
+        "dev/timer",
+        rw_ops(
+            evfs::timer::lookup,
+            evfs::timer::stat,
+            evfs::timer::listdir_at,
+            evfs::timer::register,
+            evfs::timer::create,
+            evfs::timer::truncate,
+            evfs::timer::read,
+            evfs::timer::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    vfs::mount(
+        "evfs",
+        "dev/wait",
+        rw_ops(
+            evfs::wait::lookup,
+            evfs::wait::stat,
+            evfs::wait::listdir_at,
+            evfs::wait::register,
+            evfs::wait::create,
+            evfs::wait::truncate,
+            evfs::wait::read,
+            evfs::wait::write,
+            reject_mkdir,
+            reject_rmdir,
+            reject_unlink,
+            reject_rename,
+            reject_symlink,
+            reject_readlink,
+        ),
+    );
+    vfs::mount(
+        "evfs",
+        "dev/sig",
+        rw_ops(
+            evfs::sig::lookup,
+            evfs::sig::stat,
+            evfs::sig::listdir_at,
+            evfs::sig::register,
+            evfs::sig::create,
+            evfs::sig::truncate,
+            evfs::sig::read,
+            evfs::sig::write,
             reject_mkdir,
             reject_rmdir,
             reject_unlink,

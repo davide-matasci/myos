@@ -167,8 +167,8 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 1) {
         return Err(EAGAIN);
     }
-    if files::writer(fd).is_some() {
-        return eventfd_read(fd, buf, len);
+    if files::sigfd(fd) {
+        return signalfd_read(fd, buf, len);
     }
     match files::get(fd) {
         Some(e) if e.dir => Err(EISDIR),
@@ -179,9 +179,6 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
-    if let Some(w) = files::writer(fd) {
-        return eventfd_write(w, buf, len);
-    }
     if would_block(fd, 2) {
         return Err(EAGAIN);
     }
@@ -278,10 +275,6 @@ fn pty_alias(path: String) -> String {
 }
 
 pub fn close(fd: usize) -> R {
-    if let Some(w) = files::writer(fd) {
-        files::set_writer(fd, None);
-        close(w).ok();
-    }
     files::remove(fd);
     if task::fd_close(fd) { Ok(0) } else { Err(EBADF) }
 }
@@ -543,47 +536,334 @@ pub fn pipe2(fds: usize, flags: usize) -> R {
     Ok(0)
 }
 
-/// `eventfd2(initval, flags)` as a native pipe: the eventfd is the read
-/// end, the write end is kept aside (`files::writer`). A write of a
-/// non-zero count puts a byte in the pipe; a read takes what is there and
-/// gives the number of bytes as the count. Enough for a wakeup (libcurl's),
-/// not for exact counts: no semaphore mode, no initial value.
+// ---- event counters and timers (docs/events.md) ---------------------------
+
+/// `/dev/<kind>`'s VFS path. `/dev` is the system's, also inside a
+/// `linux --root` chroot (a bind): the objects' `clone`, `ctl` and
+/// `status` are reached by VFS path, as `/net`'s conversations are.
+fn evfd_root(kind: &str) -> R2<String> {
+    user::resolve_copied_path(&alloc::format!("/dev/{kind}")).ok_or(ENOMEM)
+}
+
+/// A new object at `/dev/<kind>/clone`: its number.
+fn evfd_clone(kind: &str) -> R2<usize> {
+    let mut b = [0u8; 16];
+    let n = fs::read(&alloc::format!("{}/clone", evfd_root(kind)?), 0, &mut b).ok_or(ENOMEM)?;
+    core::str::from_utf8(&b[..n]).ok().and_then(|t| t.trim().parse().ok()).ok_or(ENOMEM)
+}
+
+/// An fd on a new object of `kind` (its `data`), with the `O_CLOEXEC` and
+/// `O_NONBLOCK` of `flags`, and its directory's VFS path.
+fn evfd_open(kind: &str, flags: usize) -> R2<(usize, String)> {
+    let id = evfd_clone(kind)?;
+    let fd = native(user::open_path(&alloc::format!("/dev/{kind}/{id}/data"), 2), EMFILE)?;
+    files::remove(fd);
+    files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    files::set_nonblock(fd, flags & O_NONBLOCK != 0);
+    Ok((fd, alloc::format!("{}/{id}", evfd_root(kind)?)))
+}
+
+/// The directory (`/dev/<kind>/N`, VFS path) of the object `fd` is open on.
+fn evfd_dir(fd: usize, kind: &str) -> R2<String> {
+    let path = task::fd_path(fd).ok_or(EBADF)?;
+    let prefix = alloc::format!("/dev/{kind}/");
+    let id = core::str::from_utf8(&path)
+        .ok()
+        .and_then(|p| p.strip_prefix(prefix.as_str())?.strip_suffix("/data"))
+        .ok_or(EINVAL)?;
+    Ok(alloc::format!("{}/{id}", evfd_root(kind)?))
+}
+
+/// `eventfd2(initval, flags)`: an fd on a kernel event counter. The
+/// semaphore mode and the initial value are commands on its `ctl`.
 pub fn eventfd2(init: usize, flags: usize) -> R {
     const EFD_SEMAPHORE: usize = 1;
-    if init != 0 || flags & EFD_SEMAPHORE != 0 {
+    if flags & !(EFD_SEMAPHORE | O_CLOEXEC | O_NONBLOCK) != 0 {
         return Err(EINVAL);
     }
-    let (r, w) = task::pipe_open().ok_or(EMFILE)?;
-    for fd in [r, w] {
-        files::remove(fd);
-        files::set_cloexec(fd, flags & O_CLOEXEC != 0);
+    let (fd, dir) = evfd_open("event", flags)?;
+    let ctl = alloc::format!("{dir}/ctl");
+    let init = init as u32;
+    let ok = (flags & EFD_SEMAPHORE == 0 || fs::write(&ctl, 0, b"semaphore").is_some())
+        && (init == 0 || fs::write(&ctl, 0, alloc::format!("add {init}").as_bytes()).is_some());
+    if !ok {
+        close(fd).ok();
+        return Err(EINVAL);
     }
-    files::set_nonblock(r, flags & O_NONBLOCK != 0);
-    files::set_writer(r, Some(w));
-    Ok(r)
+    Ok(fd)
 }
 
-fn eventfd_read(fd: usize, buf: usize, len: usize) -> R {
-    if len < 8 {
+/// `timerfd_create(clockid, flags)`: an fd on a kernel timer. Every Linux
+/// clock is the one clock here (`timespec_deadline`), so the clock is not
+/// kept.
+pub fn timerfd_create(clockid: usize, flags: usize) -> R {
+    const CLOCK_REALTIME: usize = 0;
+    const CLOCK_MONOTONIC: usize = 1;
+    const CLOCK_BOOTTIME: usize = 7;
+    if !matches!(clockid, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME)
+        || flags & !(O_CLOEXEC | O_NONBLOCK) != 0
+    {
         return Err(EINVAL);
     }
-    // The bytes land in the caller's buffer, then their number replaces them.
-    let n = native(user::sys_read(fd, buf, 8), EBADF)?;
-    put(buf, &(n as u64).to_le_bytes())?;
-    Ok(8)
+    Ok(evfd_open("timer", flags)?.0)
 }
 
-fn eventfd_write(writer: usize, buf: usize, len: usize) -> R {
-    if len < 8 {
+/// The `struct timespec` at `ts` in nanoseconds; `EINVAL` for one Linux
+/// refuses (negative, or a nanosecond field of a second or more).
+fn timespec_ns(ts: usize) -> R2<u64> {
+    let sec = get_u64(ts)?;
+    let nsec = get_u64(ts + 8)?;
+    if (sec as i64) < 0 || nsec >= 1_000_000_000 {
         return Err(EINVAL);
     }
-    let mut v = [0u8; 8];
-    get(buf, &mut v)?;
-    if u64::from_le_bytes(v) != 0 {
-        // Any one byte of the caller's buffer will do.
-        native(task::fd_write(writer, buf, 1), EBADF)?;
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
+}
+
+/// Timer `dir`'s `status`: nanoseconds until its next expiry and between
+/// expiries (both 0: disarmed).
+fn timer_status(dir: &str) -> R2<(u64, u64)> {
+    let mut b = [0u8; 64];
+    let n = fs::read(&alloc::format!("{dir}/status"), 0, &mut b).ok_or(EBADF)?;
+    let text = core::str::from_utf8(&b[..n]).map_err(|_| EIO)?;
+    let mut words = text.split_ascii_whitespace();
+    match words.next() {
+        Some("armed") => {
+            let mut ns = || words.next().and_then(|w| w.parse().ok()).ok_or(EIO);
+            Ok((ns()?, ns()?))
+        }
+        Some("disarmed") => Ok((0, 0)),
+        _ => Err(EIO),
     }
-    Ok(8)
+}
+
+/// `(left, interval)` as the `struct itimerspec` at `ptr` (interval first).
+fn put_itimerspec(ptr: usize, (left, interval): (u64, u64)) -> R2<()> {
+    let mut b = [0u8; 32];
+    for (i, ns) in [interval, left].into_iter().enumerate() {
+        b[i * 16..i * 16 + 8].copy_from_slice(&(ns / 1_000_000_000).to_le_bytes());
+        b[i * 16 + 8..i * 16 + 16].copy_from_slice(&(ns % 1_000_000_000).to_le_bytes());
+    }
+    put(ptr, &b)
+}
+
+/// `timerfd_settime(fd, flags, new, old)`: an `arm` or `disarm` on the
+/// timer's `ctl`. An absolute value (`TFD_TIMER_ABSTIME`) is on the one
+/// Linux clock, and goes to the kernel relative to now.
+pub fn timerfd_settime(fd: usize, flags: usize, new: usize, old: usize) -> R {
+    const TFD_TIMER_ABSTIME: usize = 1;
+    if flags & !TFD_TIMER_ABSTIME != 0 {
+        return Err(EINVAL);
+    }
+    let dir = evfd_dir(fd, "timer")?;
+    let interval = timespec_ns(new)?;
+    let value = timespec_ns(new + 16)?;
+    if old != 0 {
+        put_itimerspec(old, timer_status(&dir)?)?;
+    }
+    let cmd = if value == 0 {
+        String::from("disarm")
+    } else {
+        let first = if flags & TFD_TIMER_ABSTIME != 0 {
+            value.saturating_sub(now_us().saturating_mul(1000)).max(1)
+        } else {
+            value
+        };
+        alloc::format!("arm {first} {interval}")
+    };
+    fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).ok_or(EINVAL)?;
+    Ok(0)
+}
+
+pub fn timerfd_gettime(fd: usize, cur: usize) -> R {
+    let dir = evfd_dir(fd, "timer")?;
+    put_itimerspec(cur, timer_status(&dir)?)?;
+    Ok(0)
+}
+
+// ---- epoll: wait sets (docs/events.md) --------------------------------------
+
+/// `struct epoll_event`: `events` (u32) then `data` (u64), packed on
+/// x86_64 (12 bytes), aligned elsewhere (16).
+#[cfg(target_arch = "x86_64")]
+const EPOLL_EVENT_SIZE: usize = 12;
+#[cfg(not(target_arch = "x86_64"))]
+const EPOLL_EVENT_SIZE: usize = 16;
+const EPOLL_DATA_OFF: usize = EPOLL_EVENT_SIZE - 8;
+
+const EPOLL_CTL_ADD: usize = 1;
+const EPOLL_CTL_DEL: usize = 2;
+const EPOLL_CTL_MOD: usize = 3;
+const EPOLLIN: u32 = 0x1;
+const EPOLLOUT: u32 = 0x4;
+const EPOLLET: u32 = 1 << 31;
+const EPOLLONESHOT: u32 = 1 << 30;
+/// An `epoll_wait` takes this many at most in one go (the rest stay ready).
+const EPOLL_MAX_EVENTS: usize = 64;
+
+/// `epoll_create1(flags)`: an fd on a kernel wait set. The fd is kept
+/// non-blocking here: `epoll_wait` waits for readiness itself and then
+/// takes what is ready, never blocking in the read.
+pub fn epoll_create1(flags: usize) -> R {
+    if flags & !O_CLOEXEC != 0 {
+        return Err(EINVAL);
+    }
+    let (fd, _) = evfd_open("wait", flags | O_NONBLOCK)?;
+    Ok(fd)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn epoll_create(size: usize) -> R {
+    if (size as isize) <= 0 {
+        return Err(EINVAL);
+    }
+    epoll_create1(0)
+}
+
+/// The `EVENTS` word of a wait set's `ctl` for Linux `events` bits: `in`,
+/// `out`, `et`, `oneshot`; what myos lacks (`EPOLLPRI`, `EPOLLRDHUP`,
+/// `EPOLLEXCLUSIVE`, ...) is dropped, `EPOLLERR` and `EPOLLHUP` are always
+/// reported.
+fn epoll_events_word(events: u32) -> String {
+    let words = [(EPOLLIN, "in"), (EPOLLOUT, "out"), (EPOLLET, "et"), (EPOLLONESHOT, "oneshot")];
+    let text: Vec<&str> = words.iter().filter(|(bit, _)| events & bit != 0).map(|(_, w)| *w).collect();
+    if text.is_empty() { String::from("none") } else { text.join(",") }
+}
+
+/// Whether the set at `dir` lists `fd` among its members (`status`).
+fn epoll_has(dir: &str, fd: usize) -> bool {
+    let mut b = alloc::vec![0u8; 16384];
+    let n = fs::read(&alloc::format!("{dir}/status"), 0, &mut b).unwrap_or(0);
+    let text = core::str::from_utf8(&b[..n]).unwrap_or("");
+    text.lines().skip(1).any(|l| l.split_ascii_whitespace().next().and_then(|w| w.parse::<usize>().ok()) == Some(fd))
+}
+
+/// `epoll_ctl(epfd, op, fd, event)`: an `add`, `mod` or `del` on the wait
+/// set's `ctl`. The kernel refuses without a reason, so the one Linux
+/// gives is worked out here: `EBADF` for a closed fd, `EEXIST` for an
+/// `add` of a member, `ENOENT` for a `mod` or `del` of a non-member,
+/// `ELOOP` for a set added to itself or into a cycle, `EINVAL` otherwise.
+pub fn epoll_ctl(epfd: usize, op: usize, fd: usize, event: usize) -> R {
+    let dir = evfd_dir(epfd, "wait")?;
+    if task::fd_kind(fd).is_none() {
+        return Err(EBADF);
+    }
+    let cmd = match op {
+        EPOLL_CTL_ADD | EPOLL_CTL_MOD => {
+            let mut b = [0u8; EPOLL_EVENT_SIZE];
+            get(event, &mut b)?;
+            let events = u32::from_le_bytes(b[..4].try_into().unwrap());
+            let cookie = u64::from_le_bytes(b[EPOLL_DATA_OFF..].try_into().unwrap());
+            let verb = if op == EPOLL_CTL_ADD { "add" } else { "mod" };
+            alloc::format!("{verb} {fd} {} {cookie}", epoll_events_word(events))
+        }
+        EPOLL_CTL_DEL => alloc::format!("del {fd}"),
+        _ => return Err(EINVAL),
+    };
+    if fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).is_some() {
+        return Ok(0);
+    }
+    let member = epoll_has(&dir, fd);
+    Err(match op {
+        EPOLL_CTL_ADD if member => EEXIST,
+        // A refused add of a set: the set itself, or a cycle of sets.
+        EPOLL_CTL_ADD if evfd_dir(fd, "wait").is_ok() => ELOOP,
+        EPOLL_CTL_ADD => EINVAL,
+        _ if !member => ENOENT,
+        _ => EINVAL,
+    })
+}
+
+/// `epoll_wait(epfd, events, maxevents, timeout_ms)`: wait for a ready
+/// member, then take the ready ones, up to `maxevents`, into the
+/// `struct epoll_event`s at `events`.
+pub fn epoll_wait(epfd: usize, events: usize, maxevents: usize, timeout_ms: isize) -> R {
+    if (maxevents as isize) <= 0 {
+        return Err(EINVAL);
+    }
+    evfd_dir(epfd, "wait")?;
+    let max = maxevents.min(EPOLL_MAX_EVENTS);
+    if !user::buffer_ok(events, max * EPOLL_EVENT_SIZE) {
+        return Err(EFAULT);
+    }
+    let timeout_us = (timeout_ms >= 0).then(|| timeout_ms as u64 * 1000);
+    let mut taken = Vec::new();
+    wait_ready(timeout_us, || {
+        taken = task::wait_take(epfd, max).ok_or(EINVAL)?;
+        Ok(taken.len())
+    })?;
+    let mut b = alloc::vec![0u8; taken.len() * EPOLL_EVENT_SIZE];
+    for (i, (cookie, bits)) in taken.iter().enumerate() {
+        let e = &mut b[i * EPOLL_EVENT_SIZE..(i + 1) * EPOLL_EVENT_SIZE];
+        e[..4].copy_from_slice(&bits.to_le_bytes());
+        e[EPOLL_DATA_OFF..].copy_from_slice(&cookie.to_le_bytes());
+    }
+    if !b.is_empty() {
+        put(events, &b)?;
+    }
+    Ok(taken.len())
+}
+
+/// `epoll_pwait(epfd, events, maxevents, timeout_ms, sigmask)`: the signal
+/// mask is not applied, as `ppoll`'s.
+pub fn epoll_pwait(epfd: usize, events: usize, maxevents: usize, timeout_ms: isize) -> R {
+    epoll_wait(epfd, events, maxevents, timeout_ms)
+}
+
+/// `epoll_pwait2(epfd, events, maxevents, timeout, sigmask)`: a `struct
+/// timespec` timeout (null: none).
+pub fn epoll_pwait2(epfd: usize, events: usize, maxevents: usize, ts: usize) -> R {
+    let timeout_ms = timespec_us(ts)?.map_or(-1, |us| us.div_ceil(1000).min(isize::MAX as u64) as isize);
+    epoll_wait(epfd, events, maxevents, timeout_ms)
+}
+
+// ---- signalfd: signal fds (docs/events.md) ----------------------------------
+
+/// Linux's `struct signalfd_siginfo`.
+const SIGINFO_SIZE: usize = 128;
+/// The kernel's record: `{u32 signo, u32 code, i32 pid, u32 uid}`.
+const SIG_RECORD: usize = 16;
+
+/// `signalfd4(fd, mask, sizemask, flags)`: an fd on a kernel signal fd
+/// (`-1`), or a new mask for one. The mask is Linux's 64-bit set; the
+/// signals myos has are kept.
+pub fn signalfd4(fd: usize, mask: usize, sizemask: usize, flags: usize) -> R {
+    if sizemask != 8 || flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
+        return Err(EINVAL);
+    }
+    let native = super::abi::mask_from_linux(get_u64(mask)?);
+    let list: Vec<String> = (1..32).filter(|n| native & (1 << n) != 0).map(|n| alloc::format!("{n}")).collect();
+    let cmd = alloc::format!("mask {}", if list.is_empty() { String::from("none") } else { list.join(",") });
+    let (fd, dir) = if fd as isize == -1 {
+        let (fd, dir) = evfd_open("sig", flags)?;
+        files::set_sigfd(fd, true);
+        (fd, dir)
+    } else {
+        (fd, evfd_dir(fd, "sig")?)
+    };
+    fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).ok_or(EINVAL)?;
+    Ok(fd)
+}
+
+/// A read of a signal fd: the kernel's 16-byte records, read into the
+/// front of the caller's buffer, become `struct signalfd_siginfo`s (128
+/// bytes, `ssi_signo` Linux's number, the rest 0), filled from the back
+/// so none is overwritten before it is read.
+fn signalfd_read(fd: usize, buf: usize, len: usize) -> R {
+    let count = len / SIGINFO_SIZE;
+    if count == 0 {
+        return Err(EINVAL);
+    }
+    let n = native(user::sys_read(fd, buf, count * SIG_RECORD), EBADF)?;
+    let got = n / SIG_RECORD;
+    for i in (0..got).rev() {
+        let mut record = [0u8; SIG_RECORD];
+        get(buf + i * SIG_RECORD, &mut record)?;
+        let signo = u32::from_le_bytes(record[..4].try_into().unwrap());
+        let mut info = [0u8; SIGINFO_SIZE];
+        info[..4].copy_from_slice(&(super::abi::sig_to_linux(signo) as u32).to_le_bytes());
+        put(buf + i * SIGINFO_SIZE, &info)?;
+    }
+    Ok(got * SIGINFO_SIZE)
 }
 
 pub fn dup(fd: usize, min: usize) -> R {
@@ -936,6 +1216,61 @@ pub fn wait4(pid: usize, status: usize, options: usize, rusage: usize) -> R {
     Ok(child)
 }
 
+/// `waitid(idtype, id, infop, options, rusage)`: `P_ALL` or `P_PID`; the
+/// options `WNOHANG` and `WNOWAIT` (the native wait reports without
+/// reaping; what Python's asyncio asks before `subprocess` reaps the
+/// child). Only exits are reported (`WEXITED`; the layer has no stopped
+/// children, `WSTOPPED` and `WCONTINUED` are taken as nothing to wait
+/// for). The `siginfo_t` is a `SIGCHLD`'s: `CLD_EXITED` with the exit
+/// code or `CLD_KILLED` with the Linux signal number; `si_pid` 0 when
+/// `WNOHANG` found no exited child, as on Linux.
+pub fn waitid(idtype: usize, id: usize, infop: usize, options: usize, rusage: usize) -> R {
+    const P_ALL: usize = 0;
+    const P_PID: usize = 1;
+    const WNOHANG: usize = 1;
+    const WEXITED: usize = 4;
+    const WNOWAIT: usize = 0x0100_0000;
+    const WAIT_NOWAIT: usize = 2; // the native option bit
+    const SIGCHLD: i32 = 17;
+    const CLD_EXITED: i32 = 1;
+    const CLD_KILLED: i32 = 2;
+    let pid = match idtype {
+        P_ALL => 0,
+        P_PID if (id as isize) > 0 => id,
+        _ => return Err(EINVAL),
+    };
+    if options & WEXITED == 0 {
+        return Err(EINVAL);
+    }
+    let opts = (options & WNOHANG) | if options & WNOWAIT != 0 { WAIT_NOWAIT } else { 0 };
+    // The native status lands in the caller's `siginfo_t` (a user address,
+    // as the core wants), which is then written whole.
+    let child = native(user::sys_waitpid(infop, opts, pid), ECHILD)?;
+    let mut info = [0u8; 128];
+    if child != 0 && infop != 0 {
+        let mut st = [0u8; 4];
+        get(infop, &mut st)?;
+        let status = u32::from_le_bytes(st);
+        let (code, value) = if status & 0x7f != 0 {
+            (CLD_KILLED, sig_to_linux(status & 0x7f) as i32)
+        } else {
+            (CLD_EXITED, (status >> 8) as i32)
+        };
+        info[..4].copy_from_slice(&SIGCHLD.to_le_bytes());
+        info[8..12].copy_from_slice(&code.to_le_bytes());
+        info[16..20].copy_from_slice(&(child as i32).to_le_bytes());
+        // si_uid: the layer's processes run as uid 0 (`getuid`).
+        info[24..28].copy_from_slice(&value.to_le_bytes());
+    }
+    if infop != 0 {
+        put(infop, &info)?;
+    }
+    if rusage != 0 {
+        put(rusage, &[0u8; 144])?;
+    }
+    Ok(0)
+}
+
 pub fn kill(pid: usize, sig: usize) -> R {
     // Signal 0 asks whether the target exists, of the kernel (which tells
     // the caller only about the processes it may signal).
@@ -1062,6 +1397,17 @@ pub fn clock_gettime(ts: usize) -> R {
     b[..8].copy_from_slice(&(us / 1_000_000).to_le_bytes());
     b[8..].copy_from_slice(&((us % 1_000_000) * 1000).to_le_bytes());
     put(ts, &b)?;
+    Ok(0)
+}
+
+/// `clock_getres(clock, res)`: the one clock's resolution, a microsecond
+/// (`now_us`). A null `res` only checks the clock.
+pub fn clock_getres(res: usize) -> R {
+    if res != 0 {
+        let mut b = [0u8; 16];
+        b[8..].copy_from_slice(&1000u64.to_le_bytes());
+        put(res, &b)?;
+    }
     Ok(0)
 }
 

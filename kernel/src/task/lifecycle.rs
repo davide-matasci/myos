@@ -390,8 +390,11 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
 /// (ECHILD), not 0 (which would busy-spin shells that treat 0 as "try
 /// again").
 ///
-/// `pid` restricts the wait to that child (`waitpid(pid > 0)`).
-pub fn wait_child(status_out: Option<usize>, nohang: bool, pid: Option<usize>) -> usize {
+/// `pid` restricts the wait to that child (`waitpid(pid > 0)`). With `peek`
+/// the child is reported but not reaped: a later wait finds it again
+/// (Linux `waitid` with `WNOWAIT`, which Python's asyncio uses to learn of
+/// an exit before `subprocess` reaps it).
+pub fn wait_child(status_out: Option<usize>, nohang: bool, peek: bool, pid: Option<usize>) -> usize {
     let parent = current_pid();
     loop {
         let mut any = false;
@@ -421,21 +424,24 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool, pid: Option<usize>) -
             if let Some(i) = reap {
                 let code = tasks[i].exit_code;
                 let term_sig = tasks[i].term_sig;
-                // The child's CPU time, its own children's included, is
-                // the parent's from now on (`/proc/<pid>/status`).
-                let child_ns = super::acct::cpu_ns(i)
-                    + tasks.proc_opt(i).map_or(0, |p| p.ended_cpu_ns + p.child_cpu_ns);
-                if let Some(p) = tasks.proc_opt_mut(parent) {
-                    p.child_cpu_ns += child_ns;
-                }
-                if reapable(&tasks, i) {
-                    tasks.recycle(i);
-                } else {
-                    // Exited but still in `die()` (freeing its address space,
-                    // or not yet off its kernel stack): report the exit now and
-                    // leave the slot to `free_dead_orphans`, so nothing reuses
-                    // that stack until it is Dead and off it.
-                    tasks[i].ppid = NO_PARENT;
+                if !peek {
+                    // The child's CPU time, its own children's included, is
+                    // the parent's from now on (`/proc/<pid>/status`).
+                    let child_ns = super::acct::cpu_ns(i)
+                        + tasks.proc_opt(i).map_or(0, |p| p.ended_cpu_ns + p.child_cpu_ns);
+                    if let Some(p) = tasks.proc_opt_mut(parent) {
+                        p.child_cpu_ns += child_ns;
+                    }
+                    if reapable(&tasks, i) {
+                        tasks.recycle(i);
+                    } else {
+                        // Exited but still in `die()` (freeing its address
+                        // space, or not yet off its kernel stack): report the
+                        // exit now and leave the slot to `free_dead_orphans`,
+                        // so nothing reuses that stack until it is Dead and
+                        // off it.
+                        tasks[i].ppid = NO_PARENT;
+                    }
                 }
                 drop(tasks);
                 irq_restore(flags);

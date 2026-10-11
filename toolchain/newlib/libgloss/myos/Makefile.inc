@@ -31,6 +31,7 @@ multilibtool_LIBRARIES += %D%/libgloss.a
 	%D%/mntent.c \
 	%D%/pollselect.c \
 	%D%/pty.c \
+	%D%/evfd.c \
 	%D%/sleep.c \
 	%D%/uio.c \
 	%D%/pthread.c

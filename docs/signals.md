@@ -123,7 +123,7 @@ previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 | 34 | `kill(pid, sig)` | `pid > 0` task, `0` own group, `< 0` group `-pid`; `sig` 0 sends nothing, only checks that the target exists (`ESRCH` for an exited one, zombies included) |
 | 37 | `sigprocmask(how, set, oset)` | 32-bit masks |
 | 45 | `sigreturn()` | frame at the user stack pointer |
-| 46 | `waitpid(status, options, pid)` | POSIX `int` status (`WIFSIGNALED`); `pid > 0` that child, else any (`wait`) |
+| 46 | `waitpid(status, options, pid)` | POSIX `int` status (`WIFSIGNALED`); `pid > 0` that child, else any (`wait`); options bit 0 `WNOHANG`, bit 1 reports an exited child without reaping it (Linux `waitid` with `WNOWAIT`) |
 | 47 | `sigpending()` | returns the pending set |
 | 48 | `sigsuspend(mask)` | always `EINTR` |
 | 49 | `sigwait(set)` | returns the signal taken |

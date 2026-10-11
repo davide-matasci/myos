@@ -12,6 +12,7 @@ mod console;
 // Its accessors are used by the aarch64 / riscv64 arch code only.
 #[allow(dead_code)]
 mod dt;
+mod evfd;
 mod exception;
 mod fs;
 mod heap;

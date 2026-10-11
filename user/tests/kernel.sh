@@ -1019,6 +1019,15 @@ lx_unix() {
 	cat $OUT/lx-unix.log $OUT/lx-unix-server.log
 	[ $status = 0 ] && contains "LINUX-UNIX OK" $OUT/lx-unix.log
 }
+# The event fds from a chroot (how Alpine's programs run, docs/events.md):
+# the launcher binds the system's /dev into the root, and
+# /dev/wait/N/data opened there must still be a wait set, not a plain file.
+lx_evfd_root() {
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-evfd-root.log linux --root /tmp/lxroot /linux-smoke evfd
+	cat $OUT/lx-evfd-root.log
+	contains "LINUX-EVFD OK" $OUT/lx-evfd-root.log
+}
 # The page cache (kernel/src/fs/pagecache.rs): the libraries one run maps
 # serve the next (PageCacheKiB), and one rewritten in between is read as it
 # is now. libsmoke2.so overwritten with libsmoke.so has no smoke2_name for
@@ -1063,6 +1072,79 @@ lx_python_net() {
 	out=$(linux --root /tmp/alpine python3 -c 'import urllib.request as u;print("HTTP",u.urlopen("http://example.com/").status)')
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
+}
+# ... and its event loop, the end-to-end test of the event fds
+# (docs/events.md): asyncio's selector is epoll (select.epoll over
+# /dev/wait), its signal handler a wakeup fd in that selector, its
+# subprocess a child watched from a thread; an echo server and client over
+# an AF_UNIX socket (the layer's listeners are unix ones: issue #415), a
+# timer, a timeout that elapses, SIGUSR1 handled by the loop, a child's
+# output read back. The script runs inside the Python root (the launcher
+# binds /dev, /proc and /net into it, not /tmp); it says what it is at on
+# stderr and gives up after 60 s, and is killed after 120 s should the loop
+# itself hang, so a step that never ends fails the test instead of
+# stalling the boot.
+lx_python_asyncio() {
+	mkdir -p /tmp/alpine/tmp
+	cat > /tmp/alpine/tmp/asyncio_smoke.py <<'PY'
+import asyncio, os, selectors, signal, sys
+sel = type(selectors.DefaultSelector()).__name__
+def step(what):
+    print('step:', what, file=sys.stderr, flush=True)
+async def main():
+    loop = asyncio.get_running_loop()
+    async def handle(r, w):
+        w.write((await r.read(100)).upper())
+        await w.drain()
+        w.close()
+    step('unix server')
+    srv = await asyncio.start_unix_server(handle, '/tmp/asyncio.sock')
+    async with srv:
+        step('connect')
+        r, w = await asyncio.open_unix_connection('/tmp/asyncio.sock')
+        w.write(b'asyncio')
+        await w.drain()
+        step('echo')
+        echoed = await asyncio.wait_for(r.read(100), 10)
+        w.close()
+    step('sleep')
+    t0 = loop.time()
+    await asyncio.sleep(0.2)
+    slept = loop.time() - t0 >= 0.15
+    step('timeout')
+    try:
+        await asyncio.wait_for(asyncio.Event().wait(), 0.2)
+        timed_out = False
+    except asyncio.TimeoutError:
+        timed_out = True
+    step('signal')
+    got = loop.create_future()
+    loop.add_signal_handler(signal.SIGUSR1, got.set_result, 'USR1')
+    loop.call_later(0.1, os.kill, os.getpid(), signal.SIGUSR1)
+    sig = await asyncio.wait_for(got, 10)
+    step('subprocess')
+    p = await asyncio.create_subprocess_exec(sys.executable, '-c', 'print("sub")', stdout=asyncio.subprocess.PIPE)
+    out, _ = await p.communicate()
+    print('ASYNCIO', sel, echoed.decode(), slept, timed_out, sig, out.strip().decode(), p.returncode)
+asyncio.run(asyncio.wait_for(main(), 60))
+PY
+	linux --root /tmp/alpine python3 /tmp/asyncio_smoke.py > $OUT/asyncio.out 2> $OUT/asyncio.err &
+	apid=$!
+	i=0
+	while [ $i -lt 120 ] && kill -0 $apid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $apid 2>/dev/null
+	wait $apid 2>/dev/null
+	out=$(cat $OUT/asyncio.out)
+	# The runner shows the last 40 lines: the first traceback (a thread's,
+	# the cause) and the end of the last. Python's chained tracebacks end a
+	# line in "exception:", which the host takes for a kernel crash marker
+	# (src/boot_test.rs).
+	{ head -n 30 $OUT/asyncio.err; echo ...; tail -n 4 $OUT/asyncio.err; } | sed 's/exception:/exception./'
+	echo "$out"
+	[ "$out" = "ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0" ]
 }
 # An Alpine X client on the native X server (the tinyx package, installed
 # as an app): xdpyinfo reaches Xfbdev's /tmp/.X11-unix/X0 over AF_UNIX and
@@ -1136,11 +1218,13 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t linux_smoke lx_smoke
 	t linux_dyn lx_dyn
 	t linux_unix lx_unix
+	t linux_evfd_root lx_evfd_root
 	t linux_pagecache lx_pagecache
 	if [ "$MODE" = full ]; then
 		t alpine_jq lx_alpine
 		t alpine_python lx_python
 		t alpine_python_net lx_python_net
+		t alpine_python_asyncio lx_python_asyncio
 		t alpine_x11 lx_x11
 		t alpine_rustc lx_rustc
 	fi

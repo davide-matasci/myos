@@ -4,6 +4,10 @@
 //! `*at` calls need one, and a directory fd needs a read position. Paths are
 //! the task's own (chroot-relative) absolute view. A socket's is its `/net`
 //! conversation, with the socket's state.
+//!
+//! Lock order: the core calls `on_fork` and `on_spawn` with its task lock
+//! held, so nothing here may enter the core (`task::current_pid` takes
+//! that lock) while holding `PATHS` or `FLAGS`: the pid is read first.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -33,12 +37,12 @@ static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }
 struct Flags {
     cloexec: u64,
     nonblock: u64,
-    /// An eventfd's hidden pipe write end (`sys::eventfd2`), by the read
-    /// end that stands for it: fd + 1.
-    writer: [u8; 64],
+    /// The signal fds (`sys::signalfd4`): a read of one is translated into
+    /// Linux's `struct signalfd_siginfo`.
+    sigfd: u64,
 }
 
-const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, writer: [0; 64] };
+const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, sigfd: 0 };
 
 static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([NO_FLAGS; MAX_TASKS]);
 
@@ -58,47 +62,44 @@ pub fn on_spawn(slot: usize) {
     FLAGS.lock()[slot] = NO_FLAGS;
 }
 
-/// `fd` and the hidden write end behind it, if any: they share their flags.
-fn with_writer(e: &Flags, fd: usize) -> u64 {
-    match e.writer.get(fd) {
-        Some(&w) if w != 0 => bit(fd) | bit(w as usize - 1),
-        _ => bit(fd),
-    }
-}
-
 /// Set fd's close-on-exec flag.
 pub fn set_cloexec(fd: usize, on: bool) {
+    let me = task::current_pid();
     let mut f = FLAGS.lock();
-    let e = &mut f[task::current_pid()];
-    let b = with_writer(e, fd);
+    let e = &mut f[me];
+    let b = bit(fd);
     e.cloexec = if on { e.cloexec | b } else { e.cloexec & !b };
 }
 
 pub fn cloexec(fd: usize) -> bool {
-    FLAGS.lock()[task::current_pid()].cloexec & bit(fd) != 0
+    let me = task::current_pid();
+    FLAGS.lock()[me].cloexec & bit(fd) != 0
 }
 
 pub fn set_nonblock(fd: usize, on: bool) {
+    let me = task::current_pid();
     let mut f = FLAGS.lock();
-    let e = &mut f[task::current_pid()];
-    let b = with_writer(e, fd);
+    let e = &mut f[me];
+    let b = bit(fd);
     e.nonblock = if on { e.nonblock | b } else { e.nonblock & !b };
 }
 
 pub fn nonblock(fd: usize) -> bool {
-    FLAGS.lock()[task::current_pid()].nonblock & bit(fd) != 0
+    let me = task::current_pid();
+    FLAGS.lock()[me].nonblock & bit(fd) != 0
 }
 
-/// The hidden write end behind eventfd `fd`, if it is one.
-pub fn writer(fd: usize) -> Option<usize> {
-    let w = *FLAGS.lock()[task::current_pid()].writer.get(fd)?;
-    (w != 0).then(|| w as usize - 1)
+pub fn set_sigfd(fd: usize, on: bool) {
+    let me = task::current_pid();
+    let mut f = FLAGS.lock();
+    let e = &mut f[me];
+    let b = bit(fd);
+    e.sigfd = if on { e.sigfd | b } else { e.sigfd & !b };
 }
 
-pub fn set_writer(fd: usize, writer: Option<usize>) {
-    if let Some(slot) = FLAGS.lock()[task::current_pid()].writer.get_mut(fd) {
-        *slot = writer.map_or(0, |w| w as u8 + 1);
-    }
+pub fn sigfd(fd: usize) -> bool {
+    let me = task::current_pid();
+    FLAGS.lock()[me].sigfd & bit(fd) != 0
 }
 
 
@@ -109,7 +110,8 @@ pub fn take_cloexec(slot: usize) -> u64 {
 }
 
 pub fn get(fd: usize) -> Option<FdPath> {
-    PATHS.lock()[task::current_pid()].iter().find(|e| e.fd == fd).cloned()
+    let me = task::current_pid();
+    PATHS.lock()[me].iter().find(|e| e.fd == fd).cloned()
 }
 
 pub fn set(fd: usize, path: String, dir: bool) {
@@ -121,23 +123,26 @@ pub fn set_sock(fd: usize, conv: String, sock: Sock) {
 }
 
 fn put(e: FdPath) {
+    let me = task::current_pid();
     let mut t = PATHS.lock();
-    let v = &mut t[task::current_pid()];
+    let v = &mut t[me];
     v.retain(|x| x.fd != e.fd);
     v.push(e);
 }
 
 /// Change the state of socket `fd`; `None` if it is not a socket.
 pub fn with_sock<T>(fd: usize, f: impl FnOnce(&mut Sock) -> T) -> Option<T> {
+    let me = task::current_pid();
     let mut t = PATHS.lock();
-    t[task::current_pid()].iter_mut().find(|e| e.fd == fd)?.sock.as_mut().map(f)
+    t[me].iter_mut().find(|e| e.fd == fd)?.sock.as_mut().map(f)
 }
 
 pub fn remove(fd: usize) {
-    PATHS.lock()[task::current_pid()].retain(|e| e.fd != fd);
+    let me = task::current_pid();
+    PATHS.lock()[me].retain(|e| e.fd != fd);
     set_cloexec(fd, false);
     set_nonblock(fd, false);
-    set_writer(fd, None);
+    set_sigfd(fd, false);
 }
 
 /// `new` now refers to what `old` does (dup/dup2/F_DUPFD), without
@@ -150,11 +155,13 @@ pub fn dup(old: usize, new: usize) {
     }
     set_cloexec(new, false);
     set_nonblock(new, nb);
+    set_sigfd(new, sigfd(old));
 }
 
 pub fn set_pos(fd: usize, pos: usize) {
+    let me = task::current_pid();
     let mut t = PATHS.lock();
-    if let Some(e) = t[task::current_pid()].iter_mut().find(|e| e.fd == fd) {
+    if let Some(e) = t[me].iter_mut().find(|e| e.fd == fd) {
         e.pos = pos;
     }
 }

@@ -14,6 +14,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
     match nr {
         17 => ret(sys::getcwd(a[0], a[1])),
         19 => ret(sys::eventfd2(a[0], a[1])),
+        20 => ret(sys::epoll_create1(a[0])),
+        21 => ret(sys::epoll_ctl(a[0], a[1], a[2], a[3])),
+        22 => ret(sys::epoll_pwait(a[0], a[1], a[2], a[3] as isize)),
         23 => ret(sys::dup(a[0], 0)),
         24 => ret(sys::dup3(a[0], a[1], false, a[2])),
         25 => ret(sys::fcntl(a[0], a[1], a[2])),
@@ -47,11 +50,15 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         70 | 287 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
         72 => ret(sys::pselect6(a[0], a[1], a[2], a[3], a[4])),
         73 => ret(sys::ppoll(a[0], a[1], a[2])),
+        74 => ret(sys::signalfd4(a[0], a[1], a[2], a[3])),
         78 => ret(sys::readlinkat(a[0], a[1], a[2], a[3])),
         79 => ret(sys::fstatat(a[0], a[1], a[2], a[3])), // newfstatat
         88 => ret(sys::utimensat(a[0], a[1], a[2], a[3])),
         80 => ret(sys::fstat(a[0], a[1])),
         82 | 83 => ret(sys::fd_noop(a[0])), // fsync, fdatasync
+        85 => ret(sys::timerfd_create(a[0], a[1])),
+        86 => ret(sys::timerfd_settime(a[0], a[1], a[2], a[3])),
+        87 => ret(sys::timerfd_gettime(a[0], a[1])),
         93 => thread::exit(a[0]),
         94 => task::user_exit(a[0] as u8), // exit_group
         96 => thread::set_tid_address(a[0]),
@@ -59,6 +66,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         99 => 0, // set_robust_list
         101 => ret(sys::nanosleep(a[0], false)),
         113 => ret(sys::clock_gettime(a[1])),
+        114 => ret(sys::clock_getres(a[1])),
         115 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
         122 => 0, // sched_setaffinity: the core places tasks
         123 => ret(sys::sched_getaffinity(a[1], a[2])),
@@ -116,10 +124,12 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         226 => result(user::sys_mprotect(a[0], a[1], a[2]), ENOMEM),
         227 => ret(sys::msync(a[0], a[1], a[2])),
         233 => ret(sys::madvise(a[0], a[1], a[2])),
+        95 => ret(sys::waitid(a[0], a[1], a[2], a[3], a[4])),
         260 => ret(sys::wait4(a[0], a[1], a[2], a[3])),
         261 => ret(sys::prlimit(a[1], a[3])),
         278 => ret(sys::getrandom(a[0], a[1])),
         279 => ret(sys::memfd_create(a[0], a[1])),
+        441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
         _ => err(ENOSYS),
     }
 }

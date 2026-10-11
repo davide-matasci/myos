@@ -19,16 +19,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/reboot.h>
 #include <sys/select.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -414,6 +417,174 @@ static void check_select(void) {
     close(p[0]);
 }
 
+/* eventfd and timerfd (docs/events.md): a counter adds up its writes and a
+ * read takes them (one at a time as a semaphore, from the initial value);
+ * an empty nonblocking read is EAGAIN; a child's write wakes a blocked
+ * read; a one-shot timer expires once after its delay, a periodic one
+ * counts its expirations, gettime shows what is left, disarming stops it. */
+static void check_evfd(void) {
+    uint64_t v = 0;
+    struct pollfd p;
+    int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    check(fd >= 0, "eventfd");
+    check(read(fd, &v, 8) == -1 && errno == EAGAIN, "eventfd: an empty nonblocking read is EAGAIN");
+    v = 3;
+    check(write(fd, &v, 8) == 8 && (v = 4, write(fd, &v, 8) == 8) && read(fd, &v, 8) == 8 && v == 7,
+          "eventfd: a read takes the whole count");
+    p.fd = fd;
+    p.events = POLLIN | POLLOUT;
+    check(poll(&p, 1, 0) == 1 && p.revents == POLLOUT, "eventfd: an empty counter is only writable");
+    close(fd);
+    fd = eventfd(2, EFD_SEMAPHORE);
+    check(fd >= 0 && read(fd, &v, 8) == 8 && v == 1 && read(fd, &v, 8) == 8 && v == 1,
+          "eventfd: a semaphore takes one per read, from the initial value");
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        v = 1;
+        _exit(write(fd, &v, 8) == 8 ? 0 : 1);
+    }
+    int status = 0;
+    check(read(fd, &v, 8) == 8 && v == 1 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "eventfd: a child's write wakes a blocked read");
+    close(fd);
+
+    struct itimerspec its = {{0, 0}, {0, 50000000}}, cur;
+    struct timespec t0, t1;
+    fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    check(fd >= 0, "timerfd_create");
+    p.fd = fd;
+    p.events = POLLIN;
+    check(poll(&p, 1, 0) == 0, "timerfd: a disarmed timer is not readable");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(timerfd_settime(fd, 0, &its, NULL) == 0 && timerfd_gettime(fd, &cur) == 0 && cur.it_value.tv_nsec > 0 &&
+              cur.it_value.tv_nsec <= 50000000 && cur.it_interval.tv_nsec == 0,
+          "timerfd: a one-shot armed 50 ms ahead");
+    check(read(fd, &v, 8) == 8 && v == 1, "timerfd: a read waits for the expiry");
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    check(ms >= 40, "timerfd: not before 50 ms");
+    check(poll(&p, 1, 0) == 0 && timerfd_gettime(fd, &cur) == 0 && cur.it_value.tv_nsec == 0,
+          "timerfd: a one-shot is disarmed after its expiry");
+    its.it_value.tv_nsec = 20000000;
+    its.it_interval.tv_nsec = 20000000;
+    check(timerfd_settime(fd, 0, &its, NULL) == 0, "timerfd: periodic");
+    usleep(100000);
+    check(read(fd, &v, 8) == 8 && v >= 3 && v <= 15, "timerfd: the expirations of 100 ms");
+    memset(&its, 0, sizeof its);
+    check(timerfd_settime(fd, 0, &its, &cur) == 0 && cur.it_interval.tv_nsec == 20000000,
+          "timerfd: disarming returns the old setting");
+    usleep(50000);
+    check(poll(&p, 1, 0) == 0, "timerfd: disarmed");
+    close(fd);
+}
+
+/* epoll (docs/events.md): a pipe's write end is reported writable, its
+ * read end once a byte is in it; a timeout elapses; a child's write ends a
+ * wait; EPOLLET reports once while the data stays; EPOLLONESHOT once until
+ * EPOLL_CTL_MOD; EEXIST and ENOENT; a member goes with its last fd. */
+static void check_epoll(void) {
+    struct epoll_event ev[4];
+    int p[2] = {-1, -1}, q[2] = {-1, -1}, ep, n;
+    char c = 'x';
+    ep = epoll_create1(EPOLL_CLOEXEC);
+    check(ep >= 0 && pipe(p) == 0 && pipe(q) == 0, "epoll_create1");
+    if (ep < 0 || p[0] < 0 || q[0] < 0) {
+        return; /* the waits below would read whatever fd a missing pipe left */
+    }
+    ev[0].events = EPOLLIN;
+    ev[0].data.u64 = 10;
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[0], &ev[0]) == 0, "epoll_ctl: add the read end");
+    ev[0].events = EPOLLOUT;
+    ev[0].data.u64 = 11;
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[1], &ev[0]) == 0, "epoll_ctl: add the write end");
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[1], &ev[0]) == -1 && errno == EEXIST, "epoll_ctl: a second add is EEXIST");
+    check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == -1 && errno == ENOENT, "epoll_ctl: mod of a non-member is ENOENT");
+    n = epoll_wait(ep, ev, 4, 0);
+    check(n == 1 && ev[0].data.u64 == 11 && ev[0].events == EPOLLOUT, "epoll_wait: an empty pipe's write end only");
+    check(epoll_ctl(ep, EPOLL_CTL_DEL, p[1], NULL) == 0, "epoll_ctl: del");
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    n = epoll_wait(ep, ev, 4, 100);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    check(n == 0 && ms >= 80, "epoll_wait: a 100 ms timeout elapses");
+    check(write(p[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 1000) == 1 && ev[0].data.u64 == 10 && ev[0].events == EPOLLIN &&
+              read(p[0], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 0,
+          "epoll_wait: a byte makes the read end readable, a read takes it back");
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        _exit(write(p[1], &c, 1) == 1 ? 0 : 1);
+    }
+    int status = 0;
+    check(epoll_wait(ep, ev, 4, -1) == 1 && ev[0].data.u64 == 10 && read(p[0], &c, 1) == 1 &&
+              waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "epoll_wait: a child's write ends a wait");
+    ev[0].events = EPOLLIN | EPOLLET;
+    ev[0].data.u64 = 30;
+    check(epoll_ctl(ep, EPOLL_CTL_ADD, q[0], &ev[0]) == 0 && write(q[1], "ab", 2) == 2 && epoll_wait(ep, ev, 4, 0) == 1 &&
+              ev[0].data.u64 == 30 && epoll_wait(ep, ev, 4, 0) == 0,
+          "EPOLLET: reported once while the data stays");
+    check(read(q[0], &c, 1) == 1 && read(q[0], &c, 1) == 1 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 &&
+              ev[0].data.u64 == 30 && read(q[0], &c, 1) == 1,
+          "EPOLLET: reported again after a drain");
+    ev[0].events = EPOLLIN | EPOLLONESHOT;
+    ev[0].data.u64 = 31;
+    check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == 0 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 &&
+              ev[0].data.u64 == 31 && epoll_wait(ep, ev, 4, 0) == 0,
+          "EPOLLONESHOT: once");
+    ev[0].events = EPOLLIN;
+    ev[0].data.u64 = 32;
+    check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == 0 && epoll_wait(ep, ev, 4, 0) == 1 && ev[0].data.u64 == 32 &&
+              read(q[0], &c, 1) == 1,
+          "EPOLLONESHOT: re-armed by mod");
+    close(q[0]);
+    check(epoll_ctl(ep, EPOLL_CTL_DEL, q[0], NULL) == -1 && errno == EBADF, "epoll: a closed member's fd is EBADF");
+    close(q[1]);
+    close(p[0]);
+    close(p[1]);
+    close(ep);
+}
+
+/* signalfd (docs/events.md): a blocked signal makes the fd readable and a
+ * read takes it as a struct signalfd_siginfo; an empty nonblocking read is
+ * EAGAIN; a child's kill ends a blocked read; the mask changes. */
+static void check_signalfd(void) {
+    struct signalfd_siginfo si;
+    sigset_t set;
+    struct pollfd p;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    check(sigprocmask(SIG_BLOCK, &set, NULL) == 0, "signalfd: block SIGUSR1");
+    int fd = signalfd(-1, &set, SFD_NONBLOCK | SFD_CLOEXEC);
+    check(fd >= 0, "signalfd");
+    p.fd = fd;
+    p.events = POLLIN;
+    check(poll(&p, 1, 0) == 0 && read(fd, &si, sizeof si) == -1 && errno == EAGAIN,
+          "signalfd: nothing pending, EAGAIN");
+    check(kill(getpid(), SIGUSR1) == 0 && poll(&p, 1, 1000) == 1 && (p.revents & POLLIN) &&
+              read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR1 && poll(&p, 1, 0) == 0,
+          "signalfd: a pending signal is read, not delivered");
+    fcntl(fd, F_SETFL, 0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(100000);
+        _exit(kill(getppid(), SIGUSR1) == 0 ? 0 : 1);
+    }
+    int status = 0;
+    check(read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR1 &&
+              waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "signalfd: a child's kill ends a blocked read");
+    sigaddset(&set, SIGUSR2);
+    check(sigprocmask(SIG_BLOCK, &set, NULL) == 0 && signalfd(fd, &set, 0) == fd && kill(getpid(), SIGUSR2) == 0 &&
+              read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR2,
+          "signalfd: the mask changes");
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+    close(fd);
+}
+
 /* `unix NAME`: connect to a server listening under NAME (a native one,
  * user/tests/kernel.sh; it may not listen yet: retried for 20 s), send a
  * line, read it back. */
@@ -431,6 +602,41 @@ static int unix_client(const char *name) {
     ok = ok && memcmp(b, "linux-unix\n", 11) == 0;
     out(ok ? "LINUX-UNIX OK\n" : "LINUX-UNIX FAIL\n");
     return ok ? 0 : 1;
+}
+
+/* A thread setting fd flags while its process forks: the layer's fork hook
+ * runs under the core's task lock and takes the fd tables' locks, which the
+ * flag calls hold while asking the core for the pid; taken in the other
+ * order that was a deadlock of two CPUs (both spinning, interrupts off). */
+static volatile int flagging_done;
+
+static void *flagger(void *arg) {
+    int fd = *(int *)arg;
+    while (!flagging_done) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        fcntl(fd, F_SETFD, 0);
+    }
+    return NULL;
+}
+
+static void check_fork_vs_fds(void) {
+    int fd = open("/dev/null", O_RDONLY);
+    pthread_t t;
+    int ok = fd >= 0 && pthread_create(&t, NULL, flagger, &fd) == 0;
+    for (int i = 0; ok && i < 100; i++) {
+        pid_t c = fork();
+        if (c == 0) {
+            _exit(0);
+        }
+        int status = 0;
+        ok = c > 0 && waitpid(c, &status, 0) == c && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+    flagging_done = 1;
+    if (fd >= 0) {
+        pthread_join(t, NULL);
+        close(fd);
+    }
+    check(ok, "fork while a thread sets fd flags");
 }
 
 static void check_toolchain_calls(char *self) {
@@ -497,6 +703,9 @@ static void check_toolchain_calls(char *self) {
     close(sv[1]);
     check_unix_sockets();
     check_select();
+    check_evfd();
+    check_epoll();
+    check_signalfd();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;
@@ -560,6 +769,15 @@ int main(int argc, char **argv) {
     }
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);
+    }
+    /* `evfd`: the event fds alone, for a run chrooted into a bare root
+     * (`linux --root`), where /dev is a bind of the system's. */
+    if (argc > 1 && strcmp(argv[1], "evfd") == 0) {
+        check_evfd();
+        check_epoll();
+        check_signalfd();
+        out(failures ? "LINUX-EVFD FAIL\n" : "LINUX-EVFD OK\n");
+        return failures != 0;
     }
 
     struct utsname u;
@@ -678,7 +896,15 @@ int main(int argc, char **argv) {
         }
     }
     usleep(20000);
+    /* waitid: WNOHANG on a live child reports nobody; WNOWAIT reports the
+     * death and leaves the child to waitpid. */
+    siginfo_t si;
+    memset(&si, 0xff, sizeof si);
+    check(waitid(P_PID, c, &si, WEXITED | WNOHANG) == 0 && si.si_pid == 0, "waitid WNOHANG");
     check(kill(c, SIGUSR1) == 0, "kill");
+    check(waitid(P_PID, c, &si, WEXITED | WNOWAIT) == 0 && si.si_signo == SIGCHLD &&
+              si.si_code == CLD_KILLED && si.si_pid == c && si.si_status == SIGUSR1,
+          "waitid WNOWAIT");
     check(waitpid(c, &status, 0) == c && WIFSIGNALED(status) && WTERMSIG(status) == SIGUSR1,
           "WTERMSIG(SIGUSR1)");
 
@@ -743,6 +969,7 @@ int main(int argc, char **argv) {
     check(tcgetattr(1, &t) == -1 && errno == ENOTTY, "tcgetattr on a file: ENOTTY");
 
     check_toolchain_calls(argv[0]);
+    check_fork_vs_fds();
 
     if (failures) {
         out("LINUX-SMOKE FAIL\n");

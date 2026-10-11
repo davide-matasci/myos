@@ -31,13 +31,17 @@ pub fn on_new_task(slot: usize) {
 }
 
 /// `clone(flags, stack, ptid, tls, ctid)` (the arch passes them in this
-/// order). Three forms: a thread (`CLONE_THREAD`, sharing what the core's
+/// order). Four forms: a thread (`CLONE_THREAD`, sharing what the core's
 /// threads share), the fork-equivalent one (exit signal in the low byte,
-/// nothing shared, no new stack), and posix_spawn's.
+/// nothing shared, no new stack), musl's `vfork` on aarch64 and riscv64
+/// (`CLONE_VM | CLONE_VFORK` on the parent's stack: a fork, as x86_64's
+/// `vfork` syscall is; the child's memory is a copy the parent never sees,
+/// which a `vfork` child that only execs does not mind), and posix_spawn's.
 pub fn clone(regs: &SyscallRegs, flags: usize, stack: usize, ptid: usize, tls: usize, ctid: usize) -> R {
     if flags & CLONE_THREAD == 0 {
         return match (flags & !0xff, stack) {
             (0, 0) => sys::fork(regs),
+            (f, 0) if f == CLONE_VM | CLONE_VFORK => sys::fork(regs),
             // posix_spawn (musl's, Rust's `Command`): CLONE_VM | CLONE_VFORK,
             // the child on a stack of its own until it execs. A fork whose
             // child starts on that stack does: its memory is a copy, not

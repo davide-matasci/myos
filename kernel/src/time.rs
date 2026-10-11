@@ -148,6 +148,15 @@ pub fn set_wall(secs: i64, usec: i64) -> bool {
     true
 }
 
+/// The monotonic time at which the wall clock reads `wall` (Unix ns): an
+/// absolute `CLOCK_REALTIME` deadline as the scheduler counts it, 0 when
+/// it has passed. `None` before the RTC was read.
+pub fn wall_to_monotonic(wall: i64) -> Option<u64> {
+    let now = monotonic_ns();
+    let delta = wall.wrapping_sub(wall_ns(now)?);
+    Some((now as i64).saturating_add(delta).max(0) as u64)
+}
+
 /// Unix nanoseconds at monotonic `now`: the RTC's time plus what
 /// `settimeofday` set.
 fn wall_ns(now: u64) -> Option<i64> {

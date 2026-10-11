@@ -166,8 +166,12 @@ the kernel):
   `task/thread.rs`): the kernel resets, copies or applies the bits and
   calls `ops.on_spawn / on_fork / on_thread / on_exec` so the module can do
   the same with its own per-slot state (fd paths, the trampoline, the
-  `clear_tid` word). The thread pointer and the FP/SIMD registers are
-  switched for every user task by the core (`task/tp.rs`, `task/fpu.rs`);
+  `clear_tid` word). `on_spawn`, `on_fork` and `on_thread` run with the
+  core's task lock held and interrupts off, so a lock the module takes in
+  them is never held while calling into the core (`current_pid` takes
+  that lock: `files.rs` reads the pid before locking its tables). The
+  thread pointer and the FP/SIMD registers are switched for every user
+  task by the core (`task/tp.rs`, `task/fpu.rs`);
 - signal delivery (`signal.rs`): a caught signal of an active task goes to
   `ops.deliver(regs, &SignalDelivery, &mut ret)` (the decided handler,
   trampoline, return context and the native mask the handler's return
@@ -210,7 +214,10 @@ Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 `f_type`), `lseek`, `getdents64`, `ioctl` (the tty
 requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
-`faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `dup`, `dup2`, `dup3`, `fcntl`
+`faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `timerfd_create`,
+`timerfd_settime`, `timerfd_gettime`, `epoll_create(1)`, `epoll_ctl`,
+`epoll_wait`, `epoll_pwait(2)`, `signalfd(4)`, `dup`, `dup2`, `dup3`,
+`fcntl`
 (dup, fd flags, record locks), `flock`, `truncate`, `ftruncate`, `fsync`,
 `fdatasync`, `chmod`, `chown` (and their `f`, `l`, `at` forms), `getcwd`,
 `chdir`, `fchdir`, `mkdir(at)`, `rmdir`, `unlink(at)`, `rename(at/at2)`,
@@ -227,7 +234,8 @@ Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
 the kernel's way: `exec` on the script and its `exec` rule apply,
 `docs/security.md`; a file that is neither an ELF nor a script fails with
 `ENOEXEC`),
-`exit` (the thread), `exit_group`, `wait4`, `kill`, `tkill`, `tgkill`,
+`exit` (the thread), `exit_group`, `wait4`, `waitid` (`P_ALL`, `P_PID`;
+`WNOHANG`, `WNOWAIT`; exits only), `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname` (the node name is the kernel's host name,
 `/proc/sys/kernel/hostname`), `sethostname`, `reboot` (the native
@@ -245,12 +253,15 @@ Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `REQUEUE`/`CMP_REQUEUE` as a wake of every waiter) maps onto the core's
 `wait_addr`/`wake_addr`; a thread's `exit` clears and wakes its
 `CLEAR_TID` word, which is what `pthread_join` waits on. `clone` without
-`CLONE_THREAD` is the fork form, or `posix_spawn`'s (`CLONE_VM |
-CLONE_VFORK` with a stack, what Rust's `Command` uses through musl): a fork
-whose child starts on that stack (the core's `fork_from`). Its memory is a
-fork's (the parent's pages shared copy-on-write, `README.md`) rather than
-shared, which posix_spawn does not notice: its child reports a failed exec
-through a pipe the parent waits on.
+`CLONE_THREAD` is the fork form, musl's `vfork` on aarch64 and riscv64
+(`CLONE_VM | CLONE_VFORK` on the parent's stack: a fork, as the x86_64
+`vfork` syscall is), or `posix_spawn`'s (`CLONE_VM | CLONE_VFORK` with a
+stack, what Rust's `Command` uses through musl): a fork whose child starts
+on that stack (the core's `fork_from`). Its memory is a fork's (the
+parent's pages shared copy-on-write, `README.md`) rather than shared,
+which posix_spawn and a `vfork` child that only execs do not notice:
+posix_spawn's child reports a failed exec through a pipe the parent waits
+on.
 
 Signals: `rt_sigaction` (handlers with `SA_SIGINFO`, `SA_RESTART`,
 `SA_NODEFER`, `SA_RESETHAND`, `sa_mask`), `rt_sigreturn`, `rt_sigprocmask`,
@@ -265,8 +276,8 @@ Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 `setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
-Time and misc: `clock_gettime`, `gettimeofday`, `time`, `nanosleep`,
-`clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
+Time and misc: `clock_gettime`, `clock_getres`, `gettimeofday`, `time`,
+`nanosleep`, `clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
 created and unlinked at once, as libgloss's; sealing is accepted and not
 done); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
 readiness: readable on `POLLIN`, `POLLHUP` or `POLLERR`, writable on
@@ -437,9 +448,24 @@ three, the kernel crate itself an hour. Known gaps:
   successful exec closes the close-on-exec fds (the `on_exec` hook), and a
   non-blocking pipe end that would block gives `EAGAIN` (from the core's
   pipe readiness, as libgloss does for native programs).
-- An eventfd is a pipe (its write end kept aside): a non-zero write wakes
-  a reader, a read returns how many writes it collected. No semaphore mode
-  and no initial value.
+- An eventfd is the kernel's event counter (`/dev/event/N/data`,
+  `docs/events.md`), a timerfd its timer (`/dev/timer/N/data`) and an
+  epoll fd its wait set (`/dev/wait/N/data`): the fd the program holds is
+  the native one, read, written and polled by the core; `eventfd2`'s
+  semaphore mode and initial value, `timerfd_settime` / `timerfd_gettime`
+  and `epoll_ctl` are the object's `ctl` and `status`, `epoll_wait` waits
+  for the set's readiness and takes the ready members (`KernelApi::
+  wait_take`). A signalfd is a kernel signal fd (`/dev/sig/N/data`): the
+  layer flags the fd and turns each 16-byte record a read gives into a
+  `struct signalfd_siginfo` (`ssi_signo` Linux's number, the rest 0).
+  `EPOLLET` reports a readiness once, and again only
+  once something happened since (`docs/events.md`); `EPOLLPRI`,
+  `EPOLLRDHUP`, `EPOLLEXCLUSIVE` and the signal mask of `epoll_pwait` are
+  ignored. Every Linux
+  clock is the one clock here, so a `TFD_TIMER_ABSTIME` value is taken
+  relative to it, whatever the clock the timerfd was created on.
+- `listen` and `accept` serve `AF_UNIX` sockets only: a TCP socket's
+  `listen` is `EOPNOTSUPP` (issue #415).
 - `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and
   `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` a `/net/unix` pair,
   their ends kept like TCP sockets (Rust's `Command` reports a failed exec
@@ -504,7 +530,10 @@ signal numbers, handlers, masks, `sigwait`, `EINTR` and `SA_RESTART`,
 pthreads: a mutex, a condition variable, thread-local storage, thread ids,
 join, and `exit` from a thread ending the process) and `LINUX-DYN OK` (a
 call, shared data, a relocated function pointer and a thread-local in
-`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`).
+`libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`);
+`linux --root` of a bare root with the smoke's event fd checks
+(`linux-smoke evfd`, `LINUX-EVFD OK`) runs them through the root's bind
+of `/dev`.
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
 `run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the
@@ -516,7 +545,14 @@ than the 64 MiB data partition holds) and runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
 and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
-expecting `HTTP 200`. Last, it mounts the disk the launcher made on the
+expecting `HTTP 200`, and runs an asyncio script (`alpine_python_asyncio`:
+the end-to-end test of the event fds, `docs/events.md`), whose selector is
+`select.epoll` over `/dev/wait`, whose signal handler is a wakeup fd in it
+and whose subprocess is watched from a thread: an echo over an `AF_UNIX`
+socket, a timer, a timeout, `SIGUSR1` handled by the loop and a child's
+output,
+expecting `ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0`. Last, it
+mounts the disk the launcher made on the
 host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img
 rust` (kept in `target/`: remove it for newer packages) and attached as
 `/dev/nvme2n1/data` (writes go to a QEMU snapshot), and runs `rustc --version`

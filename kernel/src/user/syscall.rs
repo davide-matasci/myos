@@ -191,6 +191,9 @@ const DUP_EXACT: usize = 2;
 
 /// Wait options bit 0: `WNOHANG` (userspace `WNOHANG = 1`).
 const WAIT_NOHANG: usize = 1;
+/// Wait options bit 1: report an exited child but leave it to a later
+/// wait (Linux `waitid` with `WNOWAIT`).
+const WAIT_NOWAIT: usize = 2;
 
 /// The user registers the syscall return path loads back, for the signal
 /// code to read and redirect (delivery, sigreturn, restart).
@@ -640,11 +643,15 @@ pub(super) fn open_real(
 /// [`open_real`] once the checks passed: the fd, of whatever kind the file
 /// makes it.
 fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::vfs::TreeGuard) -> usize {
+    // The special files are known by where they are stored: `path` with
+    // its binds undone, so that a chroot (`linux --root`, which binds the
+    // system's /dev into the root) opens the same pty and event fds.
+    let stored = fs::vfs::canonical(&path).unwrap_or_else(|| path.clone());
     // The pty ends (docs/tty.md): /dev/pts/clone allocates a pair and
     // returns its master, /dev/pts/N/data is the slave. The fd is a pty fd,
     // not a plain file fd (I/O routes via crate::pty). /dev/pts/N/master is
     // only ever what clone returned, never opened by name.
-    let path_rel = path.trim_start_matches('/');
+    let path_rel = stored.trim_start_matches('/');
     if let Some(rest) = path_rel.strip_prefix("dev/pts/") {
         if rest == "clone" {
             return task::fd_open_pty_master().unwrap_or(SYSERR);
@@ -656,6 +663,21 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
                     "master" => return SYSERR,
                     _ => {}
                 }
+            }
+        }
+    }
+    // An event counter's, a timer's, a wait set's or a signal fd's data
+    // (docs/events.md): the fd is of that kind, its I/O routed via
+    // crate::evfd.
+    for (kind, prefix) in [
+        (fs::evfs::Kind::Event, "dev/event/"),
+        (fs::evfs::Kind::Timer, "dev/timer/"),
+        (fs::evfs::Kind::Wait, "dev/wait/"),
+        (fs::evfs::Kind::Sig, "dev/sig/"),
+    ] {
+        if let Some(rest) = path_rel.strip_prefix(prefix) {
+            if let Some(id) = fs::evfs::data_id(kind, rest) {
+                return task::fd_open_evfd(kind, id).unwrap_or(SYSERR);
             }
         }
     }
@@ -1284,6 +1306,7 @@ pub(crate) fn sys_waitpid(status_ptr: usize, options: usize, pid: usize) -> usiz
     task::wait_child(
         if status_ptr == 0 { None } else { Some(status_ptr) },
         options & WAIT_NOHANG != 0,
+        options & WAIT_NOWAIT != 0,
         if (pid as isize) > 0 { Some(pid) } else { None },
     )
 }

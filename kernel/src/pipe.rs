@@ -86,36 +86,44 @@ pub fn add_writer(id: usize) -> bool {
     true
 }
 
-pub fn drop_reader(id: usize) {
+/// One fd on the read end closed; true when it was the last.
+pub fn drop_reader(id: usize) -> bool {
+    let last;
     {
         let mut pipes = PIPES.lock();
         let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-            return;
+            return false;
         };
         p.readers = p.readers.saturating_sub(1);
-        if p.readers == 0 {
+        last = p.readers == 0;
+        if last {
             p.write_closed = true;
         }
         release_if_idle(&mut pipes, id);
     }
     // Blocked writers see EPIPE / FIFO openers see the reader count move.
     notify(id);
+    last
 }
 
-pub fn drop_writer(id: usize) {
+/// One fd on the write end closed; true when it was the last.
+pub fn drop_writer(id: usize) -> bool {
+    let last;
     {
         let mut pipes = PIPES.lock();
         let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
-            return;
+            return false;
         };
         p.writers = p.writers.saturating_sub(1);
-        if p.writers == 0 {
+        last = p.writers == 0;
+        if last {
             p.write_closed = true;
         }
         release_if_idle(&mut pipes, id);
     }
     // Blocked readers see EOF; pollers see POLLHUP.
     notify(id);
+    last
 }
 
 /// Wake tasks blocked on this pipe and any poller. Called after the PIPES
