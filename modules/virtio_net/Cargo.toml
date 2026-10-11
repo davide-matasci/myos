@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "virtio-net kernel module: poll-mode /dev/netN Ethernet frames."
+description = "virtio-net kernel module: /dev/netN Ethernet frames, RX interrupt."
 
 [[bin]]
 name = "virtio_net"
@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 myos-abi = { path = "../abi" }
+myos-virtio = { path = "../virtio" }
 
 [profile.dev]
 panic = "abort"

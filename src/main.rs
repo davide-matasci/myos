@@ -354,15 +354,13 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     let empty = empty_img_path();
     cmd.arg("-drive")
         .arg(format!("if=none,id=vd0,format=raw,file={}", fat.display()));
-    // Legacy I/O-BAR virtio-blk (kernel talks to BAR0 ports, device 0x1001).
-    cmd.arg("-device")
-        .arg("virtio-blk-pci,drive=vd0,disable-modern=on");
+    // Transitional virtio-blk-pci: the module drives its modern layout.
+    cmd.arg("-device").arg("virtio-blk-pci,drive=vd0");
     cmd.arg("-drive").arg(format!(
         "if=none,id=vd1,format=raw,file={}",
         empty.display()
     ));
-    cmd.arg("-device")
-        .arg("virtio-blk-pci,drive=vd1,disable-modern=on");
+    cmd.arg("-device").arg("virtio-blk-pci,drive=vd1");
     add_nvme(cmd);
     add_usb(cmd);
 }
@@ -723,16 +721,17 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path, Mode) 
     exit(if ok { 0 } else { 1 })
 }
 
-/// x86: the boot disk as a third legacy virtio-blk (`/dev/vdc/`, after
+/// x86: the boot disk as a third virtio-blk (`/dev/vdc/`, after
 /// `add_virtio_blk_x86`'s two, so the test disks keep their names), the one
 /// the firmware boots: myos sees it (`get-myos --upgrade` writes it), which
 /// an IDE disk it is not. Not NVMe: with 4 GiB of RAM SeaBIOS maps the NVMe
 /// BAR (64-bit) above 4 GiB, out of its reach, and finds no disk to boot;
-/// the legacy virtio-blk's BAR0 is I/O ports.
+/// the transitional virtio-blk keeps its legacy BAR0 in I/O ports for the
+/// firmware, and the modern layout the module drives beside it.
 fn add_boot_disk(cmd: &mut Command, image: &Path) {
     cmd.arg("-drive")
         .arg(format!("if=none,id=bootdisk,format=raw,file={}", image.display()));
-    cmd.arg("-device").arg("virtio-blk-pci,drive=bootdisk,disable-modern=on,bootindex=0");
+    cmd.arg("-device").arg("virtio-blk-pci,drive=bootdisk,bootindex=0");
 }
 
 fn qemu_aarch64(image: &Path, ci: bool) -> Command {
