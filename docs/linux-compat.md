@@ -226,8 +226,12 @@ the console keymap and module devices natively), `access`,
 Memory: `brk`, `mmap` (anonymous, shared anonymous, private and shared
 file mappings), `munmap`, `mprotect`, `msync`, `madvise` (`MADV_DONTNEED` drops the pages, which read as
 zero or as their file next time, as allocators such as rustc's Scudo
-expect; other advice is ignored). Files also: `pread64`, `pwrite64`,
-`pwritev(2)`.
+expect; other advice is ignored), `mremap` (a mapping shrinks in place;
+it cannot grow, `ENOMEM`, and musl's `realloc` then allocates anew and
+copies). Files also: `pread64`, `pwrite64`, `pwritev(2)`, `fallocate`
+(mode 0, what `posix_fallocate` asks: the file grows to the range's end,
+its blocks not reserved ahead; other modes are `EOPNOTSUPP`),
+`readahead` (a hint, done).
 
 Processes: `fork`, `vfork` (as fork), `clone` (see Threads), `execve` (a
 `#!` script runs its interpreter, with the line's one optional argument,
@@ -241,9 +245,12 @@ the kernel's way: `exec` on the script and its `exec` rule apply,
 `/proc/sys/kernel/hostname`), `sethostname`, `reboot` (the native
 `power`, `docs/power.md`; turning Ctrl-Alt-Del on or off does nothing),
 `arch_prctl`, `set_tid_address`, `set_robust_list`,
-`prlimit64`, `getrlimit`, `get/set uid/gid` (uid and gid 0 whoever runs the
-program: what it may do is the security policy's, `docs/security.md`),
-`sched_yield`.
+`prlimit64`, `getrlimit`, `get/set uid/gid` and `getresuid`/`getresgid`
+(uid and gid 0 whoever runs the program: what it may do is the security
+policy's, `docs/security.md`), `getpriority` (nice 0) and `setpriority`
+(accepted; the core schedules), `prctl` (`PR_SET_NAME` and `PR_SET_VMA`
+accepted and not kept, `PR_GET_DUMPABLE` set; any other option, seccomp
+included, `EINVAL`), `sched_yield`.
 
 Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `CLONE_FILES`, `CLONE_SIGHAND`; `CLONE_SETTLS`, `CLONE_PARENT_SETTID`,
@@ -509,9 +516,9 @@ three, the kernel crate itself an hour. Known gaps:
     riscv64) with at most 4096 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
     small neighbouring ones: jq peaks at 188; rustc's Scudo allocator
-    needs more than 256 to compile `core`). At most 64 distinct files
-    are mapped at once; a file mapping past that is read in whole when it
-    is made;
+    needs more than 256 to compile `core`). At most 1024 distinct files
+    are mapped at once (Firefox and its GTK stack map well over a
+    hundred); a file mapping past that is read in whole when it is made;
   - a 16 MiB `brk` heap;
   - 64 fds per process, 512 open file descriptions in the system, 64 tasks
     in total, 64 pipes in the system (and 24 named FIFOs), each with a
