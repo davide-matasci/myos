@@ -122,6 +122,10 @@ const SYS_EXECAT: usize = 80;
 const SYS_PREAD: usize = 81;
 const SYS_PWRITE: usize = 82;
 const SYS_PIPE: usize = 10;
+const SYS_DUPFD: usize = 14;
+const SYS_WAITPID: usize = 46;
+/// `dupfd` flag: the copy is the fd asked for itself (`dup2`).
+const DUP_EXACT: usize = 2;
 const AT_FDCWD: usize = -100isize as usize;
 const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const AT_REMOVEDIR: usize = 0x200;
@@ -238,19 +242,20 @@ pub fn fork() -> Option<usize> {
 }
 
 pub fn wait() -> Option<usize> {
-    let pid = unsafe { sys_wait(0) };
+    let pid = unsafe { sys3(SYS_WAITPID, 0, 0, 0) };
     if pid == usize::MAX { None } else { Some(pid) }
 }
 
-/// Wait for a child and return `(pid, exit_code)`.
+/// Wait for a child and return `(pid, exit_code)`: the code it exited
+/// with, or `128 + sig` when a signal killed it (what a shell reports).
 pub fn wait_status() -> Option<(usize, u8)> {
-    let mut status = 0u8;
-    let pid = unsafe { sys_wait(&mut status as *mut u8 as usize) };
+    let mut status = 0u32;
+    let pid = unsafe { sys3(SYS_WAITPID, &mut status as *mut u32 as usize, 0, 0) };
     if pid == usize::MAX {
-        None
-    } else {
-        Some((pid, status))
+        return None;
     }
+    let sig = status & 0x7f;
+    Some((pid, if sig != 0 { 128 + sig as u8 } else { (status >> 8) as u8 }))
 }
 
 pub fn pipe() -> Option<(usize, usize)> {
@@ -264,7 +269,7 @@ pub fn pipe() -> Option<(usize, usize)> {
 }
 
 pub fn dup2(oldfd: usize, newfd: usize) -> bool {
-    unsafe { sys_dup2(oldfd, newfd) != usize::MAX }
+    unsafe { sys3(SYS_DUPFD, oldfd, newfd, DUP_EXACT) != usize::MAX }
 }
 
 /// The size of the buffer callers list a directory into.
@@ -755,50 +760,6 @@ unsafe fn sys_fork() -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sys_wait(status_ptr: usize) -> usize {
-    let ret: usize;
-    // a1/rsi = options; must be 0 (blocking). Leaving rsi unset made WNOHANG
-    // spuriously active when bit0 was set in leftover register state.
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 7usize,
-            in("rdi") status_ptr,
-            in("rsi") 0usize,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            lateout("rdi") _,
-            lateout("rsi") _,
-            lateout("rdx") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") 11usize,
-            in("rdi") oldfd,
-            in("rsi") newfd,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            lateout("rdi") _,
-            lateout("rsi") _,
-            lateout("rdx") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
     unsafe {
@@ -857,39 +818,6 @@ unsafe fn sys_fork() -> usize {
 }
 
 #[cfg(target_arch = "aarch64")]
-unsafe fn sys_wait(status_ptr: usize) -> usize {
-    let ret: usize;
-    // a1/x1 = options; zero = blocking wait (see x86_64 sys_wait comment).
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") 7usize,
-            in("x0") status_ptr,
-            in("x1") 0usize,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") 11usize,
-            in("x0") oldfd,
-            in("x1") newfd,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
 unsafe fn sys_brk(addr: usize) -> usize {
     let ret: usize;
     unsafe {
@@ -930,38 +858,6 @@ unsafe fn sys_close(fd: usize) {
 #[cfg(target_arch = "riscv64")]
 unsafe fn sys_fork() -> usize {
     unsafe { sys_fork_raw() }
-}
-
-#[cfg(target_arch = "riscv64")]
-unsafe fn sys_wait(status_ptr: usize) -> usize {
-    let ret: usize;
-    // a1 = options; zero = blocking wait (see x86_64 sys_wait comment).
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") 7usize,
-            inout("a0") status_ptr => ret,
-            in("a1") 0usize,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-unsafe fn sys_dup2(oldfd: usize, newfd: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") 11usize,
-            in("a0") oldfd,
-            in("a1") newfd,
-            lateout("a0") ret,
-            options(nostack),
-        );
-    }
-    ret
 }
 
 #[cfg(target_arch = "riscv64")]

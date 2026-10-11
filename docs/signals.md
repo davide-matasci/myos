@@ -121,18 +121,14 @@ previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 | # | Name | Notes |
 |--:|------|-------|
 | 34 | `kill(pid, sig)` | `pid > 0` task, `0` own group, `< 0` group `-pid`; `sig` 0 sends nothing, only checks that the target exists (`ESRCH` for an exited one, zombies included) |
-| 35 | `sigaction(sig, act, oact)` | 3-word struct, `SIG_DFL`/`SIG_IGN` only (binaries from before handlers) |
 | 37 | `sigprocmask(how, set, oset)` | 32-bit masks |
 | 45 | `sigreturn()` | frame at the user stack pointer |
-| 46 | `waitpid(status, options, pid)` | POSIX `int` status (`WIFSIGNALED`); `SYS_WAIT` (7) keeps the exit-code byte |
+| 46 | `waitpid(status, options, pid)` | POSIX `int` status (`WIFSIGNALED`); `pid > 0` that child, else any (`wait`) |
 | 47 | `sigpending()` | returns the pending set |
 | 48 | `sigsuspend(mask)` | always `EINTR` |
 | 49 | `sigwait(set)` | returns the signal taken |
-| 50 | `sigaction2(sig, act, oact)` | 4-word struct: `{handler, flags, mask, trampoline}` |
+| 50 | `sigaction(sig, act, oact)` | 4-word structs: `{handler, flags, mask, trampoline}`; without a trampoline only `SIG_DFL`/`SIG_IGN` |
 | 88 | `itimer(which, new, old)` | the process's `ITIMER_REAL`: `SIGALRM` when it is due, then every interval (`setitimer`, `getitimer`, `alarm`) |
-
-Syscalls 39, 41 and 42 (`SIGCHLD_TAKE`, `SIGCHLD_PENDING`, `PIPE_PEER`) are
-the old libgloss SIGCHLD polling, kept for binaries built before this.
 
 ## Not yet
 

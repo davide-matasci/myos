@@ -279,7 +279,7 @@ gid_t getegid(void) {
 
 
 int dup2(int oldfd, int newfd) {
-    long ret = myos_syscall3(MYOS_SYS_DUP2, oldfd, newfd, 0);
+    long ret = myos_syscall3(MYOS_SYS_DUPFD, oldfd, newfd, MYOS_DUP_EXACT);
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;
         return -1;

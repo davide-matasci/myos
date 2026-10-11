@@ -3,12 +3,11 @@
 pub const SYS_EXIT: usize = 1;
 pub const SYS_CLOSE: usize = 4;
 pub const SYS_FORK: usize = 6;
-pub const SYS_WAIT: usize = 7;
 pub const SYS_BRK: usize = 9;
 pub const SYS_PIPE: usize = 10;
-pub const SYS_DUP2: usize = 11;
 pub const SYS_EXECNAME: usize = 13;
 pub const SYS_DUPFD: usize = 14;
+pub const SYS_WAITPID: usize = 46;
 pub const SYS_GETCWD: usize = 16;
 pub const SYS_REALPATH: usize = 93;
 pub const SYS_LSEEK: usize = 26;
@@ -45,6 +44,8 @@ pub const LOCK_UN: usize = 8;
 pub const FILE_AT: usize = 1;
 pub const FD_SET: usize = 1;
 pub const FD_CLOEXEC: usize = 1;
+/// `dupfd` flag: the copy is the fd asked for itself (`dup2`).
+pub const DUP_EXACT: usize = 2;
 pub const AT_FDCWD: usize = -100isize as usize;
 pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 pub const AT_REMOVEDIR: usize = 0x200;
@@ -318,9 +319,10 @@ pub fn fork() -> isize {
     }
 }
 
+/// Reap any child: its pid, with its POSIX `int` status in `status`, or -1.
 #[inline]
-pub fn wait_status(status: &mut u8) -> isize {
-    let ret = raw_wait(status as *mut u8 as usize);
+pub fn wait_status(status: &mut i32) -> isize {
+    let ret = raw_syscall3(SYS_WAITPID, status as *mut i32 as usize, 0, 0);
     if ret == usize::MAX {
         -1
     } else {
@@ -341,7 +343,7 @@ pub fn pipe(fds: &mut [usize; 2]) -> isize {
 
 #[inline]
 pub fn dup2(oldfd: i32, newfd: i32) -> isize {
-    let ret = raw_dup2(oldfd as usize, newfd as usize);
+    let ret = raw_syscall3(SYS_DUPFD, oldfd as usize, newfd as usize, DUP_EXACT);
     if ret == usize::MAX {
         -1
     } else {
@@ -351,7 +353,7 @@ pub fn dup2(oldfd: i32, newfd: i32) -> isize {
 
 #[inline]
 pub fn wait() -> isize {
-    let ret = raw_wait(0);
+    let ret = raw_syscall3(SYS_WAITPID, 0, 0, 0);
     if ret == usize::MAX {
         -1
     } else {
@@ -605,76 +607,6 @@ fn raw_fork() -> usize {
     ret
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn raw_wait(status_ptr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_WAIT,
-            in("rdi") status_ptr,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_wait(status_ptr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_WAIT,
-            in("x0") status_ptr,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") SYS_DUP2,
-            in("rdi") oldfd,
-            in("rsi") newfd,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_DUP2,
-            in("x0") oldfd,
-            in("x1") newfd,
-            lateout("x0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
 #[cfg(target_arch = "riscv64")]
 #[inline]
 fn raw_close(fd: usize) -> usize {
@@ -757,38 +689,6 @@ sys_fork_raw:
     ret
 "#
 );
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
-fn raw_wait(status_ptr: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_WAIT,
-            inout("a0") status_ptr => ret,
-            options(nostack),
-        );
-    }
-    ret
-}
-
-#[cfg(target_arch = "riscv64")]
-#[inline]
-fn raw_dup2(oldfd: usize, newfd: usize) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") SYS_DUP2,
-            in("a0") oldfd,
-            in("a1") newfd,
-            lateout("a0") ret,
-            options(nostack),
-        );
-    }
-    ret
-}
 
 #[cfg(target_arch = "x86_64")]
 #[inline]

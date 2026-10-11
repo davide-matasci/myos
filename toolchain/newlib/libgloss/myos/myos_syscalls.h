@@ -12,14 +12,15 @@ struct winsize;
 #define MYOS_SYS_EXIT 1
 #define MYOS_SYS_CLOSE 4
 #define MYOS_SYS_FORK 6
-#define MYOS_SYS_WAIT 7
 #define MYOS_SYS_BRK 9
-/* pipe(fds, flags), dupfd(fd, min, flags): MYOS_FD_CLOEXEC in flags makes
- * the new fds close at exec. */
+/* pipe(fds, flags), dupfd(fd, new, flags): a copy of fd as the first free
+ * fd from `new` on (F_DUPFD), or with MYOS_DUP_EXACT as `new` itself,
+ * closed first if open (dup2); MYOS_FD_CLOEXEC in flags makes the new fds
+ * close at exec. */
 #define MYOS_SYS_PIPE 10
-#define MYOS_SYS_DUP2 11
 #define MYOS_SYS_EXECNAME 13
 #define MYOS_SYS_DUPFD 14
+#define MYOS_DUP_EXACT 2
 #define MYOS_SYS_GETCWD 16
 #define MYOS_SYS_MMAP 23
 #define MYOS_SYS_MUNMAP 24
@@ -32,27 +33,24 @@ struct winsize;
 #define MYOS_SYS_GETSID 32
 #define MYOS_SYS_GETTIMEOFDAY 33
 #define MYOS_SYS_KILL 34
-#define MYOS_SYS_SIGACTION 35
 #define MYOS_SYS_GETPID 36
 #define MYOS_SYS_SIGPROCMASK 37
 /* poll(fds, nfds, timeout_ms): the kernel scans struct pollfd and sleeps until
  * the first one is ready (pollselect.c). */
 #define MYOS_SYS_POLL 38
-#define MYOS_SYS_SIGCHLD_TAKE 39
-#define MYOS_SYS_SIGCHLD_PENDING 41
-#define MYOS_SYS_PIPE_PEER 42
 /* Return from a signal handler: the trampoline is done with the frame at the
  * stack pointer (signal.c, kernel/src/signal.rs). */
 #define MYOS_SYS_SIGRETURN 45
 
 /* waitpid(status, options, pid): POSIX int status (WIFSIGNALED-aware),
- * pid > 0 waits for that child. SYS_WAIT keeps the legacy exit-code byte. */
+ * pid > 0 waits for that child, anything else for any child. */
 #define MYOS_SYS_WAITPID 46
 #define MYOS_SYS_SIGPENDING 47
 #define MYOS_SYS_SIGSUSPEND 48
 #define MYOS_SYS_SIGWAIT 49
-/* sigaction with the trampoline as a 4th struct word (signal.c). */
-#define MYOS_SYS_SIGACTION2 50
+/* sigaction(sig, act, oact): 4-word structs {handler, flags, mask,
+ * trampoline} (signal.c). */
+#define MYOS_SYS_SIGACTION 50
 /* nanosleep(ns, flags): the task blocks (its CPU halts) until the deadline or
  * a signal (EINTR). MYOS_SLEEP_ANY_EVENT also ends the sleep on any kernel
  * event a poller cares about (console/pipe/pty/device traffic, an exit). */

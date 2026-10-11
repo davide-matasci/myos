@@ -1095,7 +1095,7 @@ unsafe extern "C" fn api_fd_dup_min(fd: usize, min: usize) -> i32 {
 }
 
 unsafe extern "C" fn api_fd_dup2(old: usize, new: usize) -> i32 {
-    if crate::task::fd_dup2(old, new) { 0 } else { -1 }
+    if crate::task::fd_dup2(old, new, false) { 0 } else { -1 }
 }
 
 unsafe extern "C" fn api_fd_close(fd: usize) -> i32 {

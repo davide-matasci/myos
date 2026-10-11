@@ -141,13 +141,15 @@ mod syscalls {
     const SYS_EXIT: usize = 1;
     const SYS_CLOSE: usize = 4;
     const SYS_FORK: usize = 6;
-    const SYS_WAIT: usize = 7;
     const SYS_BRK: usize = 9;
     const SYS_PIPE: usize = 10;
-    const SYS_DUP2: usize = 11;
+    const SYS_DUPFD: usize = 14;
+    /// `dupfd` flag: the copy is the fd asked for itself (`dup2`).
+    const DUP_EXACT: usize = 2;
     const SYS_GETTIMEOFDAY: usize = 33;
     const SYS_KILL: usize = 34;
-    const SYS_SIGACTION: usize = 35;
+    const SYS_SIGACTION: usize = 50;
+    const SYS_WAITPID: usize = 46;
     const SYS_GETPID: usize = 36;
     const SYS_POLL: usize = 38;
     /// The path calls (`kernel/src/user/at.rs`): a directory fd (`AT_FDCWD`,
@@ -345,7 +347,7 @@ mod syscalls {
     }
 
     pub unsafe fn sys_dup2(oldfd: c_int, newfd: c_int) -> c_int {
-        let ret = raw_syscall(SYS_DUP2, oldfd as usize, newfd as usize, 0);
+        let ret = raw_syscall(SYS_DUPFD, oldfd as usize, newfd as usize, DUP_EXACT);
         if ret == usize::MAX {
             set_errno(EBADF);
             -1
@@ -364,8 +366,12 @@ mod syscalls {
         }
     }
 
-    pub unsafe fn sys_wait(status: *mut c_int) -> pid_t {
-        let ret = raw_syscall(SYS_WAIT, status as usize, 0, 0);
+    /// Reap the child `pid` (any child when it is not > 0): the kernel
+    /// writes a POSIX `int` status. `nohang`: 0 while none has exited.
+    pub unsafe fn sys_waitpid(pid: pid_t, status: *mut c_int, nohang: bool) -> pid_t {
+        const WAIT_NOHANG: usize = 1;
+        let pid = if pid > 0 { pid as usize } else { 0 };
+        let ret = raw_syscall(SYS_WAITPID, status as usize, if nohang { WAIT_NOHANG } else { 0 }, pid);
         if ret == usize::MAX {
             set_errno(ECHILD);
             -1
@@ -432,12 +438,20 @@ mod syscalls {
         }
     }
 
+    /// `act` is `{handler, flags, mask}` as the kernel takes them; it goes
+    /// in without a trampoline (the kernel's 4th word), so only `SIG_DFL`
+    /// and `SIG_IGN` are accepted.
     pub unsafe fn sys_sigaction(sig: c_int, act: *const c_void, oact: *mut c_void) -> c_int {
         if sig <= 0 || sig > 31 {
             set_errno(EINVAL);
             return -1;
         }
-        let ret = raw_syscall(SYS_SIGACTION, sig as usize, act as usize, oact as usize);
+        let mut kact = [0usize; 4];
+        if !act.is_null() {
+            kact[..3].copy_from_slice(core::slice::from_raw_parts(act as *const usize, 3));
+        }
+        let act = if act.is_null() { 0 } else { kact.as_ptr() as usize };
+        let ret = raw_syscall(SYS_SIGACTION, sig as usize, act, oact as usize);
         if ret == usize::MAX {
             set_errno(ENOSYS);
             -1
@@ -605,13 +619,12 @@ pub unsafe extern "C" fn fork() -> pid_t {
 
 #[no_mangle]
 pub unsafe extern "C" fn wait(status: *mut c_int) -> pid_t {
-    syscalls::sys_wait(status)
+    syscalls::sys_waitpid(-1, status, false)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn waitpid(pid: pid_t, status: *mut c_int, _options: c_int) -> pid_t {
-    let _ = pid;
-    syscalls::sys_wait(status)
+pub unsafe extern "C" fn waitpid(pid: pid_t, status: *mut c_int, options: c_int) -> pid_t {
+    syscalls::sys_waitpid(pid, status, options & WNOHANG != 0)
 }
 
 #[no_mangle]
@@ -1065,9 +1078,8 @@ pub unsafe extern "C" fn raise(sig: c_int) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn sigaction(sig: c_int, act: *const c_void, oldact: *mut c_void) -> c_int {
-    // Kernel expects {handler, flags, mask} usizes. Callers using newlib layout
-    // should go through libgloss; rustix/ctrlc typically pass opaque pointers —
-    // we forward as-is when non-null (first word = handler).
+    // {handler, flags, mask} usizes (rustix/ctrlc pass opaque pointers;
+    // callers using newlib's layout go through libgloss).
     syscalls::sys_sigaction(sig, act, oldact)
 }
 

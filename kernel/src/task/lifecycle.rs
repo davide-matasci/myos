@@ -3,30 +3,6 @@
 
 use super::*;
 
-/// Per-parent count of exited-but-unreaped (zombie) user children, for the
-/// legacy `SIGCHLD_PENDING` syscall. A counter is robust against task-state
-/// scan timing (the child may be reaped by a concurrent waiter).
-static ZOMBIES: [core::sync::atomic::AtomicU32; MAX_TASKS] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; MAX_TASKS];
-
-/// Record that `parent` gained a zombie child (called in `die()`).
-pub fn note_zombie(parent: usize) {
-    if parent < MAX_TASKS {
-        ZOMBIES[parent].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-/// A child of `parent` was reaped; drop the zombie marker (saturating).
-pub fn note_reap(parent: usize) {
-    if parent < MAX_TASKS {
-        ZOMBIES[parent].try_update(
-            core::sync::atomic::Ordering::Relaxed,
-            core::sync::atomic::Ordering::Relaxed,
-            |n| Some(n.saturating_sub(1)),
-        ).ok();
-    }
-}
-
 /// `ppid` of a task whose parent exited first. `ppid` is a slot index and
 /// slots are recycled, so an orphan must not keep pointing at its dead
 /// parent's slot (see `orphan_children`).
@@ -95,17 +71,6 @@ fn orphan_children(tasks: &mut TaskTable, id: usize) {
         } else {
             tasks[j].ppid = NO_PARENT;
         }
-    }
-    if id < MAX_TASKS {
-        ZOMBIES[id].store(0, core::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-pub fn zombie_count(parent: usize) -> usize {
-    if parent < MAX_TASKS {
-        ZOMBIES[parent].load(core::sync::atomic::Ordering::Relaxed) as usize
-    } else {
-        0
     }
 }
 /// Home CPU for a new top-level user task: round-robin over the online
@@ -415,48 +380,18 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
     Some((slot, stack_base, sp, top))
 }
 
-/// True if `parent` has a child that has exited (`Dead`) and not yet been
-/// reaped (legacy `SIGCHLD_PENDING` syscall).
-pub fn has_exited_child(parent: usize) -> bool {
-    if zombie_count(parent) > 0 {
-        return true;
-    }
-    let flags = irq_save();
-    irq_off();
-    let tasks = TASKS.lock();
-    let mut found = false;
-    for i in 0..MAX_TASKS {
-        if i != parent
-            && tasks[i].ppid == parent
-            && tasks[i].user_rip != 0
-            && (tasks[i].state == State::Dead || tasks[i].exited)
-        {
-            found = true;
-            break;
-        }
-    }
-    drop(tasks);
-    irq_restore(flags);
-    found
-}
-
 /// Yield until a child has exited, reap it, return its pid.
 /// `usize::MAX` if this task has no children. If `status_out` is `Some(va)`,
-/// stores the low 8 bits of the child's exit code at that user address.
-/// When `nohang` is set and children exist but none are Dead yet, returns 0
-/// (POSIX WNOHANG) so waitpid cannot block the dropbear reap loop — and so a
-/// WNOHANG poll with no children still returns `usize::MAX` (ECHILD), not 0
-/// (which would busy-spin shells that treat 0 as "try again").
+/// stores the child's POSIX `int` status (the exit code in bits 8-15, or
+/// the signal that killed it in bits 0-6: `WIFSIGNALED`) at that user
+/// address. When `nohang` is set and children exist but none are Dead yet,
+/// returns 0 (POSIX WNOHANG) so waitpid cannot block the dropbear reap loop
+/// — and so a WNOHANG poll with no children still returns `usize::MAX`
+/// (ECHILD), not 0 (which would busy-spin shells that treat 0 as "try
+/// again").
 ///
-/// `pid` restricts the wait to that child (`waitpid(pid > 0)`). The status is
-/// written as one exit-code byte (legacy) or, with `status_word`, as a POSIX
-/// `int` status that distinguishes a signal death (`WIFSIGNALED`).
-pub fn wait_child(
-    status_out: Option<usize>,
-    nohang: bool,
-    pid: Option<usize>,
-    status_word: bool,
-) -> usize {
+/// `pid` restricts the wait to that child (`waitpid(pid > 0)`).
+pub fn wait_child(status_out: Option<usize>, nohang: bool, pid: Option<usize>) -> usize {
     let parent = current_pid();
     loop {
         let mut any = false;
@@ -504,18 +439,9 @@ pub fn wait_child(
                 }
                 drop(tasks);
                 irq_restore(flags);
-                note_reap(parent);
                 if let Some(va) = status_out {
-                    if status_word {
-                        let status: u32 = if term_sig != 0 {
-                            term_sig as u32
-                        } else {
-                            (code as u32) << 8
-                        };
-                        let _ = user::copy_to_user(current_aspace(), va, &status.to_le_bytes());
-                    } else {
-                        let _ = user::copy_to_user(current_aspace(), va, &[code]);
-                    }
+                    let status: u32 = if term_sig != 0 { term_sig as u32 } else { (code as u32) << 8 };
+                    let _ = user::copy_to_user(current_aspace(), va, &status.to_le_bytes());
                 }
                 return i;
             }
@@ -633,7 +559,7 @@ pub fn user_exit(code: u8) -> ! {
 }
 
 /// Terminate the current process because of `sig` (its default action).
-/// `wait` reports it as signaled; byte-status callers still see `128 + sig`.
+/// `wait` reports it as signaled; the exit code it leaves is `128 + sig`.
 pub fn user_exit_signal(sig: u32) -> ! {
     exit_group(128u8.wrapping_add(sig as u8), sig);
 }
@@ -677,7 +603,6 @@ extern "C" fn trampoline() -> ! {
 pub fn die() -> ! {
     irq_off();
     let mut chld_parent = usize::MAX;
-    let mut leaves_zombie = true;
     // Closed outside TASKS below: dropping pipe/pty ends wakes their peers
     // (and a pty hangup signals the session), which take TASKS themselves.
     let mut fds_to_drop: Option<[FdEntry; MAX_FDS]> = None;
@@ -696,7 +621,6 @@ pub fn die() -> ! {
             // none are left).
             if chld_parent != NO_PARENT && signal_no_zombies(&tasks, chld_parent) {
                 tasks[id].ppid = NO_PARENT;
-                leaves_zombie = false;
             }
             user::note_exit();
             let aspace = tasks[id].aspace;
@@ -736,12 +660,9 @@ pub fn die() -> ! {
     // is final, so the parent can reap it while this task still frees its
     // address space below (that walk is not on the parent's critical path).
     // SIGCHLD's default action is ignore, so a parent without a handler is
-    // unaffected; a parent polling SIGCHLD_TAKE sees the bit.
+    // unaffected.
     if chld_parent != usize::MAX {
         crate::signal::raise_sigchld(chld_parent);
-        if leaves_zombie {
-            note_zombie(chld_parent);
-        }
         // The parent may be blocked in `wait`; pollers may watch for exits.
         wake(key_child(chld_parent));
         wake_any();

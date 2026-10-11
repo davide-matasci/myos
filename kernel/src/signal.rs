@@ -461,12 +461,11 @@ pub fn sigprocmask(how: usize, set: Option<usize>, oset: Option<usize>) -> bool 
 }
 
 /// `sigaction(sig, act, oact)` on libgloss's packed struct of `usize` words
-/// `{handler, flags, mask}` and, with `with_tramp` (`SYS_SIGACTION2`), a 4th
-/// word: the trampoline (libgloss's `__myos_sigtramp`) that runs a function
-/// handler. Without it (`SYS_SIGACTION`, binaries from before kernel-delivered
-/// handlers) only `SIG_DFL` (0) / `SIG_IGN` (1) are accepted. `oact` gets the
-/// first three words.
-pub fn sigaction(sig: u32, act: Option<usize>, oact: Option<usize>, with_tramp: bool) -> bool {
+/// `{handler, flags, mask, trampoline}`: the trampoline (libgloss's
+/// `__myos_sigtramp`) runs a function handler, so without one (0) only
+/// `SIG_DFL` (0) / `SIG_IGN` (1) are accepted. `oact` gets the first three
+/// words.
+pub fn sigaction(sig: u32, act: Option<usize>, oact: Option<usize>) -> bool {
     if sig == 0 || sig > 31 {
         return false;
     }
@@ -487,8 +486,7 @@ pub fn sigaction(sig: u32, act: Option<usize>, oact: Option<usize>, with_tramp: 
     }
     if let Some(inp) = act {
         let mut bytes = [0u8; 4 * 8];
-        let len = if with_tramp { 4 * 8 } else { 3 * 8 };
-        if !crate::user::buffer_ok(inp, len) || !crate::user::copy_from_user(task::current_aspace(), inp, &mut bytes[..len]) {
+        if !crate::user::buffer_ok(inp, bytes.len()) || !crate::user::copy_from_user(task::current_aspace(), inp, &mut bytes) {
             return false;
         }
         let word = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap()) as usize;
