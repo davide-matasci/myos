@@ -212,6 +212,22 @@ fstab_mount() {
 t rmmod_hello rmmod_hello
 t rmmod_busy rmmod_busy
 t pci_rescan pci_rescan
+# The virtio-scsi disk (modules/virtio_scsi): the launcher gives every boot
+# a virtio-scsi host with one 1 MiB disk, the first `sd` disk (the USB
+# stick comes later, on the USB thread). It reads and writes by sector,
+# and ends where READ CAPACITY said.
+scsi_disk() {
+	d=/dev/sda/data
+	[ -e $d ] || return 1
+	! grep -q 'sda$' /proc/usb || return 1
+	printf 'scsi-disk-%s' "$$" > /tmp/scsi.in
+	dd if=/tmp/scsi.in of=$d bs=512 seek=3 count=1 conv=notrunc 2> /dev/null || return 1
+	dd if=$d of=/tmp/scsi.out bs=512 skip=3 count=1 2> /dev/null || return 1
+	[ "$(head -c "$(wc -c < /tmp/scsi.in)" /tmp/scsi.out)" = "$(cat /tmp/scsi.in)" ] || return 1
+	[ "$(dd if=$d bs=512 skip=2047 count=1 2> /dev/null | wc -c)" -eq 512 ] || return 1
+	[ "$(dd if=$d bs=512 skip=2048 count=1 2> /dev/null | wc -c)" -eq 0 ]
+}
+t scsi_disk scsi_disk
 t partitions partitions
 t boot_disk boot_disk
 t fstab_mount fstab_mount

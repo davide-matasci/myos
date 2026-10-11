@@ -13,7 +13,9 @@ them.
 | 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3`, mounted at `/data` | state an upgrade keeps: `get-myos`'s apps, `get-alpine`'s root |
 
 The image is 579 MiB, written sparse: only what the partitions hold takes
-space on the host.
+space on the host. A VPS whose disk hangs off a virtio-scsi controller
+(Hetzner's do) sees it as `/dev/sda` instead (`modules/virtio_scsi`); the
+fstab names the partitions by GUID, so the layout does not care.
 
 ## The ESP: two boot slots
 

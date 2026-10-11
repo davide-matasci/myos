@@ -5,7 +5,7 @@
 | Component | Location | Why |
 |-----------|----------|-----|
 | PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
-| virtio-blk, NVMe | `modules/virtio_blk`, `modules/nvme` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules |
+| virtio-blk, virtio-scsi, NVMe | `modules/virtio_blk`, `modules/virtio_scsi`, `modules/nvme` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules. The virtio modules are the `virtio-drivers` crate over the module ABI (`modules/virtio`: its `Hal`, PCI and virtio-mmio probing) |
 | USB: xHCI host, hub and mass storage | `modules/xhci`, `modules/usb_hub`, `modules/usb_storage` | The host publishes the USB bus as a service the class drivers look up; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
@@ -410,7 +410,7 @@ AP stacks are too small for nested timer/IPI frames).
 - `/proc/cpuinfo` — online CPUs, hw ids, schedule counts
 - `/proc/platform` — the board description and where each component came from (above)
 - `/proc/usb` — the controllers (ports, interrupt, event counts) and the USB devices: id, parent hub and port, speed, vendor:product, each interface's class triple and the driver that took it (`docs/usb.md`)
-- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear); the kernel then calls every module's `module_rescan`, and the block drivers (virtio-blk, NVMe) bring up the disks that appeared since boot, leaving the known ones alone. virtio-net probes once at load (netd binds the one `/dev/net0`). No ACPI/QEMU hotplug IRQ yet: a hot-added disk shows up after a rescan.
+- `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear); the kernel then calls every module's `module_rescan`, and the block drivers (virtio-blk, virtio-scsi, NVMe) bring up the disks that appeared since boot, leaving the known ones alone. virtio-net probes once at load (netd binds the one `/dev/net0`). No ACPI/QEMU hotplug IRQ yet: a hot-added disk shows up after a rescan.
 - `/proc/acpi/info`, `tables`, `s5` — from `acpi` module (honest stubs if no RSDP)
 
 ## Out of scope

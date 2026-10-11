@@ -188,6 +188,29 @@ fn write_empty_blk_image() {
         .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
+fn scsi_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/scsi.img")
+}
+
+/// The virtio-scsi test disk: 1 MiB, empty (`kernel.sh`'s `scsi_disk`
+/// writes and reads it back).
+fn write_scsi_image() {
+    let dest = scsi_img_path();
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&dest, vec![0u8; 1024 * 1024]).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
+
+/// A virtio-scsi host (`device`: the PCI or the virtio-mmio one) with
+/// the test disk as its target 0.
+fn add_virtio_scsi(cmd: &mut Command, device: &str) {
+    write_scsi_image();
+    cmd.arg("-device").arg(format!("{device},id=scsi0"));
+    cmd.arg("-drive").arg(format!("if=none,id=scsi0d,format=raw,file={}", scsi_img_path().display()));
+    cmd.arg("-device").arg("scsi-hd,drive=scsi0d,bus=scsi0.0");
+}
+
 fn nvme_img_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/nvme.img")
 }
@@ -361,6 +384,7 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
         empty.display()
     ));
     cmd.arg("-device").arg("virtio-blk-pci,drive=vd1");
+    add_virtio_scsi(cmd, "virtio-scsi-pci");
     add_nvme(cmd);
     add_usb(cmd);
 }
@@ -377,6 +401,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
         empty.display()
     ));
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
+    add_virtio_scsi(cmd, "virtio-scsi-device");
     add_nvme(cmd);
     add_usb(cmd);
 }

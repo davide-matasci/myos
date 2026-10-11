@@ -260,6 +260,9 @@ HELLO_OK_ELFS=(
   target/virtio_blk-x86_64-unknown-none
   target/virtio_blk-aarch64-unknown-none-softfloat
   target/virtio_blk-riscv64imac-unknown-none-elf
+  target/virtio_scsi-x86_64-unknown-none
+  target/virtio_scsi-aarch64-unknown-none-softfloat
+  target/virtio_scsi-riscv64imac-unknown-none-elf
   target/nvme-x86_64-unknown-none
   target/nvme-aarch64-unknown-none-softfloat
   target/nvme-riscv64imac-unknown-none-elf
