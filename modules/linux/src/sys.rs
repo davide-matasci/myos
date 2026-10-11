@@ -1114,63 +1114,56 @@ pub fn prlimit(resource: usize, old: usize) -> R {
     Ok(0)
 }
 
-/// poll(2) on pipes and sockets; other fds always report ready.
-pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
-    const POLLIN: u16 = 1;
-    const POLLOUT: u16 = 4;
-    const POLLERR: u16 = 8;
-    const POLLHUP: u16 = 0x10;
-    const POLLNVAL: u16 = 0x20;
-    if nfds > 64 {
-        return Err(EINVAL);
+const POLLIN: u16 = 1;
+const POLLPRI: u16 = 2;
+const POLLOUT: u16 = 4;
+const POLLERR: u16 = 8;
+const POLLHUP: u16 = 0x10;
+const POLLNVAL: u16 = 0x20;
+
+/// The `poll` events of `fd` among `events`, with `POLLERR` and `POLLHUP`,
+/// which are reported unasked; `POLLNVAL` for an fd that is not open.
+/// Pipes and sockets know their readiness, other fds are always ready.
+fn fd_revents(fd: usize, events: u16) -> u16 {
+    if task::fd_kind(fd).is_none() {
+        return POLLNVAL;
     }
-    let deadline = (timeout_ms >= 0).then(|| now_us().saturating_add(timeout_ms as u64 * 1000));
+    if let Some(r) = net::poll_events(fd) {
+        return r & (events | POLLERR | POLLHUP);
+    }
+    match task::fd_poll_bits(fd) {
+        Some(bits) => {
+            let mut r = 0;
+            if bits & 1 != 0 {
+                r |= POLLIN;
+            }
+            if bits & 2 != 0 {
+                r |= POLLOUT;
+            }
+            if bits & 4 != 0 {
+                r |= POLLHUP;
+            }
+            r & (events | POLLHUP)
+        }
+        None => events & (POLLIN | POLLOUT),
+    }
+}
+
+/// The wait of `poll` and `select`: `scan` checks the fds and returns how
+/// many are ready; until some are, the timeout (`timeout_us`, `None`: no
+/// timeout) passes or a signal comes, sleep until something happens
+/// (pipe, tty, socket or device traffic, an exit) and scan again.
+fn wait_ready(timeout_us: Option<u64>, mut scan: impl FnMut() -> R) -> R {
+    let deadline = timeout_us.map(|t| now_us().saturating_add(t));
     loop {
         let seq = task::wait_seq();
-        let mut ready = 0;
-        for i in 0..nfds {
-            let mut b = [0u8; 8];
-            get(fds + i * 8, &mut b)?;
-            let fd = i32::from_le_bytes(b[..4].try_into().unwrap());
-            let events = u16::from_le_bytes([b[4], b[5]]);
-            let rev = if fd < 0 {
-                0
-            } else if task::fd_kind(fd as usize).is_none() {
-                POLLNVAL
-            } else if let Some(r) = net::poll_events(fd as usize) {
-                r & (events | POLLERR | POLLHUP)
-            } else {
-                match task::fd_poll_bits(fd as usize) {
-                    Some(bits) => {
-                        let mut r = 0;
-                        if bits & 1 != 0 {
-                            r |= POLLIN;
-                        }
-                        if bits & 2 != 0 {
-                            r |= POLLOUT;
-                        }
-                        if bits & 4 != 0 {
-                            r |= POLLHUP;
-                        }
-                        r & (events | POLLHUP)
-                    }
-                    None => events & (POLLIN | POLLOUT),
-                }
-            };
-            b[6..8].copy_from_slice(&rev.to_le_bytes());
-            put(fds + i * 8, &b)?;
-            if rev != 0 {
-                ready += 1;
-            }
-        }
+        let ready = scan()?;
         if ready > 0 || deadline.is_some_and(|d| now_us() >= d) {
             return Ok(ready);
         }
         if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
-        // Sleep until something happens (pipe/tty/device traffic, an exit)
-        // or the timeout; readiness is re-scanned above either way.
         let mono = match deadline {
             Some(d) => crate::k::time::monotonic_ns()
                 .saturating_add(d.saturating_sub(now_us()).saturating_mul(1000))
@@ -1181,15 +1174,121 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
     }
 }
 
+/// poll(2): `timeout_ms` negative waits for as long as it takes.
+pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
+    if nfds > 64 {
+        return Err(EINVAL);
+    }
+    let timeout_us = (timeout_ms >= 0).then(|| timeout_ms as u64 * 1000);
+    wait_ready(timeout_us, || {
+        let mut ready = 0;
+        for i in 0..nfds {
+            let mut b = [0u8; 8];
+            get(fds + i * 8, &mut b)?;
+            let fd = i32::from_le_bytes(b[..4].try_into().unwrap());
+            let events = u16::from_le_bytes([b[4], b[5]]);
+            let rev = if fd < 0 { 0 } else { fd_revents(fd as usize, events) };
+            b[6..8].copy_from_slice(&rev.to_le_bytes());
+            put(fds + i * 8, &b)?;
+            if rev != 0 {
+                ready += 1;
+            }
+        }
+        Ok(ready)
+    })
+}
+
 /// `ppoll(fds, nfds, timeout, sigmask)` (the only poll on aarch64/riscv64;
 /// the signal mask argument is not applied).
 pub fn ppoll(fds: usize, nfds: usize, ts: usize) -> R {
-    let ms = if ts == 0 {
-        -1
+    poll(fds, nfds, timespec_us(ts)?.map_or(-1, |us| us.div_ceil(1000).min(isize::MAX as u64) as isize))
+}
+
+/// The `struct timespec` at `ts` in microseconds, rounded up; `None` for a
+/// null pointer (no timeout).
+fn timespec_us(ts: usize) -> Result<Option<u64>, usize> {
+    if ts == 0 {
+        return Ok(None);
+    }
+    let sec = get_u64(ts)?;
+    let nsec = get_u64(ts + 8)?;
+    Ok(Some(sec.saturating_mul(1_000_000).saturating_add(nsec.div_ceil(1000))))
+}
+
+/// `FD_SETSIZE`: the fds a `select` set holds.
+const FD_SETSIZE: usize = 1024;
+
+/// `select(nfds, readfds, writefds, exceptfds, timeout)` (x86_64; musl's
+/// `select` on aarch64 and riscv64 is [`pselect6`]), over the same
+/// readiness as `poll`: an fd is readable when `poll` would say `POLLIN`,
+/// `POLLHUP` or `POLLERR`, writable on `POLLOUT` or `POLLERR`; nothing has
+/// exceptional conditions. The sets are rewritten with the ready fds; the
+/// timeout is not updated with the time left.
+#[cfg(target_arch = "x86_64")]
+pub fn select(nfds: usize, rfds: usize, wfds: usize, efds: usize, tv: usize) -> R {
+    let timeout_us = if tv == 0 {
+        None
     } else {
-        let sec = get_u64(ts)?;
-        let nsec = get_u64(ts + 8)?;
-        (sec.saturating_mul(1000) + nsec.div_ceil(1_000_000)).min(isize::MAX as u64) as isize
+        let sec = get_u64(tv)?;
+        let usec = get_u64(tv + 8)?;
+        Some(sec.saturating_mul(1_000_000).saturating_add(usec))
     };
-    poll(fds, nfds, ms)
+    select_sets(nfds, [rfds, wfds, efds], timeout_us)
+}
+
+/// `pselect6(nfds, readfds, writefds, exceptfds, timeout, sigmask)`: a
+/// `select` with a `struct timespec` timeout (the signal mask argument is
+/// not applied, as `ppoll`'s).
+pub fn pselect6(nfds: usize, rfds: usize, wfds: usize, efds: usize, ts: usize) -> R {
+    select_sets(nfds, [rfds, wfds, efds], timespec_us(ts)?)
+}
+
+fn select_sets(nfds: usize, sets: [usize; 3], timeout_us: Option<u64>) -> R {
+    if nfds > FD_SETSIZE {
+        return Err(EINVAL);
+    }
+    // Each set is `nfds` bits rounded up to whole longs, as Linux copies it.
+    let words = nfds.div_ceil(64);
+    let mut want = [[0u64; FD_SETSIZE / 64]; 3];
+    for (set, ptr) in want.iter_mut().zip(sets) {
+        if ptr == 0 {
+            continue;
+        }
+        for (w, word) in set[..words].iter_mut().enumerate() {
+            *word = get_u64(ptr + w * 8)?;
+        }
+    }
+    let wanted = |set: &[u64; FD_SETSIZE / 64], fd: usize| set[fd / 64] & (1 << (fd % 64)) != 0;
+    // The ready fds of the last scan, the sets written back.
+    let mut got = [[0u64; FD_SETSIZE / 64]; 3];
+    let ready = wait_ready(timeout_us, || {
+        got = [[0u64; FD_SETSIZE / 64]; 3];
+        let mut ready = 0;
+        for fd in 0..nfds {
+            let [r, w, e] = [0, 1, 2].map(|i| wanted(&want[i], fd));
+            if !(r || w || e) {
+                continue;
+            }
+            let rev = fd_revents(fd, POLLIN | POLLOUT | POLLPRI);
+            if rev & POLLNVAL != 0 {
+                return Err(EBADF);
+            }
+            let bit = 1 << (fd % 64);
+            if r && rev & (POLLIN | POLLHUP | POLLERR) != 0 {
+                got[0][fd / 64] |= bit;
+                ready += 1;
+            }
+            if w && rev & (POLLOUT | POLLERR) != 0 {
+                got[1][fd / 64] |= bit;
+                ready += 1;
+            }
+        }
+        Ok(ready)
+    })?;
+    for (set, ptr) in got.iter().zip(sets).filter(|&(_, ptr)| ptr != 0) {
+        for (w, word) in set[..words].iter().enumerate() {
+            put(ptr + w * 8, &word.to_le_bytes())?;
+        }
+    }
+    Ok(ready)
 }
