@@ -1129,7 +1129,11 @@ PY
 	kill $apid 2>/dev/null
 	wait $apid 2>/dev/null
 	out=$(cat $OUT/asyncio.out)
-	cat $OUT/asyncio.err
+	# The runner shows the last 40 lines: the first traceback (a thread's,
+	# the cause) and the end of the last. Python's chained tracebacks end a
+	# line in "exception:", which the host takes for a kernel crash marker
+	# (src/boot_test.rs).
+	{ head -n 30 $OUT/asyncio.err; echo ...; tail -n 4 $OUT/asyncio.err; } | sed 's/exception:/exception./'
 	echo "$out"
 	[ "$out" = "ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0" ]
 }
