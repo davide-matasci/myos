@@ -446,9 +446,10 @@ three, the kernel crate itself an hour. Known gaps:
   semaphore mode and initial value, `timerfd_settime` / `timerfd_gettime`
   and `epoll_ctl` are the object's `ctl` and `status`, `epoll_wait` waits
   for the set's readiness and takes the ready members (`KernelApi::
-  wait_take`). `EPOLLET` reports a readiness once until the member was
-  seen not ready; `EPOLLPRI`, `EPOLLRDHUP`, `EPOLLEXCLUSIVE` and the
-  signal mask of `epoll_pwait` are ignored. Every Linux
+  wait_take`). `EPOLLET` reports a readiness once, and again only
+  once something happened since (`docs/events.md`); `EPOLLPRI`,
+  `EPOLLRDHUP`, `EPOLLEXCLUSIVE` and the signal mask of `epoll_pwait` are
+  ignored. Every Linux
   clock is the one clock here, so a `TFD_TIMER_ABSTIME` value is taken
   relative to it, whatever the clock the timerfd was created on.
 - `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and

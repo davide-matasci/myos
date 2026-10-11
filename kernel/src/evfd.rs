@@ -455,8 +455,12 @@ pub const WAIT_IN: u32 = 0x1;
 pub const WAIT_OUT: u32 = 0x4;
 pub const WAIT_ERR: u32 = 0x8;
 pub const WAIT_HUP: u32 = 0x10;
-/// `et`: a readiness is reported once, until the member was seen not
-/// ready (an edge, near enough: Linux reports every new event).
+/// `et`: a readiness is reported once, and again only once something
+/// happened since (any wake in the system, `crate::task::wait_seq`: the
+/// member's own new data among them). An edge, near enough: Linux reports
+/// every new event and nothing else; this reports a few more when the
+/// system is busy, which an edge-triggered reader takes as a read that
+/// finds nothing.
 const WAIT_ET: u32 = 1 << 31;
 /// `oneshot`: reported once, then the member waits for a `mod`.
 const WAIT_ONESHOT: u32 = 1 << 30;
@@ -475,8 +479,9 @@ struct Member {
     target: FdEntry,
     events: u32,
     cookie: u64,
-    /// `et`: reported while ready, not seen not ready since.
-    reported: bool,
+    /// `et`: the wake sequence when its readiness was last reported, while
+    /// nothing happened since and it was not seen not ready.
+    reported: Option<u64>,
     /// `oneshot`: reported, waiting for a `mod`.
     disabled: bool,
 }
@@ -579,7 +584,7 @@ pub fn wait_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
             if words.next().is_some() {
                 return None;
             }
-            let member = Member { fd, target, events, cookie, reported: false, disabled: false };
+            let member = Member { fd, target, events, cookie, reported: None, disabled: false };
             if verb == "add" {
                 if let FdEntry::Wait(other) = target {
                     if other == id || wait_holds(other, id, 4) {
@@ -624,6 +629,9 @@ pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
     let mut out = Vec::new();
     let mut tty = false;
     let Some(w) = WAITS.get(id) else { return (out, false) };
+    // Read before the readiness is: an event during the scan counts as
+    // after this report, so an `et` member's next one is not missed.
+    let seq = crate::task::wait_seq();
     // The members' readiness is asked outside the lock: a member that is
     // a set itself scans its own.
     let snapshot: Vec<(usize, FdEntry, u32)> =
@@ -640,11 +648,11 @@ pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
         let Some(m) = members.iter_mut().find(|m| m.fd == fd && m.target == target) else { continue };
         if hit == 0 {
             if take {
-                m.reported = false;
+                m.reported = None;
             }
             continue;
         }
-        if m.events & WAIT_ET != 0 && m.reported {
+        if m.events & WAIT_ET != 0 && m.reported == Some(seq) {
             continue;
         }
         if out.len() >= max {
@@ -653,7 +661,7 @@ pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
         }
         if take {
             if m.events & WAIT_ET != 0 {
-                m.reported = true;
+                m.reported = Some(seq);
             }
             if m.events & WAIT_ONESHOT != 0 {
                 m.disabled = true;

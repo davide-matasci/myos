@@ -122,8 +122,10 @@ The `ctl` commands name the member by an fd of the writing process:
 | `del FD` | leaves |
 
 `EVENTS` is a comma list of `in`, `out`, `et` (edge-triggered: a readiness
-is reported once, until the member was seen not ready; Linux reports
-every new event, which is near enough for an event loop), `oneshot`
+is reported once, and again only once something happened since, any wake
+in the system; Linux reports every new event and nothing else, so a busy
+myos reports a few more, which an edge-triggered reader takes as a read
+that finds nothing), `oneshot`
 (reported once, then disabled until a `mod`), or `none` (errors and
 hangups only). `status` reads `members N` and one `FD EVENTS COOKIE` line
 per member, ` disabled` after a fired `oneshot`.

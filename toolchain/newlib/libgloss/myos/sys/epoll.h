@@ -4,8 +4,9 @@
 /* epoll(7) over /dev/wait (docs/events.md, evfd.c): an fd on a kernel wait
  * set, whose members are other fds' open objects. epoll_wait gives the
  * members ready now, with the data they were added with. EPOLLET reports
- * a readiness once, until the member was seen not ready; EPOLLONESHOT
- * once, until EPOLL_CTL_MOD. EPOLLERR and EPOLLHUP are always reported;
+ * a readiness once, and again only once something happened since (a few
+ * more than Linux's every-new-event on a busy system); EPOLLONESHOT once,
+ * until EPOLL_CTL_MOD. EPOLLERR and EPOLLHUP are always reported;
  * EPOLLPRI, EPOLLRDHUP, EPOLLEXCLUSIVE and EPOLLWAKEUP are accepted and
  * ignored. */
 #include <fcntl.h>
