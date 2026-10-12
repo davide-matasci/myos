@@ -36,7 +36,8 @@ Missing ELF is a **hard error** at image pack time (CI always builds vim).
 
 - Kernel stdin is **cooked**; libgloss `<termios.h>` stubs (`tcgetattr` fails /
   `tcsetattr` no-op success). Raw/visual mode and single-key input are limited.
-- Framebuffer ANSI CSI includes DECSTBM (`CSI r`) + SU/SD (`CSI S`/`CSI T`);
+- Framebuffer ANSI CSI includes DECSTBM (`CSI r`), SU/SD (`CSI S`/`CSI T`),
+  IL/DL (`CSI L`/`CSI M`, termcap `al`/`dl`) and RI (`ESC M`, `sr`);
   `TIOCGWINSZ` reports FB character cells; termios raw mode via TCGETS/TCSETS.
 - `select()` is libgloss's (`pollselect.c`), over the kernel's `poll`.
 - Interactive editing on serial/FB may be awkward; opening a file and `:q!`

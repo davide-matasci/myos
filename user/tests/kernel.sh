@@ -749,6 +749,33 @@ console_cr() {
 }
 t console_cr console_cr
 
+# Inserting and deleting lines moves the rows below the cursor (termcap `al`
+# and `dl`: vim opening a line with Enter or `o`), as does reverse index at
+# the top (`sr`): the first two cells of the top three rows read back must
+# be as if the text were written already moved.
+console_rows() {
+	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+	for y in $(seq 0 23); do
+		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
+	done | cksum
+}
+
+console_lines() {
+	read -r w h depth chan pitch mode < /dev/fb/ctl
+	mirror=$(grep '^mirror ' /dev/console/ctl)
+	echo 'mirror on' > /dev/console/ctl || return 1
+	moved=$(console_rows '\r\nA\r\nB')
+	il=$(console_rows 'A\r\nB\033[H\033[L')
+	ri=$(console_rows 'A\r\nB\033[H\033M')
+	dl=$(console_rows 'X\r\nA\r\nB\033[H\033[M')
+	up=$(console_rows 'A\r\nB')
+	printf '\033[H\033[J\n' > /dev/console/data
+	echo "$mirror" > /dev/console/ctl
+	echo "moved: $moved; IL: $il; RI: $ri; DL: $dl"
+	[ "$il" = "$moved" ] && [ "$ri" = "$moved" ] && [ "$dl" = "$up" ]
+}
+t console_lines console_lines
+
 # Security (docs/security.md). The tests run as root in the admin domain.
 # A policy with three more users, alice and bob (passwords alice-pw and
 # bob-pw), their homes under /tmp/sec/home and programs under /tmp/sec/bin
