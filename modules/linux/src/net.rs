@@ -514,10 +514,13 @@ fn adopt(fd: usize) {
     let Some(path) = task::fd_path(fd).and_then(|p| String::from_utf8(p).ok()) else {
         return;
     };
-    let unix = net_dir("unix").ok().and_then(|dir| {
-        let id = path.strip_prefix(dir.as_str())?.strip_prefix('/')?.strip_suffix("/data")?;
-        Some(format!("{dir}/{id}"))
+    // `.../unix/N/data`, whichever mount names it (a `linux --root` sees
+    // `/net` through a bind): the conversation as this process reaches it.
+    let unix = path.strip_suffix("/data").and_then(|p| {
+        let (dir, id) = p.rsplit_once('/')?;
+        (dir.ends_with("/unix") && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
     });
+    let unix = unix.and_then(|id| Some(format!("{}/{id}", net_dir("unix").ok()?)));
     if let Some(conv) = unix {
         files::set_sock(fd, conv, UNIX_SOCK);
     } else if path.starts_with("/dev/sig/") {
