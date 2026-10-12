@@ -7,6 +7,7 @@
 //! id is the pid, and it holds what the threads share (address space, fds,
 //! cwd, signal dispositions, job control, exit status). See `thread`.
 
+mod bits;
 mod fd;
 pub mod fpu;
 pub mod info;
@@ -21,6 +22,7 @@ mod thread;
 pub mod tp;
 mod vm;
 pub use acct::idle_ns;
+use bits::*;
 pub use fd::*;
 pub use jobs::*;
 pub use lifecycle::*;
@@ -40,7 +42,7 @@ use crate::user;
 
 use crate::arch::switch::{seed_stack, task_switch};
 
-pub const MAX_TASKS: usize = 64;
+pub const MAX_TASKS: usize = myos_abi::MYOS_MAX_TASKS;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
 /// stack (exception frame + `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays).
 /// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
@@ -51,10 +53,9 @@ pub const STACK_SIZE: usize = 64 * 1024;
 /// the tiny Rust shell; raise further for dropbear: a session holds stdio +
 /// the session socket + the signal pipe (2) + three pipes for `spawn_command`
 /// (6) before the child execs, so 16 was exhausted and exec failed. 64 for
-/// larger programs; libgloss tracks per-fd flags up to `MYOS_MAX_FDS`.
-pub const MAX_FDS: usize = 64;
-// `Process::cloexec` keeps a bit per fd.
-const _: () = assert!(MAX_FDS <= 64);
+/// larger programs, 256 for Firefox (IPC sockets, shared memory, fonts);
+/// libgloss tracks per-fd flags up to `MYOS_MAX_FDS` too.
+pub const MAX_FDS: usize = myos_abi::MYOS_MAX_FDS;
 
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -561,7 +562,7 @@ pub fn remap_sec_ctx(mut f: impl FnMut(crate::sec::Ctx) -> crate::sec::Ctx) {
     let flags = irq_save();
     irq_off();
     let mut tasks = TASKS.lock();
-    for pid in 0..MAX_TASKS {
+    for pid in tasks.slots() {
         if let Some(p) = tasks.proc_opt_mut(pid) {
             p.ctx = f(p.ctx);
         }

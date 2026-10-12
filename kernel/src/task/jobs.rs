@@ -87,7 +87,7 @@ pub fn setsid() -> Option<usize> {
     irq_off();
     let mut tasks = TASKS.lock();
     let pid = tasks[current_slot()].tgid;
-    let leads = (0..MAX_TASKS).any(|i| {
+    let leads = tasks.slots().any(|i| {
         task_exists(&tasks[i]) && tasks[i].tgid == i && tasks.proc_opt(i).is_some_and(|p| p.pgid == pid)
     });
     let out = (!leads).then(|| {
@@ -129,14 +129,13 @@ pub fn session_alive(sid: usize) -> bool {
 /// Linux pid, an id is not handed out again while a group or session goes
 /// by it (an exited group leader's group lives on in its members, and a new
 /// process in that slot could neither `setsid` nor lead a group of its own).
-pub(super) fn named_ids(tasks: &TaskTable) -> u64 {
-    const _: () = assert!(MAX_TASKS <= 64);
-    let mut out = 0u64;
-    for j in 0..MAX_TASKS {
+pub(super) fn named_ids(tasks: &TaskTable) -> TaskBits {
+    let mut out = TaskBits::EMPTY;
+    for j in tasks.slots() {
         if let Some(p) = tasks.proc_opt(j) {
             for id in [p.pgid, p.sid] {
                 if id != j && id < MAX_TASKS {
-                    out |= 1 << id;
+                    out.insert(id);
                 }
             }
         }
@@ -245,7 +244,7 @@ pub fn setpgid(pid: usize, pgid: usize) -> Result<(), SetpgidError> {
         }
         let same_sid = tasks.proc(target).sid;
         let allowed = new_pgid == target
-            || (0..MAX_TASKS).any(|i| {
+            || tasks.slots().any(|i| {
                 task_exists(&tasks[i])
                     && tasks[i].tgid == i
                     && tasks

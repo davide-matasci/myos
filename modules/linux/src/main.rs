@@ -91,7 +91,7 @@ unsafe extern "C" fn op_syscall(nr: usize, a0: usize, a1: usize, a2: usize, regs
 unsafe extern "C" fn op_on_exec(slot: usize) {
     signal::on_exec(slot);
     let close = files::take_cloexec(slot);
-    for fd in (0..64).filter(|fd| close & 1 << fd != 0) {
+    for fd in (0..k::MAX_FDS).filter(|&fd| close.contains(fd)) {
         sys::close(fd).ok();
     }
 }

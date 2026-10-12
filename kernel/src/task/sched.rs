@@ -87,13 +87,13 @@ fn pick_and_switch() -> Pick {
         let idle = IDLE_SLOT[cpu].load(Ordering::Relaxed);
         // The run queues hold only Ready tasks that are on no CPU: a woken
         // task still halting in `block_until` somewhere resumes there.
-        let queued = RUNQ[cpu].load(Ordering::SeqCst) | FLOAT.load(Ordering::SeqCst);
+        let queued = RUNQ[cpu].load().union(FLOAT.load());
         // A task that can go on keeps its CPU when nothing is queued: it
         // keeps its address space too, where a round through the idle task
         // loaded the kernel's and back (a whole TLB flush each way, every
         // tick). The idle task runs only when nothing else can.
         let current_runs = current != idle && matches!(tasks[current].state, State::Running | State::Ready);
-        let mut next = pick_from(queued, current).inspect(|&n| dequeue(n, tasks[n].affinity));
+        let mut next = queued.next_after(current).inspect(|&n| dequeue(n, tasks[n].affinity));
         if next.is_none() && !current_runs {
             next = pull(&mut tasks, cpu);
         }
@@ -218,12 +218,10 @@ fn pick_and_switch() -> Pick {
 // TASKS; the idle loop reads them without it to ask "is anything ready
 // here?", and `enqueue` to pick a CPU to kick.
 
-const _: () = assert!(MAX_TASKS <= 64);
-
 /// Per CPU: its run queue.
-static RUNQ: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+static RUNQ: [AtomicTaskSet; crate::smp::MAX_CPUS] = [const { AtomicTaskSet::new() }; crate::smp::MAX_CPUS];
 /// The queue of the tasks with no home.
-static FLOAT: AtomicU64 = AtomicU64::new(0);
+static FLOAT: AtomicTaskSet = AtomicTaskSet::new();
 /// Per CPU: how many tasks it pulled from another CPU's queue (`/proc/cpuinfo`).
 static PULLS: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
 
@@ -231,7 +229,7 @@ pub fn pulls(cpu: usize) -> u64 {
     PULLS.get(cpu).map_or(0, |n| n.load(Ordering::Relaxed))
 }
 
-fn queue(affinity: Option<usize>) -> &'static AtomicU64 {
+fn queue(affinity: Option<usize>) -> &'static AtomicTaskSet {
     match affinity {
         Some(c) => &RUNQ[c.min(crate::smp::MAX_CPUS - 1)],
         None => &FLOAT,
@@ -242,37 +240,23 @@ fn queue(affinity: Option<usize>) -> &'static AtomicU64 {
 /// TASKS). It is picked by its home CPU, or by an idle one: see
 /// [`kick_for`] for the kicks that get it run now.
 fn enqueue(slot: usize, affinity: Option<usize>) {
-    queue(affinity).fetch_or(1 << slot, Ordering::SeqCst);
+    queue(affinity).insert(slot);
 }
 
 fn dequeue(slot: usize, affinity: Option<usize>) {
-    queue(affinity).fetch_and(!(1 << slot), Ordering::SeqCst);
+    queue(affinity).remove(slot);
 }
 
 /// Slot `slot` leaves every queue (a recycled slot).
 pub(super) fn unqueue(slot: usize) {
     for q in RUNQ.iter().chain(core::iter::once(&FLOAT)) {
-        q.fetch_and(!(1 << slot), Ordering::SeqCst);
+        q.remove(slot);
     }
 }
 
 /// Is anything queued that this CPU may run?
 fn queued_for(cpu: usize) -> bool {
-    RUNQ[cpu].load(Ordering::SeqCst) | FLOAT.load(Ordering::SeqCst) != 0
-}
-
-/// The bit of `mask` after `current`, round-robin: the first above it, or
-/// else its lowest.
-fn pick_from(mask: u64, current: usize) -> Option<usize> {
-    if mask == 0 {
-        return None;
-    }
-    let above = match current.checked_add(1) {
-        Some(n) if n < 64 => mask & (u64::MAX << n),
-        _ => 0,
-    };
-    let from = if above != 0 { above } else { mask };
-    Some(from.trailing_zeros() as usize)
+    !RUNQ[cpu].load().union(FLOAT.load()).is_empty()
 }
 
 /// Whether user tasks run on `cpu` (`user_affinity` keeps them off the BSP
@@ -304,10 +288,7 @@ fn pull(tasks: &mut TaskTable, cpu: usize) -> Option<usize> {
         if c == cpu || CPU_IDLE[c].load(Ordering::SeqCst) {
             continue;
         }
-        let mut mask = RUNQ[c].load(Ordering::SeqCst);
-        while mask != 0 {
-            let slot = mask.trailing_zeros() as usize;
-            mask &= mask - 1;
+        for slot in RUNQ[c].load().iter() {
             if pullable(slot, &tasks[slot]) {
                 dequeue(slot, Some(c));
                 tasks[slot].affinity = Some(cpu);
@@ -786,7 +767,7 @@ pub fn wake(key: usize) {
 pub(super) fn wake_key_locked(tasks: &mut TaskTable, key: usize, kicks: &mut u64) -> bool {
     let any = ANY_WAITERS.load(Ordering::SeqCst) != 0;
     let mut woke = false;
-    for i in 0..MAX_TASKS {
+    for i in tasks.slots() {
         if tasks[i].state == State::Blocked && (tasks[i].wait_key == key || (any && tasks[i].wait_key == WAIT_ANY)) {
             wake_locked(tasks, i, kicks);
             woke = true;
@@ -816,7 +797,7 @@ pub fn wake_n(key: usize, max: usize) -> usize {
     {
         let mut tasks = TASKS.lock();
         WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
-        for i in 0..MAX_TASKS {
+        for i in tasks.slots() {
             if n == max {
                 break;
             }
@@ -944,7 +925,7 @@ pub fn timer_tick() {
         };
         let mut next = u64::MAX;
         let mut woke = false;
-        for i in 0..MAX_TASKS {
+        for i in tasks.slots() {
             if tasks[i].alarm_at != 0 {
                 next = next.min(alarm_tick(&mut tasks, i, now, &mut kicks));
             }

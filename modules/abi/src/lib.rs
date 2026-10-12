@@ -51,7 +51,8 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// Linux layer's `epoll_wait`).
 /// 38 added [`KernelApi::user_mapped`] (the Linux layer's `mremap` tells
 /// a mapped range from a hole).
-pub const ABI_VERSION: u32 = 38;
+/// 39 raised [`MYOS_MAX_TASKS`] to 512 and [`MYOS_MAX_FDS`] to 256.
+pub const ABI_VERSION: u32 = 39;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -344,7 +345,10 @@ pub struct ModuleConsoleOps {
 
 /// Task slots (pids / tids are slot indexes), the user page size and the
 /// native exec limits, for modules that keep per-task state or build execs.
-pub const MYOS_MAX_TASKS: usize = 64;
+pub const MYOS_MAX_TASKS: usize = 512;
+/// Fds per process (`toolchain/newlib/libgloss/myos/myos_syscalls.h`'s
+/// `MYOS_MAX_FDS` says the same).
+pub const MYOS_MAX_FDS: usize = 256;
 pub const MYOS_PAGE: usize = 4096;
 pub const MYOS_MAX_ARGC: usize = 1024;
 pub const MYOS_MAX_ENVC: usize = 1024;

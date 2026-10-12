@@ -42,7 +42,12 @@ path = sys.argv[1]
 s = open(path).read()
 tail = "#ifdef __cplusplus\n}\n#endif\n#endif /* _SYS_FEATURES_H */"
 assert s.count(tail) == 1, "features.h tail not found"
-s = s.replace(tail, """/* myos: libgloss pthread.c. */
+s = s.replace(tail, """/* myos: select's sets hold every fd a process can have
+ * (MYOS_MAX_FDS); newlib's default is 64. */
+#ifndef FD_SETSIZE
+#define FD_SETSIZE 256
+#endif
+/* myos: libgloss pthread.c. */
 #ifndef _POSIX_THREADS
 #define _POSIX_THREADS 1
 #endif

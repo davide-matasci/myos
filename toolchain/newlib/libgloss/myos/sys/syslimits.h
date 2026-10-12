@@ -43,7 +43,7 @@
 #define	NAME_MAX		  255	/* max bytes in a file name */
 #define	NGROUPS_MAX		   16	/* max supplemental group id's */
 #ifndef OPEN_MAX
-#define	OPEN_MAX		   64	/* max open files per process */
+#define	OPEN_MAX		  256	/* max open files per process (MYOS_MAX_FDS) */
 #endif
 #define	PATH_MAX		 1024	/* max bytes in pathname */
 #define	PIPE_BUF		  512	/* max bytes for atomic pipe writes */

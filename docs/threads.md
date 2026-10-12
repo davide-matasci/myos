@@ -48,6 +48,10 @@ at `entry(arg)` on its own stack, a Linux `clone` thread like a forked child
 
 - `thread_exit` ends the calling thread. A thread is nobody's child: its
   slot is freed once it is off its kernel stack.
+- The kernel has 512 task slots, one per thread, kernel threads and idle
+  tasks included (`task::MAX_TASKS`, `MYOS_MAX_TASKS` for modules); a
+  `fork` or `thread_spawn` past them fails (`EAGAIN` in libc). Scans of
+  every task stop at the highest slot ever used.
 - Every thread has a 64 KiB kernel stack (`task::STACK_SIZE`), a heap
   allocation with a canary word at its bottom that `schedule` checks on
   every switch away from it: a thread that ran off its stack panics the
@@ -130,7 +134,7 @@ The `*-unknown-myos` targets are no longer `singlethread` (which compiled
 atomics to plain loads and stores). `/bin/std/thread` (`user/std/thread`, test
 `std_thread`) checks the locks, channels, thread-locals and their
 destructors, scoped threads, parking, and that joined and detached threads
-free their task slots and stacks (120 threads, past the kernel's 64 slots).
+free their task slots and stacks (120 threads).
 
 ## C threads (pthreads)
 
@@ -207,7 +211,7 @@ on the same calls, laid out as the std port's:
 then a mutex and a condition variable under contention, `errno`, keys,
 stdio and malloc per thread, `pthread_once` across threads, `pthread_exit`
 with a cleanup handler, a detached thread, 150 threads started and joined,
-past the kernel's task slots, read-write locks, barriers and spin locks
+100 threads alive at once, read-write locks, barriers and spin locks
 under contention, a condition wait on `CLOCK_MONOTONIC`, cancellation in
 `read`, in a condition wait, while disabled, asynchronous and of the
 caller itself, and forks while two threads keep malloc and stdio busy.

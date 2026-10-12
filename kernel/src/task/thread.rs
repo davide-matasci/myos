@@ -175,7 +175,7 @@ fn kill_other_threads(mark: impl FnOnce(&mut Task)) -> usize {
         let me = current_slot();
         let pid = tasks[me].tgid;
         mark(&mut tasks[pid]);
-        for j in 0..MAX_TASKS {
+        for j in tasks.slots() {
             if j != me && is_thread_of(&tasks, j, pid) {
                 tasks[j].sig_pending |= 1 << crate::signal::SIGKILL;
                 kicks |= wake_task_locked(&mut tasks, j);
@@ -202,7 +202,7 @@ fn has_other_threads(pid: usize) -> bool {
     irq_off();
     let tasks = TASKS.lock();
     let me = current_slot();
-    let any = (0..MAX_TASKS).any(|j| j != me && is_thread_of(&tasks, j, pid));
+    let any = tasks.slots().any(|j| j != me && is_thread_of(&tasks, j, pid));
     drop(tasks);
     irq_restore(flags);
     any

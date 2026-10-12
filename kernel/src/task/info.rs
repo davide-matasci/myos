@@ -72,7 +72,7 @@ fn snapshot<R>(f: impl FnOnce(&TaskTable) -> R) -> R {
 
 /// The pids of the processes, in slot order.
 pub fn processes() -> Vec<usize> {
-    snapshot(|tasks| (0..MAX_TASKS).filter(|&i| live(&tasks[i]) && tasks[i].tgid == i).collect())
+    snapshot(|tasks| tasks.slots().filter(|&i| live(&tasks[i]) && tasks[i].tgid == i).collect())
 }
 
 /// The tids of the threads of process `pid`, the leader first.
@@ -81,7 +81,7 @@ pub fn threads_of(pid: usize) -> Option<Vec<usize>> {
         if pid >= MAX_TASKS || !live(&tasks[pid]) || tasks[pid].tgid != pid {
             return None;
         }
-        Some((0..MAX_TASKS).filter(|&i| live(&tasks[i]) && tasks[i].tgid == pid).collect())
+        Some(tasks.slots().filter(|&i| live(&tasks[i]) && tasks[i].tgid == pid).collect())
     })
 }
 
@@ -98,7 +98,7 @@ pub fn process_info(pid: usize) -> Option<ProcInfo> {
         // leader that only waits for the others to end does not count.
         let mut rank = 0;
         let mut state = state_name(leader);
-        for i in 0..MAX_TASKS {
+        for i in tasks.slots() {
             let t = &tasks[i];
             if !live(t) || t.tgid != pid {
                 continue;

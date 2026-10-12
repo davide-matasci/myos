@@ -7,7 +7,7 @@ struct termios;
 struct winsize;
 
 /* Per-process fd table size (kernel/src/task/mod.rs MAX_FDS). */
-#define MYOS_MAX_FDS 64
+#define MYOS_MAX_FDS 256
 
 #define MYOS_SYS_EXIT 1
 #define MYOS_SYS_CLOSE 4
@@ -157,7 +157,7 @@ struct myos_lock_range {
 #define MYOS_UTIME_OMIT (-2LL)
 
 /* fds per process (kernel MAX_FDS): sysconf(_SC_OPEN_MAX), getdtablesize. */
-#define MYOS_OPEN_MAX 64
+#define MYOS_OPEN_MAX MYOS_MAX_FDS
 #define MYOS_WAIT_NOHANG 1
 
 #define MYOS_STR_(x) #x

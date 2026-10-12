@@ -1540,7 +1540,7 @@ pub fn getrandom(buf: usize, len: usize) -> R {
 pub fn prlimit(resource: usize, old: usize) -> R {
     const RLIMIT_NOFILE: usize = 7;
     if old != 0 {
-        let v = if resource == RLIMIT_NOFILE { 32 } else { u64::MAX };
+        let v = if resource == RLIMIT_NOFILE { crate::k::MAX_FDS as u64 } else { u64::MAX };
         let mut b = [0u8; 16];
         b[..8].copy_from_slice(&v.to_le_bytes());
         b[8..].copy_from_slice(&v.to_le_bytes());

@@ -5,9 +5,10 @@
 
 use alloc::string::String;
 
-use myos_abi::{ApiCell, KernelApi, MYOS_MAX_TASKS, StrRef};
+use myos_abi::{ApiCell, KernelApi, MYOS_MAX_FDS, MYOS_MAX_TASKS, StrRef};
 
 pub const MAX_TASKS: usize = MYOS_MAX_TASKS;
+pub const MAX_FDS: usize = MYOS_MAX_FDS;
 
 static API: ApiCell = ApiCell::new();
 

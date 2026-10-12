@@ -794,8 +794,36 @@ static int fork_busy(void) {
     return bad ? fail("fork with busy threads", bad) : 0;
 }
 
+/* More threads than the old limit of 64 tasks in the whole system, all
+ * alive at once. */
+#define MANY 100
+static pthread_barrier_t many_barrier;
+
+static void *many_wait(void *arg) {
+    pthread_barrier_wait(&many_barrier);
+    return arg;
+}
+
+static int many_threads(void) {
+    pthread_t t[MANY];
+    int made = 0, bad = 0;
+    pthread_barrier_init(&many_barrier, NULL, MANY + 1);
+    while (made < MANY && pthread_create(&t[made], NULL, many_wait, NULL) == 0) {
+        made++;
+    }
+    if (made < MANY) {
+        return fail("100 threads at once", made);
+    }
+    pthread_barrier_wait(&many_barrier);
+    for (int i = 0; i < made; i++) {
+        bad |= pthread_join(t[i], NULL);
+    }
+    pthread_barrier_destroy(&many_barrier);
+    return bad ? fail("joining 100 threads", bad) : 0;
+}
+
 int main(void) {
-    if (alone() || with_threads() || locks() || cancellation() || fork_busy()) {
+    if (alone() || with_threads() || locks() || cancellation() || fork_busy() || many_threads()) {
         return 1;
     }
     printf("[ OK ] pthread\n");

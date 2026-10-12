@@ -133,8 +133,8 @@ child's (its own children's included) to the parent's `children`.
 Each file is made under one scheduler lock, so a line is consistent in
 itself; nothing is consistent across files. A process can exit between
 listing `/proc` and opening its `status`: `ENOENT` there is normal, and a
-reader drops the process. With 64 task slots a pid is reused within
-seconds: a tool that compares two samples keys a process on its pid and its
+reader drops the process. A pid is a task slot, and a new process takes
+the lowest free one, so a pid is reused within seconds: a tool that compares two samples keys a process on its pid and its
 start time.
 
 Anyone can read every process's status lines. What else of another process

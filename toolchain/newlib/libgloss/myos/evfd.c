@@ -183,7 +183,7 @@ int eventfd_write(int fd, eventfd_t value) {
 /* ---- timerfd ---------------------------------------------------------- */
 
 /* The timerfds on CLOCK_REALTIME, a bit per fd. */
-static unsigned long long tfd_realtime;
+static unsigned long long tfd_realtime[MYOS_MAX_FDS / 64];
 
 int timerfd_create(clockid_t clockid, int flags) {
     char dir[EVFD_PATH];
@@ -197,11 +197,11 @@ int timerfd_create(clockid_t clockid, int flags) {
         return -1;
     }
     fd = clone_open("timer", flags, dir);
-    if (fd >= 0 && fd < 64) {
+    if (fd >= 0 && fd < MYOS_MAX_FDS) {
         if (clockid == CLOCK_REALTIME) {
-            tfd_realtime |= 1ull << fd;
+            tfd_realtime[fd / 64] |= 1ull << (fd % 64);
         } else {
-            tfd_realtime &= ~(1ull << fd);
+            tfd_realtime[fd / 64] &= ~(1ull << (fd % 64));
         }
     }
     return fd;
@@ -265,7 +265,7 @@ int timerfd_settime(int fd, int flags, const struct itimerspec *value, struct it
         put_dec(cmd + strlen(cmd), timespec_ns(&value->it_interval));
         if (flags & TFD_TIMER_ABSTIME) {
             strcat(cmd, " abs");
-            if (fd < 64 && (tfd_realtime & (1ull << fd))) {
+            if (fd < MYOS_MAX_FDS && (tfd_realtime[fd / 64] & (1ull << (fd % 64)))) {
                 strcat(cmd, " realtime");
             }
         }
