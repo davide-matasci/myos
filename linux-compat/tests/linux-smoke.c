@@ -33,6 +33,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
+#include <sys/sysinfo.h>
 #include <sys/timerfd.h>
 #include <sys/un.h>
 #include <sys/utsname.h>
@@ -663,6 +664,16 @@ static void check_misc_calls(void) {
     check(pthread_getattr_np(pthread_self(), &a) == 0 && pthread_attr_getstack(&a, &low, &size) == 0 &&
               (char *)low <= &here && &here < (char *)low + size,
           "pthread_getattr_np: the main thread's stack");
+    struct sysinfo si;
+    check(sysinfo(&si) == 0 && si.totalram > 0 && si.freeram <= si.totalram && si.mem_unit == 1, "sysinfo");
+    // Firefox's IPC aborts on a socket that says it buffers nothing.
+    int sv[2], snd = 0, rcv = 0;
+    socklen_t l1 = sizeof snd, l2 = sizeof rcv;
+    check(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0 && getsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &snd, &l1) == 0 &&
+              getsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &rcv, &l2) == 0 && snd > 0 && rcv > 0 && l1 == sizeof snd,
+          "getsockopt SO_SNDBUF, SO_RCVBUF");
+    close(sv[0]);
+    close(sv[1]);
 }
 
 static void check_fork_vs_fds(void) {

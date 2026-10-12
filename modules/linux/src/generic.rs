@@ -137,6 +137,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         278 => ret(sys::getrandom(a[0], a[1])),
         279 => ret(sys::memfd_create(a[0], a[1])),
         441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
+        179 => ret(sys::sysinfo(a[0])),
         _ => super::trace::unimplemented(nr, &a),
     }
 }

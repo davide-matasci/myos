@@ -33,6 +33,8 @@ const SHUT_RDWR: usize = 2;
 const SOL_SOCKET: usize = 1;
 const SO_TYPE: usize = 3;
 const SO_ERROR: usize = 4;
+const SO_SNDBUF: usize = 7;
+const SO_RCVBUF: usize = 8;
 
 const EADDRINUSE: usize = 98;
 const EISCONN: usize = 106;
@@ -467,11 +469,16 @@ pub fn getpeername(fd: usize, addr: usize, alen: usize) -> R {
     }
 }
 
+/// `getsockopt`: the type, a failed connection's error, and the buffer
+/// sizes: 64 KiB each way for a unix socket (`docs/sockets-unix.md`), the
+/// 8 KiB netd queues per TCP conversation otherwise. Firefox's IPC
+/// sizes its writes by `SO_SNDBUF` and aborts on 0. Anything else reads 0.
 pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -> R {
     let (conv, s) = sock(fd)?;
     let v: i32 = match (level, opt) {
         (SOL_SOCKET, SO_TYPE) => (if s.stream { SOCK_STREAM } else { SOCK_DGRAM }) as i32,
         (SOL_SOCKET, SO_ERROR) if state(&conv) == State::Failed => ECONNREFUSED as i32,
+        (SOL_SOCKET, SO_SNDBUF | SO_RCVBUF) => if s.unix.is_some() { 64 << 10 } else { 8 << 10 },
         _ => 0,
     };
     put(val, &v.to_le_bytes())?;
