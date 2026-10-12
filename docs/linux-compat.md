@@ -228,7 +228,8 @@ file mappings), `munmap`, `mprotect`, `msync`, `madvise` (`MADV_DONTNEED` drops 
 zero or as their file next time, as allocators such as rustc's Scudo
 expect; other advice is ignored), `mremap` (a mapping shrinks in place;
 it cannot grow, `ENOMEM`, and musl's `realloc` then allocates anew and
-copies: issue #421). Files also: `pread64`, `pwrite64`, `pwritev(2)`, `fallocate`
+copies: issue #421; a range that is not mapped is `EFAULT`, which ends
+musl's `pthread_getattr_np` walk down the main thread's stack). Files also: `pread64`, `pwrite64`, `pwritev(2)`, `fallocate`
 (mode 0, what `posix_fallocate` asks: the file grows to the range's end,
 its blocks not reserved ahead; other modes are `EOPNOTSUPP`),
 `readahead` (a hint, done).

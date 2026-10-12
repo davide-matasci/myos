@@ -323,14 +323,19 @@ pub fn fallocate(fd: usize, mode: usize, offset: usize, len: usize) -> R {
 
 /// `mremap(old, old_size, new_size, flags)`: a shrink lets go of the end
 /// and keeps the address. A mapping cannot grow (`ENOMEM`, the answer of a
-/// kernel that finds no room): musl's `realloc`, the main user, then
-/// allocates anew and copies.
+/// kernel that finds no room, issue #421): musl's `realloc`, the main user,
+/// then allocates anew and copies. A range that is not mapped is `EFAULT`,
+/// as on Linux: musl's `pthread_getattr_np` measures the main thread's
+/// stack by growing one page after another below it until that answer.
 pub fn mremap(old: usize, old_size: usize, new_size: usize) -> R {
     const PAGE: usize = 4096;
     if old % PAGE != 0 || new_size == 0 {
         return Err(EINVAL);
     }
     let (old_end, new_end) = (old_size.div_ceil(PAGE) * PAGE, new_size.div_ceil(PAGE) * PAGE);
+    if !task::user_mapped(old, old_end) {
+        return Err(EFAULT);
+    }
     if new_end > old_end {
         return Err(ENOMEM);
     }

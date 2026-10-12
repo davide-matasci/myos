@@ -1840,6 +1840,28 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     va
 }
 
+/// Whether every page of `[addr, addr + len)` is the caller's: its image,
+/// its stack, its heap below the break or one of its mmap regions. The
+/// Linux layer's `mremap` answers a range that is there (and cannot grow)
+/// apart from one that is not, which musl's `pthread_getattr_np` walks
+/// down the main thread's stack with.
+pub(crate) fn user_mapped(addr: usize, len: usize) -> bool {
+    let pages = (addr % PAGE + len).div_ceil(PAGE);
+    if pages > MMAP_AREA_PAGES {
+        return false;
+    }
+    let (base, span, stack_off) = task::current_user_map();
+    let image = base as usize..base as usize + span;
+    let stack = (base + stack_off) as usize..heap_base_va(base, stack_off) as usize;
+    let heap = heap_base_va(base, stack_off) as usize..align_up_usize(task::current_brk() as usize, PAGE);
+    let first = addr - addr % PAGE;
+    (0..pages).all(|i| {
+        first.checked_add(i * PAGE).is_some_and(|va| {
+            image.contains(&va) || stack.contains(&va) || heap.contains(&va) || task::mmap_backing(va).is_some()
+        })
+    })
+}
+
 /// `madvise(MADV_DONTNEED)`: free the frames of `[addr, addr + len)` in the
 /// mmap window but keep its regions, so a page reads as new on its next
 /// touch (`fault_in`: zeroed, or from the file). Allocators release memory
