@@ -43,6 +43,7 @@ pub const O_DIRECTORY: usize = 0o200000;
 pub const O_NOFOLLOW: usize = 0o400000;
 #[cfg(not(target_arch = "aarch64"))]
 pub const O_LARGEFILE: usize = 0o100000;
+pub const ENODATA: usize = 61;
 pub const EOPNOTSUPP: usize = 95;
 pub const ENOBUFS: usize = 105;
 pub const ETIMEDOUT: usize = 110;

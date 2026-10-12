@@ -304,7 +304,12 @@ parallel) and `sched_setaffinity` (accepted; the core places tasks);
 `fadvise64` (a hint: accepted); `membarrier` (the global and the private
 expedited barriers, one and the same: every CPU running a task is
 interrupted and answers, as for a TLB shootdown, before the call returns;
-registering is accepted).
+registering is accepted); the extended attribute calls (`listxattr`,
+`getxattr`, `setxattr`, `removexattr` and their `l` and `f` forms): no
+myos file system keeps attributes, so, as on a Linux file system without
+them, a file lists none, reading one is `ENODATA` and setting or removing
+one `EOPNOTSUPP` (what Python's `shutil.copy2`, so `ensurepip` and pipx,
+copies and skips).
 
 Anything else returns `ENOSYS`.
 `/proc/linux_trace` reports each such call (Debugging below).

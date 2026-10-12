@@ -191,6 +191,18 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         98 => ret(sys::getrusage(a[0], a[1])),
         221 => ret(sys::fadvise(a[0], a[3])),
         324 => ret(sys::membarrier(a[0], a[1])),
+        188 => ret(sys::xattr_path(a[0], true, sys::Xattr::Set)),
+        189 => ret(sys::xattr_path(a[0], false, sys::Xattr::Set)),
+        190 => ret(sys::xattr_fd(sys::Xattr::Set)),
+        191 => ret(sys::xattr_path(a[0], true, sys::Xattr::Get)),
+        192 => ret(sys::xattr_path(a[0], false, sys::Xattr::Get)),
+        193 => ret(sys::xattr_fd(sys::Xattr::Get)),
+        194 => ret(sys::xattr_path(a[0], true, sys::Xattr::List)),
+        195 => ret(sys::xattr_path(a[0], false, sys::Xattr::List)),
+        196 => ret(sys::xattr_fd(sys::Xattr::List)),
+        197 => ret(sys::xattr_path(a[0], true, sys::Xattr::Set)),
+        198 => ret(sys::xattr_path(a[0], false, sys::Xattr::Set)),
+        199 => ret(sys::xattr_fd(sys::Xattr::Set)),
         _ => super::trace::unimplemented(nr, &a),
     }
 }
