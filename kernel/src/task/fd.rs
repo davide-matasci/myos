@@ -1254,6 +1254,60 @@ pub fn fd_set_cloexec(fd: usize, on: bool) -> bool {
     })
 }
 
+/// Fds in flight: what a unix socket carries from a sender's fd table to
+/// a receiver's (`SCM_RIGHTS`, `modules/netfs`), held as an fd holds it
+/// (a reference to its pipe end, description, ...). A slot's number is the
+/// module's token for it; only modules reach them, never a process.
+static HELD: Mutex<Vec<Option<FdEntry>>> = Mutex::new(Vec::new());
+
+/// Hold what the caller's `fd` refers to, as a `dup` would: the token
+/// (from 1), or `None` for a free fd.
+pub fn fd_hold(fd: usize) -> Option<usize> {
+    if fd >= MAX_FDS {
+        return None;
+    }
+    let entry = with_process_mut(|t| {
+        let e = t.fds[fd];
+        (e != FdEntry::Empty).then(|| fd_clone(e))
+    })?;
+    let mut held = HELD.lock();
+    let i = match held.iter().position(Option::is_none) {
+        Some(i) => i,
+        None => {
+            held.push(None);
+            held.len() - 1
+        }
+    };
+    held[i] = Some(entry);
+    Some(i + 1)
+}
+
+/// Make held `token` the caller's lowest free fd (closing at exec if
+/// `cloexec`): the fd, or `None` (no such token, or no free fd: the token
+/// is still held then).
+pub fn fd_install(token: usize, cloexec: bool) -> Option<usize> {
+    let mut held = HELD.lock();
+    let entry = (*held.get(token.wrapping_sub(1))?)?;
+    let fd = with_process_mut(|t| {
+        let i = (0..MAX_FDS).find(|&i| t.fds[i] == FdEntry::Empty)?;
+        t.fds[i] = entry;
+        t.cloexec[i] = cloexec;
+        Some(i)
+    })?;
+    held[token - 1] = None;
+    Some(fd)
+}
+
+/// Let go of held `token` (a receiver never took it), as a close would.
+pub fn fd_release(token: usize) {
+    let entry = HELD.lock().get_mut(token.wrapping_sub(1)).and_then(Option::take);
+    // Outside HELD: the last reference to a socket closes it, into its
+    // module.
+    if let Some(e) = entry {
+        fd_drop(e);
+    }
+}
+
 /// Close the fds marked close-on-exec: the new image of an exec never sees
 /// them.
 pub fn fd_close_on_exec() {

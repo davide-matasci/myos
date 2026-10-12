@@ -260,6 +260,11 @@ unsafe impl GlobalAlloc for KernelHeap {
 #[global_allocator]
 static HEAP: KernelHeap = KernelHeap;
 
+/// The kernel's calls (set at init).
+fn api() -> &'static KernelApi {
+    API.get()
+}
+
 /// Wake the kernel's pollers: readiness changed without a write or close
 /// (a unix reader made room for its peer).
 fn wake_any() {
@@ -323,6 +328,9 @@ enum Node {
     Status(u8, u16),
     /// `/net/unix/N/listen`: connections waiting to be accepted.
     Listen(u8, u16),
+    /// `/net/unix/N/rights`: the fds that came with the last read of
+    /// `data` (`SCM_RIGHTS`).
+    Rights(u8, u16),
     /// `/net/udp/N/hdata`: `data` with the datagrams' headers.
     Hdata(u16),
 }
@@ -336,7 +344,8 @@ impl Node {
             | Node::Ctl(p, _)
             | Node::Data(p, _)
             | Node::Status(p, _)
-            | Node::Listen(p, _) => Some(p),
+            | Node::Listen(p, _)
+            | Node::Rights(p, _) => Some(p),
             Node::Hdata(_) => Some(PROTO_UDP),
         }
     }
@@ -376,6 +385,9 @@ fn parse_path(path: &str) -> Option<Node> {
                 Some("status") if it.next().is_none() => Some(Node::Status(proto, conv)),
                 Some("listen") if it.next().is_none() && proto == PROTO_UNIX => {
                     Some(Node::Listen(proto, conv))
+                }
+                Some("rights") if it.next().is_none() && proto == PROTO_UNIX => {
+                    Some(Node::Rights(proto, conv))
                 }
                 _ => None,
             }
@@ -844,7 +856,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             }
             (S_IFDIR | 0o755, 0, 100 + id as u32)
         }
-        Node::Listen(_, _) => return -1,
+        Node::Listen(_, _) | Node::Rights(_, _) => return -1,
         Node::Hdata(id) => {
             if !conv_ok(&st.convs, id, PROTO_UDP) {
                 return -1;
@@ -949,7 +961,6 @@ unsafe extern "C" fn net_read(
     buf: *mut u8,
     buf_len: usize,
 ) -> i32 {
-    let st = &mut *lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -959,9 +970,12 @@ unsafe extern "C" fn net_read(
     let Some(node) = parse_path(path) else {
         return -1;
     };
+    // Unix conversations have their own lock, and close passed fds, which
+    // may come back here, with no lock held (`unix`).
     if node.proto() == Some(PROTO_UNIX) {
         return unix::read(node, pos, out);
     }
+    let st = &mut *lock();
     // hdata is data with the headers.
     let (node, hdr) = match node {
         Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true),
@@ -1093,7 +1107,6 @@ fn trim_ctl(buf: &[u8]) -> &[u8] {
 /// parent and child share the data fd open count, so hangup fires only when
 /// the last holder closes. Explicit ctl `hangup` write still tears down.
 unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
-    let st = &mut *lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -1104,6 +1117,7 @@ unsafe extern "C" fn net_release(path: *const u8, path_len: usize) -> i32 {
         unix::release(node);
         return 0;
     }
+    let st = &mut *lock();
     // Ctl/Status: open-count zero must not tear down — clients open+close
     // these transiently while the TCP conversation must stay alive.
     let (p, id) = match node {
@@ -1148,7 +1162,6 @@ unsafe extern "C" fn net_write(
     buf: *const u8,
     buf_len: usize,
 ) -> i32 {
-    let st = &mut *lock();
     let Some(path) = (unsafe { c_str(path, path_len) }) else {
         return -1;
     };
@@ -1161,6 +1174,7 @@ unsafe extern "C" fn net_write(
     if node.proto() == Some(PROTO_UNIX) {
         return unix::write(node, src);
     }
+    let st = &mut *lock();
     let (node, hdr) = match node {
         Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true),
         n => (n, false),

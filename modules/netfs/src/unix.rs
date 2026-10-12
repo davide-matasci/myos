@@ -10,7 +10,16 @@
 //!   `listen` file hands out its number (`"N\n"`, nothing when none waits);
 //! - `pair`: a second conversation connected to this one, handed out through
 //!   this one's `listen` the same way (`socketpair`);
-//! - `hangup`: close the connection both ways (`shutdown`).
+//! - `hangup`: close the connection both ways (`shutdown`);
+//! - `rights FD...`: send the writer's own fds with the next write of
+//!   `data` (`SCM_RIGHTS`). They are held as the writer's fds hold them
+//!   (the kernel's `fd_hold`) and come with the first byte of that write:
+//!   a read of `data` never goes past the bytes before them, and the read
+//!   that starts there takes them. Reading `N/rights` then makes them the
+//!   reader's fds (`fd_install`) and gives their numbers (`"5 6\n"`); the
+//!   next read of `data` closes the ones not taken, and so does the end of
+//!   the conversation, for every fd it still carries. `norights` lets go
+//!   of the fds `rights` took when the write they were for failed.
 //!
 //! Each end buffers what its peer wrote, up to [`BUF_CAP`] bytes (allocated
 //! as it fills, let go of once it is drained). As for
@@ -42,6 +51,8 @@ const BUF_KEEP: usize = 4096;
 const NAME_CAP: usize = 108;
 /// Connections a listener queues before `connect` is refused.
 const BACKLOG: usize = 8;
+/// Fds one write carries at most (Linux's `SCM_MAX_FD`).
+const RIGHTS_MAX: usize = 253;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -68,6 +79,15 @@ struct Conv {
     queue: [u16; BACKLOG],
     queued: usize,
     rx: VecDeque<u8>,
+    /// The offset in this end's stream of `rx`'s first byte.
+    rx_base: u64,
+    /// Fds that came with the byte at an offset of the stream, in order
+    /// (the kernel's tokens for them).
+    marks: VecDeque<(u64, Vec<usize>)>,
+    /// Fds `rights` took from this end's writer, for its next write.
+    pending: Vec<usize>,
+    /// Fds that came with the last read of `data`, for `rights`.
+    delivered: Vec<usize>,
 }
 
 impl Conv {
@@ -80,7 +100,20 @@ impl Conv {
         queue: [0; BACKLOG],
         queued: 0,
         rx: VecDeque::new(),
+        rx_base: 0,
+        marks: VecDeque::new(),
+        pending: Vec::new(),
+        delivered: Vec::new(),
     };
+
+    /// Every fd it carries, to be let go of.
+    fn take_rights(&mut self, drops: &mut Vec<usize>) {
+        drops.append(&mut self.pending);
+        drops.append(&mut self.delivered);
+        for (_, mut fds) in self.marks.drain(..) {
+            drops.append(&mut fds);
+        }
+    }
 
     fn status(&self) -> &'static [u8] {
         match self.state {
@@ -99,6 +132,18 @@ static CONVS: Lock<Vec<Conv>> = Lock::new(Vec::new());
 /// Run `f` on the conversations with their lock held.
 fn with<R>(f: impl FnOnce(&mut Vec<Conv>) -> R) -> R {
     f(&mut CONVS.lock())
+}
+
+/// [`with`] for a call that may let go of passed fds (into `drops`): they
+/// are released once the lock is dropped, as the last reference to a unix
+/// socket closes it, back into this module.
+fn with_drops<R>(f: impl FnOnce(&mut Vec<Conv>, &mut Vec<usize>) -> R) -> R {
+    let mut drops = Vec::new();
+    let r = f(&mut CONVS.lock(), &mut drops);
+    for token in drops {
+        crate::api().fd_release(token);
+    }
+    r
 }
 
 fn get(convs: &mut Vec<Conv>, id: u16) -> Option<&mut Conv> {
@@ -184,6 +229,7 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
             Node::Data(_, id) => (id, 2),
             Node::Status(_, id) => (id, 3),
             Node::Listen(_, id) => (id, 4),
+            Node::Rights(_, id) => (id, 5),
             Node::Root | Node::Ndb | Node::Ifaddrs | Node::Hdata(_) => return None,
         };
         let c = get_own(convs, id)?;
@@ -210,7 +256,7 @@ pub fn listdir(node: Node, dst: &mut [u8], n: &mut usize) -> bool {
             true
         }
         Node::ConvDir(_, id) if get_own(convs, id).is_some() => {
-            for leaf in [&b"ctl"[..], b"data", b"status", b"listen"] {
+            for leaf in [&b"ctl"[..], b"data", b"status", b"listen", b"rights"] {
                 let _ = put_bytes(dst, n, leaf);
             }
             true
@@ -251,7 +297,7 @@ pub fn poll(node: Node) -> u32 {
 }
 
 fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
-    with(|convs| match node {
+    with_drops(|convs, drops| match node {
         Node::Clone(_) => {
             if pos > 0 {
                 return 0;
@@ -265,10 +311,23 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             let Some(c) = get_own(convs, id) else {
                 return -1;
             };
-            let n = out.len().min(c.rx.len());
+            // The fds an earlier read brought and nobody took are closed,
+            // as a Linux `read` of a socket closes them.
+            drops.append(&mut c.delivered);
+            let start = c.rx_base;
+            let mut n = out.len().min(c.rx.len());
+            // Fds come with the read that starts at their byte, never with
+            // one that started before it.
+            if let Some(&(at, _)) = c.marks.iter().find(|(at, _)| *at > start) {
+                n = n.min((at - start) as usize);
+            }
+            if n > 0 && c.marks.front().is_some_and(|(at, _)| *at == start) {
+                c.delivered = c.marks.pop_front().map(|(_, fds)| fds).unwrap_or_default();
+            }
             for (o, b) in out.iter_mut().zip(c.rx.drain(..n)) {
                 *o = b;
             }
+            c.rx_base += n as u64;
             if c.rx.is_empty() && c.rx.capacity() > BUF_KEEP {
                 c.rx = VecDeque::new();
             }
@@ -295,17 +354,45 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
         Node::Ctl(_, id) => {
             if get_own(convs, id).is_none() { -1 } else { 0 }
         }
+        Node::Rights(_, id) => {
+            let Some(c) = get_own(convs, id) else {
+                return -1;
+            };
+            // Each fd's number and a space: installed only when all fit.
+            if out.len() < 4 * c.delivered.len() + 1 {
+                return -1;
+            }
+            let mut n = 0;
+            for token in c.delivered.drain(..) {
+                // No free fd: closed, as Linux closes what does not fit
+                // (`MSG_CTRUNC`).
+                let Some(fd) = crate::api().fd_install(token, false) else {
+                    drops.push(token);
+                    continue;
+                };
+                if n > 0 {
+                    out[n] = b' ';
+                    n += 1;
+                }
+                n += dec(fd as u16, &mut out[n..]) as usize;
+            }
+            if n > 0 {
+                out[n] = b'\n';
+                n += 1;
+            }
+            n as i32
+        }
         _ => -1,
     })
 }
 
 pub fn write(node: Node, src: &[u8]) -> i32 {
-    with(|convs| match node {
+    with_drops(|convs, drops| match node {
         Node::Ctl(_, id) => {
             if get_own(convs, id).is_none() {
                 return -1;
             }
-            if ctl(convs, id, crate::trim_ctl(src)) {
+            if ctl(convs, id, crate::trim_ctl(src), drops) {
                 src.len() as i32
             } else {
                 -1
@@ -319,18 +406,32 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             let n = src.len().min(BUF_CAP - p.rx.len());
             // Full (or no heap for it): the library waits for the reader and
             // retries.
-            if n == 0 || p.rx.try_reserve(n).is_err() {
+            if n == 0 || p.rx.try_reserve(n).is_err() || p.marks.try_reserve(1).is_err() {
                 return -1;
             }
+            let at = p.rx_base + p.rx.len() as u64;
             p.rx.extend(&src[..n]);
+            // The fds `rights` took come with this write's first byte.
+            let fds = core::mem::take(&mut convs[id as usize].pending);
+            if !fds.is_empty() {
+                convs[peer as usize].marks.push_back((at, fds));
+            }
             n as i32
         }
         _ => -1,
     })
 }
 
-fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8]) -> bool {
+fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8], drops: &mut Vec<usize>) -> bool {
     let open = convs[id as usize].state == State::Open;
+    if let Some(list) = cmd.strip_prefix(b"rights ") {
+        return rights(convs, id, list, drops);
+    }
+    if cmd == b"norights" {
+        // The write they were for failed: they are not sent.
+        drops.append(&mut convs[id as usize].pending);
+        return true;
+    }
     if cmd == b"hangup" {
         disconnect(convs, id);
         return true;
@@ -370,13 +471,35 @@ fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8]) -> bool {
     false
 }
 
+/// `rights FD...`: hold the writer's fds `list` (decimal, space
+/// separated) for its next write; none held when one is not an open fd.
+fn rights(convs: &mut Vec<Conv>, id: u16, list: &[u8], drops: &mut Vec<usize>) -> bool {
+    if convs[id as usize].state != State::Connected {
+        return false;
+    }
+    let mut held = Vec::new();
+    for word in list.split(|&b| b == b' ').filter(|w| !w.is_empty()) {
+        let fd = core::str::from_utf8(word).ok().and_then(|w| w.parse::<usize>().ok());
+        match fd.and_then(|fd| crate::api().fd_hold(fd)) {
+            Some(token) if convs[id as usize].pending.len() + held.len() < RIGHTS_MAX => held.push(token),
+            other => {
+                drops.extend(other);
+                drops.append(&mut held);
+                return false;
+            }
+        }
+    }
+    convs[id as usize].pending.append(&mut held);
+    true
+}
+
 /// Last close of `data`: end the conversation, and the connections still
-/// queued on it (nobody can open those any more).
+/// queued on it (nobody can open those any more), with the fds they carry.
 pub fn release(node: Node) {
     let Node::Data(_, id) = node else {
         return;
     };
-    with(|convs| {
+    with_drops(|convs, drops| {
         if get_own(convs, id).is_none() {
             return;
         }
@@ -384,9 +507,11 @@ pub fn release(node: Node) {
         let (queue, queued) = (c.queue, c.queued);
         for &q in &queue[..queued] {
             disconnect(convs, q);
+            convs[q as usize].take_rights(drops);
             convs[q as usize] = Conv::FREE;
         }
         disconnect(convs, id);
+        convs[id as usize].take_rights(drops);
         convs[id as usize] = Conv::FREE;
     });
 }

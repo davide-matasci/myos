@@ -417,25 +417,167 @@ fn msghdr(msg: usize) -> Result<[usize; 4], usize> {
     Ok([w(0), w(8) & 0xffff_ffff, w(16), w(24)])
 }
 
-pub fn sendmsg(fd: usize, msg: usize) -> R {
-    let [name, namelen, iov, iovlen] = msghdr(msg)?;
-    send_to(fd, name, namelen)?;
-    super::sys::rw_vec(fd, iov, iovlen, true)
+/// `SCM_RIGHTS`: a control message of fds.
+const SCM_RIGHTS: u32 = 1;
+/// `recvmsg`: the fds received close at exec.
+const MSG_CMSG_CLOEXEC: usize = 0x4000_0000;
+/// `msg_flags`: control data was cut (fds that did not fit are closed).
+const MSG_CTRUNC: u32 = 8;
+/// A `struct cmsghdr`: `cmsg_len` (64 bits), `cmsg_level`, `cmsg_type`.
+const CMSG_HDR: usize = 16;
+/// The most control data a `sendmsg` hands over (Linux's `optmem_max`).
+const CONTROL_MAX: usize = 20480;
+
+/// The fds of `msg`'s `SCM_RIGHTS` control messages (`msg_control` and
+/// `msg_controllen` at 32 and 40); other messages (credentials) are
+/// ignored.
+fn sent_rights(msg: usize) -> Result<Vec<i32>, usize> {
+    let mut b = [0u8; 16];
+    get_bytes(msg + 32, &mut b)?;
+    let (control, len) = (u64::from_le_bytes(b[..8].try_into().unwrap()) as usize, u64::from_le_bytes(b[8..].try_into().unwrap()) as usize);
+    let mut fds = Vec::new();
+    if control == 0 || len < CMSG_HDR {
+        return Ok(fds);
+    }
+    if len > CONTROL_MAX {
+        return Err(ENOBUFS);
+    }
+    let mut data = alloc::vec![0u8; len];
+    get_bytes(control, &mut data)?;
+    let mut off = 0;
+    while off + CMSG_HDR <= len {
+        let clen = u64::from_le_bytes(data[off..off + 8].try_into().unwrap()) as usize;
+        let level = u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap());
+        let ty = u32::from_le_bytes(data[off + 12..off + 16].try_into().unwrap());
+        if clen < CMSG_HDR || clen > len - off {
+            return Err(EINVAL);
+        }
+        if level as usize == SOL_SOCKET && ty == SCM_RIGHTS {
+            for f in data[off + CMSG_HDR..off + clen].chunks_exact(4) {
+                fds.push(i32::from_le_bytes(f.try_into().unwrap()));
+            }
+        }
+        off += clen.next_multiple_of(8);
+    }
+    Ok(fds)
 }
 
+/// `sendmsg`: the data, with the fds of an `SCM_RIGHTS` message on a unix
+/// socket (`/net/unix`'s `rights`, `docs/sockets-unix.md`): they come with
+/// its first byte.
+pub fn sendmsg(fd: usize, msg: usize) -> R {
+    let [name, namelen, iov, iovlen] = msghdr(msg)?;
+    let fds = sent_rights(msg)?;
+    send_to(fd, name, namelen)?;
+    if fds.is_empty() {
+        return super::sys::rw_vec(fd, iov, iovlen, true);
+    }
+    let (conv, s) = sock(fd)?;
+    if s.unix.is_none() {
+        return Err(EINVAL);
+    }
+    let mut cmd = String::from("rights");
+    for f in fds {
+        cmd.push_str(&format!(" {f}"));
+    }
+    let ctl = format!("{conv}/ctl");
+    fs::write(&ctl, 0, cmd.as_bytes()).ok_or(EBADF)?;
+    let r = super::sys::rw_vec(fd, iov, iovlen, true);
+    if !matches!(r, Ok(n) if n > 0) {
+        // Not sent: a retry sends them again.
+        let _ = fs::write(&ctl, 0, b"norights");
+    }
+    r
+}
+
+/// The fds that came with the data a unix socket's last read took, made
+/// the caller's (`/net/unix`'s `rights`) and given the layer's state.
+fn received_rights(conv: &str, cloexec: bool) -> Vec<usize> {
+    let mut b = [0u8; 4 * 253 + 2];
+    let n = fs::read(&format!("{conv}/rights"), 0, &mut b).unwrap_or(0);
+    let fds: Vec<usize> = core::str::from_utf8(&b[..n])
+        .unwrap_or("")
+        .split_ascii_whitespace()
+        .filter_map(|w| w.parse().ok())
+        .collect();
+    for &fd in &fds {
+        adopt(fd);
+        files::set_cloexec(fd, cloexec);
+    }
+    fds
+}
+
+/// An fd another process sent: the state the layer keeps for what it is
+/// open on, from its path (`/proc/self/fd`'s): a unix socket's
+/// conversation, a signal fd's translation, a file's path.
+fn adopt(fd: usize) {
+    let Some(path) = task::fd_path(fd).and_then(|p| String::from_utf8(p).ok()) else {
+        return;
+    };
+    // `.../unix/N/data`, whichever mount names it (a `linux --root` sees
+    // `/net` through a bind): the conversation as this process reaches it.
+    let unix = path.strip_suffix("/data").and_then(|p| {
+        let (dir, id) = p.rsplit_once('/')?;
+        (dir.ends_with("/unix") && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+    });
+    let unix = unix.and_then(|id| Some(format!("{}/{id}", net_dir("unix").ok()?)));
+    if let Some(conv) = unix {
+        files::set_sock(fd, conv, UNIX_SOCK);
+    } else if path.starts_with("/dev/sig/") {
+        files::set_sigfd(fd, true);
+    } else if path.starts_with('/') {
+        let dir = fs::stat(&path).is_some_and(|st| st.mode & fs::S_IFMT == 0o040000);
+        files::set(fd, path, dir);
+    }
+}
+
+/// `recvmsg`: the data, and on a unix socket the fds that came with it as
+/// an `SCM_RIGHTS` message; the ones `msg_control` has no room for are
+/// closed (`MSG_CTRUNC`).
 pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     let [name, _, iov, iovlen] = msghdr(msg)?;
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
-    let s = sock(fd)?.1;
+    let (conv, s) = sock(fd)?;
     if let Some(peer) = s.peer {
         put_addr(name, msg + 8, peer)?;
     } else if s.unix.is_some() && name != 0 {
         put(msg + 8, &0u32.to_le_bytes())?;
     }
-    // No control data, no flags.
-    put(msg + 40, &0u64.to_le_bytes())?;
-    put(msg + 48, &0u32.to_le_bytes())?;
+    let fds = if s.unix.is_some() && n > 0 { received_rights(&conv, flags & MSG_CMSG_CLOEXEC != 0) } else { Vec::new() };
+    let (used, truncated) = put_rights(msg, &fds)?;
+    put(msg + 40, &(used as u64).to_le_bytes())?;
+    put(msg + 48, &(if truncated { MSG_CTRUNC } else { 0 }).to_le_bytes())?;
     Ok(n)
+}
+
+/// Write `fds` to `msg`'s control buffer as one `SCM_RIGHTS` message,
+/// closing those it has no room for: the bytes used and whether any were
+/// closed.
+fn put_rights(msg: usize, fds: &[usize]) -> Result<(usize, bool), usize> {
+    if fds.is_empty() {
+        return Ok((0, false));
+    }
+    let mut b = [0u8; 16];
+    get_bytes(msg + 32, &mut b)?;
+    let (control, len) = (u64::from_le_bytes(b[..8].try_into().unwrap()) as usize, u64::from_le_bytes(b[8..].try_into().unwrap()) as usize);
+    let room = if control == 0 { 0 } else { len.saturating_sub(CMSG_HDR) / 4 };
+    let kept = fds.len().min(room);
+    for &fd in &fds[kept..] {
+        super::sys::close(fd).ok();
+    }
+    if kept == 0 {
+        return Ok((0, true));
+    }
+    let clen = CMSG_HDR + 4 * kept;
+    let mut out = Vec::with_capacity(clen);
+    out.extend_from_slice(&(clen as u64).to_le_bytes());
+    out.extend_from_slice(&(SOL_SOCKET as u32).to_le_bytes());
+    out.extend_from_slice(&SCM_RIGHTS.to_le_bytes());
+    for &fd in &fds[..kept] {
+        out.extend_from_slice(&(fd as i32).to_le_bytes());
+    }
+    put(control, &out)?;
+    Ok((clen.next_multiple_of(8).min(len), kept < fds.len()))
 }
 
 /// Only a full shutdown hangs up: `/net` has no half-close.
