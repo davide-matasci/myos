@@ -1371,6 +1371,28 @@ pub fn sched_getaffinity(len: usize, mask: usize) -> R {
     Ok(size)
 }
 
+/// `sysinfo`: the uptime and the memory, from the kernel's `/proc/meminfo`
+/// (free RAM counts the caches it gives back, as `MemAvailable` does);
+/// no swap, load average or process count. Firefox sizes its caches by `totalram`.
+pub fn sysinfo(info: usize) -> R {
+    let mut text = [0u8; 2048];
+    let n = fs::read("/proc/meminfo", 0, &mut text).unwrap_or(0);
+    let kib = |key: &str| {
+        core::str::from_utf8(&text[..n])
+            .ok()
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix(key)?.trim().parse::<u64>().ok()))
+            .unwrap_or(0)
+    };
+    // struct sysinfo of a 64-bit Linux: 112 bytes, mem_unit at 104.
+    let mut b = [0u8; 112];
+    b[0..8].copy_from_slice(&(crate::k::time::monotonic_ns() / 1_000_000_000).to_le_bytes());
+    b[32..40].copy_from_slice(&(kib("MemTotalKiB:") * 1024).to_le_bytes());
+    b[40..48].copy_from_slice(&(kib("MemAvailableKiB:") * 1024).to_le_bytes());
+    b[104..108].copy_from_slice(&1u32.to_le_bytes());
+    put(info, &b)?;
+    Ok(0)
+}
+
 /// The kernel's host name file (`docs/linux-compat.md`).
 const HOSTNAME: &str = "/proc/sys/kernel/hostname";
 

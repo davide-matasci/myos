@@ -243,7 +243,8 @@ the kernel's way: `exec` on the script and its `exec` rule apply,
 `WNOHANG`, `WNOWAIT`; exits only), `kill`, `tkill`, `tgkill`,
 `getpid`, `gettid`, `getppid`, `getpgid`, `setpgid`, `getpgrp`, `getsid`,
 `setsid`, `uname` (the node name is the kernel's host name,
-`/proc/sys/kernel/hostname`), `sethostname`, `reboot` (the native
+`/proc/sys/kernel/hostname`), `sysinfo` (uptime and memory from
+`/proc/meminfo`; no swap, load or process count), `sethostname`, `reboot` (the native
 `power`, `docs/power.md`; turning Ctrl-Alt-Del on or off does nothing),
 `arch_prctl`, `set_tid_address`, `set_robust_list`,
 `prlimit64`, `getrlimit`, `get/set uid/gid` and `getresuid`/`getresgid`
@@ -280,7 +281,8 @@ the native (newlib) numbering, also in `wait4` statuses.
 Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 `socketpair` (`AF_UNIX`), `connect`, `bind`, `listen`, `accept`, `accept4`
 (`AF_UNIX`), `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `shutdown`,
-`getsockname`, `getpeername`, `getsockopt` (`SO_ERROR`, `SO_TYPE`),
+`getsockname`, `getpeername`, `getsockopt` (`SO_ERROR`, `SO_TYPE`,
+`SO_SNDBUF`/`SO_RCVBUF`: 64 KiB for a unix socket, 8 KiB otherwise),
 `setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
