@@ -222,7 +222,7 @@ static void cloexec(const char *self) {
     c = fcntl(b, F_DUPFD_CLOEXEC, 200);
     check(c >= 200 && fcntl(c, F_GETFD) == FD_CLOEXEC, "F_DUPFD_CLOEXEC");
     d = dup2(a, 230);
-    check(d == 30 && fcntl(d, F_GETFD) == 0, "dup2's copy stays open across exec");
+    check(d == 230 && fcntl(d, F_GETFD) == 0, "dup2's copy stays open across exec");
     check(dup2(a, d) == d && dup2(d, d) == d && fcntl(d, F_GETFD) == 0, "dup2 onto an open fd, and onto itself");
     e = open(f, O_RDONLY);
     check(fcntl(e, F_SETFD, FD_CLOEXEC) == 0 && fcntl(e, F_GETFD) == FD_CLOEXEC, "F_SETFD on");
