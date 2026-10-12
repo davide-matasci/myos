@@ -36,7 +36,7 @@ pub(super) fn reapable(tasks: &TaskTable, slot: usize) -> bool {
 /// Free the slots of dead, already-reported (`NO_PARENT`) tasks that have left
 /// their kernel stacks, keeping each stack for reuse.
 fn free_dead_orphans(tasks: &mut TaskTable) {
-    for j in 0..MAX_TASKS {
+    for j in tasks.slots() {
         if tasks[j].ppid == NO_PARENT && tasks[j].user_rip != 0 && reapable(tasks, j) {
             tasks.recycle(j);
         }
@@ -58,7 +58,7 @@ fn free_dead_orphans(tasks: &mut TaskTable) {
 /// live ones become `NO_PARENT` and are freed by a later `die()` sweep once
 /// they are dead and off-CPU.
 fn orphan_children(tasks: &mut TaskTable, id: usize) {
-    for j in 0..MAX_TASKS {
+    for j in tasks.slots() {
         if j == id || tasks[j].state == State::Unused || tasks[j].user_rip == 0 {
             continue;
         }
@@ -104,7 +104,7 @@ pub(super) fn user_affinity() -> Option<usize> {
 /// pipelines) RR-spread; init/netd (no ctty) always inherit so getty/login
 /// stay with the session home — no basename sticky allowlists.
 pub(super) fn parent_has_active_child(tasks: &TaskTable, ppid: usize) -> bool {
-    for i in 0..MAX_TASKS {
+    for i in tasks.slots() {
         if i == ppid || tasks[i].ppid != ppid || tasks[i].user_rip == 0 {
             continue;
         }
@@ -345,7 +345,7 @@ pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
         let named = super::jobs::named_ids(&tasks);
         let free = |i: usize| tasks[i].state == State::Unused || reapable(&tasks, i);
         let kept_stack = |i: usize| tasks[i].user_rip == 0 && tasks[i].aspace == 0 && tasks[i].stack_base != 0;
-        let unnamed = |i: usize| named & (1 << i) == 0;
+        let unnamed = |i: usize| !named.contains(i);
         // Best a slot no group or session goes by, with a kernel stack to
         // reuse; then without the stack; then any.
         let slot = (0..MAX_TASKS)
@@ -406,7 +406,7 @@ pub fn wait_child(status_out: Option<usize>, nohang: bool, peek: bool, pid: Opti
             let flags = irq_save();
             irq_off();
             let mut tasks = TASKS.lock();
-            for i in 0..MAX_TASKS {
+            for i in tasks.slots() {
                 if i == parent
                     || pid.is_some_and(|p| p != i)
                     || tasks[i].ppid != parent
@@ -499,7 +499,7 @@ fn spawn_inner(
     let mut tasks = TASKS.lock();
     let named = super::jobs::named_ids(&tasks);
     let slot = (0..MAX_TASKS)
-        .find(|&i| tasks[i].state == State::Unused && named & (1 << i) == 0)
+        .find(|&i| tasks[i].state == State::Unused && !named.contains(i))
         .or_else(|| tasks.iter().position(|t| t.state == State::Unused))
         .expect("no task slot");
     let brk_cur = if user_rip != 0 {

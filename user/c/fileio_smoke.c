@@ -188,6 +188,25 @@ static void positional(void) {
     close(pfd[1]);
 }
 
+/* 256 fds per process: as many open at once, and O_NONBLOCK kept on a
+ * high one (libgloss tracks it). */
+static void many_fds(void) {
+    int fds[200], n = 0;
+    check(sysconf(_SC_OPEN_MAX) == 256, "sysconf(_SC_OPEN_MAX) is 256");
+    while (n < 200 && (fds[n] = open("/dev/null", O_RDONLY)) >= 0) {
+        n++;
+    }
+    check(n == 200, "200 fds open at once");
+    if (n > 0) {
+        int hi = fds[n - 1];
+        check(hi > 64 && fcntl(hi, F_SETFL, O_NONBLOCK) == 0 && (fcntl(hi, F_GETFL) & O_NONBLOCK) != 0,
+              "O_NONBLOCK on a high fd");
+    }
+    while (n > 0) {
+        close(fds[--n]);
+    }
+}
+
 static void cloexec(const char *self) {
     const char *f = in_dir("cloexec");
     int a, b, c, d, e, p[2], status = 0;
@@ -199,10 +218,11 @@ static void cloexec(const char *self) {
     b = open(f, O_RDONLY);
     check(a >= 0 && b >= 0, "open cloexec");
     check(fcntl(a, F_GETFD) == FD_CLOEXEC && fcntl(b, F_GETFD) == 0, "F_GETFD");
-    c = fcntl(b, F_DUPFD_CLOEXEC, 20);
-    check(c >= 20 && fcntl(c, F_GETFD) == FD_CLOEXEC, "F_DUPFD_CLOEXEC");
-    d = dup2(a, 30);
-    check(d == 30 && fcntl(d, F_GETFD) == 0, "dup2's copy stays open across exec");
+    /* Fds past 64 (the limit is 256): their flags are kept as the low ones' are. */
+    c = fcntl(b, F_DUPFD_CLOEXEC, 200);
+    check(c >= 200 && fcntl(c, F_GETFD) == FD_CLOEXEC, "F_DUPFD_CLOEXEC");
+    d = dup2(a, 230);
+    check(d == 230 && fcntl(d, F_GETFD) == 0, "dup2's copy stays open across exec");
     check(dup2(a, d) == d && dup2(d, d) == d && fcntl(d, F_GETFD) == 0, "dup2 onto an open fd, and onto itself");
     e = open(f, O_RDONLY);
     check(fcntl(e, F_SETFD, FD_CLOEXEC) == 0 && fcntl(e, F_GETFD) == FD_CLOEXEC, "F_SETFD on");
@@ -642,6 +662,7 @@ int main(int argc, char **argv) {
     excl();
     positional();
     cloexec("/bin/etc/fileio_smoke");
+    many_fds();
     open_flags();
     locks();
     inodes();

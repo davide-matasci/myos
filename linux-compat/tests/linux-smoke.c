@@ -674,6 +674,14 @@ static void check_misc_calls(void) {
           "getsockopt SO_SNDBUF, SO_RCVBUF");
     close(sv[0]);
     close(sv[1]);
+    // Fds past 64 keep their flags (256 per process).
+    struct rlimit nofile;
+    int hi = dup3(1, 200, O_CLOEXEC);
+    check(getrlimit(RLIMIT_NOFILE, &nofile) == 0 && nofile.rlim_cur == 256 && hi == 200 &&
+              fcntl(hi, F_GETFD) == FD_CLOEXEC && fcntl(hi, F_SETFL, O_NONBLOCK) == 0 &&
+              (fcntl(hi, F_GETFL) & O_NONBLOCK) != 0,
+          "fd 200: RLIMIT_NOFILE, FD_CLOEXEC, O_NONBLOCK");
+    close(hi);
 }
 
 static void check_fork_vs_fds(void) {

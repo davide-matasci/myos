@@ -333,6 +333,38 @@ static int spinning_child(void) {
     return 0;
 }
 
+/* More processes alive at once than the old limit of 64 tasks in the
+ * whole system: each waits for the parent to close the pipe. */
+static int many_children(void) {
+    enum { N = 80 };
+    pid_t kids[N];
+    int p[2], made = 0, bad = 0, status;
+    char c;
+    if (pipe(p) != 0) {
+        return fail("pipe for many children");
+    }
+    while (made < N) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(p[1]);
+            _exit(read(p[0], &c, 1) == 0 ? 0 : 1);
+        }
+        if (pid < 0) {
+            break;
+        }
+        kids[made++] = pid;
+    }
+    close(p[0]);
+    close(p[1]);
+    for (int i = 0; i < made; i++) {
+        bad |= waitpid(kids[i], &status, 0) != kids[i] || !WIFEXITED(status) || WEXITSTATUS(status) != 0;
+    }
+    if (made < N) {
+        return fail("80 children at once");
+    }
+    return bad ? fail("80 children's exits") : 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -363,7 +395,7 @@ int main(void) {
         return fail("a plain parent's zombie");
     }
 
-    if (spinning_child() != 0) {
+    if (spinning_child() != 0 || many_children() != 0) {
         return 1;
     }
     if (setsid_child() != 0) {

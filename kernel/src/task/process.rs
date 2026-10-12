@@ -14,9 +14,9 @@ use super::*;
 /// process has one; its threads reach it through `Task::tgid`.
 pub(super) struct Process {
     pub fds: [FdEntry; MAX_FDS],
-    /// Bit `i`: fd `i` closes at exec (`FD_CLOEXEC`). Inherited on fork;
-    /// clear for a free fd (`fd::fd_close` and `fd_dup2` clear it).
-    pub cloexec: u64,
+    /// Fd `i` closes at exec (`FD_CLOEXEC`). Inherited on fork; false for
+    /// a free fd (`fd::fd_close` and `fd_dup2` clear it).
+    pub cloexec: [bool; MAX_FDS],
     pub user_base: u64,
     pub image_span: usize,
     pub stack_off: u64,
@@ -84,7 +84,7 @@ const fn root_cwd_buf() -> [u8; 256] {
 /// (set by the spawner).
 static EMPTY_PROC: Process = Process {
     fds: [FdEntry::Empty; MAX_FDS],
-    cloexec: 0,
+    cloexec: [false; MAX_FDS],
     user_base: 0,
     image_span: 0,
     stack_off: 0,
@@ -154,6 +154,9 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
 pub(super) struct TaskTable {
     tasks: [Task; MAX_TASKS],
     procs: [Option<Box<Process>>; MAX_TASKS],
+    /// One past the highest slot ever changed: the slots above it were
+    /// never used, and the scans of every task stop there ([`Self::slots`]).
+    high: usize,
 }
 
 impl TaskTable {
@@ -161,7 +164,14 @@ impl TaskTable {
         Self {
             tasks: [EMPTY; MAX_TASKS],
             procs: [const { None }; MAX_TASKS],
+            high: 0,
         }
+    }
+
+    /// The slots that may hold a task: the ones up to the highest ever
+    /// used. A scan of every task needs no more.
+    pub fn slots(&self) -> core::ops::Range<usize> {
+        0..self.high
     }
 
     pub fn iter(&self) -> core::slice::Iter<'_, Task> {
@@ -216,6 +226,7 @@ impl TaskTable {
 
     /// Give slot `slot` the process block `p` (it becomes a process leader).
     pub fn install_proc(&mut self, slot: usize, p: Box<Process>) {
+        self.high = self.high.max(slot + 1);
         self.procs[slot] = Some(p);
     }
 
@@ -246,6 +257,7 @@ impl core::ops::Index<usize> for TaskTable {
 
 impl core::ops::IndexMut<usize> for TaskTable {
     fn index_mut(&mut self, i: usize) -> &mut Task {
+        self.high = self.high.max(i + 1);
         &mut self.tasks[i]
     }
 }

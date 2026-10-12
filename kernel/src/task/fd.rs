@@ -66,7 +66,7 @@ struct OpenFile {
 
 /// Open file descriptions in the whole system (docs/linux-compat.md lists
 /// the limits with the fds per process).
-const MAX_OPEN_FILES: usize = 512;
+const MAX_OPEN_FILES: usize = 2048;
 
 /// Taken after `TASKS` when both are held (`fd_clone` runs under it), never
 /// the other way round.
@@ -353,7 +353,8 @@ pub fn pipe_open(cloexec: bool) -> Option<(usize, usize)> {
         t.fds[r] = FdEntry::PipeRead(id);
         t.fds[w] = FdEntry::PipeWrite(id);
         if cloexec {
-            t.cloexec |= 1 << r | 1 << w;
+            t.cloexec[r] = true;
+            t.cloexec[w] = true;
         }
         Some((r, w))
     });
@@ -656,11 +657,7 @@ pub fn fd_dup2(oldfd: usize, newfd: usize, cloexec: bool) -> bool {
         let prev = t.fds[newfd];
         t.fds[newfd] = fd_clone(old);
         // The copy's own flag (`dup3`), whatever `oldfd`'s is.
-        if cloexec {
-            t.cloexec |= 1 << newfd;
-        } else {
-            t.cloexec &= !(1 << newfd);
-        }
+        t.cloexec[newfd] = cloexec;
         (true, prev)
     });
     records_released(dropped);
@@ -682,9 +679,7 @@ pub fn fd_dup_min(oldfd: usize, minfd: usize, cloexec: bool) -> Option<usize> {
         for i in minfd..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
                 t.fds[i] = fd_clone(old);
-                if cloexec {
-                    t.cloexec |= 1 << i;
-                }
+                t.cloexec[i] = cloexec;
                 return Some(i);
             }
         }
@@ -1225,7 +1220,7 @@ pub fn fd_close(fd: usize) -> bool {
         // open/pipe/socket reuses the lowest fd (os-test stdio/puts does
         // close(0); close(1); pipe() and expects the pipe on 0,1).
         t.fds[fd] = FdEntry::Empty;
-        t.cloexec &= !(1 << fd);
+        t.cloexec[fd] = false;
         entry
     });
     if entry == FdEntry::Empty {
@@ -1242,7 +1237,7 @@ pub fn fd_cloexec(fd: usize) -> Option<bool> {
     if fd >= MAX_FDS {
         return None;
     }
-    with_process_mut(|t| (t.fds[fd] != FdEntry::Empty).then_some(t.cloexec & 1 << fd != 0))
+    with_process_mut(|t| (t.fds[fd] != FdEntry::Empty).then_some(t.cloexec[fd]))
 }
 
 /// Make `fd` close at exec or stay open (`F_SETFD`): false for a free fd.
@@ -1254,11 +1249,7 @@ pub fn fd_set_cloexec(fd: usize, on: bool) -> bool {
         if t.fds[fd] == FdEntry::Empty {
             return false;
         }
-        if on {
-            t.cloexec |= 1 << fd;
-        } else {
-            t.cloexec &= !(1 << fd);
-        }
+        t.cloexec[fd] = on;
         true
     })
 }
@@ -1267,7 +1258,7 @@ pub fn fd_set_cloexec(fd: usize, on: bool) -> bool {
 /// them.
 pub fn fd_close_on_exec() {
     let marked = with_process_mut(|t| t.cloexec);
-    for fd in (0..MAX_FDS).filter(|fd| marked & 1 << fd != 0) {
+    for fd in (0..MAX_FDS).filter(|&fd| marked[fd]) {
         fd_close(fd);
     }
 }

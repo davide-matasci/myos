@@ -15,7 +15,7 @@ use myos_abi::Lock as Mutex;
 
 use super::net::Sock;
 use crate::k::task;
-use crate::k::MAX_TASKS;
+use crate::k::{MAX_FDS, MAX_TASKS};
 
 #[derive(Clone)]
 pub struct FdPath {
@@ -30,25 +30,39 @@ pub struct FdPath {
 
 static PATHS: Mutex<[Vec<FdPath>; MAX_TASKS]> = Mutex::new([const { Vec::new() }; MAX_TASKS]);
 
-/// A process's fd flags, a bit per fd (native fds are below 64): which
-/// close on exec (`FD_CLOEXEC`), which are non-blocking (`O_NONBLOCK`,
-/// a socket's is in its `Sock`).
+/// A set of fds, a bit per fd.
+#[derive(Clone, Copy)]
+pub struct FdBits([u64; MAX_FDS / 64]);
+
+impl FdBits {
+    const EMPTY: Self = Self([0; MAX_FDS / 64]);
+
+    pub fn contains(&self, fd: usize) -> bool {
+        fd < MAX_FDS && self.0[fd / 64] & 1 << (fd % 64) != 0
+    }
+
+    fn set(&mut self, fd: usize, on: bool) {
+        if fd < MAX_FDS {
+            let (w, b) = (&mut self.0[fd / 64], 1 << (fd % 64));
+            *w = if on { *w | b } else { *w & !b };
+        }
+    }
+}
+
+/// A process's fd flags: which fds close on exec (`FD_CLOEXEC`), which are
+/// non-blocking (`O_NONBLOCK`, a socket's is in its `Sock`).
 #[derive(Clone, Copy)]
 struct Flags {
-    cloexec: u64,
-    nonblock: u64,
+    cloexec: FdBits,
+    nonblock: FdBits,
     /// The signal fds (`sys::signalfd4`): a read of one is translated into
     /// Linux's `struct signalfd_siginfo`.
-    sigfd: u64,
+    sigfd: FdBits,
 }
 
-const NO_FLAGS: Flags = Flags { cloexec: 0, nonblock: 0, sigfd: 0 };
+const NO_FLAGS: Flags = Flags { cloexec: FdBits::EMPTY, nonblock: FdBits::EMPTY, sigfd: FdBits::EMPTY };
 
 static FLAGS: Mutex<[Flags; MAX_TASKS]> = Mutex::new([NO_FLAGS; MAX_TASKS]);
-
-fn bit(fd: usize) -> u64 {
-    if fd < 64 { 1 << fd } else { 0 }
-}
 
 pub fn on_fork(parent: usize, child: usize) {
     let mut t = PATHS.lock();
@@ -62,51 +76,41 @@ pub fn on_spawn(slot: usize) {
     FLAGS.lock()[slot] = NO_FLAGS;
 }
 
+/// The calling process's flags.
+fn with_flags<T>(f: impl FnOnce(&mut Flags) -> T) -> T {
+    let me = task::current_pid();
+    f(&mut FLAGS.lock()[me])
+}
+
 /// Set fd's close-on-exec flag.
 pub fn set_cloexec(fd: usize, on: bool) {
-    let me = task::current_pid();
-    let mut f = FLAGS.lock();
-    let e = &mut f[me];
-    let b = bit(fd);
-    e.cloexec = if on { e.cloexec | b } else { e.cloexec & !b };
+    with_flags(|e| e.cloexec.set(fd, on));
 }
 
 pub fn cloexec(fd: usize) -> bool {
-    let me = task::current_pid();
-    FLAGS.lock()[me].cloexec & bit(fd) != 0
+    with_flags(|e| e.cloexec.contains(fd))
 }
 
 pub fn set_nonblock(fd: usize, on: bool) {
-    let me = task::current_pid();
-    let mut f = FLAGS.lock();
-    let e = &mut f[me];
-    let b = bit(fd);
-    e.nonblock = if on { e.nonblock | b } else { e.nonblock & !b };
+    with_flags(|e| e.nonblock.set(fd, on));
 }
 
 pub fn nonblock(fd: usize) -> bool {
-    let me = task::current_pid();
-    FLAGS.lock()[me].nonblock & bit(fd) != 0
+    with_flags(|e| e.nonblock.contains(fd))
 }
 
 pub fn set_sigfd(fd: usize, on: bool) {
-    let me = task::current_pid();
-    let mut f = FLAGS.lock();
-    let e = &mut f[me];
-    let b = bit(fd);
-    e.sigfd = if on { e.sigfd | b } else { e.sigfd & !b };
+    with_flags(|e| e.sigfd.set(fd, on));
 }
 
 pub fn sigfd(fd: usize) -> bool {
-    let me = task::current_pid();
-    FLAGS.lock()[me].sigfd & bit(fd) != 0
+    with_flags(|e| e.sigfd.contains(fd))
 }
 
-
 /// A successful exec in `slot`: the fds to close now (and forget).
-pub fn take_cloexec(slot: usize) -> u64 {
+pub fn take_cloexec(slot: usize) -> FdBits {
     let mut f = FLAGS.lock();
-    core::mem::replace(&mut f[slot].cloexec, 0)
+    core::mem::replace(&mut f[slot].cloexec, FdBits::EMPTY)
 }
 
 pub fn get(fd: usize) -> Option<FdPath> {

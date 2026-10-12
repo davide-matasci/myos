@@ -524,8 +524,8 @@ three, the kernel crate itself an hour. Known gaps:
     are mapped at once (Firefox and its GTK stack map well over a
     hundred); a file mapping past that is read in whole when it is made;
   - a 16 MiB `brk` heap;
-  - 64 fds per process, 512 open file descriptions in the system, 64 tasks
-    in total, 64 pipes in the system (and 24 named FIFOs), each with a
+  - 256 fds per process, 2048 open file descriptions in the system, 512
+    tasks (threads and processes) in total, 64 pipes in the system (and 24 named FIFOs), each with a
     4 KiB buffer;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
     kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the

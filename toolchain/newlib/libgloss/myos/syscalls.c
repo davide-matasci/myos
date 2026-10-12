@@ -104,21 +104,21 @@ int __myos_kpoll(struct pollfd *fds, unsigned long nfds, int timeout) {
  * setnonblocking(signal_pipe) then drains with `while (read > 0)` — without
  * EAGAIN on empty, a forced-POLLIN wake hangs the session forever and the SSH
  * client never receives exit-status. */
-static unsigned long long myos_fd_nb_mask;
+static unsigned long long myos_fd_nb_mask[MYOS_MAX_FDS / 64];
 
 void myos_fd_nonblock_set(int fd, int on) {
     if (fd < 0 || fd >= MYOS_MAX_FDS) {
         return;
     }
     if (on) {
-        myos_fd_nb_mask |= (1ull << fd);
+        myos_fd_nb_mask[fd / 64] |= 1ull << (fd % 64);
     } else {
-        myos_fd_nb_mask &= ~(1ull << fd);
+        myos_fd_nb_mask[fd / 64] &= ~(1ull << (fd % 64));
     }
 }
 
 int myos_fd_nonblock_get(int fd) {
-    return (fd >= 0 && fd < MYOS_MAX_FDS && (myos_fd_nb_mask & (1ull << fd))) ? 1 : 0;
+    return (fd >= 0 && fd < MYOS_MAX_FDS && (myos_fd_nb_mask[fd / 64] & (1ull << (fd % 64)))) ? 1 : 0;
 }
 
 void myos_fd_nonblock_clear(int fd) {
