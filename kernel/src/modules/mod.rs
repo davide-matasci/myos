@@ -135,6 +135,8 @@ static API: KernelApi = KernelApi {
     fd_hold: api_fd_hold,
     fd_install: api_fd_install,
     fd_release: api_fd_release,
+    cpu_time: api_cpu_time,
+    membarrier: api_membarrier,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1276,6 +1278,23 @@ unsafe extern "C" fn api_thread_place(tid: i32) {
     if tid >= 0 {
         crate::task::place_thread(tid as usize);
     }
+}
+
+unsafe extern "C" fn api_cpu_time(which: u32) -> u64 {
+    use crate::task::info;
+    match which {
+        myos_abi::MYOS_CPU_PROCESS => info::process_info(crate::task::current_pid()).map_or(0, |p| p.cpu_ns),
+        myos_abi::MYOS_CPU_CHILDREN => info::process_info(crate::task::current_pid()).map_or(0, |p| p.child_cpu_ns),
+        myos_abi::MYOS_CPU_THREAD => info::thread_info(crate::task::current_tid()).map_or(0, |t| t.cpu_ns),
+        _ => 0,
+    }
+}
+
+/// Every CPU running a task is interrupted and answers (a TLB shootdown:
+/// its handler's atomics are full barriers); an idle CPU runs no thread
+/// that could need one.
+unsafe extern "C" fn api_membarrier() {
+    crate::smp::tlb_shootdown();
 }
 
 unsafe extern "C" fn api_fd_hold(fd: usize) -> isize {

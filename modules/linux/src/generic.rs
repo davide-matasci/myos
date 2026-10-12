@@ -65,7 +65,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         98 => ret(thread::futex(a[0], a[1], a[2], a[3], a[5])),
         99 => 0, // set_robust_list
         101 => ret(sys::nanosleep(a[0], false)),
-        113 => ret(sys::clock_gettime(a[1])),
+        113 => ret(sys::clock_gettime(a[0], a[1])),
         114 => ret(sys::clock_getres(a[1])),
         115 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
         122 => 0, // sched_setaffinity: the core places tasks
@@ -138,6 +138,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         279 => ret(sys::memfd_create(a[0], a[1])),
         441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
         179 => ret(sys::sysinfo(a[0])),
+        165 => ret(sys::getrusage(a[0], a[1])),
+        223 => ret(sys::fadvise(a[0], a[3])),
+        283 => ret(sys::membarrier(a[0], a[1])),
         _ => super::trace::unimplemented(nr, &a),
     }
 }

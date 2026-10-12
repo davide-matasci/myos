@@ -150,7 +150,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         204 => ret(sys::sched_getaffinity(a[1], a[2])),
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
-        228 => ret(sys::clock_gettime(a[1])),
+        228 => ret(sys::clock_gettime(a[0], a[1])),
         229 => ret(sys::clock_getres(a[1])),
         230 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
@@ -188,6 +188,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         319 => ret(sys::memfd_create(a[0], a[1])),
         441 => ret(sys::epoll_pwait2(a[0], a[1], a[2], a[3])),
         99 => ret(sys::sysinfo(a[0])),
+        98 => ret(sys::getrusage(a[0], a[1])),
+        221 => ret(sys::fadvise(a[0], a[3])),
+        324 => ret(sys::membarrier(a[0], a[1])),
         _ => super::trace::unimplemented(nr, &a),
     }
 }

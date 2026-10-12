@@ -824,6 +824,28 @@ static void check_misc_calls(void) {
               (fcntl(hi, F_GETFL) & O_NONBLOCK) != 0,
           "fd 200: RLIMIT_NOFILE, FD_CLOEXEC, O_NONBLOCK");
     close(hi);
+    // CPU time: the process's grows while it computes.
+    struct timespec c0, c1;
+    struct rusage ru;
+    volatile unsigned long spin = 0;
+    check(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c0) == 0, "clock_gettime(CLOCK_PROCESS_CPUTIME_ID)");
+    for (unsigned long i = 0; i < 20000000; i++) {
+        spin += i;
+    }
+    check(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c1) == 0 &&
+              (c1.tv_sec > c0.tv_sec || (c1.tv_sec == c0.tv_sec && c1.tv_nsec > c0.tv_nsec)),
+          "CPU time grows while computing");
+    check(getrusage(RUSAGE_SELF, &ru) == 0 && (ru.ru_utime.tv_sec > 0 || ru.ru_utime.tv_usec > 0) &&
+              getrusage(RUSAGE_CHILDREN, &ru) == 0 && getrusage(42, &ru) == -1 && errno == EINVAL,
+          "getrusage");
+    int ffd = open("/tmp/linux-smoke.fadvise", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(ffd >= 0 && posix_fadvise(ffd, 0, 0, POSIX_FADV_SEQUENTIAL) == 0 && posix_fadvise(ffd, 0, 0, 99) == EINVAL,
+          "posix_fadvise: a hint");
+    close(ffd);
+    unlink("/tmp/linux-smoke.fadvise");
+    long mb = syscall(SYS_membarrier, 0, 0);
+    check(mb > 0 && (mb & 8) && syscall(SYS_membarrier, 16, 0) == 0 && syscall(SYS_membarrier, 8, 0) == 0,
+          "membarrier: query, register, private expedited");
 }
 
 static void check_fork_vs_fds(void) {
