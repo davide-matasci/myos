@@ -8,15 +8,16 @@ through netd: the bytes stay in the kernel.
 
 ## `/net/unix`
 
-The files are those of `/net/tcp`, plus `listen`:
+The files are those of `/net/tcp`, plus `listen` and `rights`:
 
 | File | |
 |------|-|
 | `clone` | reading it makes a conversation and returns its number `N`; its files are the reading process's user's alone (`docs/security.md`) |
-| `N/ctl` | commands: `announce NAME`, `connect NAME`, `pair`, `hangup` |
+| `N/ctl` | commands: `announce NAME`, `connect NAME`, `pair`, `hangup`, `rights FD...`, `norights` |
 | `N/data` | the byte stream; `st_size` is the number of bytes waiting |
 | `N/status` | `open`, `announced`, `connected` or `hangup` |
 | `N/listen` | reading it hands out the next connection queued here (`"M\n"`, nothing when none waits); `st_size` is how many wait |
+| `N/rights` | reading it makes the fds that came with the last read of `data` the reader's, and gives their numbers (`"5 6\n"`) |
 
 - `announce NAME` makes the conversation a listener under NAME. NAME is a
   name in `/net/unix` only: nothing is created in the filesystem, and the
@@ -29,6 +30,19 @@ The files are those of `/net/tcp`, plus `listen`:
 - `pair` makes a second conversation connected to this one and queues it on
   this one's `listen` (`socketpair`).
 - `hangup` ends the connection both ways (`shutdown`).
+- `rights FD...` passes the writer's own fds (`SCM_RIGHTS`) with the next
+  write of `data`: they are held as the writer's fds hold them (a pipe
+  end, an open file description with its rights, a socket: the kernel's
+  `fd_hold`, a deliberate grant under the policy, `docs/security.md`)
+  and come with that write's first byte. A read of `data` never goes
+  past the bytes before them, and the read that starts there takes them;
+  reading `rights` then installs them as the reader's lowest free fds
+  (`fd_install`). The next read of `data` closes the ones nobody took,
+  as Linux's `read` of a socket does, and so does the end of the
+  conversation for every fd it still carries. `norights` lets go of what
+  `rights` took when the write it was for failed (a retry sends them
+  again). At most 253 fds per write. A socket passed over itself, or in
+  a cycle of sockets nobody holds, stays open: there is no collector.
 
 Each end buffers up to 64 KiB written by its peer, allocated as it fills
 and let go of once read. Reads and writes never
@@ -60,6 +74,8 @@ lock, so the unix conversations have their own spinlock.
 | `write` / `send` | `data`; a full peer buffer waits in `poll` for room (blocking) or says `EAGAIN`; a closed peer `EPIPE` (no `SIGPIPE`) |
 | `poll` / `select` | netfs's `poll` hook: `POLLIN` for bytes, a queued connection or the peer gone, `POLLOUT` while the peer's buffer has room |
 | `getsockname` / `getpeername` | the bound or connected name; accepted sockets have the listener's name and an unnamed peer |
+| `sendmsg` | `rights` with an `SCM_RIGHTS` message, then the data gathered into one write (`norights` when it fails) |
+| `recvmsg` | one read of `data`, then `rights` for the fds that came with it as an `SCM_RIGHTS` message; those `msg_control` has no room for are closed (`MSG_CTRUNC`); `MSG_CMSG_CLOEXEC` |
 
 `SOCK_DGRAM` is not supported (`EPROTONOSUPPORT`).
 
@@ -69,9 +85,10 @@ Linux and native programs connect to each other by name.
 
 ## Not yet
 
-- Passing file descriptors (`SCM_RIGHTS`) and credentials (`SCM_CREDENTIALS`,
-  `SO_PEERCRED`): issue #340. Shared memory between processes is there
-  (`shm_open`, `memfd_create`, System V `shmget`, `MAP_SHARED`: README).
+- Credentials (`SCM_CREDENTIALS`, `SO_PEERCRED`): issue #340. File
+  descriptors pass (`SCM_RIGHTS`, above), and shared memory between
+  processes is there (`shm_open`, `memfd_create`, System V `shmget`,
+  `MAP_SHARED`: README).
 
 ## Test
 

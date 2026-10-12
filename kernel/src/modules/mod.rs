@@ -132,6 +132,9 @@ static API: KernelApi = KernelApi {
     blk_name: api_blk_name,
     wait_take: api_wait_take,
     user_mapped: api_user_mapped,
+    fd_hold: api_fd_hold,
+    fd_install: api_fd_install,
+    fd_release: api_fd_release,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1273,6 +1276,18 @@ unsafe extern "C" fn api_thread_place(tid: i32) {
     if tid >= 0 {
         crate::task::place_thread(tid as usize);
     }
+}
+
+unsafe extern "C" fn api_fd_hold(fd: usize) -> isize {
+    crate::task::fd_hold(fd).map_or(-1, |t| t as isize)
+}
+
+unsafe extern "C" fn api_fd_install(token: usize, cloexec: i32) -> i32 {
+    crate::task::fd_install(token, cloexec != 0).map_or(-1, |fd| fd as i32)
+}
+
+unsafe extern "C" fn api_fd_release(token: usize) {
+    crate::task::fd_release(token)
 }
 
 unsafe extern "C" fn api_user_mapped(addr: usize, len: usize) -> i32 {

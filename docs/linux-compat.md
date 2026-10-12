@@ -280,7 +280,8 @@ the native (newlib) numbering, also in `wait4` statuses.
 
 Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 `socketpair` (`AF_UNIX`), `connect`, `bind`, `listen`, `accept`, `accept4`
-(`AF_UNIX`), `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `shutdown`,
+(`AF_UNIX`), `sendto`, `recvfrom`, `sendmsg`, `recvmsg` (with fds,
+`SCM_RIGHTS`, on a unix socket: `docs/sockets-unix.md`), `shutdown`,
 `getsockname`, `getpeername`, `getsockopt` (`SO_ERROR`, `SO_TYPE`,
 `SO_SNDBUF`/`SO_RCVBUF`: 64 KiB for a unix socket, 8 KiB otherwise),
 `setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
@@ -326,7 +327,11 @@ name (leading NUL) is `@name`. Names live in `/net/unix`, not in the
 filesystem, so Linux and native programs reach each other by name, also
 from inside a `linux --root`: an Alpine X client connects to the native
 X server's `/tmp/.X11-unix/X0` with nothing in its root (libxcb tries the
-abstract name first, is refused, and takes the path).
+abstract name first, is refused, and takes the path). Fds pass as
+`SCM_RIGHTS` messages through the conversation's `rights` (Firefox's IPC
+sends its sockets and shared memory this way); a received fd gets the
+layer's state back from its path: a unix socket's conversation, a signal
+fd's translation, a file's path.
 
 ## Dynamic linking
 

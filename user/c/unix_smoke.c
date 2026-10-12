@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -177,6 +178,146 @@ static int echo(const char *name) {
     return n < 0 ? fail("echo: read") : 0;
 }
 
+/* SCM_RIGHTS: send `data` (one byte) with the fds `fds`. */
+static int send_fds(int sock, char data, const int *fds, int n) {
+    union {
+        char buf[CMSG_SPACE(4 * sizeof(int))];
+        struct cmsghdr align;
+    } u;
+    struct iovec iov = {&data, 1};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_iov = &iov;
+    m.msg_iovlen = 1;
+    if (n > 0) {
+        memset(&u, 0, sizeof u);
+        m.msg_control = u.buf;
+        m.msg_controllen = CMSG_SPACE(n * sizeof(int));
+        struct cmsghdr *c = CMSG_FIRSTHDR(&m);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(n * sizeof(int));
+        memcpy(CMSG_DATA(c), fds, n * sizeof(int));
+    }
+    return sendmsg(sock, &m, 0) == 1 ? 0 : -1;
+}
+
+/* Receive up to `len` bytes and up to `room` fds (the control buffer's
+ * room): the bytes, with the fds in `fds`, their count in `*n` and the
+ * message flags in `*flags`. */
+static int recv_fds(int sock, char *buf, int len, int *fds, int room, int *n, int *flags) {
+    union {
+        char buf[CMSG_SPACE(4 * sizeof(int))];
+        struct cmsghdr align;
+    } u;
+    struct iovec iov = {buf, (size_t)len};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_iov = &iov;
+    m.msg_iovlen = 1;
+    m.msg_control = u.buf;
+    /* Exactly `room` fds' worth: CMSG_SPACE would round up to room for more. */
+    m.msg_controllen = room > 0 ? CMSG_LEN(room * sizeof(int)) : 0;
+    if (room == 0) {
+        m.msg_control = NULL;
+    }
+    int r = (int)recvmsg(sock, &m, 0);
+    *n = 0;
+    *flags = m.msg_flags;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); r >= 0 && c != NULL; c = CMSG_NXTHDR(&m, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+            int k = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+            memcpy(fds + *n, CMSG_DATA(c), k * sizeof(int));
+            *n += k;
+        }
+    }
+    return r;
+}
+
+/* Fds over a unix socket (SCM_RIGHTS): each comes with the message it was
+ * sent with; a pipe end from a child that has exited still reads what the
+ * child wrote; a socket received works; fds a too small control buffer
+ * has no room for are closed (MSG_CTRUNC), and so are fds never received.
+ * NULL, or what failed. */
+static const char *pass_fds(void) {
+    int sv[2], p[2], q[2], fds[4], n, flags;
+    char buf[8];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        return "SCM_RIGHTS: socketpair";
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        int kp[2];
+        close(sv[0]);
+        _exit(pipe(kp) != 0 || write(kp[1], "kid", 3) != 3 || send_fds(sv[1], 'A', &kp[0], 1) != 0);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return "SCM_RIGHTS: a child sends a pipe's read end";
+    }
+    if (recv_fds(sv[0], buf, sizeof buf, fds, 4, &n, &flags) != 1 || buf[0] != 'A' || n != 1 || flags != 0
+        || read(fds[0], buf, 3) != 3 || memcmp(buf, "kid", 3) != 0) {
+        return "SCM_RIGHTS: the pipe end, received after the child exited, reads";
+    }
+    close(fds[0]);
+
+    /* Two messages with fds: each read takes its own. */
+    if (pipe(p) != 0 || send_fds(sv[1], 'B', &p[0], 1) != 0 || send_fds(sv[1], 'C', &p[1], 1) != 0) {
+        return "SCM_RIGHTS: send two messages";
+    }
+    if (recv_fds(sv[0], buf, sizeof buf, fds, 4, &n, &flags) != 1 || buf[0] != 'B' || n != 1) {
+        return "SCM_RIGHTS: the first read stops before the second message's fds";
+    }
+    int r = fds[0];
+    if (recv_fds(sv[0], buf, sizeof buf, fds, 4, &n, &flags) != 1 || buf[0] != 'C' || n != 1) {
+        return "SCM_RIGHTS: the second read takes the second message's fds";
+    }
+    if (write(fds[0], "w", 1) != 1 || read(r, buf, 1) != 1 || buf[0] != 'w') {
+        return "SCM_RIGHTS: both ends of a pipe received";
+    }
+    close(r);
+    close(fds[0]);
+
+    /* A socket received works. */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, q) != 0 || send_fds(sv[1], 'D', &q[1], 1) != 0) {
+        return "SCM_RIGHTS: send a socket";
+    }
+    close(q[1]);
+    if (recv_fds(sv[0], buf, sizeof buf, fds, 4, &n, &flags) != 1 || n != 1 || write(fds[0], "s", 1) != 1
+        || read(q[0], buf, 1) != 1 || buf[0] != 's') {
+        return "SCM_RIGHTS: a socket received";
+    }
+    close(fds[0]);
+    close(q[0]);
+
+    /* Room for one of two: the other is closed. */
+    int two[2] = {p[0], p[1]};
+    if (send_fds(sv[1], 'E', two, 2) != 0 || recv_fds(sv[0], buf, sizeof buf, fds, 1, &n, &flags) != 1 || n != 1
+        || !(flags & MSG_CTRUNC)) {
+        return "SCM_RIGHTS: MSG_CTRUNC";
+    }
+    close(fds[0]);
+    close(p[0]);
+    close(p[1]);
+
+    /* Never received: closed. The pipe's last write end goes with the
+     * conversation, and its read end sees EOF. */
+    if (pipe(p) != 0) {
+        return "SCM_RIGHTS: pipe";
+    }
+    if (send_fds(sv[1], 'G', &p[1], 1) != 0) {
+        return "SCM_RIGHTS: send a write end";
+    }
+    close(p[1]);
+    close(sv[0]);
+    close(sv[1]);
+    if (read(p[0], buf, 1) != 0) {
+        return "SCM_RIGHTS: fds never received are closed";
+    }
+    close(p[0]);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     static char bulk[BULK];
     char buf[8];
@@ -220,6 +361,10 @@ int main(int argc, char **argv) {
     close(sv[1]);
     if (many() != 0) {
         return 1;
+    }
+    const char *e = pass_fds();
+    if (e != NULL) {
+        return fail(e);
     }
 
     int ls = listener(NAME);

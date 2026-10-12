@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include "myos_fmt.h"
 #include <poll.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -1619,6 +1620,214 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     /* _read already maps empty connected reads (EAGAIN / block / hangup EOF). */
     (void)flags;
     return n;
+}
+
+/* The fds of msg's SCM_RIGHTS messages into `fds` (at most `cap`): how
+ * many, or -1 when the control data is malformed. */
+static int sent_rights(const struct msghdr *msg, int *fds, int cap) {
+    struct msghdr m = *msg;
+    struct cmsghdr *c;
+    int n = 0;
+    if (m.msg_control == NULL) {
+        return 0;
+    }
+    for (c = CMSG_FIRSTHDR(&m); c != NULL; c = CMSG_NXTHDR(&m, c)) {
+        size_t k;
+        if (c->cmsg_len < CMSG_LEN(0)) {
+            return -1;
+        }
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) {
+            continue;
+        }
+        for (k = 0; k < (c->cmsg_len - CMSG_LEN(0)) / sizeof(int); k++) {
+            if (n == cap) {
+                return -1;
+            }
+            memcpy(&fds[n++], CMSG_DATA(c) + k * sizeof(int), sizeof(int));
+        }
+    }
+    return n;
+}
+
+/* sendmsg: the data, with the fds of an SCM_RIGHTS message on a unix
+ * socket: the conversation's "rights" takes them and they come with the
+ * first byte (docs/sockets-unix.md). */
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
+    struct myos_sock *s = sock_lookup(sockfd);
+    int fds[253];
+    int n = sent_rights(msg, fds, 253);
+    ssize_t r;
+    if (n < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (n > 0) {
+        char cmd[sizeof "rights" + 253 * 4];
+        size_t pos = 6;
+        int i;
+        if (s == NULL || s->family != AF_UNIX) {
+            errno = s == NULL ? ENOTSOCK : EINVAL;
+            return -1;
+        }
+        memcpy(cmd, "rights", 6);
+        for (i = 0; i < n; i++) {
+            int w;
+            if (fds[i] < 0) {
+                errno = EBADF;
+                return -1;
+            }
+            cmd[pos++] = ' ';
+            w = myos_u16_dec(cmd + pos, sizeof cmd - pos, (unsigned short)fds[i]);
+            if (w < 0) {
+                errno = EBADF;
+                return -1;
+            }
+            pos += (size_t)w;
+        }
+        cmd[pos] = '\0';
+        if (listener_ctl(s, cmd) < 0) {
+            errno = EBADF; /* an fd that is not open */
+            return -1;
+        }
+    }
+    if (msg->msg_name != NULL && s != NULL && s->state != SOCK_CONNECTED && !is_dgram(sockfd)) {
+        if (connect(sockfd, msg->msg_name, msg->msg_namelen) < 0) {
+            return -1;
+        }
+    }
+    if (is_dgram(sockfd)) {
+        /* One datagram: the iovecs gathered (no fds on UDP). */
+        size_t total = 0, off = 0, i;
+        char *buf;
+        for (i = 0; i < msg->msg_iovlen; i++) {
+            total += msg->msg_iov[i].iov_len;
+        }
+        buf = malloc(total ? total : 1);
+        if (buf == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+        for (i = 0; i < msg->msg_iovlen; i++) {
+            memcpy(buf + off, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
+            off += msg->msg_iov[i].iov_len;
+        }
+        r = udp_send(s, buf, total, flags, msg->msg_name, msg->msg_namelen);
+        free(buf);
+        return r;
+    }
+    r = writev(sockfd, msg->msg_iov, (int)msg->msg_iovlen);
+    if (n > 0 && r <= 0) {
+        int e = errno;
+        /* Not sent: a retry sends them again. */
+        listener_ctl(s, "norights");
+        errno = e;
+    }
+    return r;
+}
+
+/* The fds that came with what the last read of `s` took: the
+ * conversation's "rights" makes them this process's. How many, into `fds`. */
+static int received_rights(struct myos_sock *s, int *fds, int cap) {
+    char path[64];
+    char buf[253 * 4 + 2];
+    int fd, n = 0;
+    ssize_t len, i;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "rights") < 0) {
+        return 0;
+    }
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    len = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    for (i = 0; i < len; ) {
+        int v = 0, any = 0;
+        while (i < len && buf[i] >= '0' && buf[i] <= '9') {
+            v = v * 10 + (buf[i++] - '0');
+            any = 1;
+        }
+        if (any && n < cap) {
+            fds[n++] = v;
+        }
+        i++;
+    }
+    return n;
+}
+
+/* recvmsg: the data, and on a unix socket the fds that came with it as an
+ * SCM_RIGHTS message; those msg_control has no room for are closed
+ * (MSG_CTRUNC). */
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags) {
+    struct myos_sock *s = sock_lookup(sockfd);
+    int restore = 0, fds[253], n = 0, kept, i;
+    ssize_t r;
+    if (is_dgram(sockfd)) {
+        /* One datagram, scattered over the iovecs. */
+        size_t total = 0, off = 0, k;
+        char *buf;
+        for (k = 0; k < msg->msg_iovlen; k++) {
+            total += msg->msg_iov[k].iov_len;
+        }
+        buf = malloc(total ? total : 1);
+        if (buf == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+        r = udp_recv(s, buf, total, flags, msg->msg_name, &msg->msg_namelen);
+        for (k = 0; r > 0 && k < msg->msg_iovlen && off < (size_t)r; k++) {
+            size_t take = msg->msg_iov[k].iov_len < (size_t)r - off ? msg->msg_iov[k].iov_len : (size_t)r - off;
+            memcpy(msg->msg_iov[k].iov_base, buf + off, take);
+            off += take;
+        }
+        free(buf);
+        msg->msg_controllen = 0;
+        msg->msg_flags = 0;
+        return r;
+    }
+    if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
+        s->nonblock = 1;
+        restore = 1;
+    }
+    r = readv(sockfd, msg->msg_iov, (int)msg->msg_iovlen);
+    if (restore) {
+        s->nonblock = 0;
+    }
+    msg->msg_flags = 0;
+    msg->msg_namelen = 0;
+    if (r > 0 && s != NULL && s->family == AF_UNIX) {
+        n = received_rights(s, fds, 253);
+    }
+    kept = 0;
+    if (n > 0 && msg->msg_control != NULL && msg->msg_controllen >= CMSG_LEN(sizeof(int))) {
+        kept = (int)((msg->msg_controllen - CMSG_LEN(0)) / sizeof(int));
+        if (kept > n) {
+            kept = n;
+        }
+    }
+    for (i = kept; i < n; i++) {
+        close(fds[i]);
+    }
+    if (kept < n) {
+        msg->msg_flags |= MSG_CTRUNC;
+    }
+    for (i = 0; i < kept; i++) {
+        if (flags & MSG_CMSG_CLOEXEC) {
+            fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+        }
+    }
+    if (kept > 0) {
+        struct cmsghdr *c = (struct cmsghdr *)msg->msg_control;
+        size_t space = CMSG_SPACE(kept * sizeof(int));
+        c->cmsg_len = CMSG_LEN(kept * sizeof(int));
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        memcpy(CMSG_DATA(c), fds, kept * sizeof(int));
+        msg->msg_controllen = space < msg->msg_controllen ? space : msg->msg_controllen;
+    } else {
+        msg->msg_controllen = 0;
+    }
+    return r;
 }
 
 ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,

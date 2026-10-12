@@ -2,6 +2,7 @@
 #define _MYOS_SYS_SOCKET_H_
 
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -48,9 +49,48 @@ typedef unsigned short sa_family_t;
 #define SHUT_RDWR 2
 
 #define MSG_PEEK     0x2
+#define MSG_CTRUNC   0x8
 #define MSG_TRUNC    0x20
 #define MSG_DONTWAIT 0x40
 #define MSG_NOSIGNAL 0x4000
+#define MSG_CMSG_CLOEXEC 0x40000000
+
+/* sendmsg / recvmsg (socket.c), with Linux's layout. The control data a
+ * unix socket carries is fds (SCM_RIGHTS, docs/sockets-unix.md). */
+struct msghdr {
+    void *msg_name;
+    socklen_t msg_namelen;
+    struct iovec *msg_iov;
+    size_t msg_iovlen;
+    void *msg_control;
+    size_t msg_controllen;
+    int msg_flags;
+};
+
+struct cmsghdr {
+    size_t cmsg_len;
+    int cmsg_level;
+    int cmsg_type;
+};
+
+#define SCM_RIGHTS 1
+
+#define CMSG_ALIGN(len) (((len) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
+#define CMSG_DATA(c) ((unsigned char *)((struct cmsghdr *)(c) + 1))
+#define CMSG_SPACE(len) (CMSG_ALIGN(len) + CMSG_ALIGN(sizeof(struct cmsghdr)))
+#define CMSG_LEN(len) (CMSG_ALIGN(sizeof(struct cmsghdr)) + (len))
+#define CMSG_FIRSTHDR(m) \
+    ((m)->msg_controllen >= sizeof(struct cmsghdr) ? (struct cmsghdr *)(m)->msg_control : (struct cmsghdr *)0)
+#define CMSG_NXTHDR(m, c) __myos_cmsg_nxthdr((m), (c))
+
+static __inline struct cmsghdr *__myos_cmsg_nxthdr(struct msghdr *m, struct cmsghdr *c) {
+    unsigned char *next = (unsigned char *)c + CMSG_ALIGN(c->cmsg_len);
+    unsigned char *end = (unsigned char *)m->msg_control + m->msg_controllen;
+    if (c->cmsg_len < sizeof(struct cmsghdr) || next + sizeof(struct cmsghdr) > end) {
+        return (struct cmsghdr *)0;
+    }
+    return (struct cmsghdr *)next;
+}
 
 struct sockaddr {
     sa_family_t sa_family;
@@ -85,6 +125,8 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
     const struct sockaddr *dest_addr, socklen_t addrlen);
 ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
     struct sockaddr *src_addr, socklen_t *addrlen);
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
 
 /* Called from _close so hangup frees /net conversation slots. */
 void myos_socket_on_close(int fd);

@@ -52,7 +52,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 38 added [`KernelApi::user_mapped`] (the Linux layer's `mremap` tells
 /// a mapped range from a hole).
 /// 39 raised [`MYOS_MAX_TASKS`] to 512 and [`MYOS_MAX_FDS`] to 256.
-pub const ABI_VERSION: u32 = 39;
+/// 40 added [`KernelApi::fd_hold`], `fd_install` and `fd_release` (fds
+/// passed over a unix socket, `SCM_RIGHTS`).
+pub const ABI_VERSION: u32 = 40;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -864,6 +866,17 @@ pub struct KernelApi {
     /// 1 when every page of `[addr, addr + len)` is the calling process's
     /// (its image, stack, heap below the break or an mmap region), else 0.
     pub user_mapped: unsafe extern "C" fn(addr: usize, len: usize) -> i32,
+    // --- ABI 40 ---
+    /// Hold what the calling process's `fd` refers to, as a `dup` would,
+    /// for another process to receive: a token (> 0), or negative for a
+    /// free fd. A module that never hands it on lets go with `fd_release`.
+    pub fd_hold: unsafe extern "C" fn(fd: usize) -> isize,
+    /// Make held `token` the calling process's lowest free fd (closing at
+    /// exec when `cloexec` is nonzero): the fd, or negative (no such token,
+    /// or no free fd: still held then).
+    pub fd_install: unsafe extern "C" fn(token: usize, cloexec: i32) -> i32,
+    /// Let go of held `token`, as a close of the fd would.
+    pub fd_release: unsafe extern "C" fn(token: usize),
 }
 
 /// Where a module keeps the table `module_init` received: set once there,
@@ -1349,6 +1362,20 @@ impl KernelApi {
 
     pub fn wake(&self, key: usize) {
         unsafe { (self.wake)(key) }
+    }
+
+    pub fn fd_hold(&self, fd: usize) -> Option<usize> {
+        let t = unsafe { (self.fd_hold)(fd) };
+        (t > 0).then_some(t as usize)
+    }
+
+    pub fn fd_install(&self, token: usize, cloexec: bool) -> Option<usize> {
+        let fd = unsafe { (self.fd_install)(token, cloexec as i32) };
+        (fd >= 0).then_some(fd as usize)
+    }
+
+    pub fn fd_release(&self, token: usize) {
+        unsafe { (self.fd_release)(token) }
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {
