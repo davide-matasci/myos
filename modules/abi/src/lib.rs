@@ -54,7 +54,8 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 39 raised [`MYOS_MAX_TASKS`] to 512 and [`MYOS_MAX_FDS`] to 256.
 /// 40 added [`KernelApi::fd_hold`], `fd_install` and `fd_release` (fds
 /// passed over a unix socket, `SCM_RIGHTS`).
-pub const ABI_VERSION: u32 = 40;
+/// 41 added [`KernelApi::cpu_time`] and [`KernelApi::membarrier`].
+pub const ABI_VERSION: u32 = 41;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -877,7 +878,20 @@ pub struct KernelApi {
     pub fd_install: unsafe extern "C" fn(token: usize, cloexec: i32) -> i32,
     /// Let go of held `token`, as a close of the fd would.
     pub fd_release: unsafe extern "C" fn(token: usize),
+    // --- ABI 41 ---
+    /// Nanoseconds of CPU time of [`MYOS_CPU_PROCESS`] (the calling
+    /// process's threads, ended ones included), [`MYOS_CPU_THREAD`] (the
+    /// calling thread) or [`MYOS_CPU_CHILDREN`] (its reaped children).
+    pub cpu_time: unsafe extern "C" fn(which: u32) -> u64,
+    /// A memory barrier on every CPU that runs a task now, done before it
+    /// returns (the CPUs are interrupted and answer): `membarrier`.
+    pub membarrier: unsafe extern "C" fn(),
 }
+
+/// [`KernelApi::cpu_time`]'s `which`.
+pub const MYOS_CPU_PROCESS: u32 = 0;
+pub const MYOS_CPU_THREAD: u32 = 1;
+pub const MYOS_CPU_CHILDREN: u32 = 2;
 
 /// Where a module keeps the table `module_init` received: set once there,
 /// read through [`ApiCell::get`] by every later call, from any CPU.
@@ -1376,6 +1390,14 @@ impl KernelApi {
 
     pub fn fd_release(&self, token: usize) {
         unsafe { (self.fd_release)(token) }
+    }
+
+    pub fn cpu_time(&self, which: u32) -> u64 {
+        unsafe { (self.cpu_time)(which) }
+    }
+
+    pub fn membarrier(&self) {
+        unsafe { (self.membarrier)() }
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {

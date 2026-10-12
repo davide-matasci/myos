@@ -1480,13 +1480,83 @@ pub(super) fn now_us() -> u64 {
     }
 }
 
-pub fn clock_gettime(ts: usize) -> R {
-    let us = now_us();
+/// `clock_gettime(clock, ts)`: the process's and the thread's CPU-time
+/// clocks are their CPU time (the kernel's accounting); every other clock
+/// is the time of day.
+pub fn clock_gettime(clock: usize, ts: usize) -> R {
+    const CLOCK_PROCESS_CPUTIME_ID: usize = 2;
+    const CLOCK_THREAD_CPUTIME_ID: usize = 3;
+    let ns = match clock {
+        CLOCK_PROCESS_CPUTIME_ID => crate::k::api().cpu_time(myos_abi::MYOS_CPU_PROCESS),
+        CLOCK_THREAD_CPUTIME_ID => crate::k::api().cpu_time(myos_abi::MYOS_CPU_THREAD),
+        _ => now_us() * 1000,
+    };
     let mut b = [0u8; 16];
-    b[..8].copy_from_slice(&(us / 1_000_000).to_le_bytes());
-    b[8..].copy_from_slice(&((us % 1_000_000) * 1000).to_le_bytes());
+    b[..8].copy_from_slice(&(ns / 1_000_000_000).to_le_bytes());
+    b[8..].copy_from_slice(&(ns % 1_000_000_000).to_le_bytes());
     put(ts, &b)?;
     Ok(0)
+}
+
+/// `getrusage(who, usage)`: the CPU time of the process, the thread or the
+/// reaped children (the kernel's accounting), all of it as user time; the
+/// other fields are 0.
+pub fn getrusage(who: usize, usage: usize) -> R {
+    const RUSAGE_SELF: isize = 0;
+    const RUSAGE_CHILDREN: isize = -1;
+    const RUSAGE_THREAD: isize = 1;
+    let which = match who as i32 as isize {
+        RUSAGE_SELF => myos_abi::MYOS_CPU_PROCESS,
+        RUSAGE_CHILDREN => myos_abi::MYOS_CPU_CHILDREN,
+        RUSAGE_THREAD => myos_abi::MYOS_CPU_THREAD,
+        _ => return Err(EINVAL),
+    };
+    let ns = crate::k::api().cpu_time(which);
+    // struct rusage: ru_utime and ru_stime (timevals), 14 longs.
+    let mut b = [0u8; 144];
+    b[..8].copy_from_slice(&(ns / 1_000_000_000).to_le_bytes());
+    b[8..16].copy_from_slice(&(ns % 1_000_000_000 / 1000).to_le_bytes());
+    put(usage, &b)?;
+    Ok(0)
+}
+
+/// `fadvise64(fd, offset, len, advice)`: a hint, taken and not acted on.
+pub fn fadvise(fd: usize, advice: usize) -> R {
+    const POSIX_FADV_NOREUSE: usize = 5;
+    if task::fd_kind(fd).is_none() {
+        return Err(EBADF);
+    }
+    if advice > POSIX_FADV_NOREUSE {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
+/// `membarrier(cmd, flags, cpu)`: the global and the private expedited
+/// barriers are one, every CPU running a task passing a memory barrier
+/// before the call returns (the kernel interrupts them and waits for each);
+/// registering is accepted. `MEMBARRIER_CMD_QUERY` says which.
+pub fn membarrier(cmd: usize, flags: usize) -> R {
+    const QUERY: usize = 0;
+    const GLOBAL: usize = 1;
+    const GLOBAL_EXPEDITED: usize = 2;
+    const REGISTER_GLOBAL_EXPEDITED: usize = 4;
+    const PRIVATE_EXPEDITED: usize = 8;
+    const REGISTER_PRIVATE_EXPEDITED: usize = 16;
+    const SUPPORTED: usize =
+        GLOBAL | GLOBAL_EXPEDITED | REGISTER_GLOBAL_EXPEDITED | PRIVATE_EXPEDITED | REGISTER_PRIVATE_EXPEDITED;
+    if flags != 0 {
+        return Err(EINVAL);
+    }
+    match cmd {
+        QUERY => Ok(SUPPORTED),
+        REGISTER_GLOBAL_EXPEDITED | REGISTER_PRIVATE_EXPEDITED => Ok(0),
+        GLOBAL | GLOBAL_EXPEDITED | PRIVATE_EXPEDITED => {
+            crate::k::api().membarrier();
+            Ok(0)
+        }
+        _ => Err(EINVAL),
+    }
 }
 
 /// `clock_getres(clock, res)`: the one clock's resolution, a microsecond

@@ -287,7 +287,11 @@ Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 `setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
-Time and misc: `clock_gettime`, `clock_getres`, `gettimeofday`, `time`,
+Time and misc: `clock_gettime` (the time of day for every clock but the
+process's and the thread's CPU-time clocks, which are their CPU time),
+`clock_getres`, `gettimeofday`, `time`, `getrusage` (the process's, the
+thread's or the reaped children's CPU time, all as user time; the other
+fields 0),
 `nanosleep`, `clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
 created and unlinked at once, as libgloss's; sealing is accepted and not
 done); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
@@ -296,9 +300,13 @@ readiness: readable on `POLLIN`, `POLLHUP` or `POLLERR`, writable on
 applied and `select` does not update its timeout), which FLTK's event loop
 waits in (dillo);
 `sched_getaffinity` (every online CPU, so cargo and rustc run their jobs in
-parallel) and `sched_setaffinity` (accepted; the core places tasks).
+parallel) and `sched_setaffinity` (accepted; the core places tasks);
+`fadvise64` (a hint: accepted); `membarrier` (the global and the private
+expedited barriers, one and the same: every CPU running a task is
+interrupted and answers, as for a TLB shootdown, before the call returns;
+registering is accepted).
 
-Anything else returns `ENOSYS` (`membarrier` among them: issue #420).
+Anything else returns `ENOSYS`.
 `/proc/linux_trace` reports each such call (Debugging below).
 
 ## Sockets
