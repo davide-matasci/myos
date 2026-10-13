@@ -6,9 +6,13 @@ text, read to see it and written to change it. myos has no `ioctl`: nothing
 about a terminal, or any device, goes through one.
 
 ```
-/dev/console/data        the hardware console (serial and framebuffer)
+/dev/console/data        the console: the kernel's messages, the boot's, the daemons'
 /dev/console/ctl
 /dev/console/kbd         the keyboard's presses and releases, for a program that takes it
+/dev/tty1/data           a terminal on text screen 1 of the framebuffer (tty1…tty9)
+/dev/tty1/ctl
+/dev/ttyS0/data          the serial port's terminal
+/dev/ttyS0/ctl
 /dev/pts/clone           open: allocates a pty pair, returns its master fd
 /dev/pts/N/master        the master end, what clone returned (never opened by name)
 /dev/pts/N/data          the slave, the terminal a session runs on
@@ -18,6 +22,51 @@ about a terminal, or any device, goes through one.
 /proc/self/tty           symlink to the controlling terminal's directory, /dev/pts/3
 /proc/self/exe           symlink to the program the process runs (the file its exec loaded)
 ```
+
+## Screens and logins
+
+The framebuffer has ten text screens, one shown at a time. Screen 0 is the
+console's: the kernel's messages, the boot's status lines, and what
+processes write to `/dev/console/data` (the boot script `/etc/rc`, a daemon's
+`syslog`). Screens 1 to 9 are the terminals `/dev/tty1` to `/dev/tty9`.
+Every screen keeps its text while another is shown and is drawn whole when
+it comes back; text written to a screen that is not shown costs no drawing.
+`Alt+1` to `Alt+9` (the left Alt and the number row) show tty1 to tty9,
+`Alt+0` the console; the key is taken, the shell never sees it (oksh's
+`Alt+digit` repeat count is gone with it). `screen N` on
+`/dev/console/ctl` does the same, and the ctl's `screen` line says which is
+shown. The keyboard types at the shown screen's terminal: the console's on
+screen 0, `ttyN` on screen N.
+
+The serial port is `/dev/ttyS0`. The kernel's own messages always go to it
+as well as to screen 0, so a crash shows on a headless machine; what
+processes write to the console goes to it too until `ttyS0` is first opened
+(by its getty, at the end of init's boot), so the serial port shows the
+whole boot and then is a terminal like the others, with its input going to
+`ttyS0` instead of the console.
+
+init starts a getty on `ttyS0` and on `tty1` to `ttyN`, each started again
+when its session ends, and shows tty1's screen once they run: the local
+login is on tty1, the boot's lines are one `Alt+0` away. `N` comes from
+`/data/etc/ttys` when the data partition has one, else from the image's
+`/etc/ttys` (4): a number from 0 to 9, on a line of its own.
+
+```
+$ echo 2 > /data/etc/ttys        # tty1 and tty2 at the next boot
+```
+
+While a program holds the screen (`/dev/fb` in `graphics` mode, an X
+server) it has it to itself: the text screens keep taking text but nothing
+is drawn, and while it holds the keyboard (`/dev/console/kbd`) `Alt+N` is
+one more key for it, not a switch. When it gives the screen back the shown
+screen is drawn again.
+
+The ttys are pty pairs whose master the kernel holds (below): their
+termios, `ctty`, `^C` and window size work as a pty's, and `/proc/self/tty`
+names them (`/dev/tty3`, `/dev/ttyS0`). A screen's window size is the
+screen's; `ttyS0` has the screen's too until a `winsize` line sets its own
+(the serial line has no size). They are `dev.tty` in the policy, like the
+ptys: for now every user's, not only their session's (issue #442).
 
 `/dev/tty` stays a plain file because POSIX names it and ported programs open
 it as such. Its control file is `$(readlink /proc/self/tty)/ctl`. A program
@@ -36,19 +85,16 @@ cc 03 00 7f 00 04 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 speed 0 0
 winsize 100 160
 keymap /lib/kbd/ch.map
-mirror on
+screen 1
 ```
 
 The four flag lines and `speed` are the termios fields with Linux's bit values
 (`toolchain/newlib/libgloss/myos/termios.h`), `cc` the 32 control characters
 (`VINTR` first) as two hex digits each, `winsize` rows and columns. The console
 has two more lines: `keymap`, the file its keyboard map was loaded from, or
-`none`; `mirror`, whether its output goes to the screen as well as to the
-serial port (`on`, the default) or to the serial port only (`off`: scrolling
-a big framebuffer is slow under emulation, so the boot tests' runner turns it
-off while they run). A write takes the same lines back, and a line changes
+`none`; `screen`, the text screen shown (above). A write takes the same lines back, and a line changes
 only what it names: `lflag 0` puts the terminal in raw mode and leaves the
-rest alone, `cc 03` sets `VINTR` only, `mirror off` stops the screen copy.
+rest alone, `cc 03` sets `VINTR` only, `screen 0` shows the console.
 Numbers are `0x` hex or decimal. Three more lines are commands:
 
 | Line | Effect |
@@ -57,7 +103,7 @@ Numbers are `0x` hex or decimal. Three more lines are commands:
 | `flush [in\|out\|both]` | discard the pending input and/or output; `both` when nothing is given |
 | `keymap PATH` | the console loads the keyboard map in that file (`docs/keymap.md`); a pty refuses it |
 
-A pty refuses `mirror` too.
+A pty refuses `screen` too.
 
 A write applies all its lines or none: an unknown word, a bad number, a line
 with extra words or a keymap that cannot be loaded fails it with nothing
@@ -110,8 +156,8 @@ keys the keymap does not map and every key while no keymap is loaded. There is
 no autorepeat: a held key is one `d` and, later, one `u`.
 
 Opening the file takes the keyboard: until its last fd closes (or its
-holder exits) the console tty gets no keys from it. Serial input still
-reaches the tty, so the serial console stays usable. One program holds the
+holder exits) no terminal gets keys from it, and `Alt+N` does not switch
+screens. The serial port's terminal is not affected. One program holds the
 file at a time; another open fails. Reads return whole lines; a read waits
 for the next event, `poll` reports `POLLIN` while one is queued. The queue
 holds 128 events and drops new ones while full. The keyboard interrupts
@@ -120,11 +166,11 @@ virtio-input device's interrupt); otherwise it is polled every 10 ms while
 someone waits. The file exists when the
 console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
 
-Console input goes through the line discipline as it arrives, whether or
-not anything reads the console (the `console-input` kernel thread,
-[`kernel/src/input.rs`](../kernel/src/input.rs)): `^C` interrupts a
-foreground job that never reads it, such as `sha512sum /dev/zero`, and
-typed-ahead input is echoed at once.
+Keyboard and serial input goes through the line discipline as it arrives,
+whether or not anything reads the terminal (the `console-input` kernel
+thread, [`kernel/src/input.rs`](../kernel/src/input.rs)): `^C` interrupts a
+job that never reads it, such as `sha512sum /dev/zero`, and typed-ahead
+input is echoed at once.
 
 A read of the console (`/dev/console/data`, `/dev/tty`) waits for as long as
 it takes, a shell at its prompt until the next key, without holding the
@@ -151,6 +197,11 @@ master's reads report `EIO` once drained ([`kernel/src/pty.rs`](../kernel/src/pt
 There is no fixed number of pairs: each takes a few KiB of kernel heap and
 holds at least one fd, so the fd limits bound them, and a freed index is
 reused first.
+
+The kernel's terminals (`ttyS0`, `tty1`…`tty9`) are pairs too, made at boot,
+whose master the kernel holds for good: their output goes to the serial port
+or their screen instead of a ring a master reads, and their input comes from
+the serial port or the keyboard. They are never hung up.
 
 ## libc
 

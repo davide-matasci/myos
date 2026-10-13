@@ -4,8 +4,9 @@
 //!   `1280 800 32 x8r8g8b8 5120 text`. `chan` names the pixel layout from
 //!   the most significant bits down, as Plan 9 does (`x` is unused bits).
 //!   Writing `graphics` takes the screen: this module stops painting text
-//!   and blinking the cursor on it. Writing `text`, or closing the last fd
-//!   of `ctl` (a program's exit too), gives it back, cleared.
+//!   and blinking the cursor on it (the text screens keep taking text).
+//!   Writing `text`, or closing the last fd of `ctl` (a program's exit
+//!   too), gives it back: the text screen to show is painted again.
 //! - `data` is the pixels: `read`/`write` at an offset (`cat data` is a
 //!   screenshot), or `mmap(MAP_SHARED)`, which maps the framebuffer itself
 //!   (the kernel asks [`fb_mmap`] for each page).
@@ -69,12 +70,13 @@ fn write_pixels(fb: &FramebufferInfo, pos: usize, buf: *const u8, len: usize) ->
     n
 }
 
-/// Give the screen back to the text console: cleared, since it cannot
-/// repaint what was drawn over it.
+/// Give the screen back to the text screens: the one to show is painted
+/// whole, with what it took meanwhile.
 fn leave_graphics() {
+    let mut screens = FB.lock();
     if GRAPHICS.swap(false, Ordering::Relaxed) {
-        if let Some(w) = FB.lock().as_mut() {
-            w.clear();
+        if let Some(w) = screens.active() {
+            w.show();
         }
     }
 }
@@ -236,7 +238,13 @@ unsafe extern "C" fn fb_write(path: *const u8, len: usize, pos: usize, buf: *con
         Node::Root => -1,
         Node::Ctl => match unsafe { core::slice::from_raw_parts(buf, n) }.trim_ascii() {
             b"graphics" => {
-                GRAPHICS.store(true, Ordering::Relaxed);
+                // The text screen stops drawing; it keeps taking text.
+                let mut screens = FB.lock();
+                if !GRAPHICS.swap(true, Ordering::Relaxed) {
+                    if let Some(w) = screens.active() {
+                        w.hide();
+                    }
+                }
                 n as i32
             }
             b"text" => {

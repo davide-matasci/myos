@@ -34,6 +34,8 @@ pub struct Decoder {
     set: ScancodeSet,
     shift: bool,
     altgr: bool,
+    /// Left Alt (Right Alt is AltGr).
+    alt: bool,
     ctrl: bool,
     extended: bool,
     set2_break: bool,
@@ -46,6 +48,7 @@ impl Decoder {
             set,
             shift: false,
             altgr: false,
+            alt: false,
             ctrl: false,
             extended: false,
             set2_break: false,
@@ -65,6 +68,11 @@ impl Decoder {
         self.altgr
     }
 
+    /// True while the left Alt key is held down (the right one is AltGr).
+    pub fn alt(&self) -> bool {
+        self.alt
+    }
+
     /// True while a Ctrl key (left or right) is held down.
     pub fn ctrl(&self) -> bool {
         self.ctrl
@@ -73,6 +81,7 @@ impl Decoder {
     pub fn reset_modifiers(&mut self) {
         self.shift = false;
         self.altgr = false;
+        self.alt = false;
         self.ctrl = false;
         self.extended = false;
         self.set2_break = false;
@@ -141,6 +150,7 @@ impl Decoder {
                 } else {
                     match sc {
                         0x12 | 0x59 => self.shift = false,
+                        0x11 => self.alt = false,  // Left Alt
                         0x14 => self.ctrl = false, // Left Ctrl
                         _ => {}
                     }
@@ -164,6 +174,7 @@ impl Decoder {
             let code = sc & 0x7F;
             match code {
                 0x2A | 0x36 => self.shift = false,
+                0x38 => self.alt = false,  // Left Alt
                 0x1D => self.ctrl = false, // Left Ctrl
                 _ => {}
             }
@@ -241,8 +252,11 @@ impl Decoder {
                 self.shift = true;
                 None
             }
-            // Left Alt — not AltGr; ignore for character path.
-            0x38 => None,
+            // Left Alt — not AltGr: a modifier, no character.
+            0x38 => {
+                self.alt = true;
+                None
+            }
             0x1D => {
                 self.ctrl = true; // Left Ctrl
                 None
@@ -258,7 +272,10 @@ impl Decoder {
                 self.shift = true;
                 None
             }
-            0x11 => None, // Left Alt (non-extended)
+            0x11 => {
+                self.alt = true; // Left Alt (non-extended)
+                None
+            }
             0x14 => {
                 self.ctrl = true; // Left Ctrl
                 None
@@ -763,6 +780,27 @@ mod tests {
         assert!(dec.autodetect_set2_make(0x44));
         assert_eq!(dec.set(), ScancodeSet::Set2);
         assert_eq!(dec.feed(0x44), Some(0x18));
+    }
+
+    #[test]
+    fn alt_set1() {
+        let mut dec = Decoder::new(ScancodeSet::Set1);
+        assert_eq!(dec.feed(0x38), None);
+        assert!(dec.alt() && !dec.altgr());
+        assert_eq!(dec.feed(0x03), Some(0x03)); // 2 while Alt is held
+        assert_eq!(dec.feed(0xB8), None);
+        assert!(!dec.alt());
+    }
+
+    #[test]
+    fn alt_set2() {
+        let mut dec = Decoder::new(ScancodeSet::Set2);
+        assert_eq!(dec.feed(0x11), None);
+        assert!(dec.alt() && !dec.altgr());
+        assert_eq!(dec.feed(0x1E), Some(0x03)); // 2 while Alt is held
+        assert_eq!(dec.feed(0xF0), None);
+        assert_eq!(dec.feed(0x11), None);
+        assert!(!dec.alt());
     }
 
     #[test]

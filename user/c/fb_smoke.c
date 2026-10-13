@@ -106,7 +106,8 @@ static int text_main(void) {
     if (geometry(&g) < 0 || g.depth != 32 || g.width < CELLS_W) {
         return fail("text: ctl");
     }
-    /* The runner turned the screen copy off (run.sh): on for the check. */
+    /* The console's text screen shown for the check, the one shown before
+     * again after it (docs/tty.md). */
     char line[512];
     int ctl = open("/dev/console/ctl", O_RDWR);
     ssize_t n = ctl < 0 ? -1 : read(ctl, line, sizeof line - 1);
@@ -114,10 +115,10 @@ static int text_main(void) {
         return fail("text: console ctl");
     }
     line[n] = '\0';
-    char *mirror = strstr(line, "mirror ");
-    char *end = mirror ? strchr(mirror, '\n') : NULL;
-    if (end == NULL || ctl_write(ctl, "mirror on\n") < 0) {
-        return fail("text: mirror on");
+    char *screen = strstr(line, "screen ");
+    char *end = screen ? strchr(screen, '\n') : NULL;
+    if (end == NULL || ctl_write(ctl, "screen 0\n") < 0) {
+        return fail("text: screen 0");
     }
     end[1] = '\0';
     int con = open("/dev/console/data", O_WRONLY);
@@ -151,7 +152,7 @@ static int text_main(void) {
         }
     }
     write(con, "\033[H\033[J\n", 7);
-    ctl_write(ctl, mirror);
+    ctl_write(ctl, screen);
     close(ctl);
 
 #define SAME(a, b) (memcmp(px[a], px[b], sizeof px[a]) == 0)

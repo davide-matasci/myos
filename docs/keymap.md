@@ -9,7 +9,8 @@ positions). Characters come from a keymap loaded at runtime.
 
 - Kernel keymap slot is **empty** after boot.
 - Until a map is loaded, keyboard hardware produces **no** console ASCII.
-- **Serial stdin is unchanged** (CI and serial consoles keep working).
+- **Serial input is unchanged** (CI and serial consoles keep working: the
+  serial port is `ttyS0`, `docs/tty.md`).
 - `user/init` loads the default map early (before getty):
 
 ```rust
@@ -125,7 +126,7 @@ this is how TUIs like `vim` and the shell's line editor get their keys.
 ## oksh: Emacs line editing on the raw console
 
 The interactive shell (`ports/oksh`) does **not** read cooked canonical lines
-anymore. At the `$` prompt it puts the console tty into raw/cbreak mode
+anymore. At the `$` prompt it puts its tty into raw/cbreak mode
 (clears `ICANON`\|`ECHO`, keeps `ISIG` via `tcsetattr` → kernel `TCSETS`) and
 runs its bundled **Emacs** line editor (`emacs.c`) over the raw bytes. The
 kernel delivers the `ESC [ A/B/C/D` bytes the keyboard drivers produce directly

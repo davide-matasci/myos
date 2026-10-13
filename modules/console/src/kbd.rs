@@ -23,7 +23,7 @@
 //! `KEY_*` numbering: while a program holds `/dev/console/kbd`
 //! ([`crate::kbdev`]) those events go to it and the tty gets no keys.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::keymap;
 use myos_abi::Lock;
@@ -148,6 +148,33 @@ fn caps_shift(keycode: u8, shift: bool, altgr: bool) -> bool {
 /// A Latin-1 letter (the keymap's characters are Latin-1).
 fn is_letter(c: u8) -> bool {
     c.is_ascii_alphabetic() || (c >= 0xC0 && c != 0xD7 && c != 0xF7)
+}
+
+/// A screen Alt+digit asked for ([`screen_key`]), not taken yet: 0–9, or
+/// -1 for none.
+static SCREEN: AtomicI32 = AtomicI32::new(-1);
+
+/// Alt (the left one) with a digit of the number row switches screens
+/// (`docs/tty.md`): Alt+1…Alt+9 to tty1…tty9, Alt+0 to the console. True
+/// when `keycode` was that and is taken; the tty gets nothing for it.
+pub fn screen_key(keycode: u8, alt: bool) -> bool {
+    // Set-1 positions of 1…9 and 0.
+    if !alt || !(0x02..=0x0B).contains(&keycode) {
+        return false;
+    }
+    SCREEN.store(i32::from(keycode - 1) % 10, Ordering::SeqCst);
+    true
+}
+
+/// The screen a key asked for since the last call, if any.
+pub fn take_screen() -> Option<u32> {
+    u32::try_from(SCREEN.swap(-1, Ordering::SeqCst)).ok()
+}
+
+/// A screen taken with [`take_screen`] goes back, unless a key asked for
+/// another since.
+pub fn put_back_screen(n: u32) {
+    let _ = SCREEN.compare_exchange(-1, n as i32, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 /// Someone holds `/dev/console/kbd`: keys go there, not to the tty.

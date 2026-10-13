@@ -273,9 +273,9 @@ pub enum CtlAction {
     /// `keymap PATH`: the console loads the keyboard map in that file
     /// (`docs/keymap.md`); a pty refuses it.
     Keymap(String),
-    /// `mirror on|off`: the console's output on the screen too, or on the
-    /// serial port only; a pty refuses it.
-    Mirror(bool),
+    /// `screen N`: the console shows text screen `N` (0 its own, 1–9 the
+    /// ttys', `docs/tty.md`); a pty refuses it.
+    Screen(usize),
 }
 
 /// The text of a terminal's control file, `ctl` next to its `data`
@@ -307,7 +307,7 @@ pub fn ctl_text(t: &Termios, rows: u16, cols: u16) -> Vec<u8> {
 
 /// Parse a write to a control file: the lines of [`ctl_text`] (a flag line
 /// changes that flag only, a `cc` line the characters it lists) and the
-/// commands `ctty`, `flush [in|out|both]`, `keymap PATH` and `mirror on|off`. Numbers are `0x` hex or
+/// commands `ctty`, `flush [in|out|both]`, `keymap PATH` and `screen N`. Numbers are `0x` hex or
 /// decimal. The write is all or nothing: an unknown word, a bad number or a
 /// line with too many words fails it (`None`) and nothing is applied, so it
 /// has to carry whole lines.
@@ -367,11 +367,13 @@ pub fn ctl_parse(current: &Termios, text: &[u8]) -> Option<Vec<CtlAction>> {
                 actions.push(CtlAction::Flush { input, output });
             }
             "keymap" => actions.push(CtlAction::Keymap(String::from(words.next()?))),
-            "mirror" => match words.next()? {
-                "on" => actions.push(CtlAction::Mirror(true)),
-                "off" => actions.push(CtlAction::Mirror(false)),
-                _ => return None,
-            },
+            "screen" => {
+                let n = number(words.next()?)? as usize;
+                if n >= myos_abi::CONSOLE_SCREENS {
+                    return None;
+                }
+                actions.push(CtlAction::Screen(n));
+            }
             _ => return None,
         }
         if words.next().is_some() {
@@ -396,7 +398,7 @@ fn number(word: &str) -> Option<u32> {
 /// it has one, else none.
 pub fn ctty_dir() -> Option<String> {
     if let Some(id) = crate::pty::for_session(crate::task::current_pid()) {
-        return Some(alloc::format!("/dev/pts/{id}"));
+        return Some(crate::pty::dir(id));
     }
     crate::task::has_ctty().then(|| String::from("/dev/console"))
 }

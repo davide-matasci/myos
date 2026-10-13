@@ -146,34 +146,86 @@ fn spawn_rc() {
     }
 }
 
-/// Stay PID1: fork getty, wait for *that* child, respawn.
-///
-/// Other children (notably netd) must not trigger another getty: a second
-/// getty on the same `/dev/console` reprints `login: ` on the same line and
-/// steals stdin bytes so login is unusable.
+/// The ttys with a login: `/data/etc/ttys` (the administrator's), else the
+/// image's `/etc/ttys` (`docs/tty.md`): their number, 0 to 9, on a line of
+/// its own (`#` lines are comments). 1 when neither says.
+fn tty_count() -> usize {
+    for path in [&b"/data/etc/ttys"[..], b"/etc/ttys"] {
+        let Some(fd) = myos_user::open(path) else {
+            continue;
+        };
+        let mut buf = [0u8; 512];
+        let n = myos_user::read(fd, &mut buf);
+        close(fd);
+        if n == usize::MAX {
+            continue;
+        }
+        let line = buf[..n].split(|&b| b == b'\n').map(|l| l.trim_ascii()).find(|l| !l.is_empty() && l[0] != b'#');
+        match line {
+            Some(&[d]) if d.is_ascii_digit() => return usize::from(d - b'0'),
+            _ => status_warn("ttys: not a number from 0 to 9"),
+        }
+    }
+    1
+}
+
+/// The terminals with a getty: `ttyS0` (the serial port), then `tty1`…
+/// `ttyN`, as `/dev/<name>/data`.
+const TTYS: [&[u8]; 10] = [
+    b"/dev/ttyS0/data",
+    b"/dev/tty1/data",
+    b"/dev/tty2/data",
+    b"/dev/tty3/data",
+    b"/dev/tty4/data",
+    b"/dev/tty5/data",
+    b"/dev/tty6/data",
+    b"/dev/tty7/data",
+    b"/dev/tty8/data",
+    b"/dev/tty9/data",
+];
+
+/// A getty on `tty`; its pid.
+fn spawn_getty(tty: &[u8]) -> Option<usize> {
+    match fork() {
+        Some(0) => {
+            exec(b"/bin/ubase/getty", &[b"getty", tty, b"linux"]);
+            status_fail("getty exec failed");
+            exit();
+        }
+        Some(pid) => Some(pid),
+        None => {
+            status_fail("getty fork failed");
+            None
+        }
+    }
+}
+
+/// Stay PID1: a getty on each terminal, each started again when it exits
+/// (a logout). Other children (netd, the boot script) exit without one.
+/// The screen goes from the console's to tty1's, whose login is the local
+/// one; Alt+0 shows the console again.
 fn spawn_getty_loop() -> ! {
+    let ttys = &TTYS[..1 + tty_count()];
+    let mut pids = [None; TTYS.len()];
+    for (i, tty) in ttys.iter().enumerate() {
+        pids[i] = spawn_getty(tty);
+    }
+    if ttys.len() > 1 {
+        if let Some(fd) = open_flags(b"/dev/console/ctl", O_WRONLY) {
+            write_fd(fd, b"screen 1\n");
+            close(fd);
+        }
+    }
     loop {
-        match fork() {
-            Some(0) => {
-                exec(
-                    b"/bin/ubase/getty",
-                    &[b"getty", b"/dev/console/data", b"linux"],
-                );
-                status_fail("getty exec failed");
-                exit();
+        if let Some((pid, _)) = wait_status() {
+            if let Some(i) = pids.iter().position(|&p| p == Some(pid)) {
+                pids[i] = None;
             }
-            Some(getty_pid) => {
-                loop {
-                    match wait_status() {
-                        Some((pid, _)) if pid == getty_pid => break,
-                        Some(_) => {}
-                        None => break,
-                    }
-                }
-            }
-            None => {
-                status_fail("getty fork failed");
-                exit();
+        }
+        // The one that exited, and any whose start failed.
+        for (i, tty) in ttys.iter().enumerate() {
+            if pids[i].is_none() {
+                pids[i] = spawn_getty(tty);
             }
         }
     }

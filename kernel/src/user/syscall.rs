@@ -657,7 +657,7 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
             return task::fd_open_pty_master().unwrap_or(SYSERR);
         }
         if let Some((index, member)) = rest.split_once('/') {
-            if let Ok(id) = index.parse::<usize>() {
+            if let Some(id) = index.parse::<usize>().ok().and_then(crate::pty::pts_id) {
                 match member {
                     "data" => return task::fd_open_pty_slave(id).unwrap_or(SYSERR),
                     "master" => return SYSERR,
@@ -665,6 +665,10 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
                 }
             }
         }
+    }
+    // The kernel's terminals, /dev/tty1…9 and /dev/ttyS0: pty slaves too.
+    if let Some(id) = fs::term_data_id(path_rel) {
+        return task::fd_open_pty_slave(id).unwrap_or(SYSERR);
     }
     // An event counter's, a timer's, a wait set's or a signal fd's data
     // (docs/events.md): the fd is of that kind, its I/O routed via

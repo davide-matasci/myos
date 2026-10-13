@@ -178,6 +178,8 @@ pub(crate) fn kernel_main() -> ! {
     }
 
     fs::init();
+    // The kernel's terminals, /dev/tty1…9 and /dev/ttyS0 (docs/tty.md).
+    pty::init_terms();
     fs::init_limine();
     rng::init();
     console::status_ok("urandom");

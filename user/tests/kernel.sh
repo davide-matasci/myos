@@ -255,7 +255,7 @@ t fstab_mount fstab_mount
 tty_ctl() {
 	tty=$(readlink /proc/self/tty) || return 1
 	echo "tty: $tty"
-	[ "$tty" = /dev/console ] || return 1
+	[ "$tty" = /dev/ttyS0 ] || return 1
 	exec 5< /dev/console/data || return 1
 	fd5=$(readlink /proc/self/fd/5)
 	exec 5<&-
@@ -271,6 +271,43 @@ tty_ctl() {
 	grep -q '^winsize [0-9]* [0-9]*$' $tty/ctl
 }
 t tty_ctl tty_ctl
+
+# The kernel's terminals (docs/tty.md): ttyS0 on the serial port (this
+# session's) and tty1…tty9 on the console's text screens, init's getty on
+# the ones /etc/ttys names (4), tty1's screen shown. `screen N` on the
+# console's ctl shows another (0 the console's own), a tty refuses it.
+# Text written to a screen not shown is kept: shown, it is drawn whole.
+ttys() {
+	ls /dev | tr '\n' ' '
+	echo
+	for t in ttyS0 tty1 tty5 tty9; do
+		[ "$(ls /dev/$t | tr '\n' ' ')" = "ctl data " ] || return 1
+	done
+	ps
+	[ "$(ps | grep -c ' getty$')" = 4 ] || return 1
+	grep -q '^screen 1$' /dev/console/ctl || return 1
+	echo 'screen 2' > /dev/console/ctl || return 1
+	grep -q '^screen 2$' /dev/console/ctl || return 1
+	echo 'screen 10' > /dev/console/ctl 2>/dev/null && return 1
+	echo 'screen 0' > /dev/tty2/ctl 2>/dev/null && return 1
+	[ "$(grep '^winsize' /dev/tty9/ctl)" = "$(grep '^winsize' /dev/console/ctl)" ] || return 1
+	printf 'tty9\n' > /dev/tty9/data || return 1
+	[ -e /dev/fb/ctl ] || { echo 'screen 1' > /dev/console/ctl; return 0; }
+	read -r w h depth chan pitch mode < /dev/fb/ctl
+	echo 'screen 0' > /dev/console/ctl || return 1
+	blank=$(console_cells '')
+	echo 'screen 1' > /dev/console/ctl || return 1
+	shown=$(top_cells)
+	printf '\033[H\033[JQQ\033[10;1H' > /dev/console/data
+	hidden=$(top_cells)
+	echo 'screen 0' > /dev/console/ctl || return 1
+	back=$(top_cells)
+	printf '\033[H\033[J\n' > /dev/console/data
+	echo 'screen 1' > /dev/console/ctl
+	echo "screen 1: $shown; screen 0 written meanwhile: $hidden; screen 0 shown: $back; blank: $blank"
+	[ "$hidden" = "$shown" ] || { echo "screen 0's text was drawn while screen 1 was shown"; return 1; }
+	[ "$back" != "$blank" ] && [ "$back" != "$shown" ] || { echo "screen 0 was not drawn when shown"; return 1; }
+}
 
 # /proc/self/exe names the program a process runs: the real path of the
 # file its exec loaded (a multicall tool's hardlink by its own name).
@@ -762,24 +799,26 @@ t isatty isatty_fds
 # away (it blinks): "QQ" changes them, "QQ", CR and two spaces leaves them as
 # on a cleared screen (with the CR dropped the spaces would land after the
 # Qs).
-console_cells() {
-	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+# The console's screen (0) is shown for these checks, tty1's again after.
+top_cells() {
 	for y in 0 1 2 3 4 5 6 7; do
 		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
 	done | cksum
 }
 
+console_cells() {
+	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+	top_cells
+}
+
 console_cr() {
 	read -r w h depth chan pitch mode < /dev/fb/ctl
-	# The runner turned the screen copy off (run.sh): on for the check.
-	mirror=$(grep '^mirror ' /dev/console/ctl)
-	echo 'mirror on' > /dev/console/ctl || return 1
-	grep -q '^mirror on$' /dev/console/ctl || return 1
+	echo 'screen 0' > /dev/console/ctl || return 1
 	blank=$(console_cells '')
 	qq=$(console_cells 'QQ')
 	cr=$(console_cells 'QQ\r  ')
 	printf '\033[H\033[J\n' > /dev/console/data
-	echo "$mirror" > /dev/console/ctl
+	echo 'screen 1' > /dev/console/ctl
 	echo "cleared: $blank; QQ: $qq; QQ, CR, spaces: $cr"
 	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
 	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }
@@ -799,19 +838,19 @@ console_rows() {
 
 console_lines() {
 	read -r w h depth chan pitch mode < /dev/fb/ctl
-	mirror=$(grep '^mirror ' /dev/console/ctl)
-	echo 'mirror on' > /dev/console/ctl || return 1
+	echo 'screen 0' > /dev/console/ctl || return 1
 	moved=$(console_rows '\r\nA\r\nB')
 	il=$(console_rows 'A\r\nB\033[H\033[L')
 	ri=$(console_rows 'A\r\nB\033[H\033M')
 	dl=$(console_rows 'X\r\nA\r\nB\033[H\033[M')
 	up=$(console_rows 'A\r\nB')
 	printf '\033[H\033[J\n' > /dev/console/data
-	echo "$mirror" > /dev/console/ctl
+	echo 'screen 1' > /dev/console/ctl
 	echo "moved: $moved; IL: $il; RI: $ri; DL: $dl"
 	[ "$il" = "$moved" ] && [ "$ri" = "$moved" ] && [ "$dl" = "$up" ]
 }
 t console_lines console_lines
+t ttys ttys
 
 # Security (docs/security.md). The tests run as root in the admin domain.
 # A policy with three more users, alice and bob (passwords alice-pw and

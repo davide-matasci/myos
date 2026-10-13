@@ -44,12 +44,6 @@ done
 # long test's progress go there.
 exec 3>&1
 
-# The host watches the serial port; copying every line to a big screen too
-# makes a chatty test several times slower under emulation. The screen
-# comes back at the end.
-mirror=$(grep '^mirror ' /dev/console/ctl 2>/dev/null)
-[ -n "$mirror" ] && echo 'mirror off' > /dev/console/ctl
-
 # capture FILE COMMAND...: the command's output, both streams, in the file.
 capture() {
 	f=$1
@@ -110,7 +104,6 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	else
 		t booted_installed booted_slot a
 	fi
-	[ -n "$mirror" ] && echo "$mirror" > /dev/console/ctl
 	echo "TESTS DONE $passed/$total"
 	exit 0
 fi
@@ -161,5 +154,4 @@ for f in $LAST; do
 	t $f $f
 done
 
-[ -n "$mirror" ] && echo "$mirror" > /dev/console/ctl
 echo "TESTS DONE $passed/$total"

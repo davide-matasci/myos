@@ -7,6 +7,10 @@
 //! is the process controlling terminal: open is gated in [`crate::fs::open`]
 //! and aliases to the console's `data` when a ctty is set.
 //!
+//! The kernel's terminals are directories the same way (`docs/tty.md`,
+//! [`crate::pty`]): `tty1`…`tty9` on the console's text screens and
+//! `ttyS0` on the serial port.
+//!
 //! A module's character device (`KernelApi::dev_register`) is a directory
 //! too: `/dev/<name>/data` is the device, `/dev/<name>/ctl` its control file
 //! when the module gives it one ([`myos_abi::ModuleChrOps`]).
@@ -37,6 +41,12 @@ enum Node {
     Console,
     /// `console/ctl`, its control file.
     ConsoleCtl,
+    /// `ttyN` or `ttyS0` (the pty id), a kernel terminal's directory.
+    TermDir(usize),
+    /// Its `data`: opened as a pty slave ([`term_data_id`]).
+    TermData(usize),
+    /// Its `ctl`.
+    TermCtl(usize),
     Urandom,
     /// `<disk>`, a disk's directory.
     BlkDir(u32),
@@ -135,7 +145,33 @@ fn parse_blk(name: &str) -> Option<Node> {
     }
 }
 
+/// The pty id of a kernel terminal's directory name (`tty3`, `ttyS0`).
+fn term_id(name: &str) -> Option<usize> {
+    match name.strip_prefix("tty")? {
+        "S0" => Some(crate::pty::SERIAL),
+        n if n.len() == 1 => n.parse().ok().filter(|&n| (1..crate::pty::TERMS).contains(&n)),
+        _ => None,
+    }
+}
+
+/// The pty id behind `/dev/<name>` when that is a kernel terminal's `data`
+/// (`tty3/data`, `ttyS0/data`), which opens as a pty slave fd.
+pub fn term_data_id(name: &str) -> Option<usize> {
+    match parse(name)? {
+        Node::TermData(id) => Some(id),
+        _ => None,
+    }
+}
+
 fn parse(name: &str) -> Option<Node> {
+    if let Some(id) = term_id(name.split('/').next().unwrap_or("")) {
+        return match name.split_once('/') {
+            None => Some(Node::TermDir(id)),
+            Some((_, "data")) => Some(Node::TermData(id)),
+            Some((_, "ctl")) => Some(Node::TermCtl(id)),
+            Some(_) => None,
+        };
+    }
     match name {
         "null" => Some(Node::Null),
         "zero" => Some(Node::Zero),
@@ -184,12 +220,14 @@ pub fn create(_name: &str) -> bool {
 pub fn truncate(name: &str) -> bool {
     // O_TRUNC on char/block devices is a no-op; a control file takes the
     // shell's truncating open (`echo … > ctl`) the same way.
-    parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_) | Node::BlkDir(_) | Node::BlkInfo(_)))
+    parse(name).is_some_and(|n| {
+        !matches!(n, Node::ConsoleDir | Node::TermDir(_) | Node::ChrDir(_) | Node::BlkDir(_) | Node::BlkInfo(_))
+    })
 }
 
 /// The text of `/dev/console/ctl`: the console termios, the screen's size,
-/// the keyboard map (`keymap PATH`, or `keymap none`) and whether output is
-/// mirrored to the screen (`mirror on|off`).
+/// the keyboard map (`keymap PATH`, or `keymap none`) and the text screen
+/// shown (`screen N`).
 pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
     let (rows, cols) = crate::console::winsize();
     let mut text = crate::tty::ctl_text(&input::termios(), rows, cols);
@@ -198,23 +236,30 @@ pub fn console_ctl_text() -> alloc::vec::Vec<u8> {
         Some(path) => text.extend_from_slice(path.as_bytes()),
         None => text.extend_from_slice(b"none"),
     }
-    text.extend_from_slice(if crate::console::mirrors_bytes() { b"\nmirror on\n" } else { b"\nmirror off\n" });
+    text.extend_from_slice(alloc::format!("\nscreen {}\n", crate::console::active()).as_bytes());
     text
 }
 
 /// A write to `/dev/console/ctl`. A `winsize` line is accepted and ignored:
 /// the console is the size of the screen. The console has no output buffer,
 /// so `flush out` has nothing to do. `keymap PATH` loads the keyboard map in
-/// that file (`docs/keymap.md`), `mirror on|off` turns the screen copy of
-/// the output on or off.
+/// that file (`docs/keymap.md`), `screen N` shows text screen `N`.
 pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
     use crate::tty::CtlAction;
     let actions = crate::tty::ctl_parse(&input::termios(), text)?;
-    // The keymap load is the one step that can fail, so it goes first and
-    // the write stays all or nothing.
+    // The keymap load and the switch are the steps that can fail, so they
+    // go first and the write stays all or nothing (a switch is undone when
+    // the keymap fails after it).
     for action in &actions {
         if let CtlAction::Keymap(path) = action {
             if !crate::console::keymap_load_file(path) {
+                return None;
+            }
+        }
+    }
+    for action in &actions {
+        if let CtlAction::Screen(n) = action {
+            if !crate::console::show(*n) {
                 return None;
             }
         }
@@ -225,8 +270,7 @@ pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
             CtlAction::Winsize(..) => {}
             CtlAction::Ctty => task::set_ctty(),
             CtlAction::Flush { input: true, .. } => input::flush_input(),
-            CtlAction::Mirror(on) => crate::console::set_mirror(on),
-            CtlAction::Flush { .. } | CtlAction::Keymap(_) => {}
+            CtlAction::Flush { .. } | CtlAction::Keymap(_) | CtlAction::Screen(_) => {}
         }
     }
     Some(text.len())
@@ -262,6 +306,8 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
         }
         Some(Node::ConsoleDir) => 0,
         Some(Node::ConsoleCtl) => copy_at(&console_ctl_text(), pos, out),
+        Some(Node::TermDir(_)) | Some(Node::TermData(_)) => 0,
+        Some(Node::TermCtl(id)) => copy_at(&crate::pty::ctl_text(id).unwrap_or_default(), pos, out),
         // /dev/urandom and /dev/random share the kernel CSPRNG pool (phase-1
         // has no blocking distinction; pos is ignored — it is a stream).
         Some(Node::Urandom) => {
@@ -294,6 +340,8 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         }
         Some(Node::ConsoleDir) => None,
         Some(Node::ConsoleCtl) => console_ctl_write(buf),
+        Some(Node::TermDir(_)) | Some(Node::TermData(_)) => None,
+        Some(Node::TermCtl(id)) => crate::pty::ctl_write(id, buf),
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
@@ -311,7 +359,10 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
 }
 
 pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
-    const NAMES: &[&str] = &["null", "zero", "tty", "console", "urandom", "random"];
+    const NAMES: &[&str] = &[
+        "null", "zero", "tty", "console", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6", "tty7", "tty8", "tty9",
+        "ttyS0", "urandom", "random",
+    ];
     let names: alloc::vec::Vec<alloc::string::String> = match rel {
         "" | "." => {
             blk::scan();
@@ -324,6 +375,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
             NAMES.iter().map(|&n| n.into()).chain(blk::disks()).chain(chr).collect()
         }
         "console" => alloc::vec!["data".into(), "ctl".into()],
+        _ if matches!(parse(rel), Some(Node::TermDir(_))) => alloc::vec!["data".into(), "ctl".into()],
         _ => match (parse_chr(rel), parse(rel)) {
             (Some(i), _) if chr_has_ctl(i) => alloc::vec!["data".into(), "ctl".into()],
             (Some(_), _) => alloc::vec!["data".into()],
@@ -402,6 +454,33 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             mode: S_IFREG | 0o644,
             size: console_ctl_text().len() as u64,
             ino: 9,
+            nlink: 1,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        }),
+        Node::TermDir(id) => Some(StatInfo {
+            mode: S_IFDIR | 0o755,
+            size: 0,
+            ino: 60 + 3 * id as u32,
+            nlink: 2,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        }),
+        Node::TermData(id) => Some(StatInfo {
+            mode: S_IFCHR | 0o666,
+            size: 0,
+            ino: 61 + 3 * id as u32,
+            nlink: 1,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        }),
+        Node::TermCtl(id) => Some(StatInfo {
+            mode: S_IFREG | 0o644,
+            size: crate::pty::ctl_text(id).map_or(0, |t| t.len() as u64),
+            ino: 62 + 3 * id as u32,
             nlink: 1,
             dev: 0,
             mtime: 0,

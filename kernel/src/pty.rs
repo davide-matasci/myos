@@ -17,6 +17,13 @@
 //! - closing the last master fd sends `SIGHUP` to the pty's session group.
 //! - `ISIG` ^C on the slave input goes to the pty's session group (the
 //!   console's ^C path is unchanged and stays in [`crate::input`]).
+//!
+//! The kernel's own terminals are pairs too, whose master it holds itself
+//! (`docs/tty.md`): `/dev/tty1`…`/dev/tty9`, each on a text screen of the
+//! console, typed at with the keyboard while its screen is shown, and
+//! `/dev/ttyS0`, the serial port. Their output goes to the screen or the
+//! UART instead of a ring a master reads ([`Sink`]); they hold the first
+//! [`TERMS`] ids, so pair `N` of `/dev/pts` is id `TERMS + N`.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
@@ -29,7 +36,34 @@ use crate::tty::{CtlAction, TtyIn, OPOST, ONLCR};
 
 const OUT_CAP: usize = 4096;
 
+/// The kernel's terminals: id 0 is `ttyS0`, id `N` is `ttyN`.
+pub const TERMS: usize = 10;
+/// `ttyS0`'s id.
+pub const SERIAL: usize = 0;
+
+/// Where a pair's output (and echo) goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sink {
+    /// The ring its master reads: a `/dev/pts` pair.
+    Master,
+    /// Text screen `N` of the console: `ttyN`.
+    Screen(usize),
+    /// The serial port: `ttyS0`.
+    Serial,
+}
+
+impl Sink {
+    fn emit(self, bytes: &[u8]) {
+        match self {
+            Sink::Master => {}
+            Sink::Screen(n) => crate::console::write_screen(n, bytes),
+            Sink::Serial => crate::console::write_serial(bytes),
+        }
+    }
+}
+
 pub struct Pty {
+    sink: Sink,
     /// Shared input discipline + pair termios (TCGETS/TCSETS on either end).
     term: Mutex<TtyIn>,
     /// Slave output (and echo) the master reads. head/tlen relative to cap.
@@ -106,9 +140,60 @@ fn try_box(pty: Pty) -> Option<Box<Pty>> {
     }
 }
 
+/// Make the kernel's terminals ([`TERMS`]), before any pair: their master
+/// is the kernel's for good.
+pub fn init_terms() {
+    let mut ptys = PTYS.lock();
+    for id in 0..TERMS {
+        let sink = if id == SERIAL { Sink::Serial } else { Sink::Screen(id) };
+        let pty = Box::new(new_pty(sink));
+        ptys.push(Some(pty));
+    }
+}
+
+fn new_pty(sink: Sink) -> Pty {
+    Pty {
+        sink,
+        term: Mutex::new(TtyIn::new()),
+        out: Mutex::new(OutRing::new()),
+        // A terminal's own size is the screen's (or the serial default):
+        // (0, 0) until a `winsize` line sets it.
+        winsize: Mutex::new(if sink == Sink::Master { (24, 80) } else { (0, 0) }),
+        master_refs: AtomicUsize::new(1),
+        slave_refs: AtomicUsize::new(0),
+        session: AtomicUsize::new(usize::MAX),
+    }
+}
+
+/// The directory a pair's files are in: `/dev/pts/N`, `/dev/ttyN` or
+/// `/dev/ttyS0`.
+pub fn dir(id: usize) -> alloc::string::String {
+    match id {
+        SERIAL => alloc::string::String::from("/dev/ttyS0"),
+        1..TERMS => alloc::format!("/dev/tty{id}"),
+        _ => alloc::format!("/dev/pts/{}", id - TERMS),
+    }
+}
+
+/// The id of `/dev/pts/N`, if that pair exists.
+pub fn pts_id(n: usize) -> Option<usize> {
+    let id = n.checked_add(TERMS)?;
+    slave_exists(id).then_some(id)
+}
+
+/// `/dev/ttyS0` has been opened (by its getty): from then on the serial
+/// port is that terminal's, the console's output stays on its screen and
+/// the UART's input goes to `ttyS0`.
+static SERIAL_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn serial_taken() -> bool {
+    SERIAL_TAKEN.load(Ordering::Relaxed)
+}
+
 /// Allocate a pair. The caller owns the initial master reference.
 pub fn alloc() -> Option<usize> {
     let pty = try_box(Pty {
+        sink: Sink::Master,
         term: Mutex::new(TtyIn::new()),
         out: Mutex::new(OutRing::new()),
         winsize: Mutex::new((24, 80)),
@@ -165,6 +250,9 @@ pub fn master_ref(id: usize) {
 pub fn slave_ref(id: usize) {
     if let Some(p) = pty_at(id) {
         p.slave_refs.fetch_add(1, Ordering::SeqCst);
+        if p.sink == Sink::Serial {
+            SERIAL_TAKEN.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -226,11 +314,19 @@ pub fn for_session(pid: usize) -> Option<usize> {
     crate::task::session_alive(sid).then_some(id)
 }
 
-/// The text of `/dev/pts/N/ctl` (`crate::tty::ctl_text`).
+/// The pair's window size: its own, or a terminal's screen's.
+fn winsize(p: &Pty) -> (u16, u16) {
+    match (p.sink, *p.winsize.lock()) {
+        (Sink::Screen(_), _) | (Sink::Serial, (0, 0)) => crate::console::winsize(),
+        (_, size) => size,
+    }
+}
+
+/// The text of a pair's `ctl` (`crate::tty::ctl_text`).
 pub fn ctl_text(id: usize) -> Option<Vec<u8>> {
     let p = pty_at(id)?;
     let termios = p.term.lock().termios;
-    let (rows, cols) = *p.winsize.lock();
+    let (rows, cols) = winsize(p);
     Some(crate::tty::ctl_text(&termios, rows, cols))
 }
 
@@ -240,17 +336,22 @@ pub fn ctl_write(id: usize, text: &[u8]) -> Option<usize> {
     let p = pty_at(id)?;
     let current = p.term.lock().termios;
     let actions = crate::tty::ctl_parse(&current, text)?;
-    // The keyboard map and the screen are the console's: refused before
-    // anything is applied.
-    if actions.iter().any(|a| matches!(a, CtlAction::Keymap(_) | CtlAction::Mirror(_))) {
+    // The keyboard map and the screen shown are the console's: refused
+    // before anything is applied.
+    if actions.iter().any(|a| matches!(a, CtlAction::Keymap(_) | CtlAction::Screen(_))) {
         return None;
     }
     for action in actions {
         match action {
             CtlAction::Termios(t) => p.term.lock().set_termios(t),
-            CtlAction::Winsize(rows, cols) => *p.winsize.lock() = (rows, cols),
+            // A screen is the size it is.
+            CtlAction::Winsize(rows, cols) => {
+                if !matches!(p.sink, Sink::Screen(_)) {
+                    *p.winsize.lock() = (rows, cols);
+                }
+            }
             CtlAction::Ctty => claim_session(id),
-            CtlAction::Keymap(_) | CtlAction::Mirror(_) => {}
+            CtlAction::Keymap(_) | CtlAction::Screen(_) => {}
             CtlAction::Flush { input, output } => {
                 if input {
                     p.term.lock().flush_input();
@@ -284,14 +385,22 @@ pub fn master_write(id: usize, data: &[u8]) -> usize {
         let oflag = term.termios.c_oflag;
         let post = oflag & OPOST != 0;
         let onlcr = oflag & ONLCR != 0;
+        let sink = p.sink;
         let mut echo = |b: u8| {
             if post && onlcr && b == b'\n' {
                 out.push(b'\r');
             }
             out.push(b);
         };
+        let mut echo_terminal = |b: u8| {
+            if post && onlcr && b == b'\n' {
+                sink.emit(b"\r");
+            }
+            sink.emit(&[b]);
+        };
+        let echo: &mut dyn FnMut(u8) = if sink == Sink::Master { &mut echo } else { &mut echo_terminal };
         for &raw in data {
-            if term.push_raw(raw, &mut echo) {
+            if term.push_raw(raw, echo) {
                 vintr = true;
             }
             n += 1;
@@ -370,6 +479,11 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
     let oflag = p.term.lock().termios.c_oflag;
     let post = oflag & OPOST != 0;
     let onlcr = oflag & ONLCR != 0;
+    if p.sink != Sink::Master {
+        terminal_write(p.sink, data, post && onlcr);
+        notify(id);
+        return data.len();
+    }
     let mut n = 0usize;
     for &b in data {
         // OPOST/ONLCR: LF expands to CRLF in the output stream.
@@ -413,6 +527,27 @@ pub fn slave_write(id: usize, data: &[u8]) -> usize {
     }
     notify(id);
     n
+}
+
+/// A kernel terminal's output: to its screen or the UART, LF as CRLF with
+/// `crlf` (`OPOST`, `ONLCR`), in pieces between the newlines.
+fn terminal_write(sink: Sink, data: &[u8], crlf: bool) {
+    if !crlf {
+        sink.emit(data);
+        return;
+    }
+    for (i, line) in data.split(|&b| b == b'\n').enumerate() {
+        if i > 0 {
+            sink.emit(b"\r\n");
+        }
+        sink.emit(line);
+    }
+}
+
+/// Input for a kernel terminal: the keyboard's bytes for the shown screen's
+/// tty, the UART's for `ttyS0`.
+pub fn terminal_input(id: usize, data: &[u8]) {
+    master_write(id, data);
 }
 
 /// Read from the master: slave output (and echo). Blocks until at least one
@@ -460,7 +595,7 @@ pub fn poll_state(id: usize, master: bool) -> (bool, bool, bool) {
             let term = p.term.lock();
             term.available() > 0 || term.eof
         };
-        let writable = p.out.lock().len < OUT_CAP;
+        let writable = p.sink != Sink::Master || p.out.lock().len < OUT_CAP;
         (readable, writable, p.master_refs.load(Ordering::SeqCst) == 0)
     }
 }

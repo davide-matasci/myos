@@ -6,6 +6,10 @@
 //! a wide one, none for a combining mark), drawn with the font's glyph or as
 //! `?` without one. Serial stays raw — only the framebuffer path parses
 //! escapes.
+//!
+//! A writer is one screen (`docs/tty.md`): the console's or a tty's. It
+//! keeps what each cell shows, so a screen that is not visible goes on
+//! taking text into its cells and is painted whole when it is shown again.
 
 use core::fmt;
 
@@ -69,8 +73,25 @@ enum AnsiState {
 
 const CSI_MAX_PARAMS: usize = 16;
 
-pub struct FrameBufferWriter<'a> {
-    buffer: &'a mut [u8],
+/// What one character cell shows: its glyph and colors.
+#[derive(Clone, Copy)]
+struct Cell {
+    glyph: [u8; 8],
+    fg: (u8, u8, u8),
+    bg: (u8, u8, u8),
+}
+
+const BLANK: Cell = Cell { glyph: [0; 8], fg: TEXT, bg: BG };
+
+pub struct FrameBufferWriter {
+    /// The pixels (Limine's framebuffer), shared by every screen: only the
+    /// visible one touches them.
+    fb: *mut u8,
+    fb_len: usize,
+    /// The cells, row by row (`rows() * cols()`), from the kernel's heap.
+    cells: *mut Cell,
+    /// The screen is on the framebuffer: drawing goes to the pixels too.
+    visible: bool,
     width: usize,
     height: usize,
     pitch: usize,
@@ -115,15 +136,32 @@ pub struct FrameBufferWriter<'a> {
     utf8_left: u8,
 }
 
-impl FrameBufferWriter<'static> {
-    /// A writer over the framebuffer the kernel describes (Limine's, already
-    /// mapped at `info.addr`).
-    pub fn from_info(info: &FramebufferInfo) -> Self {
+// SAFETY: the pointers are the framebuffer and the writer's own cells; a
+// writer is only used under the module's screen lock.
+unsafe impl Send for FrameBufferWriter {}
+
+impl FrameBufferWriter {
+    /// A screen on the framebuffer the kernel describes (Limine's, already
+    /// mapped at `info.addr`), blank and not visible; `None` when the heap
+    /// has no room for its cells.
+    pub fn from_info(info: &FramebufferInfo) -> Option<Self> {
         let bpp = (info.bpp as usize).max(8);
         let bytes_per_pixel = (bpp + 7) / 8;
         let len = (info.pitch as usize) * (info.height as usize);
-        Self {
-            buffer: unsafe { core::slice::from_raw_parts_mut(info.addr as *mut u8, len) },
+        let ncells = (info.width as usize / FONT_W).max(1) * (info.height as usize / FONT_H).max(1);
+        let cells = crate::api().alloc(ncells * core::mem::size_of::<Cell>(), core::mem::align_of::<Cell>()) as *mut Cell;
+        if cells.is_null() {
+            return None;
+        }
+        for i in 0..ncells {
+            // SAFETY: `cells` holds `ncells` cells.
+            unsafe { cells.add(i).write(BLANK) };
+        }
+        Some(Self {
+            fb: info.addr as *mut u8,
+            fb_len: len,
+            cells,
+            visible: false,
             width: info.width as usize,
             height: info.height as usize,
             pitch: info.pitch as usize,
@@ -155,11 +193,52 @@ impl FrameBufferWriter<'static> {
             scroll_bottom: usize::MAX,
             utf8_char: 0,
             utf8_left: 0,
-        }
+        })
     }
 }
 
-impl FrameBufferWriter<'_> {
+impl FrameBufferWriter {
+    /// The framebuffer's bytes, for the visible screen to draw on.
+    #[allow(clippy::mut_from_ref)]
+    fn pixels(&self) -> &'static mut [u8] {
+        // SAFETY: the framebuffer is `fb_len` bytes, mapped for the kernel's
+        // life; only the visible screen takes this slice, for one drawing
+        // step, under the module's screen lock.
+        unsafe { core::slice::from_raw_parts_mut(self.fb, self.fb_len) }
+    }
+
+    fn cell(&mut self, row: usize, col: usize) -> Option<&mut Cell> {
+        if row >= self.rows() || col >= self.cols() {
+            return None;
+        }
+        let i = row * self.cols() + col;
+        // SAFETY: `i` is inside the `rows() * cols()` cells.
+        Some(unsafe { &mut *self.cells.add(i) })
+    }
+
+    /// Put the screen on the framebuffer: every cell painted, the cursor
+    /// shown.
+    pub fn show(&mut self) {
+        self.visible = true;
+        self.cursor_on = false;
+        for row in 0..self.rows() {
+            for col in 0..self.cols() {
+                let Some(&mut c) = self.cell(row, col) else {
+                    continue;
+                };
+                self.paint_cell(row, col, c);
+            }
+        }
+        self.cursor_in();
+    }
+
+    /// Take the screen off the framebuffer: from now on it only keeps its
+    /// cells.
+    pub fn hide(&mut self) {
+        self.cursor_out();
+        self.visible = false;
+    }
+
     fn cols(&self) -> usize {
         (self.width / FONT_W).max(1)
     }
@@ -596,7 +675,7 @@ impl FrameBufferWriter<'_> {
     fn invert_cell(&mut self, row: usize, col: usize) {
         let cols = self.cols();
         let rows = self.rows();
-        if row >= rows || col >= cols {
+        if !self.visible || row >= rows || col >= cols {
             return;
         }
         let mut mask = 0u32;
@@ -613,7 +692,8 @@ impl FrameBufferWriter<'_> {
                     continue;
                 }
                 let offset = y * self.pitch + x * self.bytes_per_pixel;
-                let Some(pixel) = self.buffer.get_mut(offset..offset + self.bytes_per_pixel) else {
+                let bpp = self.bytes_per_pixel;
+                let Some(pixel) = self.pixels().get_mut(offset..offset + bpp) else {
                     continue;
                 };
                 let n = pixel.len().min(4);
@@ -649,7 +729,7 @@ impl FrameBufferWriter<'_> {
 
     /// Paint the block cursor at the current cell when userspace allows it.
     fn cursor_in(&mut self) {
-        if self.cursor_visible && !self.cursor_on {
+        if self.visible && self.cursor_visible && !self.cursor_on {
             let (r, c) = (self.row, self.col);
             self.cursor_on = true;
             self.invert_cell(r, c);
@@ -675,16 +755,14 @@ impl FrameBufferWriter<'_> {
         let c1 = col1.min(cols);
         let r0 = row0.min(rows);
         let r1 = row1.min(rows);
+        // Filled with the current background (SGR-aware).
+        let blank = Cell { glyph: [0; 8], fg: self.fg, bg: self.bg };
         for r in r0..r1 {
             for c in c0..c1 {
-                // Fill with current background (SGR-aware).
-                let x0 = c * FONT_W;
-                let y0 = r * FONT_H;
-                for dy in 0..FONT_H {
-                    for dx in 0..FONT_W {
-                        self.put_pixel(x0 + dx, y0 + dy, self.bg);
-                    }
+                if let Some(cell) = self.cell(r, c) {
+                    *cell = blank;
                 }
+                self.paint_cell(r, c, blank);
             }
         }
         self.cursor_in();
@@ -986,18 +1064,7 @@ impl FrameBufferWriter<'_> {
         if bottom <= top {
             return;
         }
-        let src_y = (top + 1) * FONT_H;
-        let dst_y = top * FONT_H;
-        let height_px = (bottom - top) * FONT_H;
-        let copy_len = height_px * self.pitch;
-        let src_off = src_y * self.pitch;
-        let dst_off = dst_y * self.pitch;
-        if copy_len > 0
-            && src_off + copy_len <= self.buffer.len()
-            && dst_off + copy_len <= self.buffer.len()
-        {
-            self.buffer.copy_within(src_off..src_off + copy_len, dst_off);
-        }
+        self.move_rows(top + 1, top, bottom - top);
         self.clear_region(0, bottom, self.cols(), bottom + 1);
         self.cursor_in();
     }
@@ -1008,29 +1075,52 @@ impl FrameBufferWriter<'_> {
         if bottom <= top {
             return;
         }
-        let src_y = top * FONT_H;
-        let dst_y = (top + 1) * FONT_H;
-        let height_px = (bottom - top) * FONT_H;
-        let copy_len = height_px * self.pitch;
-        let src_off = src_y * self.pitch;
-        let dst_off = dst_y * self.pitch;
-        if copy_len > 0
-            && src_off + copy_len <= self.buffer.len()
-            && dst_off + copy_len <= self.buffer.len()
-        {
-            self.buffer.copy_within(src_off..src_off + copy_len, dst_off);
-        }
+        self.move_rows(top, top + 1, bottom - top);
         self.clear_region(0, top, self.cols(), top + 1);
         self.cursor_in();
     }
 
+    /// `n` text rows from row `src` to row `dst`, cells and (when visible)
+    /// pixels.
+    fn move_rows(&mut self, src: usize, dst: usize, n: usize) {
+        let cols = self.cols();
+        if n == 0 || src.max(dst) + n > self.rows() {
+            return;
+        }
+        // SAFETY: both ranges are inside the `rows() * cols()` cells;
+        // `copy` handles the overlap.
+        unsafe { core::ptr::copy(self.cells.add(src * cols), self.cells.add(dst * cols), n * cols) };
+        if !self.visible {
+            return;
+        }
+        let pitch = self.pitch;
+        let (src_off, dst_off, len) = (src * FONT_H * pitch, dst * FONT_H * pitch, n * FONT_H * pitch);
+        let px = self.pixels();
+        if src_off + len <= px.len() && dst_off + len <= px.len() {
+            px.copy_within(src_off..src_off + len, dst_off);
+        }
+    }
+
     fn draw_glyph(&mut self, col: usize, row: usize, glyph: [u8; 8], fg: (u8, u8, u8)) {
+        let cell = Cell { glyph, fg, bg: self.bg };
+        if let Some(c) = self.cell(row, col) {
+            *c = cell;
+        }
+        self.paint_cell(row, col, cell);
+    }
+
+    /// Draw `cell` at (row, col) on the framebuffer when the screen is
+    /// visible.
+    fn paint_cell(&mut self, row: usize, col: usize, cell: Cell) {
+        if !self.visible {
+            return;
+        }
         let x0 = col * FONT_W;
         let y0 = row * FONT_H;
-        for (dy, bits) in glyph.iter().copied().enumerate() {
+        for (dy, bits) in cell.glyph.iter().copied().enumerate() {
             for dx in 0..FONT_W {
                 let on = bits & (1 << dx) != 0;
-                self.put_pixel(x0 + dx, y0 + dy, if on { fg } else { self.bg });
+                self.put_pixel(x0 + dx, y0 + dy, if on { cell.fg } else { cell.bg });
             }
         }
     }
@@ -1040,7 +1130,8 @@ impl FrameBufferWriter<'_> {
             return;
         }
         let offset = y * self.pitch + x * self.bytes_per_pixel;
-        let Some(pixel) = self.buffer.get_mut(offset..offset + self.bytes_per_pixel) else {
+        let bpp = self.bytes_per_pixel;
+        let Some(pixel) = self.pixels().get_mut(offset..offset + bpp) else {
             return;
         };
         let mut val = 0u32;
@@ -1132,7 +1223,7 @@ fn scale(channel: u8, bits: u8) -> u8 {
     }
 }
 
-impl fmt::Write for FrameBufferWriter<'_> {
+impl fmt::Write for FrameBufferWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.put_str(s);
         Ok(())
