@@ -10,6 +10,8 @@ get_alpine_fetch() {
 		[ -s $r/.get-alpine/pkgs/$p ] || { echo "no record of $p"; ls -a $r $r/.get-alpine; return 1; }
 	done
 	[ -x $r/usr/bin/jq ] && ls $r/lib/ld-musl-*.so.1 > /dev/null || { ls -R $r | head -40; return 1; }
+	# Every root gets the CAs, for a TLS client's default trust store.
+	[ -s $r/etc/ssl/certs/ca-certificates.crt ] && [ -s $r/.get-alpine/pkgs/ca-certificates-bundle ] || { ls -R $r/etc; return 1; }
 	# Installed packages are skipped.
 	run-myos get-alpine -r $r jq > /tmp/get-alpine-again.out 2>&1 || return 1
 	cat /tmp/get-alpine-again.out

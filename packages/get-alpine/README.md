@@ -16,6 +16,10 @@ run-myos get-alpine jq              # into /data/alpine (/tmp/alpine without /da
 linux --root /data/alpine jq -n '1+1'
 ```
 
+Besides the packages asked for, a root always gets Alpine's CA bundle
+(`ca-certificates-bundle`), the trust store of TLS clients such as Python,
+curl and wget, which do not depend on it.
+
 `test.sh` (full mode, after the install) fetches jq into a scratch root and
 checks the files and the records in `ROOT/.get-alpine`; running what it
 fetched is the Linux layer's test (`lx_alpine` in `user/tests/kernel.sh`).
