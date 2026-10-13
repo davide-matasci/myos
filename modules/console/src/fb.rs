@@ -326,7 +326,30 @@ impl FrameBufferWriter<'_> {
                 self.clear();
                 self.ansi_state = AnsiState::Normal;
             }
-            // Ignore other short ESC forms (e.g. ESC D IND).
+            // IND — index: down a line, scrolling at the region's bottom.
+            b'D' => {
+                let col = self.col;
+                self.newline();
+                self.set_cursor(self.row, col);
+                self.ansi_state = AnsiState::Normal;
+            }
+            // NEL — next line.
+            b'E' => {
+                self.newline();
+                self.ansi_state = AnsiState::Normal;
+            }
+            // RI — reverse index: up a line, scrolling down at the region's
+            // top (termcap `sr`).
+            b'M' => {
+                let top = self.scroll_top.min(self.scroll_bottom_row());
+                if self.row == top {
+                    self.scroll_down_region(top, self.scroll_bottom_row());
+                } else {
+                    self.set_cursor(self.row.saturating_sub(1), self.col);
+                }
+                self.ansi_state = AnsiState::Normal;
+            }
+            // Ignore other short ESC forms.
             _ => {
                 self.ansi_state = AnsiState::Normal;
             }
@@ -536,6 +559,29 @@ impl FrameBufferWriter<'_> {
                 let bot = self.scroll_bottom_row();
                 for _ in 0..n {
                     self.scroll_down_region(top, bot);
+                }
+            }
+            // IL / DL — insert / delete n lines at the cursor's row: the rows
+            // below it, down to the region's bottom, move down / up (termcap
+            // `al` / `dl`: vim opening a line). Outside the region, nothing.
+            b'L' | b'M' => {
+                let top = self.scroll_top.min(self.scroll_bottom_row());
+                let bot = self.scroll_bottom_row();
+                if (top..=bot).contains(&self.row) {
+                    let n = (self.csi_param(0, 1) as usize).min(bot - self.row + 1);
+                    for _ in 0..n {
+                        if final_byte == b'L' {
+                            self.scroll_down_region(self.row, bot);
+                        } else {
+                            self.scroll_up_region(self.row, bot);
+                        }
+                    }
+                    // The bottom (or only) row of the region: a one-row
+                    // region does not scroll, it is cleared.
+                    if self.row == bot {
+                        self.clear_region(0, bot, self.cols(), bot + 1);
+                    }
+                    self.set_cursor(self.row, 0);
                 }
             }
             // Ignore unsupported finals (still consumed).
