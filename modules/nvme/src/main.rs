@@ -9,9 +9,10 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use core::fmt::Write;
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, Lock, ModuleBlkOps, status_ok};
+use myos_abi::{ABI_VERSION, ApiCell, DiskInfo, KernelApi, Lock, ModuleBlkOps, status_ok};
 
 const SECTOR: usize = 512;
 /// The DMA buffer: one page, what a command's PRP1 covers.
@@ -63,6 +64,9 @@ struct Ctrl {
     io_cq_phase: u16,
     next_cid: u16,
     capacity: u64,
+    /// What identify says of the controller (`/dev/<disk>/info`).
+    serial: [u8; 20],
+    model: [u8; 40],
 }
 
 // SAFETY: the pointers are the controller's own queues and DMA page, used
@@ -348,6 +352,8 @@ fn setup(bar: usize) -> Option<Ctrl> {
         io_cq_phase: 1,
         next_cid: 1,
         capacity: 0,
+        serial: [0; 20],
+        model: [0; 40],
     };
 
     let mut id = [0u32; 16];
@@ -357,6 +363,11 @@ fn setup(bar: usize) -> Option<Ctrl> {
     id[10] = CNS_CTRL;
     dcache_civac(c.dma_va, 4096);
     admin(&mut c, id).ok()?;
+    dcache_civac(c.dma_va, 4096);
+    // SAFETY: the DMA page holds the controller's identify data now.
+    let ident = unsafe { core::slice::from_raw_parts(c.dma_va, 64) };
+    c.serial.copy_from_slice(&ident[4..24]);
+    c.model.copy_from_slice(&ident[24..64]);
 
     let mut idn = [0u32; 16];
     idn[0] = u32::from(OPC_IDENTIFY);
@@ -440,9 +451,15 @@ fn probe(api: &KernelApi) -> usize {
         let Some(n) = attach(va) else {
             continue;
         };
+        let mut info = DiskInfo::new();
+        let _ = write!(info, "nvme pci {bus:02x}:{slot:02x}.{func:x}");
+        if let Some(c) = CTRLS[n].lock().as_ref() {
+            info.quoted("model", &c.model);
+            info.quoted("serial", &c.serial);
+        }
         // nvme{n}n1 (n < 10: MAX_CTRL is 4).
         let name = [b'n', b'v', b'm', b'e', b'0' + n as u8, b'n', b'1'];
-        if api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n) < 0 {
+        if api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n, &info) < 0 {
             break;
         }
         new += 1;

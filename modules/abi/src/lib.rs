@@ -55,7 +55,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 40 added [`KernelApi::fd_hold`], `fd_install` and `fd_release` (fds
 /// passed over a unix socket, `SCM_RIGHTS`).
 /// 41 added [`KernelApi::cpu_time`] and [`KernelApi::membarrier`].
-pub const ABI_VERSION: u32 = 41;
+/// 42: [`KernelApi::blk_register`] takes the disk's description
+/// ([`DiskInfo`], `/dev/<disk>/info`); [`MmioDevice`] gives the window's
+/// physical address.
+pub const ABI_VERSION: u32 = 42;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -272,6 +275,67 @@ pub struct ModuleBlkOps {
     pub write: unsafe extern "C" fn(ctx: usize, lba: u64, buf: *const u8, len: usize) -> i32,
     /// Size in 512-byte sectors (0 = unknown).
     pub capacity_sectors: unsafe extern "C" fn(ctx: usize) -> u64,
+}
+
+/// Bytes of a disk's description ([`DiskInfo`]); the kernel cuts a longer one.
+pub const DISK_INFO_MAX: usize = 160;
+
+/// What a driver tells about a disk it registers ([`KernelApi::blk_register`]),
+/// shown after its name and size in `/dev/<disk>/info`: the driver, where the
+/// disk is (`pci 00:04.0`, `usb 0x002`, ...) and what the device says it
+/// is (`model "..."`, `serial "..."`). Built with `write!` and [`Self::quoted`];
+/// what does not fit is cut.
+pub struct DiskInfo {
+    buf: [u8; DISK_INFO_MAX],
+    len: usize,
+}
+
+impl DiskInfo {
+    pub const fn new() -> Self {
+        DiskInfo { buf: [0; DISK_INFO_MAX], len: 0 }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+
+    /// ` key "text"` for an identity string as devices report them (ASCII,
+    /// padded with spaces or NULs: SCSI INQUIRY, NVMe identify, a virtio-blk
+    /// id): trimmed, a `"`, `\` or anything not printable as `?`. Nothing
+    /// when the text is blank.
+    pub fn quoted(&mut self, key: &str, text: &[u8]) {
+        let blank = |b: &u8| *b == b' ' || *b == 0;
+        let Some(start) = text.iter().position(|b| !blank(b)) else {
+            return;
+        };
+        let end = text.iter().rposition(|b| !blank(b)).map_or(start, |e| e + 1);
+        self.push(b" ");
+        self.push(key.as_bytes());
+        self.push(b" \"");
+        for &b in &text[start..end] {
+            self.push(&[if (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\' { b } else { b'?' }]);
+        }
+        self.push(b"\"");
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(DISK_INFO_MAX - self.len);
+        self.buf[self.len..self.len + n].copy_from_slice(&bytes[..n]);
+        self.len += n;
+    }
+}
+
+impl Default for DiskInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::fmt::Write for DiskInfo {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.push(s.as_bytes());
+        Ok(())
+    }
 }
 
 /// The boot framebuffer as the bootloader left it (`KernelApi::framebuffer_info`):
@@ -636,12 +700,14 @@ pub struct KernelApi {
     /// filesystem modules then reach it through `ops`. A name ending in
     /// `?` (`sd?`) gets the lowest free letter of that family from the
     /// kernel, whichever module registered the others; `blk_name` tells
-    /// which.
+    /// which. `info` describes the disk in `/dev/<disk>/info` ([`DiskInfo`]).
     pub blk_register: unsafe extern "C" fn(
         name: *const u8,
         name_len: usize,
         ops: *const ModuleBlkOps,
         ctx: usize,
+        info: *const u8,
+        info_len: usize,
     ) -> i32,
     /// Nth PCI function (0-based) of `class` / `subclass` (e.g. NVMe is
     /// 0x01 / 0x08). 0 ok (BDF filled), negative when there is none.
@@ -1095,8 +1161,9 @@ impl KernelApi {
         unsafe { (self.monotonic_ns)() }
     }
 
-    pub fn blk_register(&self, name: &str, ops: &ModuleBlkOps, ctx: usize) -> i32 {
-        unsafe { (self.blk_register)(name.as_ptr(), name.len(), ops, ctx) }
+    pub fn blk_register(&self, name: &str, ops: &ModuleBlkOps, ctx: usize, info: &DiskInfo) -> i32 {
+        let info = info.as_bytes();
+        unsafe { (self.blk_register)(name.as_ptr(), name.len(), ops, ctx, info.as_ptr(), info.len()) }
     }
 
     pub fn pci_find_class(
@@ -1681,6 +1748,8 @@ pub struct UsbDriverOps {
 pub struct MmioDevice {
     /// Kernel virtual address of the register window.
     pub base: usize,
+    /// Its physical address, as the device tree gives it.
+    pub phys: u64,
     pub size: usize,
     /// Interrupt number as `irq::dispatch` / `irq_register` see it; 0 when
     /// the node has none or the kernel cannot route it.

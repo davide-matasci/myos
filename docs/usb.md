@@ -3,7 +3,9 @@
 Three modules give myos a USB bus: `xhci` drives the host controller and
 publishes the bus, `usb_hub` makes the devices behind hubs reachable,
 `usb_storage` turns memory sticks and disk enclosures into `/dev/sdX/`
-(`data`, the whole disk, and `p<N>` per GPT partition). A device plugged
+(`data`, the whole disk, `p<N>` per GPT partition, and `info`: the
+disk's size, its `/proc/usb` device and vendor:product, and the vendor
+and model its INQUIRY answer gives). A device plugged
 in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries a
 controller, a hub and two sticks (one plugged in by a test).

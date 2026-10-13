@@ -15,7 +15,9 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ABI_VERSION, ApiCell, KernelApi, Lock, ModuleBlkOps, status_ok};
+use core::fmt::Write;
+
+use myos_abi::{ABI_VERSION, ApiCell, DiskInfo, KernelApi, Lock, ModuleBlkOps, status_ok};
 use myos_virtio::virtio_drivers::device::common::Feature;
 use myos_virtio::virtio_drivers::queue::VirtQueue;
 use myos_virtio::virtio_drivers::transport::{DeviceType, Transport};
@@ -226,9 +228,9 @@ fn luns(host: &mut Host, target: u16, out: &mut [u16; MAX_LUNS]) -> usize {
     n
 }
 
-/// The disk at `target`/`lun`: its sectors, when it is a direct-access
-/// device of 512-byte sectors that is ready.
-fn disk_capacity(host: &mut Host, target: u16, lun: u16) -> Option<u64> {
+/// The disk at `target`/`lun`: its sectors and its INQUIRY data, when it
+/// is a direct-access device of 512-byte sectors that is ready.
+fn disk_capacity(host: &mut Host, target: u16, lun: u16) -> Option<(u64, [u8; 36])> {
     // TEST UNIT READY: takes the unit attention a fresh device reports
     // (its first command answers CHECK CONDITION, power on), which would
     // otherwise fail the commands below.
@@ -258,11 +260,12 @@ fn disk_capacity(host: &mut Host, target: u16, lun: u16) -> Option<u64> {
         api().write_str("virtio-scsi: a disk whose sectors are not 512 bytes, skipped\n");
         return None;
     }
-    Some(last + 1)
+    Some((last + 1, inquiry))
 }
 
-/// Register the disk; false when the tables are full.
-fn add_disk(api: &KernelApi, disk: Disk) -> bool {
+/// Register the disk, described by its host's place and its INQUIRY data;
+/// false when the tables are full.
+fn add_disk(api: &KernelApi, disk: Disk, host: Id, inquiry: &[u8; 36]) -> bool {
     let Some((n, mut free)) = DISKS.iter().enumerate().find_map(|(i, s)| {
         let s = s.lock();
         s.is_none().then_some((i, s))
@@ -270,7 +273,11 @@ fn add_disk(api: &KernelApi, disk: Disk) -> bool {
         return false;
     };
     *free = Some(disk);
-    if api.blk_register("sd?", &OPS, n) < 0 {
+    let mut info = DiskInfo::new();
+    let _ = write!(info, "virtio_scsi {host} target {}:{}", disk.target, disk.lun);
+    info.quoted("vendor", &inquiry[8..16]);
+    info.quoted("model", &inquiry[16..32]);
+    if api.blk_register("sd?", &OPS, n, &info) < 0 {
         *free = None;
         return false;
     }
@@ -292,10 +299,10 @@ fn scan(api: &KernelApi, h: usize) -> usize {
             if have(target, lun) {
                 continue;
             }
-            let Some(capacity) = disk_capacity(host, target, lun) else {
+            let Some((capacity, inquiry)) = disk_capacity(host, target, lun) else {
                 continue;
             };
-            if add_disk(api, Disk { host: h, target, lun, capacity }) {
+            if add_disk(api, Disk { host: h, target, lun, capacity }, host.id, &inquiry) {
                 new += 1;
             }
         }

@@ -17,10 +17,11 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use core::fmt::Write;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, KernelApi, ModuleBlkOps, SleepLock, StrRef, USB_ESTALL, USB_HOST_VERSION,
+    ABI_VERSION, ApiCell, DiskInfo, KernelApi, ModuleBlkOps, SleepLock, StrRef, USB_ESTALL, USB_HOST_VERSION,
     USB_SERVICE, UsbDeviceInfo, UsbDriverOps, UsbHostOps, UsbInterfaceInfo, status_fail, status_ok,
 };
 
@@ -290,10 +291,12 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         tag: 0,
         gone: false,
     });
-    // INQUIRY (what it is; the answer is not needed), ready, capacity.
+    // INQUIRY (what it is, for `/dev/<disk>/info`), ready, capacity.
     let mut inquiry = [0u8; 36];
     let cb = [0x12u8, 0, 0, 0, 36, 0];
-    let _ = scsi(d, &cb, Data::In(&mut inquiry));
+    if scsi(d, &cb, Data::In(&mut inquiry)) < 0 {
+        inquiry = [0; 36];
+    }
     if !unit_ready(d) {
         status_fail(api(), "usb_storage: unit not ready");
         *free = None;
@@ -305,8 +308,14 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         return -1;
     };
     d.capacity = capacity;
+    // `/dev/<disk>/info`: the device as `/proc/usb` lists it, and what it says
+    // it is.
+    let mut info = DiskInfo::new();
+    let _ = write!(info, "usb_storage usb {:#05x} {:04x}:{:04x}", dev.id, dev.vendor, dev.product);
+    info.quoted("vendor", &inquiry[8..16]);
+    info.quoted("model", &inquiry[16..32]);
     // `sd?`: the kernel picks the letter (SCSI disks are `sd*` too).
-    let id = api().blk_register("sd?", &OPS, slot);
+    let id = api().blk_register("sd?", &OPS, slot, &info);
     if id < 0 {
         status_fail(api(), "usb_storage: blk_register");
         *free = None;

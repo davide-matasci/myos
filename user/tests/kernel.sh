@@ -122,7 +122,7 @@ pci_rescan() {
 # port tests reuse the whole disk.)
 partitions() {
 	d=/dev/nvme1n1
-	[ "$(ls $d | tr '\n' ' ')" = "data p1 p3 " ] || { ls $d; return 1; }
+	[ "$(ls $d | tr '\n' ' ')" = "data info p1 p3 " ] || { ls $d; return 1; }
 	[ -b $d/p1 ] && [ -b $d/p3 ] || return 1
 	cat > /tmp/parts.want <<-EOF
 	nvme1n1/p1 2048 20971520 c12a7328-f81f-11d2-ba4b-00a0c93ec93b 61726373-6374-4068-8000-000000000001 "EFI system"
@@ -403,6 +403,28 @@ usb_disk() {
 	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
 t usb_disk usb_disk
+
+# Every disk says what it is in /dev/<disk>/info: its name, its size and
+# its driver's description (where it is, model, serial). The launcher's
+# NVMe controllers have serials, the virtio-scsi disk is QEMU's 1 MiB
+# scsi-hd, and the stick is the /proc/usb device usb_storage took.
+disk_info() {
+	for f in /dev/*/info; do
+		d=${f#/dev/}
+		d=${d%/info}
+		read -r name size rest < $f
+		[ "$name" = "$d" ] && [ "$size" -gt 0 ] || { echo "$f: $name $size $rest"; return 1; }
+	done
+	ls /dev/sda | grep -qx info || return 1
+	grep -Eq '^nvme0n1 [0-9]+ nvme pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "[^"]+" serial "myos"$' /dev/nvme0n1/info &&
+		grep -q ' serial "myos-scratch"$' /dev/nvme1n1/info &&
+		grep -Eq '^vda [0-9]+ virtio_blk (pci|mmio) ' /dev/vda/info &&
+		grep -Eq '^sda 1048576 virtio_scsi (pci|mmio) [^ ]+ target 0:0 vendor "QEMU" model "QEMU HARDDISK"$' /dev/sda/info ||
+		{ cat /dev/*/info; return 1; }
+	id=$(grep ':usb_storage sdb$' /proc/usb | cut -d' ' -f1)
+	grep -Eq "^sdb [0-9]+ usb_storage usb $id [0-9a-f]{4}:[0-9a-f]{4} " /dev/sdb/info || { cat /dev/sdb/info /proc/usb; return 1; }
+}
+t disk_info disk_info
 
 # mount(2) takes any existing directory that is not a mount point yet, at
 # the top level as below it, and umount gives the directory back; a busy
