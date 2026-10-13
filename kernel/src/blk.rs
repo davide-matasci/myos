@@ -11,6 +11,10 @@
 //! to its range of the disk. What is read is kept in the block cache
 //! ([`cache`]), by disk.
 //!
+//! `/dev/<name>/info` is a line about the disk: its name, its size in bytes
+//! and what its driver said of it at registration (the driver, where the
+//! disk is, its model and serial; `myos_abi::DiskInfo`).
+//!
 //! A disk's partition table is read on the first look at `/dev` or
 //! `/proc/partitions` after it registered ([`scan`]), not in
 //! [`register`]: the driver registers with its own locks held, and the
@@ -23,7 +27,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use myos_abi::ModuleBlkOps;
+use myos_abi::{DISK_INFO_MAX, ModuleBlkOps};
 use spin::Mutex;
 
 pub use cache::{frames as cache_frames, release as release_cache};
@@ -60,9 +64,34 @@ pub struct Part {
 
 #[derive(Clone, Copy)]
 enum Kind {
-    /// A driver's disk; `serial` tells it from a later disk in the same slot.
-    Disk { ops: ModuleBlkOps, ctx: usize, scan: Scan, serial: u64 },
+    /// A driver's disk; `serial` tells it from a later disk in the same
+    /// slot, `info` is what the driver said of it (`/dev/<name>/info`).
+    Disk { ops: ModuleBlkOps, ctx: usize, scan: Scan, serial: u64, info: Info },
     Part(Part),
+}
+
+/// A disk's description, printable ASCII (`/dev/<name>/info`).
+#[derive(Clone, Copy)]
+struct Info {
+    text: [u8; DISK_INFO_MAX],
+    len: u8,
+}
+
+impl Info {
+    /// `bytes` up to [`DISK_INFO_MAX`], anything not printable as `?`: the
+    /// description stays one line.
+    fn new(bytes: &[u8]) -> Info {
+        let mut info = Info { text: [0; DISK_INFO_MAX], len: 0 };
+        for (dst, &b) in info.text.iter_mut().zip(bytes) {
+            *dst = if (0x20..0x7f).contains(&b) { b } else { b'?' };
+            info.len += 1;
+        }
+        info
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.text[..self.len as usize]).unwrap_or("")
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -105,7 +134,7 @@ static SERIAL: AtomicU64 = AtomicU64::new(0);
 /// whose letters the kernel hands out (`sd?`: SCSI disks and USB sticks
 /// alike, whichever module brings them): the `?` becomes the lowest
 /// letter no disk of the family has; [`name`] tells the module which.
-pub fn register(name: &str, ops: ModuleBlkOps, ctx: usize) -> Option<u32> {
+pub fn register(name: &str, ops: ModuleBlkOps, ctx: usize, info: &[u8]) -> Option<u32> {
     let mut devs = DEVS.lock();
     let taken = |devs: &[Option<BlkDev>], n: &str| devs.iter().flatten().any(|d| matches!(d.kind, Kind::Disk { .. }) && d.name_str() == n);
     let name = match name.strip_suffix('?') {
@@ -123,7 +152,7 @@ pub fn register(name: &str, ops: ModuleBlkOps, ctx: usize) -> Option<u32> {
     let mut d = BlkDev {
         name: [0; NAME_MAX],
         name_len: name.len() as u8,
-        kind: Kind::Disk { ops, ctx, scan: Scan::Pending, serial: SERIAL.fetch_add(1, Ordering::Relaxed) },
+        kind: Kind::Disk { ops, ctx, scan: Scan::Pending, serial: SERIAL.fetch_add(1, Ordering::Relaxed), info: Info::new(info) },
     };
     d.name[..name.len()].copy_from_slice(name.as_bytes());
     devs[slot] = Some(d);
@@ -478,6 +507,22 @@ pub fn write_bytes(dev: u32, offset: u64, buf: &[u8]) -> Result<usize, ()> {
         done += take;
     }
     Ok(done)
+}
+
+/// The text of `/dev/<name>/info` for disk `disk`: its name, its size in
+/// bytes and its description (`vda 8589934592 virtio_blk pci 00:04.0 ...`).
+pub fn info_text(disk: u32) -> Option<String> {
+    let d = get(disk)?;
+    let Kind::Disk { info, .. } = d.kind else {
+        return None;
+    };
+    let mut out = alloc::format!("{} {}", d.name_str(), capacity_bytes(disk).unwrap_or(0));
+    if info.len > 0 {
+        out += " ";
+        out += info.as_str();
+    }
+    out += "\n";
+    Some(out)
 }
 
 /// The text of `/proc/partitions`: a line per partition, `sda/p1`, its

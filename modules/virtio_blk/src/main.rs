@@ -10,7 +10,9 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{ABI_VERSION, ApiCell, KernelApi, Lock, ModuleBlkOps, status_ok};
+use core::fmt::Write;
+
+use myos_abi::{ABI_VERSION, ApiCell, DiskInfo, KernelApi, Lock, ModuleBlkOps, status_ok};
 use myos_virtio::virtio_drivers::device::blk::{SECTOR_SIZE, VirtIOBlk};
 use myos_virtio::virtio_drivers::transport::DeviceType;
 use myos_virtio::{Device, Id, MAX_SHARE, MyosHal};
@@ -142,13 +144,21 @@ fn probe(api: &KernelApi) -> usize {
         }) else {
             return;
         };
-        let Ok(blk) = VirtIOBlk::<MyosHal, Device>::new(transport) else {
+        let Ok(mut blk) = VirtIOBlk::<MyosHal, Device>::new(transport) else {
             api.write_str("virtio-blk: a device did not come up\n");
             return;
         };
+        // `/dev/<disk>/info`: where it is, read-only or not, the id the host
+        // gave it (QEMU's `serial=`).
+        let mut info = DiskInfo::new();
+        let _ = write!(info, "virtio_blk {id}{}", if blk.readonly() { " ro" } else { "" });
+        let mut serial = [0u8; 20];
+        if let Ok(len) = blk.device_id(&mut serial) {
+            info.quoted("serial", &serial[..len]);
+        }
         let name = [b'v', b'd', b'a' + n as u8];
         *free = Some(Dev { id, blk });
-        if api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n) < 0 {
+        if api.blk_register(core::str::from_utf8(&name).unwrap_or_default(), &OPS, n, &info) < 0 {
             *free = None;
             return;
         }

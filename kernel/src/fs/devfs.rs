@@ -42,6 +42,8 @@ enum Node {
     BlkDir(u32),
     /// `<disk>/data` or `<disk>/p<N>`.
     Block(u32),
+    /// `<disk>/info`, what the disk is (`blk::info_text`).
+    BlkInfo(u32),
     /// `<name>`, a module device's directory.
     ChrDir(usize),
     /// `<name>/data`, the device.
@@ -124,6 +126,9 @@ fn chr_ctl_text(i: usize) -> alloc::vec::Vec<u8> {
 /// `sda/p1`), its partitions read first ([`blk::scan`]).
 fn parse_blk(name: &str) -> Option<Node> {
     blk::scan();
+    if let Some(disk) = name.strip_suffix("/info") {
+        return blk::disk_by_name(disk).map(Node::BlkInfo);
+    }
     match name.contains('/') {
         true => blk::by_path(name).map(Node::Block),
         false => blk::disk_by_name(name).map(Node::BlkDir),
@@ -179,7 +184,7 @@ pub fn create(_name: &str) -> bool {
 pub fn truncate(name: &str) -> bool {
     // O_TRUNC on char/block devices is a no-op; a control file takes the
     // shell's truncating open (`echo … > ctl`) the same way.
-    parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_) | Node::BlkDir(_)))
+    parse(name).is_some_and(|n| !matches!(n, Node::ConsoleDir | Node::ChrDir(_) | Node::BlkDir(_) | Node::BlkInfo(_)))
 }
 
 /// The text of `/dev/console/ctl`: the console termios, the screen's size,
@@ -265,6 +270,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
             out.len()
         }
         Some(Node::Block(id)) => blk::read_bytes(id, pos as u64, out).unwrap_or(0),
+        Some(Node::BlkInfo(id)) => copy_at(blk::info_text(id).unwrap_or_default().as_bytes(), pos, out),
         Some(Node::BlkDir(_)) | Some(Node::ChrDir(_)) => 0,
         Some(Node::ChrData(i)) => match chr(i) {
             Some(c) => {
@@ -291,7 +297,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
         // Writes to the RNG pool are ignored (no RNDADDENTROPY ioctl yet).
         Some(Node::Urandom) => Some(buf.len()),
         Some(Node::Block(id)) => blk::write_bytes(id, pos as u64, buf).ok(),
-        Some(Node::BlkDir(_)) | Some(Node::ChrDir(_)) => None,
+        Some(Node::BlkDir(_)) | Some(Node::BlkInfo(_)) | Some(Node::ChrDir(_)) => None,
         Some(Node::ChrData(i)) => {
             let n = unsafe { (chr(i)?.ops.write)(buf.as_ptr(), buf.len()) };
             if n < 0 { None } else { Some(n as usize) }
@@ -323,7 +329,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
             (Some(_), _) => alloc::vec!["data".into()],
             (None, Some(Node::BlkDir(disk))) => {
                 let parts = blk::parts(disk).into_iter().map(|p| alloc::format!("p{}", p.number));
-                core::iter::once("data".into()).chain(parts).collect()
+                ["data".into(), "info".into()].into_iter().chain(parts).collect()
             }
             _ => return 0,
         },
@@ -421,6 +427,15 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 atime: 0,
             })
         }
+        Node::BlkInfo(id) => Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: blk::info_text(id).map_or(0, |t| t.len() as u64),
+            ino: 100 + 2 * blk::MAX_DEVS as u32 + id,
+            nlink: 1,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        }),
         Node::BlkDir(id) => Some(StatInfo {
             mode: S_IFDIR | 0o755,
             size: 0,

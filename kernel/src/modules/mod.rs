@@ -685,16 +685,19 @@ unsafe extern "C" fn api_blk_register(
     name_len: usize,
     ops: *const ModuleBlkOps,
     ctx: usize,
+    info: *const u8,
+    info_len: usize,
 ) -> i32 {
-    if name.is_null() || name_len == 0 || ops.is_null() {
+    if name.is_null() || name_len == 0 || ops.is_null() || (info.is_null() && info_len != 0) {
         return -1;
     }
     let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
     let Ok(name) = core::str::from_utf8(name_bytes) else {
         return -1;
     };
+    let info = if info_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(info, info_len) } };
     let ops = unsafe { *ops };
-    match crate::blk::register(name, ops, ctx) {
+    match crate::blk::register(name, ops, ctx, info) {
         Some(id) => {
             registry::note_registration();
             id as i32
@@ -1368,6 +1371,7 @@ unsafe extern "C" fn api_dt_mmio_find(compatible: StrRef, index: usize, out: *mu
     unsafe {
         *out = myos_abi::MmioDevice {
             base,
+            phys: dev.base,
             size: dev.size as usize,
             irq,
         };

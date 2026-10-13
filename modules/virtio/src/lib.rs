@@ -72,9 +72,20 @@ fn api() -> &'static KernelApi {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Id {
     Pci { bus: u8, slot: u8, func: u8 },
-    /// `base` is the kernel virtual address of the window; `irq` the
-    /// interrupt the device tree gives it (0: none).
-    Mmio { base: usize, irq: u32 },
+    /// `base` is the kernel virtual address of the window, `phys` its
+    /// physical one; `irq` the interrupt the device tree gives it (0: none).
+    Mmio { base: usize, phys: u64, irq: u32 },
+}
+
+/// Where the device is, as `/dev/<disk>/info` says it: `pci 00:04.0`,
+/// `mmio 0xa003e00`.
+impl core::fmt::Display for Id {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Id::Pci { bus, slot, func } => write!(f, "pci {bus:02x}:{slot:02x}.{func:x}"),
+            Id::Mmio { phys, .. } => write!(f, "mmio {phys:#x}"),
+        }
+    }
 }
 
 // ---- memory ---------------------------------------------------------------
@@ -445,7 +456,7 @@ pub fn probe_mmio(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &m
         if api.dt_mmio_find("virtio,mmio", i, &mut node) != 0 {
             break;
         }
-        let dev = Id::Mmio { base: node.base, irq: node.irq };
+        let dev = Id::Mmio { base: node.base, phys: node.phys, irq: node.irq };
         if known(dev) || node.base == 0 || node.size < MMIO_DEVICE_ID + 4 {
             continue;
         }
