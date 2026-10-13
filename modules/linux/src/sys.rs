@@ -355,19 +355,78 @@ pub fn getresid(r: usize, e: usize, s: usize) -> R {
 }
 
 /// `prctl`: a thread's name and an anonymous mapping's (`PR_SET_VMA`) are
-/// accepted and not kept; dumpable reads as set. Any other option is
-/// `EINVAL`, a kernel's answer for one it does not have (seccomp included,
-/// which sandboxes probe for).
-pub fn prctl(option: usize) -> R {
+/// accepted and not kept; dumpable reads as set. The parent-death signal
+/// is accepted and not sent (a child whose parent dies goes on: its
+/// parent, such as an image loader's, waits for it or kills it) and reads
+/// as none. No-new-privileges is
+/// always so: nothing on myos gains privileges by exec (no setuid
+/// programs), so setting it is accepted and it reads as set. Any other
+/// option is `EINVAL`, a kernel's answer for one it does not have
+/// (seccomp included, which sandboxes probe for).
+pub fn prctl(option: usize, arg: usize) -> R {
+    const PR_SET_PDEATHSIG: usize = 1;
+    const PR_GET_PDEATHSIG: usize = 2;
     const PR_GET_DUMPABLE: usize = 3;
     const PR_SET_DUMPABLE: usize = 4;
     const PR_SET_NAME: usize = 15;
+    const PR_SET_NO_NEW_PRIVS: usize = 38;
+    const PR_GET_NO_NEW_PRIVS: usize = 39;
     const PR_SET_VMA: usize = 0x5356_4d41;
     match option {
-        PR_SET_NAME | PR_SET_VMA | PR_SET_DUMPABLE => Ok(0),
-        PR_GET_DUMPABLE => Ok(1),
+        PR_SET_NAME | PR_SET_VMA | PR_SET_DUMPABLE | PR_SET_NO_NEW_PRIVS | PR_SET_PDEATHSIG => Ok(0),
+        PR_GET_PDEATHSIG => put(arg, &0u32.to_le_bytes()).map(|_| 0),
+        PR_GET_DUMPABLE | PR_GET_NO_NEW_PRIVS => Ok(1),
         _ => Err(EINVAL),
     }
+}
+
+/// `unshare`: nothing to unshare (`0`) is done; namespaces are `EINVAL`,
+/// a kernel's answer when it has none (sandboxes such as bubblewrap then
+/// say so and their callers run without them), and so is unsharing what
+/// the process shares with others.
+pub fn unshare(flags: usize) -> R {
+    if flags == 0 { Ok(0) } else { Err(EINVAL) }
+}
+
+/// `capget`: no capabilities, the answer for a process without them. The
+/// header's version decides how many data structs there are (one for
+/// v1, two for v2 and v3); an unknown version gets the one the kernel
+/// prefers written back and `EINVAL`, as Linux does.
+pub fn capget(header: usize, data: usize) -> R {
+    const V1: u32 = 0x1998_0330;
+    const V2: u32 = 0x2007_1026;
+    const V3: u32 = 0x2008_0522;
+    let mut h = [0u8; 4];
+    get(header, &mut h)?;
+    let structs = match u32::from_le_bytes(h) {
+        V1 => 1,
+        V2 | V3 => 2,
+        _ => {
+            put(header, &V3.to_le_bytes())?;
+            return Err(EINVAL);
+        }
+    };
+    if data != 0 {
+        // Each: effective, permitted, inheritable, 32 bits apiece.
+        put(data, &[0u8; 24][..12 * structs])?;
+    }
+    Ok(0)
+}
+
+/// `capset`: dropping capabilities the process does not have is all it
+/// may do; granting any is `EPERM`.
+pub fn capset(header: usize, data: usize) -> R {
+    let mut h = [0u8; 4];
+    get(header, &mut h)?;
+    let mut d = [0u8; 24];
+    get(data, &mut d[..12])?;
+    if u32::from_le_bytes(h) != 0x1998_0330 {
+        get(data, &mut d)?;
+    }
+    if d.iter().any(|&b| b != 0) {
+        return Err(EPERM);
+    }
+    Ok(0)
 }
 
 /// `fsync`, `fdatasync`, `fchmod`, `fchown`: done once `fd` is valid.
@@ -970,6 +1029,8 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
     const F_OFD_SETLK: usize = 37;
     const F_OFD_SETLKW: usize = 38;
     const F_DUPFD_CLOEXEC: usize = 1030;
+    const F_ADD_SEALS: usize = 1033;
+    const F_GET_SEALS: usize = 1034;
     if task::fd_kind(fd).is_none() {
         return Err(EBADF);
     }
@@ -1000,8 +1061,53 @@ pub fn fcntl(fd: usize, cmd: usize, arg: usize) -> R {
         F_OFD_GETLK => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_GET, true),
         F_OFD_SETLK => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_SET, true),
         F_OFD_SETLKW => record_lock(fd, arg, myos_abi::MYOS_LOCKCTL_WAIT, true),
+        F_ADD_SEALS => seals(fd, Some(arg as u32)),
+        F_GET_SEALS => seals(fd, None),
         _ => Err(EINVAL),
     }
+}
+
+/// The seals added to each memfd (`F_ADD_SEALS`), by its file's name
+/// (`memfd:NAME.PID.N`, unique: [`memfd_create`]; an fd another process
+/// sent names it under the directory `/dev/shm` is bound to): kept and
+/// reported, not enforced (a sealed memfd can still be written; the
+/// programs that seal one, such as glycin's image loaders, are the same
+/// user's and pass it to each other). The last [`SEALED_MAX`] memfds whose
+/// seals were asked about: a memfd does not say when it is gone.
+const SEALED_MAX: usize = 256;
+static SEALS: myos_abi::Lock<Vec<(String, u32)>> = myos_abi::Lock::new(Vec::new());
+
+/// `F_GET_SEALS` (`add` none) or `F_ADD_SEALS` on `fd`: a memfd's seals
+/// after the change; `EINVAL` for any other file, whose seals Linux does
+/// not keep either, and `EPERM` once `F_SEAL_SEAL` forbids more.
+fn seals(fd: usize, add: Option<u32>) -> R {
+    const F_SEAL_SEAL: u32 = 1;
+    let path = files::get(fd).map(|e| e.path).ok_or(EINVAL)?;
+    let name = path.rsplit('/').next().unwrap_or("");
+    // Unlinked at once, it reads as deleted to a process it was sent to.
+    let path = String::from(name.strip_suffix(" (deleted)").unwrap_or(name));
+    if !path.starts_with("memfd:") {
+        return Err(EINVAL);
+    }
+    let mut seals = SEALS.lock();
+    let i = match seals.iter().position(|(p, _)| *p == path) {
+        Some(i) => i,
+        None => {
+            if seals.len() == SEALED_MAX {
+                seals.remove(0);
+            }
+            seals.push((path, 0));
+            seals.len() - 1
+        }
+    };
+    if let Some(add) = add {
+        if seals[i].1 & F_SEAL_SEAL != 0 {
+            return Err(EPERM);
+        }
+        seals[i].1 |= add;
+        return Ok(0);
+    }
+    Ok(seals[i].1 as usize)
 }
 
 /// `O_NONBLOCK` on `fd`: a socket's state, or the flag `read` / `write`
@@ -1099,7 +1205,8 @@ pub fn mmap(addr: usize, len: usize, prot: usize, flags: usize, fd: usize, off: 
 
 /// `memfd_create(name, flags)`: a file of `/dev/shm` created and unlinked
 /// at once (as libgloss's), named after `name`, this process and a
-/// counter. Sealing is accepted and not done; huge pages are refused.
+/// counter. Seals are kept, not enforced (`F_ADD_SEALS`, [`seals`]); huge
+/// pages are refused.
 pub fn memfd_create(name: usize, flags: usize) -> R {
     const MFD_CLOEXEC: usize = 1;
     const MFD_ALLOW_SEALING: usize = 2;

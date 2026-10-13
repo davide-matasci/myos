@@ -35,6 +35,8 @@ const SO_TYPE: usize = 3;
 const SO_ERROR: usize = 4;
 const SO_SNDBUF: usize = 7;
 const SO_RCVBUF: usize = 8;
+const SO_PASSCRED: usize = 16;
+const SO_PEERCRED: usize = 17;
 
 const EADDRINUSE: usize = 98;
 const EISCONN: usize = 106;
@@ -65,6 +67,8 @@ pub struct Sock {
     pub peer: Option<Addr>,
     /// `AF_UNIX`: its names (an `AF_INET` socket has none).
     pub unix: Option<UnixNames>,
+    /// `SO_PASSCRED`: reads come with the sender's `SCM_CREDENTIALS`.
+    pub passcred: bool,
 }
 
 /// The names of an `AF_UNIX` socket in `/net/unix`: its own (`bind`; an
@@ -269,7 +273,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
     // Reading `clone` allocates a conversation and names it.
     let dir = net_dir(proto)?;
     let id = conv_id(&format!("{dir}/clone"))?;
-    open_conv(proto, &id, ty, Sock { stream, nonblock: false, peer: None, unix: None })
+    open_conv(proto, &id, ty, Sock { stream, nonblock: false, peer: None, unix: None, passcred: false })
 }
 
 /// `/net/{proto}`'s VFS path. `/net` is the system's, also inside a
@@ -287,7 +291,7 @@ fn conv_id(file: &str) -> Result<String, usize> {
 }
 
 /// A new unix socket's state.
-const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, peer: None, unix: Some(UNNAMED) };
+const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, peer: None, unix: Some(UNNAMED), passcred: false };
 
 /// Conversation `id` of `/net/{proto}` as socket `sock`, non-blocking and
 /// close-on-exec as `ty`'s flags say: its `data` open.
@@ -419,6 +423,8 @@ fn msghdr(msg: usize) -> Result<[usize; 4], usize> {
 
 /// `SCM_RIGHTS`: a control message of fds.
 const SCM_RIGHTS: u32 = 1;
+/// `SCM_CREDENTIALS`: a control message of the sender's `struct ucred`.
+const SCM_CREDENTIALS: u32 = 2;
 /// `recvmsg`: the fds received close at exec.
 const MSG_CMSG_CLOEXEC: usize = 0x4000_0000;
 /// `msg_flags`: control data was cut (fds that did not fit are closed).
@@ -532,8 +538,9 @@ fn adopt(fd: usize) {
 }
 
 /// `recvmsg`: the data, and on a unix socket the fds that came with it as
-/// an `SCM_RIGHTS` message; the ones `msg_control` has no room for are
-/// closed (`MSG_CTRUNC`).
+/// an `SCM_RIGHTS` message (the ones `msg_control` has no room for are
+/// closed, `MSG_CTRUNC`), after the sender's `SCM_CREDENTIALS` with
+/// `SO_PASSCRED`.
 pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     let [name, _, iov, iovlen] = msghdr(msg)?;
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
@@ -544,40 +551,67 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
         put(msg + 8, &0u32.to_le_bytes())?;
     }
     let fds = if s.unix.is_some() && n > 0 { received_rights(&conv, flags & MSG_CMSG_CLOEXEC != 0) } else { Vec::new() };
-    let (used, truncated) = put_rights(msg, &fds)?;
+    let from = if s.unix.is_some() && s.passcred && n > 0 { sender(&conv) } else { None };
+    let (used, truncated) = put_control(msg, from, &fds)?;
     put(msg + 40, &(used as u64).to_le_bytes())?;
     put(msg + 48, &(if truncated { MSG_CTRUNC } else { 0 }).to_le_bytes())?;
     Ok(n)
 }
 
-/// Write `fds` to `msg`'s control buffer as one `SCM_RIGHTS` message,
-/// closing those it has no room for: the bytes used and whether any were
-/// closed.
-fn put_rights(msg: usize, fds: &[usize]) -> Result<(usize, bool), usize> {
-    if fds.is_empty() {
+/// The pid of the process whose write a read of `conv` returned
+/// (`/net/unix`'s `from`).
+fn sender(conv: &str) -> Option<u32> {
+    let mut b = [0u8; 12];
+    let n = fs::read(&format!("{conv}/from"), 0, &mut b).unwrap_or(0);
+    core::str::from_utf8(&b[..n]).ok()?.trim().parse().ok()
+}
+
+/// Write `msg`'s control buffer: the sender's credentials when `from`
+/// (every process is uid and gid 0 to a Linux program), then `fds` as one
+/// `SCM_RIGHTS` message, closing those it has no room for. The bytes used
+/// and whether anything was left out.
+fn put_control(msg: usize, from: Option<u32>, fds: &[usize]) -> Result<(usize, bool), usize> {
+    if fds.is_empty() && from.is_none() {
         return Ok((0, false));
     }
     let mut b = [0u8; 16];
     get_bytes(msg + 32, &mut b)?;
     let (control, len) = (u64::from_le_bytes(b[..8].try_into().unwrap()) as usize, u64::from_le_bytes(b[8..].try_into().unwrap()) as usize);
-    let room = if control == 0 { 0 } else { len.saturating_sub(CMSG_HDR) / 4 };
+    let len = if control == 0 { 0 } else { len };
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let cmsg = |out: &mut Vec<u8>, ty: u32, data: &[u8]| {
+        out.resize(out.len().next_multiple_of(8), 0);
+        out.extend_from_slice(&((CMSG_HDR + data.len()) as u64).to_le_bytes());
+        out.extend_from_slice(&(SOL_SOCKET as u32).to_le_bytes());
+        out.extend_from_slice(&ty.to_le_bytes());
+        out.extend_from_slice(data);
+    };
+    if let Some(pid) = from {
+        if len >= CMSG_HDR + 12 {
+            let mut cred = [0u8; 12];
+            cred[..4].copy_from_slice(&pid.to_le_bytes());
+            cmsg(&mut out, SCM_CREDENTIALS, &cred);
+        } else {
+            truncated = true;
+        }
+    }
+    let start = out.len().next_multiple_of(8);
+    let room = len.saturating_sub(start + CMSG_HDR) / 4;
     let kept = fds.len().min(room);
     for &fd in &fds[kept..] {
         super::sys::close(fd).ok();
     }
-    if kept == 0 {
-        return Ok((0, true));
+    truncated |= kept < fds.len();
+    if kept > 0 {
+        let data: Vec<u8> = fds[..kept].iter().flat_map(|&fd| (fd as i32).to_le_bytes()).collect();
+        cmsg(&mut out, SCM_RIGHTS, &data);
     }
-    let clen = CMSG_HDR + 4 * kept;
-    let mut out = Vec::with_capacity(clen);
-    out.extend_from_slice(&(clen as u64).to_le_bytes());
-    out.extend_from_slice(&(SOL_SOCKET as u32).to_le_bytes());
-    out.extend_from_slice(&SCM_RIGHTS.to_le_bytes());
-    for &fd in &fds[..kept] {
-        out.extend_from_slice(&(fd as i32).to_le_bytes());
+    if out.is_empty() {
+        return Ok((0, truncated));
     }
     put(control, &out)?;
-    Ok((clen.next_multiple_of(8).min(len), kept < fds.len()))
+    Ok((out.len().next_multiple_of(8).min(len), truncated))
 }
 
 /// Only a full shutdown hangs up: `/net` has no half-close.
@@ -617,10 +651,21 @@ pub fn getpeername(fd: usize, addr: usize, alen: usize) -> R {
 /// sizes its writes by `SO_SNDBUF` and aborts on 0. Anything else reads 0.
 pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -> R {
     let (conv, s) = sock(fd)?;
+    // The peer's credentials (`struct ucred`: pid, uid, gid): the layer
+    // does not know the other end, so the caller's own. Every process is
+    // uid and gid 0 to a Linux program, so only the pid can be off.
+    if (level, opt) == (SOL_SOCKET, SO_PEERCRED) {
+        let mut cred = [0u8; 12];
+        cred[..4].copy_from_slice(&(task::current_pid() as u32).to_le_bytes());
+        put(val, &cred)?;
+        put(len, &12u32.to_le_bytes())?;
+        return Ok(0);
+    }
     let v: i32 = match (level, opt) {
         (SOL_SOCKET, SO_TYPE) => (if s.stream { SOCK_STREAM } else { SOCK_DGRAM }) as i32,
         (SOL_SOCKET, SO_ERROR) if state(&conv) == State::Failed => ECONNREFUSED as i32,
         (SOL_SOCKET, SO_SNDBUF | SO_RCVBUF) => if s.unix.is_some() { 64 << 10 } else { 8 << 10 },
+        (SOL_SOCKET, SO_PASSCRED) => s.passcred as i32,
         _ => 0,
     };
     put(val, &v.to_le_bytes())?;
@@ -628,9 +673,19 @@ pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
     Ok(0)
 }
 
-/// `setsockopt`: accepted and ignored (options do not apply).
-pub fn ignored(fd: usize) -> R {
-    sock(fd).map(|_| 0)
+/// `setsockopt`: `SO_PASSCRED` on a unix socket; anything else is
+/// accepted and ignored (options do not apply).
+pub fn setsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -> R {
+    let (_, s) = sock(fd)?;
+    if (level, opt) == (SOL_SOCKET, SO_PASSCRED) && s.unix.is_some() {
+        let mut b = [0u8; 4];
+        if len < 4 {
+            return Err(EINVAL);
+        }
+        get_bytes(val, &mut b)?;
+        files::with_sock(fd, |s| s.passcred = i32::from_le_bytes(b) != 0);
+    }
+    Ok(0)
 }
 
 /// `bind`: a unix socket takes the name its `listen` announces; an

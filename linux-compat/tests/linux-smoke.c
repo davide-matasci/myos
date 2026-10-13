@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stddef.h>
@@ -370,6 +371,97 @@ static int recv_fds(int sock, char *buf, int len, int *fds, int room, int *n, in
     return r;
 }
 
+/* Seals on a memfd (glycin's image loaders seal the ones they pass back):
+ * kept and reported, those of the memfd whichever fd names it (one
+ * received over a unix socket too); F_SEAL_SEAL stops more; a file that
+ * is no memfd has none (EINVAL). */
+static const char *memfd_seals(void) {
+    const int all = F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL;
+    int fd = memfd_create("linux-smoke-seals", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    int sv[2], got[4], n = 0, fl;
+    char c;
+    if (fd < 0) {
+        return "seals: memfd_create(MFD_ALLOW_SEALING)";
+    }
+    if (fcntl(fd, F_GET_SEALS) != 0) {
+        return "seals: none on a new memfd";
+    }
+    if (fcntl(fd, F_ADD_SEALS, F_SEAL_GROW) != 0 || fcntl(fd, F_GET_SEALS) != F_SEAL_GROW) {
+        return "seals: F_ADD_SEALS kept";
+    }
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || send_fds(sv[0], 's', &fd, 1) != 0 ||
+        recv_fds(sv[1], &c, 1, got, 4, &n, &fl) != 1 || n != 1) {
+        return "seals: send a memfd";
+    }
+    if (fcntl(got[0], F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL) != 0) {
+        return "seals: F_ADD_SEALS on the received memfd";
+    }
+    if (fcntl(got[0], F_GET_SEALS) != all || fcntl(fd, F_GET_SEALS) != all) {
+        return "seals: the memfd's, whichever fd names it";
+    }
+    if (fcntl(fd, F_ADD_SEALS, F_SEAL_GROW) != -1 || errno != EPERM) {
+        return "seals: F_SEAL_SEAL stops more";
+    }
+    close(got[0]);
+    close(sv[0]);
+    close(sv[1]);
+    close(fd);
+    fd = open("/tmp/linux-smoke-seals", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || fcntl(fd, F_GET_SEALS) != -1 || errno != EINVAL) {
+        return "seals: none on a file";
+    }
+    close(fd);
+    unlink("/tmp/linux-smoke-seals");
+    return NULL;
+}
+
+/* The sender's pid of what a read returns (SO_PASSCRED, SCM_CREDENTIALS):
+ * how WebKit learns its web process's pid. A read never returns two
+ * senders' bytes. */
+static pid_t recv_cred(int sock) {
+    char c, control[CMSG_SPACE(sizeof(struct ucred))];
+    struct iovec iov = { &c, 1 };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+    if (recvmsg(sock, &msg, 0) != 1) {
+        return -1;
+    }
+    struct cmsghdr *h = CMSG_FIRSTHDR(&msg);
+    if (h == NULL || h->cmsg_level != SOL_SOCKET || h->cmsg_type != SCM_CREDENTIALS ||
+        h->cmsg_len != CMSG_LEN(sizeof(struct ucred))) {
+        return -1;
+    }
+    struct ucred cred;
+    memcpy(&cred, CMSG_DATA(h), sizeof cred);
+    return cred.uid == 0 && cred.gid == 0 ? cred.pid : -1;
+}
+
+static const char *pass_creds(void) {
+    int sv[2], on = 1, got = 0;
+    socklen_t len = sizeof got;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || setsockopt(sv[0], SOL_SOCKET, SO_PASSCRED, &on, sizeof on) != 0 ||
+        getsockopt(sv[0], SOL_SOCKET, SO_PASSCRED, &got, &len) != 0 || got != 1) {
+        return "SCM_CREDENTIALS: SO_PASSCRED";
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        _exit(write(sv[1], "k", 1) != 1);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+        write(sv[1], "p", 1) != 1) {
+        return "SCM_CREDENTIALS: a child writes";
+    }
+    if (recv_cred(sv[0]) != pid) {
+        return "SCM_CREDENTIALS: the child's pid";
+    }
+    if (recv_cred(sv[0]) != getpid()) {
+        return "SCM_CREDENTIALS: the next read, the parent's";
+    }
+    close(sv[0]);
+    close(sv[1]);
+    return NULL;
+}
+
 /* Fds over a unix socket (SCM_RIGHTS): each comes with the message it was
  * sent with; a pipe end from a child that has exited still reads what the
  * child wrote; a socket received works; fds a too small control buffer
@@ -501,6 +593,10 @@ static void check_unix_sockets(void) {
     close(ls);
     const char *e = pass_fds();
     check(e == NULL, e != NULL ? e : "SCM_RIGHTS");
+    e = memfd_seals();
+    check(e == NULL, e != NULL ? e : "memfd seals");
+    e = pass_creds();
+    check(e == NULL, e != NULL ? e : "SCM_CREDENTIALS");
 }
 
 /* select and pselect (musl: the select syscall on x86_64, pselect6 on
@@ -798,6 +894,29 @@ static void check_misc_calls(void) {
           "getpriority, setpriority");
     check(prctl(PR_SET_NAME, "smoke") == 0 && prctl(PR_GET_SECCOMP) == -1 && errno == EINVAL,
           "prctl: a name, no seccomp");
+    /* What bubblewrap and glycin (WebKitGTK's image loaders) set up a
+     * sandbox with: no namespaces (glycin then runs its loaders as they
+     * are), no capabilities, the parent-death signal and no_new_privs
+     * accepted, the overflow ids. */
+    int pdeath = -1;
+    check(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0 && prctl(PR_GET_PDEATHSIG, &pdeath) == 0 &&
+              prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1,
+          "prctl: pdeathsig, no_new_privs");
+    check(unshare(0) == 0 && unshare(CLONE_NEWUSER) == -1 && errno == EINVAL &&
+              syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, 0, 0, 0, 0) == -1 && errno == EINVAL,
+          "unshare, clone: no namespaces");
+    struct { uint32_t version; int pid; } caphdr = { 0x20080522, 0 };
+    uint32_t caps[6] = { 1, 1, 1, 1, 1, 1 };
+    check(syscall(SYS_capget, &caphdr, caps) == 0 && !(caps[0] | caps[1] | caps[2] | caps[3] | caps[4] | caps[5]) &&
+              syscall(SYS_capset, &caphdr, caps) == 0,
+          "capget: none");
+    caphdr.version = 1;
+    check(syscall(SYS_capget, &caphdr, NULL) == -1 && errno == EINVAL && caphdr.version == 0x20080522,
+          "capget: an unknown version is told the current one");
+    char ov[16] = "";
+    fd = open("/proc/sys/kernel/overflowuid", O_RDONLY);
+    check(fd >= 0 && read(fd, ov, sizeof ov - 1) == 6 && strcmp(ov, "65534\n") == 0, "overflowuid");
+    close(fd);
     char *m = mmap(NULL, 3 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     check(m != MAP_FAILED && mremap(m, 3 * 4096, 4096, 0) == m && mremap(m, 4096, 8192, MREMAP_MAYMOVE) == MAP_FAILED &&
               errno == ENOMEM,

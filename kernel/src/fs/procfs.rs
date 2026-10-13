@@ -1,7 +1,9 @@
 //! procfs: generated nodes at `/proc/…` (`mounts`, `pci`, `cpuinfo`, `platform`, `acpi/…`),
 //! the calling process's view under `self/`: `fd/N` links to what fd N is
 //! open on, `tty` to its controlling terminal's directory (`docs/tty.md`),
-//! the system's name at `sys/kernel/hostname` (writable), and the security
+//! the system's name at `sys/kernel/hostname` (writable), Linux's
+//! `sys/kernel/overflowuid` and `overflowgid` (for Linux programs: myos
+//! has no ids to overflow), and the security
 //! context: `self/ctx` (the caller's uid, user and domain) and
 //! `sys/security/users` (docs/security.md); every process at `<pid>/` and
 //! its threads at `<pid>/task/<tid>/`, and the CPUs' idle time at `cpu`
@@ -180,6 +182,17 @@ static HOSTNAME: Mutex<([u8; HOSTNAME_MAX], usize)> = Mutex::new({
 });
 
 const HOSTNAME_PATH: &str = "sys/kernel/hostname";
+
+/// `sys/kernel/overflowuid` and `overflowgid`: the id Linux shows for one
+/// it cannot map (nobody's, 65534). Linux programs read them before they
+/// make a user namespace (bubblewrap, the Linux layer's
+/// `docs/linux-compat.md`).
+fn overflow_id(name: &str) -> Option<&'static [u8]> {
+    match name {
+        "sys/kernel/overflowuid" | "sys/kernel/overflowgid" => Some(b"65534\n"),
+        _ => None,
+    }
+}
 
 fn hostname_text() -> alloc::vec::Vec<u8> {
     let h = HOSTNAME.lock();
@@ -484,6 +497,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     if name == HOSTNAME_PATH {
         return copy_at(&hostname_text(), pos, out);
     }
+    if let Some(text) = overflow_id(name) {
+        return copy_at(text, pos, out);
+    }
     if let Some((_, data)) = dyn_get(name) {
         return copy_at(data, pos, out);
     }
@@ -586,7 +602,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     }
     let entry: &[u8] = match rel {
         "sys" => b"kernel\nsecurity\n",
-        "sys/kernel" => b"hostname\n",
+        "sys/kernel" => b"hostname\noverflowgid\noverflowuid\n",
         "sys/security" => b"users\n",
         "boot" if crate::limine_boot::boot_partuuid().is_some() => b"kernel\ninitramfs\npartuuid\n",
         "boot" => b"kernel\ninitramfs\n",
@@ -682,6 +698,17 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             mode: S_IFREG | 0o444,
             size: data.len() as u64,
             ino: if name == "boot/kernel" { 88 } else { 89 },
+            nlink: 1,
+            dev: 0,
+            mtime: 0,
+            atime: 0,
+        });
+    }
+    if let Some(text) = overflow_id(name) {
+        return Some(StatInfo {
+            mode: S_IFREG | 0o444,
+            size: text.len() as u64,
+            ino: if name.ends_with("uid") { 84 } else { 85 },
             nlink: 1,
             dev: 0,
             mtime: 0,
