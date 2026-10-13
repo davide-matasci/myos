@@ -740,6 +740,12 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    /* The CAs a TLS client trusts (/etc/ssl/certs/ca-certificates.crt, what
+     * OpenSSL's /etc/ssl/cert.pem points at): Alpine has them from
+     * alpine-base, and python3, curl or wget alone do not pull them in. */
+    if (!installed("ca-certificates") && install("ca-certificates-bundle", 1) != 0) {
+        return 1;
+    }
     say("done; run with: linux --root ", pkg_root, " PROGRAM");
     return 0;
 }

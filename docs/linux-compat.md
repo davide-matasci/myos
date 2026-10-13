@@ -330,7 +330,12 @@ time. A chrooted process reaches `/net` through the bind `linux --root` sets
 up, and `get-alpine` gives a new root an `/etc/resolv.conf` for musl naming
 the DNS servers the system uses: the `dns=` lines of `/net/ndb`, QEMU's
 `10.0.2.3` without any. It is written once, when the root has none, so a
-root moved to another network needs it edited or removed.
+root moved to another network needs it edited or removed. Every root also
+gets Alpine's CA bundle (`ca-certificates-bundle`,
+`/etc/ssl/certs/ca-certificates.crt`, where OpenSSL's `/etc/ssl/cert.pem`
+points): Alpine has it from `alpine-base`, and `python3`, `curl` or `wget`
+do not depend on it, so without it every TLS connection fails its
+certificate check (`unable to get local issuer certificate`).
 
 An `AF_UNIX` stream socket is a `/net/unix` conversation, mapped as
 libgloss maps a native program's (`docs/sockets-unix.md`): `connect`
