@@ -1055,6 +1055,16 @@ lx_evfd_root() {
 	cat $OUT/lx-evfd-root.log
 	contains "LINUX-EVFD OK" $OUT/lx-evfd-root.log
 }
+# getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
+# kernel finds the cwd where it is stored, /tmp/mnt/..., and still names
+# it in the root's terms (Python's venv and busybox's pwd loop on a
+# getcwd that fails).
+lx_cwd_bind() {
+	mkdir -p /mnt/lxroot && cp /bin/linux/linux-smoke /mnt/lxroot/ || return 1
+	capture $OUT/lx-cwd.log linux --root /mnt/lxroot /linux-smoke cwd
+	cat $OUT/lx-cwd.log
+	contains "LINUX-CWD OK" $OUT/lx-cwd.log
+}
 # The layer's trace switch (docs/linux-compat.md, Debugging): on, a call
 # it does not implement still gets ENOSYS (and is reported on the console);
 # at 2 the call is kept with its answer; off again; anything else refused.
@@ -1266,6 +1276,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t linux_dyn lx_dyn
 	t linux_unix lx_unix
 	t linux_evfd_root lx_evfd_root
+	t linux_cwd_bind lx_cwd_bind
 	t linux_trace lx_trace
 	t linux_pagecache lx_pagecache
 	if [ "$MODE" = full ]; then

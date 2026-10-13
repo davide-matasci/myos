@@ -38,6 +38,7 @@
 #include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -777,6 +778,14 @@ static void check_misc_calls(void) {
     check(fd >= 0 && syscall(SYS_fallocate, fd, 1, 0, 100) == -1 && errno == EOPNOTSUPP,
           "fallocate FALLOC_FL_KEEP_SIZE: EOPNOTSUPP");
     check(fd >= 0 && syscall(SYS_readahead, fd, 0, 4096) == 0, "readahead");
+    /* No extended attributes, as on a Linux file system without them:
+     * what shutil.copy2 (ensurepip, pipx) copies and skips. */
+    char xa[16];
+    check(listxattr("/tmp", xa, sizeof xa) == 0 && flistxattr(fd, xa, sizeof xa) == 0,
+          "listxattr: no attributes");
+    check(getxattr("/tmp", "user.x", xa, sizeof xa) == -1 && errno == ENODATA, "getxattr: ENODATA");
+    check(setxattr("/tmp", "user.x", "1", 1, 0) == -1 && errno == EOPNOTSUPP, "setxattr: EOPNOTSUPP");
+    check(listxattr("/no/such", xa, sizeof xa) == -1 && errno == ENOENT, "listxattr of nothing: ENOENT");
     close(fd);
     unlink("/tmp/linux-smoke.falloc");
     uid_t r = 1, e = 1, s = 1;
@@ -1006,6 +1015,22 @@ int main(int argc, char **argv) {
         int ok = syscall(4000, 1, 2, 3) == -1 && errno == ENOSYS;
         out(ok ? "LINUX-ENOSYS OK\n" : "LINUX-ENOSYS FAIL\n");
         return !ok;
+    }
+    /* `cwd`: getcwd names the cwd as the root sees it, also when the root
+     * lies under a bind (`linux --root /mnt/x`, /mnt being /tmp/mnt). */
+    if (argc > 1 && strcmp(argv[1], "cwd") == 0) {
+        char b[256];
+        check(getcwd(b, sizeof b) && strcmp(b, "/") == 0, "getcwd at the root");
+        mkdir("/d", 0755);
+        check(chdir("/d") == 0 && getcwd(b, sizeof b) && strcmp(b, "/d") == 0, "getcwd after chdir");
+        int d = open("/d", O_RDONLY | O_DIRECTORY);
+        check(chdir("/") == 0 && d >= 0 && fchdir(d) == 0 && getcwd(b, sizeof b) && strcmp(b, "/d") == 0,
+              "getcwd after fchdir");
+        check(getcwd(b, 2) == NULL && errno == ERANGE, "getcwd: a short buffer is ERANGE");
+        close(d);
+        rmdir("/d");
+        out(failures ? "LINUX-CWD FAIL\n" : "LINUX-CWD OK\n");
+        return failures != 0;
     }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root
      * (`linux --root`), where /dev is a bind of the system's. */

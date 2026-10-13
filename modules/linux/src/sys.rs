@@ -1014,7 +1014,14 @@ fn set_nonblock(fd: usize, on: bool) {
 
 pub fn getcwd(buf: usize, size: usize) -> R {
     let r = user::sys_getcwd(buf, size);
-    if native_failed(r) { Err(ERANGE) } else { Ok(r + 1) }
+    // A buffer that holds any path the kernel has failed for another
+    // reason (the cwd was removed, or is outside the namespace): ERANGE
+    // there would have the caller grow its buffer forever.
+    match native_failed(r) {
+        false => Ok(r + 1),
+        true if size > MAX_PATH => Err(ENOENT),
+        true => Err(ERANGE),
+    }
 }
 
 pub fn chdir(path: usize) -> R {
@@ -1369,6 +1376,37 @@ pub fn sched_getaffinity(len: usize, mask: usize) -> R {
     let bits: u64 = if cpus == 64 { u64::MAX } else { (1 << cpus) - 1 };
     put(mask, &bits.to_le_bytes())?;
     Ok(size)
+}
+
+/// What an extended attribute call does.
+pub enum Xattr {
+    Get,
+    List,
+    Set,
+}
+
+/// The extended attribute calls on a path (`follow`: `getxattr`, else
+/// `lgetxattr`, ...): no myos file system keeps attributes, so a file
+/// lists none, has none to read and takes none, as on a Linux file system
+/// without them (`shutil.copy2` copies them and skips exactly these).
+pub fn xattr_path(path: usize, follow: bool, op: Xattr) -> R {
+    let path = path_at(AT_FDCWD, path)?;
+    let real = if follow { real_path(&path)? } else { real_path_nofollow(&path)? };
+    fs::stat(&real).ok_or(ENOENT)?;
+    xattr_none(op)
+}
+
+/// The extended attribute calls on an fd (`fgetxattr`, ...).
+pub fn xattr_fd(op: Xattr) -> R {
+    xattr_none(op)
+}
+
+fn xattr_none(op: Xattr) -> R {
+    match op {
+        Xattr::Get => Err(ENODATA),
+        Xattr::List => Ok(0),
+        Xattr::Set => Err(EOPNOTSUPP),
+    }
 }
 
 /// `sysinfo`: the uptime and the memory, from the kernel's `/proc/meminfo`

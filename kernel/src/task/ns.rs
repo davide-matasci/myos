@@ -111,13 +111,20 @@ impl Namespace {
     }
 
     /// The process's name for `real`, if a binding leads to it (the longest
-    /// source wins).
+    /// source wins). Both sides are compared with their bind mounts
+    /// resolved: a source is kept as the caller named it (`/mnt/a`), while
+    /// a path made from a node is where the file is stored (`/tmp/mnt/a`,
+    /// `vfs::node_path`).
     pub fn to_virtual(&self, real: &str) -> Option<String> {
-        let (b, rest) = self
+        let real = crate::fs::vfs::canonical(real)?;
+        let (b, _, rest) = self
             .binds
             .iter()
-            .filter_map(|b| below(real, &b.source).map(|rest| (b, rest)))
-            .max_by_key(|(b, _)| b.source.len())?;
-        Some(join(&b.target, rest))
+            .filter_map(|b| {
+                let source = crate::fs::vfs::canonical(&b.source)?;
+                below(&real, &source).map(|rest| (b, source.len(), String::from(rest)))
+            })
+            .max_by_key(|&(_, len, _)| len)?;
+        Some(join(&b.target, &rest))
     }
 }
