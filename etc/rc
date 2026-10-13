@@ -1,0 +1,44 @@
+#!/bin/sh
+# The boot script (docs/install.md). init runs it in the background once
+# `mount -a` is done and netd started, so the login prompt does not wait
+# for it; its last line, `boot complete` (also in /tmp/boot.done), says it
+# is over. It runs as root: init starts it as `system`, in the `rc` domain,
+# which may only become root (etc/policy).
+case $(/bin/etc/sec ctx) in
+*' rc') exec /bin/etc/sec as root /etc/rc ;;
+esac
+
+PATH=/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc
+HOME=/
+export PATH HOME
+
+# What the system keeps: on the data partition when there is one, else in
+# /tmp until the next boot.
+if grep -q '^[^ ]* /data ' /proc/mounts; then
+	keep=/data
+else
+	keep=/tmp
+fi
+
+# dropbear's host keys (`dropbear -R` makes them at the first connection)
+# and authorized_keys: /etc/dropbear, a directory of the read-only root.
+mkdir -p $keep/dropbear && mount $keep/dropbear /etc/dropbear bind \
+	|| echo "[ WARN ] rc: cannot bind $keep/dropbear on /etc/dropbear"
+
+# The administrator's part, /data/etc/rc.local: the image's default copied
+# there when missing (deleted, it comes back at the next boot). Without a
+# data partition the default runs as it is.
+rclocal=/etc/rc.local
+if [ $keep = /data ]; then
+	[ -f /data/etc/rc.local ] || { mkdir -p /data/etc && cp /etc/rc.local /data/etc/rc.local; }
+	[ -f /data/etc/rc.local ] && rclocal=/data/etc/rc.local
+fi
+sh $rclocal
+status=$?
+if [ $status -eq 0 ]; then
+	done="[ OK ] boot complete ($rclocal)"
+else
+	done="[ WARN ] boot complete ($rclocal exited $status)"
+fi
+echo "$done" > /tmp/boot.done
+echo "$done"

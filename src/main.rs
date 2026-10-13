@@ -468,10 +468,10 @@ fn add_virtio_net(cmd: &mut Command) {
     if !host_listen_2323() {
         netdev.push_str(",hostfwd=tcp::2323-:2323");
     }
-    // Dropbear SSH test (full mode): host OpenSSH clients connect to
-    // localhost:2222 which slirp forwards to guest :22. Same free-port guard.
+    // SSH to the dropbear the boot script starts on :2222 (docs/ssh.md;
+    // the full mode's test connects to it). Same free-port guard.
     if !host_listen_2222() {
-        netdev.push_str(",hostfwd=tcp::2222-:22");
+        netdev.push_str(",hostfwd=tcp::2222-:2222");
     }
     cmd.arg("-netdev").arg(netdev);
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");

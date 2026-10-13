@@ -155,7 +155,13 @@ starts, is one, so it cannot be typed at the console.
 - `system` runs init (`init`), netd (`netd`), getty and login (`login`),
   init's `mount -a` (`mount`: the ESP at `/boot`, the fstab's partitions,
   `docs/install.md`) and the boot smoke `/bin/custom/ok` (`smoke`), each
-  with what it uses.
+  with what it uses. The boot script `/etc/rc` (`rc`, its `exec` rule)
+  may only read the system and enter a user without a password, which it
+  does at once: the rest of it runs as root, in `admin`
+  (`docs/install.md`).
+- dropbear's keys, `/data/dropbear` and `/tmp/dropbear` (bound over
+  `/etc/dropbear`, `docs/ssh.md`), are `secret(root)`: no other user reads
+  the host key or changes who may log in.
 - `root` logs in to `admin`: the whole system (the image, `/tmp`, devices,
   `/proc`, `/net`, the kernel objects, every home) but not other users'
   `secret`s. It can also run `shell` and `untrusted` programs.

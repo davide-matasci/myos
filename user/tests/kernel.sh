@@ -156,7 +156,8 @@ partitions() {
 # partition /proc/boot/partuuid names) holds the kernel, the initramfs and
 # the version in slot a, an empty slot b, the one limine.conf, which boots
 # slot a and tells the kernel so (/proc/cmdline), and fstab, which
-# names the data partition: an empty ext2 at /data.
+# names the data partition: an ext2 at /data, which holds only what the
+# boot script put there (boot_rc).
 boot_disk() {
 	data=$(grep '"myos data"$' /proc/partitions | cut -d' ' -f1)
 	[ -n "$data" ] || { cat /proc/partitions; return 1; }
@@ -182,7 +183,20 @@ boot_disk() {
 		cmp "$file" "/boot/$path" || r=1
 	done < /lib/myos-boot/boot.txt
 	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }
-	[ "$(ls /data)" = lost+found ]
+	[ "$(ls /data | tr '\n' ' ')" = "dropbear etc lost+found " ]
+}
+# The boot script (etc/rc, docs/install.md), which run.sh waited for: as
+# root, it bound the data partition's /data/dropbear over /etc/dropbear,
+# copied the image's rc.local to /data/etc and ran it, which loaded the
+# Linux layer and started dropbear on port 2222.
+boot_rc() {
+	cat /proc/mounts
+	grep -q '^/data/dropbear /etc/dropbear bind' /proc/mounts || return 1
+	cmp /etc/rc.local /data/etc/rc.local || return 1
+	grep -q "^linux$" /proc/modules || return 1
+	cat /tmp/boot.done
+	grep -q '^\[ OK \] boot complete (/data/etc/rc.local)$' /tmp/boot.done || return 1
+	ps | grep -q ' dropbear$' || { ps; return 1; }
 }
 # /boot/fstab edited on the running system (docs/install.md): a line naming
 # the scratch disk's p3 (FAT since `partitions`) by its unique GUID mounts it
@@ -231,6 +245,7 @@ scsi_disk() {
 t scsi_disk scsi_disk
 t partitions partitions
 t boot_disk boot_disk
+t boot_rc boot_rc
 t fstab_mount fstab_mount
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
@@ -1287,10 +1302,11 @@ lx_rustc() {
 	echo "$out"
 	case "$out" in "rustc 1."*) ;; *) return 1 ;; esac
 }
-# Without the feature: load the module now; it registers (the kernel prints
-# `[ OK ] linux` on the console) and shows up in /proc/modules.
+# Without the feature: the boot script's default rc.local loaded the module
+# with insmod (boot_rc); it shows up in /proc/modules, and a second load is
+# refused.
 lx_insmod() {
-	insmod /lib/modules/linux && linux_loaded
+	linux_loaded && ! insmod /lib/modules/linux
 }
 
 if linux_loaded && [ -x /bin/linux/linux-smoke ]; then

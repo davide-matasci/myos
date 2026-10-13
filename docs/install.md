@@ -208,15 +208,57 @@ whole disk or in an MBR partition has no partition GUID and cannot be
 listed: naming one by its filesystem's own ID (Linux's `UUID=`) would be
 the way, if it is ever needed.
 
+## The boot script: `/etc/rc` and `/data/etc/rc.local`
+
+After `mount -a` and netd, init starts `/etc/rc` (`etc/rc` in the
+repository) and goes on to the login prompt without waiting for it
+(`[ OK ] rc started (in the background)`). The script's lines come after
+the prompt; its last one says the boot is over, also written to
+`/tmp/boot.done`:
+
+```
+[ OK ] boot complete (/data/etc/rc.local)
+[ WARN ] boot complete (/data/etc/rc.local exited 1)
+```
+
+It runs as root, in `admin`. init starts it as `system`, and the policy's
+`exec /etc/rc -> rc` rule puts it in the `rc` domain, whose only power is
+entering a user without a password; the script uses it at once
+(`sec as root`, `docs/security.md`). Then it:
+
+1. binds a writable directory over `/etc/dropbear`, for dropbear's host
+   keys and `authorized_keys` (`docs/ssh.md`): `/data/dropbear` when the
+   data partition is mounted, so they survive reboots and upgrades, else
+   `/tmp/dropbear`, until the next boot. Both are labelled `secret(root)`:
+   only root reads them;
+2. copies the image's `/etc/rc.local` to `/data/etc/rc.local` when that is
+   missing, and runs it with `sh` (without a data partition, the image's
+   own runs).
+
+`/data/etc/rc.local` is the administrator's, edited on the running system
+(only `admin` may write `/data`); deleted, the default comes back at the
+next boot. The default loads the Linux layer (`docs/linux-compat.md`)
+unless the kernel did already, and starts dropbear on port 2222:
+
+```sh
+grep -q '^linux$' /proc/modules || insmod /lib/modules/linux
+dropbear -R -D /etc/dropbear -p 2222
+```
+
+Something that stays in the foreground there holds the boot back from
+its last line, not the login: start daemons in the background (`&`, or a
+program's own `-d`; dropbear goes there unless given `-F`).
+
 ## The data partition
 
 An empty ext2 (`ext2fs::mkfs`, the same code as myos's `mkfs.ext2`) at
 `/data`, for what must outlive an upgrade. It holds the default roots of
 the package tools: `get-myos`'s apps in `/data/apps` (`docs/packages.md`)
 and `get-alpine`'s Alpine root in `/data/alpine` (`docs/linux-compat.md`),
-both labelled `sys.pkg`. Other candidates are SSH host keys and
-`authorized_keys` (in `/tmp` for now, `docs/ssh.md`), `/etc` overrides and
-home directories; which of those move there is its own change. Only the
+both labelled `sys.pkg`; the boot script's `/data/etc/rc.local` and
+dropbear's keys in `/data/dropbear` (above). Other candidates are `/etc`
+overrides and home directories; which of those move there is its own
+change. Only the
 administrator may write it (the policy's `sys.file` label). On a disk larger
 than the image (a VPS), the space after it is left unused: growing the
 partition to the disk needs the GPT rewritten, which can come later.
@@ -250,7 +292,9 @@ arch (a virtio disk: on x86 the third, `vdc`, after the test disks), and
 `kernel.sh`'s `boot_disk` checks its layout, as `mount -a` mounted it: the
 ESP at `/boot` (`/proc/boot/partuuid`), the slots, the one `limine.conf`,
 slot `a`'s version and `/proc/cmdline`, the fstab naming the data
-partition, the empty ext2 at `/data`; `fstab_mount` adds lines to
+partition, the ext2 at `/data` with only what the boot script put there
+(`boot_rc` checks its work: the bind, `rc.local`, the Linux layer and
+dropbear); `fstab_mount` adds lines to
 `/boot/fstab` (a scratch partition under `/mnt`, a `/dev/` path, a missing
 GUID) and checks what `mount -a` does with each. It also checks that `/proc/boot/` holds slot `a`'s kernel and
 initramfs, and `/lib/myos-boot/` the ESP's Limine files. Every list ends
