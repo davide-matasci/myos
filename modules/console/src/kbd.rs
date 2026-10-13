@@ -10,6 +10,8 @@
 //! - **Arrow keys** → vt100 CSI sequences `ESC [ A|B|C|D` (3 bytes). These are
 //!   the same bytes a real terminal emits, so raw-mode TUIs get working
 //!   cursor keys.
+//! - **Caps Lock** (tracked from the [`raw_key`] events) flips Shift for
+//!   the keys whose character is a letter.
 //! - **Ctrl + letter** → the control byte (`ch & 0x1f`, e.g. Ctrl+C → `0x03`),
 //!   so the kernel's existing `ISIG` ^C path fires in both cooked and raw mode.
 //!
@@ -99,7 +101,7 @@ pub fn translate(keycode: u8, shift: bool, altgr: bool, ctrl: bool) -> Option<Ke
         KEY_LEFT => return Some(csi(b'D')),
         _ => {}
     }
-    let ch = keymap::translate(keycode, shift, altgr)?;
+    let ch = keymap::translate(keycode, caps_shift(keycode, shift, altgr), altgr)?;
     if ctrl && ch.is_ascii_alphabetic() {
         // Ctrl+letter → control byte (e.g. 'c' → 0x03 → ISIG ^C).
         return Some(one(ch & 0x1f));
@@ -119,6 +121,33 @@ fn csi(final_: u8) -> KeyBytes {
         data: [0x1b, b'[', final_],
         len: 3,
     }
+}
+
+/// Caps Lock is on: letters take the other case. QEMU's VNC server relies
+/// on it: a client that types or pastes an uppercase letter without Shift
+/// held gets Caps Lock pressed around it.
+static CAPS: AtomicBool = AtomicBool::new(false);
+/// The Caps Lock key is down (a held key repeats its press, not its toggle).
+static CAPS_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Linux `KEY_CAPSLOCK`.
+const CODE_CAPSLOCK: u16 = 58;
+
+/// The Shift level for `keycode` with Caps Lock applied: flipped for a key
+/// whose plain character is a letter, as is for every other.
+fn caps_shift(keycode: u8, shift: bool, altgr: bool) -> bool {
+    if !CAPS.load(Ordering::SeqCst) {
+        return shift;
+    }
+    match keymap::translate(keycode, false, altgr) {
+        Some(c) if is_letter(c) => !shift,
+        _ => shift,
+    }
+}
+
+/// A Latin-1 letter (the keymap's characters are Latin-1).
+fn is_letter(c: u8) -> bool {
+    c.is_ascii_alphabetic() || (c >= 0xC0 && c != 0xD7 && c != 0xF7)
 }
 
 /// Someone holds `/dev/console/kbd`: keys go there, not to the tty.
@@ -178,6 +207,12 @@ pub fn raw_key(code: u16, pressed: bool) {
     match code {
         42 | 54 => RAW_SHIFT.store(pressed, Ordering::SeqCst),
         100 => RAW_ALTGR.store(pressed, Ordering::SeqCst),
+        CODE_CAPSLOCK => {
+            if pressed && !CAPS_DOWN.load(Ordering::SeqCst) {
+                CAPS.fetch_xor(true, Ordering::SeqCst);
+            }
+            CAPS_DOWN.store(pressed, Ordering::SeqCst);
+        }
         _ => {}
     }
     if !grabbed() {
@@ -185,8 +220,8 @@ pub fn raw_key(code: u16, pressed: bool) {
     }
     // Codes 1..=0x58 are also the keymap's (set-1) key positions.
     let ch = if pressed && code < 0x59 {
-        keymap::translate(code as u8, RAW_SHIFT.load(Ordering::SeqCst), RAW_ALTGR.load(Ordering::SeqCst))
-            .unwrap_or(0)
+        let (shift, altgr) = (RAW_SHIFT.load(Ordering::SeqCst), RAW_ALTGR.load(Ordering::SeqCst));
+        keymap::translate(code as u8, caps_shift(code as u8, shift, altgr), altgr).unwrap_or(0)
     } else {
         0
     };

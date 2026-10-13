@@ -91,8 +91,12 @@ keycode 0x35 = - _ none none
 arch (the PS/2 driver converts; `docs/tty.md`), with the character this
 keymap gives them.
 
-Modifiers tracked: **Shift**, **AltGr** (Right Alt), **Ctrl** (Left/Right).
-Caps Lock is ignored in v1.
+Modifiers tracked: **Shift**, **AltGr** (Right Alt), **Ctrl** (Left/Right),
+and **Caps Lock**, which flips Shift for the keys whose plain character is a
+letter (`/dev/console/kbd`'s characters too). QEMU's VNC server needs it: an
+uppercase letter typed or pasted without Shift held (a VPS's web console
+pasting text) arrives as Caps Lock pressed around the letter. The keyboard's
+Caps Lock light is not driven.
 
 ## Reserved keys (not keymap-driven)
 
