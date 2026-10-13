@@ -66,7 +66,7 @@ termios, `ctty`, `^C` and window size work as a pty's, and `/proc/self/tty`
 names them (`/dev/tty3`, `/dev/ttyS0`). A screen's window size is the
 screen's; `ttyS0` has the screen's too until a `winsize` line sets its own
 (the serial line has no size). They are `dev.tty` in the policy, like the
-ptys.
+ptys: for now every user's, not only their session's (issue #442).
 
 `/dev/tty` stays a plain file because POSIX names it and ported programs open
 it as such. Its control file is `$(readlink /proc/self/tty)/ctl`. A program
