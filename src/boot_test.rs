@@ -78,7 +78,7 @@ impl Mode {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 34] = [
+const BOOT_MARKERS: [&str; 36] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -113,14 +113,16 @@ const BOOT_MARKERS: [&str; 34] = [
     "[ OK ] proc",
     "[ OK ] tty",
     "[ OK ] signal",
+    "[ OK ] rc started",
+    "[ OK ] boot complete",
 ];
 
 /// The kernel reporting a crash: a CPU exception, a user fault it printed,
 /// a panic. Ends the run at once instead of waiting out the budget.
 const FATAL_MARKERS: [&str; 3] = ["exception:", "user panic", "[ WARN ] user fault"];
 
-/// Login never takes this long once init is up (OVMF alone can take 40 s
-/// before that, so the clock starts at `[ OK ] fork exec`).
+/// Login never takes this long once the boot is over (OVMF alone can take
+/// 40 s before that, so the clock starts at the boot script's last line).
 const LOGIN_BOUND: Duration = Duration::from_secs(60);
 /// Pause between typed bytes, and the echo-sync wait per byte.
 const TYPE_DELAY: Duration = Duration::from_millis(40);
@@ -148,9 +150,13 @@ fn tail(text: &str, n: usize) -> String {
     chars[from..].iter().collect()
 }
 
-/// The console after init handed over to getty.
+/// The boot script's last line (etc/rc): it runs in the background, so its
+/// lines come after the login prompt, and the login waits for them.
+const BOOT_DONE: &str = "] boot complete (";
+
+/// The console after the boot: past the boot script's last line.
 fn after_boot(text: &str) -> &str {
-    text.rsplit_once("[ OK ] fork exec").map(|(_, t)| t).unwrap_or(text)
+    text.rsplit_once(BOOT_DONE).map(|(_, t)| t).unwrap_or(text)
 }
 
 fn at_prompt(text: &str) -> bool {
@@ -412,16 +418,20 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> bool {
     let ports = crate::ports::load_all(&repo_root());
     let deadline = started + budget;
 
-    // Log in: `root`, an empty password, then the one command. Each line is
-    // typed in sync with its echo; a garbled line is abandoned and typed
-    // again at the next prompt.
-    let login_ready = |t: &str| {
-        t.contains("[ OK ] fork exec") && after_boot(t).contains("login: ") && typed_after(t, "login: ").is_empty()
-    };
-    if !wait_for(&serial, deadline, login_ready) {
-        fail(&serial, &mut child, "no login prompt within the budget");
+    // Log in once the boot script is done: `root`, an empty password, then
+    // the one command. Its lines came after the login prompt, so an empty
+    // name makes getty exit and init start another, which prompts again.
+    // Each line is typed in sync with its echo; a garbled line is abandoned
+    // and typed again at the next prompt.
+    if !wait_for(&serial, deadline, |t| t.contains(BOOT_DONE)) {
+        fail(&serial, &mut child, "the boot script did not finish within the budget");
     }
     let login_deadline = Instant::now() + LOGIN_BOUND;
+    let login_ready =
+        |t: &str| t.contains(BOOT_DONE) && after_boot(t).contains("login: ") && typed_after(t, "login: ").is_empty();
+    if !wait_for(&serial, Instant::now() + ECHO_WAIT, login_ready) {
+        send(&mut stdin, b"\n");
+    }
     let mut attempts = 0;
     loop {
         attempts += 1;
@@ -559,11 +569,11 @@ mod tests {
 
     #[test]
     fn prompt_and_echo() {
-        let t = "[ OK ] fork exec\nlogin: ro";
+        let t = "login: [ OK ] boot complete (/etc/rc.local)\nlogin: ro";
         assert_eq!(typed_after(t, "login: "), "ro");
-        let t = "[ OK ] fork exec\nlogin: root\nPassword: \n$ sh /lib";
+        let t = "[ OK ] boot complete (/etc/rc.local)\nlogin: root\nPassword: \n$ sh /lib";
         assert_eq!(typed_after(t, "$ "), "sh /lib");
         assert!(!at_prompt(t));
-        assert!(at_prompt("[ OK ] fork exec\n$ "));
+        assert!(at_prompt("[ OK ] boot complete (/etc/rc.local)\n$ "));
     }
 }

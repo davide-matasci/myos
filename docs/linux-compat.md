@@ -26,8 +26,9 @@ run-myos get-alpine jq                     # Alpine Linux packages, into /data/a
 linux --root /data/alpine jq -n '1+1'      # (/tmp/alpine without a /data)
 ```
 
-In a default build the module is not loaded at boot; `insmod
-/lib/modules/linux` loads it (`[ OK ] linux`, listed in `/proc/modules`),
+In a default build the kernel does not load the module at boot; the boot
+script's default `/data/etc/rc.local` does (`docs/install.md`), with
+`insmod /lib/modules/linux` (`[ OK ] linux`, listed in `/proc/modules`),
 after which `linux PROGRAM` works for any Linux musl binary at hand, and
 the lines above from `get-myos get-alpine` on work the same: nothing of
 the layer but the module and the launcher is needed to run Alpine's
@@ -645,8 +646,9 @@ from it, expecting `rustc 1.`. They need the Alpine mirror and
 `example.com` to be reachable.
 
 Without the feature (the quick list, the normal PR CI), the test instead
-runs `insmod /lib/modules/linux` and expects `[ OK ] linux` and the module
-in `/proc/modules`: the module is built and loadable in every build.
+expects the module in `/proc/modules`, loaded by the boot script's
+default `rc.local` with `insmod`, and a second `insmod` refused: the
+module is built and loadable in every build.
 
 CI builds the musl pieces when their inputs change (`linux-compat` in
 `ci-ports.yml`, cached in the GHCR registry by `scripts/ci-registry.sh`

@@ -1,0 +1,12 @@
+# Run as root by /etc/rc at every boot, in the background, once the disks
+# are mounted and the network is up (docs/install.md). This is the image's
+# default: /etc/rc copies it to /data/etc/rc.local, which is yours to edit
+# (delete it to get the default back at the next boot).
+
+# The Linux compatibility layer (docs/linux-compat.md), unless the kernel
+# loaded it already (a build with the linux_compat feature).
+grep -q '^linux$' /proc/modules || insmod /lib/modules/linux
+
+# SSH on port 2222 (docs/ssh.md): the host key is made at the first
+# connection; logins with the keys in /etc/dropbear/authorized_keys.
+dropbear -R -D /etc/dropbear -p 2222

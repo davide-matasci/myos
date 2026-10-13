@@ -31,6 +31,15 @@ passed=0
 total=0
 mkdir -p $OUT
 
+# The boot script (/etc/rc, docs/install.md) runs in the background, past
+# the login prompt: the tests check what it set up, so it must be over
+# (it says so in /tmp/boot.done).
+i=0
+while [ $i -lt 300 ] && ! [ -f /tmp/boot.done ]; do
+	sleep 1
+	i=$((i + 1))
+done
+
 # fd 3 stays the console whatever a test redirects: the HOST requests and a
 # long test's progress go there.
 exec 3>&1

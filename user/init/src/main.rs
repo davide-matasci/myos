@@ -131,6 +131,21 @@ fn spawn_netd() {
     }
 }
 
+/// The boot script (`/etc/rc`, docs/install.md), not waited for: the login
+/// prompt comes at once, and the script's last line says when it is over.
+/// Its `exec` rule makes it root (etc/policy).
+fn spawn_rc() {
+    match fork() {
+        Some(0) => {
+            exec(b"/etc/rc", &[b"/etc/rc"]);
+            status_fail("rc exec failed");
+            exit();
+        }
+        Some(_) => status_ok("rc started (in the background)"),
+        None => status_fail("rc fork failed"),
+    }
+}
+
 /// Stay PID1: fork getty, wait for *that* child, respawn.
 ///
 /// Other children (notably netd) must not trigger another getty: a second
@@ -170,6 +185,7 @@ fn start() -> ! {
     smoke_fork_exec_ok();
     mount_all();
     spawn_netd();
+    spawn_rc();
     spawn_getty_loop();
 }
 

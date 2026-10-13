@@ -55,7 +55,8 @@ TESTS DONE 17/18
   ping/pong; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
   second USB stick into the guest through the QEMU monitor and pulls it out
   (`docs/usb.md`); `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
-  sessions at once with the test key, each of which touches
+  sessions at once with the test key to the dropbear the boot script
+  started (`docs/ssh.md`), each of which touches
   `/tmp/ssh-ok-a` / `-b` for the guest test to find, then a login on a pty
   (`ssh -tt`) that writes its terminal to `/tmp/ssh-tty`. A port that needs a
   peer on the host ships its own `host.sh`; the launcher knows no test.
@@ -67,7 +68,8 @@ the ext2 ones are `mkfs.ext2`'s, DNS and HTTPS are the `dns` and `http`
 programs', listen/accept and the tty are the C smokes'. The one section of
 `user/tests` itself, `kernel.sh`, holds what has no port directory: the
 exec limits and the Linux layer (its smokes when the image was built with
-the feature, `insmod` otherwise). The runner sources `kernel.sh`, then
+the feature; otherwise that the boot script's `rc.local` loaded it with
+`insmod`). The runner sources `kernel.sh`, then
 `ports/*.sh` in name order; the packer names those so the core image ports
 (the shell, the basic programs) come first, the other image ports next,
 the packages last. In the full mode the very first test installs every
@@ -122,8 +124,11 @@ on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 forwards, and in the full mode the package mirror and, with the Linux
 layer, the Alpine Rust disk: `linux-compat/alpine-disk.sh` builds it once
 into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1/data` with its
-writes kept in a QEMU snapshot), waits for `login: `,
-types `root`, an empty password and the command (each byte once its echo
+writes kept in a QEMU snapshot), waits for the boot script's last line
+(`[ OK ] boot complete`, `docs/install.md`: it runs past the login
+prompt) and then for `login: ` (an empty name first, when the script's
+lines came after the prompt: getty exits and init starts another), types
+`root`, an empty password and the command (each byte once its echo
 is back, so an AP's lagging echo never garbles the line), then watches:
 
 - the `TEST`, `HOST` (the named port's `host.sh`) and `TESTS DONE` lines;

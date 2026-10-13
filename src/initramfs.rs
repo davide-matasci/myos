@@ -357,6 +357,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
     // The security policy (docs/security.md); the kernel carries the same
     // file as its fallback.
     add(&mut entries, "etc/policy", read(&manifest_dir.join("etc/policy")));
+    // The boot script init runs and the default of the administrator's part
+    // (docs/install.md); /etc/dropbear, which /etc/rc binds a writable
+    // directory over, for dropbear's host keys and authorized_keys.
+    add(&mut entries, "etc/rc", read(&manifest_dir.join("etc/rc")));
+    add(&mut entries, "etc/rc.local", read(&manifest_dir.join("etc/rc.local")));
+    add(&mut entries, "etc/dropbear/.keep", Some(b"\n".to_vec()));
 
     // The `linux` launcher of the Linux compatibility layer (native, always
     // shipped: with the module loaded, `linux PROGRAM` works in any build).
