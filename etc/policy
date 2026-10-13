@@ -35,6 +35,16 @@ label /dev/**                dev
 label /dev/console/**        dev.tty
 label /dev/console/kbd       dev
 label /dev/pts/**            dev.tty
+label /dev/ttyS0/**          dev.tty
+label /dev/tty1/**           dev.tty
+label /dev/tty2/**           dev.tty
+label /dev/tty3/**           dev.tty
+label /dev/tty4/**           dev.tty
+label /dev/tty5/**           dev.tty
+label /dev/tty6/**           dev.tty
+label /dev/tty7/**           dev.tty
+label /dev/tty8/**           dev.tty
+label /dev/tty9/**           dev.tty
 label /dev/tty               dev.tty
 label /dev/null              dev.common
 label /dev/zero              dev.common

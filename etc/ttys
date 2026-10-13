@@ -1,0 +1,5 @@
+# The ttys init starts a login on, besides the serial port's ttyS0
+# (docs/tty.md): tty1 to ttyN, each on its text screen (Alt+1 to Alt+N;
+# Alt+0 shows the console). A number from 0 to 9. This is the image's
+# default: init reads /data/etc/ttys instead when it is there.
+4

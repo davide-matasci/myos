@@ -1,9 +1,12 @@
-//! Kernel console: output goes to serial and, once the `console` module has
-//! registered, to its framebuffer text screen; keyboard input and the
-//! loadable keymap come from the same module.
+//! Kernel console: the kernel's messages go to serial and, once the
+//! `console` module has registered, to its framebuffer text screen 0;
+//! keyboard input and the loadable keymap come from the same module.
 //!
-//! On real hardware you usually see the framebuffer on the monitor while
-//! COM1 (x86) carries the interactive shell. Boot status lines use a
+//! The module has text screens (`docs/tty.md`): 0 is the console's, 1–9
+//! the ttys' ([`crate::pty`], [`write_screen`]); one is shown at a time
+//! ([`show`]). What processes write to `/dev/console/data` goes to screen 0,
+//! and to serial as well until `ttyS0` takes the serial port
+//! ([`write_user`]). Boot status lines use a
 //! structured `[ TAG ] label` form: serial gets plain text, the module
 //! colours the tags. Output written before the module loads is kept in a
 //! small buffer and replayed to it on registration, so the screen shows the
@@ -13,10 +16,10 @@
 //! concurrent tasks cannot interleave serial bytes or split a status line.
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use myos_abi::{
-    CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO, CONSOLE_STATUS_OK,
-    CONSOLE_STATUS_WARN, CONSOLE_TEXT, FramebufferInfo, ModuleConsoleOps,
+    CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_KEY_SCREEN, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO,
+    CONSOLE_STATUS_OK, CONSOLE_STATUS_WARN, CONSOLE_TEXT, FramebufferInfo, ModuleConsoleOps,
 };
 use spin::{Mutex, Once};
 
@@ -35,12 +38,8 @@ static FB_INFO: Once<FramebufferInfo> = Once::new();
 static OPS: Once<ModuleConsoleOps> = Once::new();
 /// Serializes every console write end-to-end (serial + screen).
 static OUT: Mutex<()> = Mutex::new(());
-/// When false, `write_byte`/`write_str` stay serial-only; boot `status_*`
-/// lines and banners still paint the screen. On by default; `mirror off` in
-/// `/dev/console/ctl` turns it off (`set_mirror`): every newline on a big
-/// framebuffer moves megabytes, which under TCG slows a chatty boot test
-/// several times (CI #34814552381), so the test runner does.
-static MIRROR_BYTES: AtomicBool = AtomicBool::new(true);
+/// The text screen shown ([`show`]).
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Boot output before the module loads: `(kind, text)` records, replayed on
 /// registration. Status lines are stored as their serial text; the module
@@ -86,7 +85,7 @@ pub fn register(ops: ModuleConsoleOps) -> bool {
         let len = usize::from(u16::from_le_bytes([early.buf[i + 1], early.buf[i + 2]]));
         i += 3;
         let end = (i + len).min(early.len);
-        unsafe { (ops.write_kind)(early.buf[i..end].as_ptr(), end - i, kind) };
+        unsafe { (ops.write_kind)(0, early.buf[i..end].as_ptr(), end - i, kind) };
         i = end;
     }
     early.len = 0;
@@ -110,31 +109,70 @@ fn early_record(kind: u32, s: &[u8]) {
     early.len += 3 + len;
 }
 
-/// Paint `s` on the screen (caller holds `OUT`).
+/// Write `s` to the console's screen, 0 (caller holds `OUT`).
 fn screen_write(kind: u32, s: &[u8]) {
     match OPS.get() {
-        Some(ops) => unsafe { (ops.write_kind)(s.as_ptr(), s.len(), kind) },
+        Some(ops) => unsafe { (ops.write_kind)(0, s.as_ptr(), s.len(), kind) },
         None => early_record(kind, s),
     }
 }
 
-pub fn mirrors_bytes() -> bool {
-    MIRROR_BYTES.load(Ordering::Relaxed)
+/// A tty's output: to its text screen `n` (1–9), painted when shown.
+pub fn write_screen(n: usize, s: &[u8]) {
+    if s.is_empty() {
+        return;
+    }
+    let _guard = OUT.lock();
+    if let Some(ops) = OPS.get() {
+        unsafe { (ops.write_kind)(n as u32, s.as_ptr(), s.len(), CONSOLE_TEXT) };
+    }
 }
 
-/// `mirror on|off` (`/dev/console/ctl`): whether output goes to the screen
-/// as well as to the serial port.
-pub fn set_mirror(on: bool) {
-    MIRROR_BYTES.store(on, Ordering::Relaxed);
+/// `ttyS0`'s output: to the serial port.
+pub fn write_serial(s: &[u8]) {
+    let _guard = OUT.lock();
+    let mut serial = SerialPort::new();
+    for &b in s {
+        serial.write_byte(b);
+    }
+}
+
+/// A process's write to `/dev/console/data`: the console's screen, and the
+/// serial port as well until `ttyS0` has it (the boot's lines, init's and
+/// the programs' it starts, are on both).
+pub fn write_user(s: &[u8]) {
+    let _guard = OUT.lock();
+    if !crate::pty::serial_taken() {
+        let mut serial = SerialPort::new();
+        for &b in s {
+            serial.write_byte(b);
+        }
+    }
+    screen_write(CONSOLE_TEXT, s);
+}
+
+/// Show text screen `n` (`screen N` on `/dev/console/ctl`, Alt+N on the
+/// keyboard): its tty gets the keyboard. False when there is no screen.
+pub fn show(n: usize) -> bool {
+    let Some(ops) = OPS.get() else {
+        return false;
+    };
+    let _guard = OUT.lock();
+    if unsafe { (ops.show)(n as u32) } != 0 {
+        return false;
+    }
+    ACTIVE.store(n, Ordering::Relaxed);
+    true
+}
+
+/// The text screen shown.
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::Relaxed)
 }
 
 /// Timer-IRQ blink for the framebuffer block cursor (the module skips the
-/// tick if a paint holds its lock). Not while the screen is not mirrored:
-/// the cursor would blink over text that no longer moves.
+/// tick if a paint holds its lock).
 pub fn cursor_blink() {
-    if !mirrors_bytes() {
-        return;
-    }
     if let Some(ops) = OPS.get() {
         unsafe { (ops.blink)() };
     }
@@ -170,14 +208,26 @@ pub fn keyboard_irq() -> bool {
 /// The screen shows the blinking cursor ([`cursor_blink`] does something):
 /// CPU 0 wakes for it while idle.
 pub fn cursor_blinks() -> bool {
-    mirrors_bytes() && OPS.get().is_some_and(|ops| unsafe { (ops.cursor_blinks)() } != 0)
+    OPS.get().is_some_and(|ops| unsafe { (ops.cursor_blinks)() } != 0)
 }
 
-/// Next keyboard byte, keymap-translated, if one is pending.
-pub fn keyboard_poll_byte() -> Option<u8> {
+/// What the keyboard gave.
+pub enum Key {
+    /// A byte, keymap-translated.
+    Byte(u8),
+    /// Alt+digit: show that screen.
+    Screen(usize),
+}
+
+/// The keyboard's next key, if one is pending.
+pub fn keyboard_poll() -> Option<Key> {
     let ops = OPS.get()?;
     let b = unsafe { (ops.keyboard_poll)() };
-    (0..=255).contains(&b).then_some(b as u8)
+    match b {
+        0..=255 => Some(Key::Byte(b as u8)),
+        _ if b >= CONSOLE_KEY_SCREEN => Some(Key::Screen((b - CONSOLE_KEY_SCREEN) as usize)),
+        _ => None,
+    }
 }
 
 /// Install a keymap from its text form (see `docs/keymap.md`). The module
@@ -224,9 +274,7 @@ pub fn write_byte(byte: u8) {
 
 fn write_byte_unlocked(byte: u8) {
     SerialPort::new().write_byte(byte);
-    if MIRROR_BYTES.load(Ordering::Relaxed) {
-        screen_write(CONSOLE_TEXT, &[byte]);
-    }
+    screen_write(CONSOLE_TEXT, &[byte]);
 }
 
 pub fn write_str(s: &str) {
@@ -314,9 +362,7 @@ impl Write for Console {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let _guard = OUT.lock();
         SerialPort::new().write_str(s)?;
-        if MIRROR_BYTES.load(Ordering::Relaxed) {
-            screen_write(CONSOLE_TEXT, s.as_bytes());
-        }
+        screen_write(CONSOLE_TEXT, s.as_bytes());
         Ok(())
     }
 }

@@ -680,29 +680,14 @@ pub fn is_live_user(id: usize) -> bool {
     ok
 }
 
-pub fn print(s: &str) {
+/// A process's write to the console (`/dev/console/data`): its screen, and
+/// the serial port until `ttyS0` has it ([`console::write_user`]).
+pub fn print_bytes(bytes: &[u8]) {
     let flags = irq_save();
     irq_off();
     {
         let _hold = SERIAL.lock();
-        console::write_str(s);
+        console::write_user(bytes);
     }
     irq_restore(flags);
-}
-
-pub fn print_bytes(bytes: &[u8]) {
-    match core::str::from_utf8(bytes) {
-        Ok(s) => print(s),
-        Err(_) => {
-            let flags = irq_save();
-            irq_off();
-            {
-                let _hold = SERIAL.lock();
-                for &b in bytes {
-                    console::write_byte(b);
-                }
-            }
-            irq_restore(flags);
-        }
-    }
 }

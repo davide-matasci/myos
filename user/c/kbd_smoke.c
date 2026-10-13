@@ -8,10 +8,16 @@
  * events are "d 42", "d 30" (with " A" when a keymap is loaded), "u 30" and
  * "u 42", the first through a read that waits, the rest through poll and
  * read. Prints [ OK ] kbd.
+ *
+ * `kbd_smoke intr TTY` is the job for test.sh's ^C check instead: a new
+ * session with TTY (a tty on a text screen, docs/tty.md) as its
+ * controlling terminal, reading /dev/zero until a signal ends it, so ^C
+ * typed on the keyboard while that screen is shown reaches it.
  */
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -34,7 +40,26 @@ static int event_is(const char *line, const char *want, const char *ch) {
     return line[n] == '\0' || (ch && line[n] == ' ' && strcmp(line + n + 1, ch) == 0);
 }
 
-int main(void) {
+/* A session of its own on `tty`, reading /dev/zero: ends by a signal. */
+static int intr(const char *tty) {
+    if (setsid() < 0) {
+        return fail("intr: setsid");
+    }
+    int t = open(tty, O_RDWR);
+    if (t < 0 || ioctl(t, TIOCSCTTY, 0) != 0) {
+        return fail("intr: controlling terminal");
+    }
+    int zero = open("/dev/zero", O_RDONLY);
+    char buf[4096];
+    while (read(zero, buf, sizeof buf) > 0) {
+    }
+    return fail("intr: /dev/zero ended");
+}
+
+int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "intr") == 0) {
+        return intr(argv[2]);
+    }
     int fd = open(KBD, O_RDONLY);
     if (fd < 0) {
         return fail("open");

@@ -141,7 +141,7 @@ fn feed_one() -> bool {
     let Some(kc) = dec.feed(sc) else {
         return true;
     };
-    if kbd::grabbed() {
+    if kbd::grabbed() || kbd::screen_key(kc, dec.alt()) {
         return true;
     }
     if let Some(kb) = kbd::translate(kc, dec.shift(), dec.altgr(), dec.ctrl()) {

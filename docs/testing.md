@@ -124,11 +124,9 @@ on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 forwards, and in the full mode the package mirror and, with the Linux
 layer, the Alpine Rust disk: `linux-compat/alpine-disk.sh` builds it once
 into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1/data` with its
-writes kept in a QEMU snapshot), waits for the boot script's last line
-(`[ OK ] boot complete`, `docs/install.md`: it runs past the login
-prompt) and then for `login: ` (an empty name first, when the script's
-lines came after the prompt: getty exits and init starts another), types
-`root`, an empty password and the command (each byte once its echo
+writes kept in a QEMU snapshot), waits for `login: ` on the serial port
+(`ttyS0`'s getty, `docs/tty.md`; a kernel status line that lands after a
+prompt is skipped), types `root`, an empty password and the command (each byte once its echo
 is back, so an AP's lagging echo never garbles the line), then watches:
 
 - the `TEST`, `HOST` (the named port's `host.sh`) and `TESTS DONE` lines;

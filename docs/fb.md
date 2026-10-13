@@ -29,8 +29,8 @@ it already owns the screen and paints the text console on it.
   module stops painting text and blinking the cursor (console output still
   goes to serial). Writing `text` gives it back, and so does the last close
   of `ctl`: a program holds the screen as long as it keeps `ctl` open, and
-  its exit (a crash too) gives it back. The screen is cleared on the way
-  back, since the text console cannot repaint what was drawn over it.
+  its exit (a crash too) gives it back. The text screen shown is drawn
+  again on the way back, with what it took meanwhile (`docs/tty.md`).
   (`echo graphics > /dev/fb/ctl` from a shell takes it and gives it back
   at once.)
 

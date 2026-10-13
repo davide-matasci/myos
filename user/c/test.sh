@@ -175,13 +175,13 @@ kbd_burst() {
 	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ]
 }
 t kbd_burst kbd_burst
-# ^C on the keyboard while nothing reads the console: the console's input
-# thread runs the line discipline anyway and the foreground group (this
-# shell's) gets SIGINT, so a job that only reads /dev/zero ends. This shell
-# ignores it meanwhile; the job is back at the default action.
+# The keyboard types at the tty whose text screen is shown (docs/tty.md):
+# tty9's here, which has no getty. ^C there while nothing reads it: the
+# console's input thread runs the line discipline anyway and the tty's
+# session (kbd_smoke intr, which reads only /dev/zero) gets SIGINT.
 ctrl_c() {
-	trap '' INT
-	( trap - INT; exec sha512sum /dev/zero ) &
+	echo 'screen 9' > /dev/console/ctl || return 1
+	/bin/etc/kbd_smoke intr /dev/tty9/data &
 	pid=$!
 	sleep 1
 	echo "HOST c-smokes sendkey ctrl-c" >&3
@@ -193,23 +193,22 @@ ctrl_c() {
 	kill -9 $pid 2>/dev/null
 	wait $pid
 	rc=$?
-	trap - INT
-	echo "sha512sum ended with $rc"
+	echo 'screen 1' > /dev/console/ctl
+	echo "kbd_smoke intr ended with $rc"
 	[ $rc -eq 130 ]
 }
 t ctrl_c ctrl_c
 # Caps Lock on the keyboard: letters take the other case, Shift with it
 # gives lowercase, digits stay. QEMU's VNC server types an uppercase letter
 # sent without Shift (a pasted one) as Caps Lock around it. The line is read
-# from the console (this shell's stdin, through fd 4: a background job's
-# stdin is /dev/null) by a job that is killed after 30 s.
+# from tty9, its screen shown, by a job that is killed after 30 s. Alt+1
+# then shows tty1's screen again.
 caps_lock() {
 	: > /tmp/caps.out
-	exec 4<&0
-	head -n 1 <&4 > /tmp/caps.out &
+	echo 'screen 9' > /dev/console/ctl || return 1
+	head -n 1 < /dev/tty9/data > /tmp/caps.out &
 	pid=$!
-	exec 4<&-
-	echo "HOST c-smokes sendkey caps_lock a 1 shift-b caps_lock c ret" >&3
+	echo "HOST c-smokes sendkey caps_lock a 1 shift-b caps_lock c ret alt-1" >&3
 	i=0
 	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
 		sleep 1
@@ -218,7 +217,14 @@ caps_lock() {
 	kill $pid 2>/dev/null
 	wait $pid 2>/dev/null
 	echo "read: $(cat /tmp/caps.out)"
-	[ "$(cat /tmp/caps.out)" = "A1bc" ]
+	[ "$(cat /tmp/caps.out)" = "A1bc" ] || return 1
+	i=0
+	while [ $i -lt 10 ] && ! grep -q '^screen 1$' /dev/console/ctl; do
+		sleep 1
+		i=$((i + 1))
+	done
+	grep '^screen' /dev/console/ctl
+	grep -q '^screen 1$' /dev/console/ctl
 }
 t caps_lock caps_lock
 # netd listen/accept: the smoke announces TCP 2323; the host connects back

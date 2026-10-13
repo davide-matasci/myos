@@ -31,11 +31,7 @@ fn parse_index(name: &str) -> Option<usize> {
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let n: usize = name.parse().ok()?;
-    if !pty::slave_exists(n) {
-        return None;
-    }
-    Some(n)
+    pty::pts_id(name.parse().ok()?)
 }
 
 fn parse(name: &str) -> Option<Node> {
@@ -109,11 +105,11 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     let mut n = 0;
     if rel.is_empty() || rel == "." {
         push_name(buf, &mut n, b"clone");
-        for id in 0..pty::id_bound() {
+        for id in pty::TERMS..pty::id_bound() {
             if !pty::slave_exists(id) {
                 continue;
             }
-            let name = alloc::format!("{}", id);
+            let name = alloc::format!("{}", id - pty::TERMS);
             if !push_name(buf, &mut n, name.as_bytes()) {
                 break;
             }

@@ -58,7 +58,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 42: [`KernelApi::blk_register`] takes the disk's description
 /// ([`DiskInfo`], `/dev/<disk>/info`); [`MmioDevice`] gives the window's
 /// physical address.
-pub const ABI_VERSION: u32 = 42;
+/// 43: the console has text screens ([`CONSOLE_SCREENS`], `docs/tty.md`):
+/// [`ModuleConsoleOps::write_kind`] names the screen, `show` switches, and
+/// `keyboard_poll` reports Alt+digit ([`CONSOLE_KEY_SCREEN`]).
+pub const ABI_VERSION: u32 = 43;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -368,17 +371,26 @@ pub const CONSOLE_STATUS_FAIL: u32 = 1;
 pub const CONSOLE_STATUS_INFO: u32 = 2;
 pub const CONSOLE_STATUS_WARN: u32 = 3;
 
+/// Text screens: 0 is the console's, 1–9 the ttys' (`docs/tty.md`).
+pub const CONSOLE_SCREENS: usize = 10;
+/// `ModuleConsoleOps::keyboard_poll` value for Alt+digit: this plus the
+/// screen the digit names (Alt+0 the console's).
+pub const CONSOLE_KEY_SCREEN: i32 = 0x100;
+
 /// The module-provided console (`KernelApi::console_register`): the
-/// framebuffer text screen and the local keyboards. Serial stays in the
-/// kernel, which calls these after writing a byte there. `blink` runs from
-/// the timer interrupt and must never spin on a lock.
+/// framebuffer's text screens and the local keyboards. Serial stays in the
+/// kernel. `blink` runs from the timer interrupt and must never spin on a
+/// lock.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModuleConsoleOps {
-    /// Paint `len` bytes of text (ANSI escapes understood) of `kind`
-    /// ([`CONSOLE_TEXT`], [`CONSOLE_BANNER`], [`CONSOLE_INFO`]).
-    pub write_kind: unsafe extern "C" fn(buf: *const u8, len: usize, kind: u32),
-    /// Paint one `[ TAG ] label` line with the tag coloured by `kind`.
+    /// Write `len` bytes of text (ANSI escapes understood) of `kind`
+    /// ([`CONSOLE_TEXT`], [`CONSOLE_BANNER`], [`CONSOLE_INFO`]) to text
+    /// screen `screen` (below [`CONSOLE_SCREENS`]); painted when it is the
+    /// one shown.
+    pub write_kind: unsafe extern "C" fn(screen: u32, buf: *const u8, len: usize, kind: u32),
+    /// Write one `[ TAG ] label` line, the tag coloured by `kind`, to the
+    /// console's screen (0).
     pub status_line: unsafe extern "C" fn(
         tag: *const u8,
         tag_len: usize,
@@ -386,13 +398,16 @@ pub struct ModuleConsoleOps {
         label: *const u8,
         label_len: usize,
     ),
+    /// Show text screen `screen`. 0 ok, negative when there is no screen.
+    pub show: unsafe extern "C" fn(screen: u32) -> i32,
     /// Character-cell size (rows, cols); negative when there is no screen.
     pub winsize: unsafe extern "C" fn(rows: *mut u16, cols: *mut u16) -> i32,
     /// Toggle the block cursor (timer tick). Must not block.
     pub blink: unsafe extern "C" fn(),
     /// A local keyboard was found.
     pub keyboard_present: unsafe extern "C" fn() -> i32,
-    /// Next keyboard byte (keymap-translated), or negative when none is pending.
+    /// Next keyboard byte (keymap-translated), [`CONSOLE_KEY_SCREEN`] plus a
+    /// screen for Alt+digit, or negative when none is pending.
     pub keyboard_poll: unsafe extern "C" fn() -> i32,
     /// Install a keymap from its text form (the console ctl's `keymap PATH`,
     /// `docs/keymap.md`). 0 ok, negative on error.

@@ -90,6 +90,8 @@ static READY: AtomicBool = AtomicBool::new(false);
 static IRQ: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
 static ALTGR: AtomicBool = AtomicBool::new(false);
+/// Left Alt (the right one is AltGr).
+static ALT: AtomicBool = AtomicBool::new(false);
 static CTRL: AtomicBool = AtomicBool::new(false);
 /// Bytes (single or multi-byte CSI sequences) waiting to drain from `poll_byte`.
 static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
@@ -213,10 +215,12 @@ fn handle_event(type_: u16, code: u16, value: u32) {
     const KEY_RIGHTSHIFT: u16 = 54;
     const KEY_LEFTCTRL: u16 = 29;
     const KEY_RIGHTCTRL: u16 = 97;
+    const KEY_LEFTALT: u16 = 56;
     const KEY_RIGHTALT: u16 = 100; // AltGr
     if value == 0 {
         match code {
             KEY_LEFTSHIFT | KEY_RIGHTSHIFT => SHIFT.store(false, Ordering::SeqCst),
+            KEY_LEFTALT => ALT.store(false, Ordering::SeqCst),
             KEY_RIGHTALT => ALTGR.store(false, Ordering::SeqCst),
             KEY_LEFTCTRL | KEY_RIGHTCTRL => CTRL.store(false, Ordering::SeqCst),
             _ => {}
@@ -226,6 +230,9 @@ fn handle_event(type_: u16, code: u16, value: u32) {
     match code {
         KEY_LEFTSHIFT | KEY_RIGHTSHIFT => {
             SHIFT.store(true, Ordering::SeqCst);
+        }
+        KEY_LEFTALT => {
+            ALT.store(true, Ordering::SeqCst);
         }
         KEY_RIGHTALT => {
             ALTGR.store(true, Ordering::SeqCst);
@@ -241,6 +248,9 @@ fn handle_event(type_: u16, code: u16, value: u32) {
             let Some(kc) = canonical(code) else {
                 return;
             };
+            if kbd::screen_key(kc, ALT.load(Ordering::SeqCst)) {
+                return;
+            }
             if let Some(kb) = kbd::translate(
                 kc,
                 SHIFT.load(Ordering::SeqCst),
@@ -364,6 +374,7 @@ pub fn init() {
             READY.store(true, Ordering::SeqCst);
             SHIFT.store(false, Ordering::SeqCst);
             ALTGR.store(false, Ordering::SeqCst);
+            ALT.store(false, Ordering::SeqCst);
             CTRL.store(false, Ordering::SeqCst);
             status_ok("keyboard");
             return;

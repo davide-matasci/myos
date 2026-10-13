@@ -362,6 +362,8 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
     // directory over, for dropbear's host keys and authorized_keys.
     add(&mut entries, "etc/rc", read(&manifest_dir.join("etc/rc")));
     add(&mut entries, "etc/rc.local", read(&manifest_dir.join("etc/rc.local")));
+    // How many ttys init starts a login on (docs/tty.md).
+    add(&mut entries, "etc/ttys", read(&manifest_dir.join("etc/ttys")));
     add(&mut entries, "etc/dropbear/.keep", Some(b"\n".to_vec()));
 
     // The `linux` launcher of the Linux compatibility layer (native, always

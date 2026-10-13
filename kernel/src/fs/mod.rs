@@ -223,6 +223,13 @@ pub fn blk_in_use(name: &str) -> bool {
     vfs::source_mounted(&path) || vfs::open_refs("dev", name) > 0
 }
 
+/// The pty id behind a `/dev/<name>` path when it is a kernel terminal's
+/// `data` (`/dev/tty3/data`, `/dev/ttyS0/data`, `docs/tty.md`).
+pub fn term_data_id(path: &str) -> Option<usize> {
+    let path = path.trim_start_matches('/');
+    devfs::term_data_id(path.strip_prefix("dev/")?)
+}
+
 /// Block-device id for a `/dev/<name>` path (`vda/data`, `nvme1n1/p2`, …),
 /// if registered.
 pub fn blk_id_from_path(path: &str) -> Option<u32> {

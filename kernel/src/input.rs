@@ -1,7 +1,10 @@
 //! Stdin: serial + keyboard (when detected), shared ring buffer.
 //!
 //! Keyboard bytes come from the `console` module (keycode→character via its
-//! loadable keymap, empty until userspace loads a map). Serial is unaffected.
+//! loadable keymap, empty until userspace loads a map). They go to the tty
+//! of the text screen shown (`docs/tty.md`): the console's on screen 0,
+//! `ttyN` on screen N ([`crate::pty`]). Serial's go to the console until
+//! `ttyS0` has the serial port, then to `ttyS0`. Alt+digit shows a screen.
 //!
 //! Line discipline follows the console termios (`ICANON` / `ECHO` / `ISIG` /
 //! `ICRNL`). The discipline core (termios + edit/ring processing) lives in
@@ -155,7 +158,11 @@ fn fold_irq_rx() {
         }
         let b = IRQ_BUF[t].load(Ordering::Relaxed);
         IRQ_TAIL.store((t + 1) % IRQ_RING, Ordering::Release);
-        push_byte(b);
+        if crate::pty::serial_taken() {
+            crate::pty::terminal_input(crate::pty::SERIAL, &[b]);
+        } else {
+            push_byte(b);
+        }
     }
 }
 
@@ -177,15 +184,24 @@ pub fn poll() {
     drain_uart_irq();
     arch::irq_restore(flags);
     fold_irq_rx();
-    while let Some(b) = console::keyboard_poll_byte() {
-        push_byte(b);
+    while let Some(key) = console::keyboard_poll() {
+        match key {
+            console::Key::Screen(n) => {
+                console::show(n);
+            }
+            console::Key::Byte(b) => match console::active() {
+                0 => push_byte(b),
+                n => crate::pty::terminal_input(n, &[b]),
+            },
+        }
     }
 }
 
-/// Console echo sink: every discipline-shown byte lands on the console.
-/// Called with the TTY lock held; the console lock never re-enters the tty.
+/// Console echo sink: every discipline-shown byte lands on the console, as
+/// a process's write does. Called with the TTY lock held; the console lock
+/// never re-enters the tty.
 fn console_echo(b: u8) {
-    console::write_byte(b);
+    console::write_user(&[b]);
 }
 
 fn push_byte(raw: u8) {

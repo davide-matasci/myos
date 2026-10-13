@@ -211,10 +211,10 @@ the way, if it is ever needed.
 ## The boot script: `/etc/rc` and `/data/etc/rc.local`
 
 After `mount -a` and netd, init starts `/etc/rc` (`etc/rc` in the
-repository) and goes on to the login prompt without waiting for it
-(`[ OK ] rc started (in the background)`). The script's lines come after
-the prompt; its last one says the boot is over, also written to
-`/tmp/boot.done`:
+repository) and goes on to the logins without waiting for it
+(`[ OK ] rc started (in the background)`). The script's lines go to the
+console's screen (`Alt+0`, `docs/tty.md`), not to the ttys' logins; its
+last one says the boot is over, also written to `/tmp/boot.done`:
 
 ```
 [ OK ] boot complete (/data/etc/rc.local)
