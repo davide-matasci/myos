@@ -5,6 +5,7 @@
 //! package root such as Alpine's python3 ~45 MB). So it is sized from the
 //! machine's memory at boot ([`size_for`]) instead of a fixed size.
 
+use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -77,4 +78,19 @@ pub fn usage() -> (usize, usize) {
     };
     crate::arch::irq_restore(flags);
     (size, free)
+}
+
+/// `len` zero bytes, or `None` when the heap has no room for them in one
+/// piece: for buffers sized by data (a whole file read for exec), where a
+/// full or fragmented heap must fail the call, not panic the kernel. The
+/// refusal is reported with the heap's state.
+pub fn try_zeroed(len: usize) -> Option<Vec<u8>> {
+    let mut v = Vec::new();
+    if v.try_reserve_exact(len).is_err() {
+        let (size, free) = usage();
+        crate::console::status_warn(&alloc::format!("heap: no room for {len} bytes in one piece ({free} of {size} free)"));
+        return None;
+    }
+    v.resize(len, 0);
+    Some(v)
 }

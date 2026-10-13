@@ -1049,7 +1049,9 @@ fn exec_path_depth(
         if size == 0 || size > EXEC_FILE_MAX {
             return SYSERR;
         }
-        let mut v = alloc::vec![0u8; size];
+        let Some(mut v) = crate::heap::try_zeroed(size) else {
+            return SYSERR;
+        };
         let mut pos = 0usize;
         while pos < size {
             let n = fs::read(&node, pos, &mut v[pos..]);

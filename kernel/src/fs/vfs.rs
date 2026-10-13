@@ -508,13 +508,16 @@ pub fn lookup(path: &str) -> Option<&'static [u8]> {
     backend_lookup(idx, rel)
 }
 
-/// Whole-file read for exec of non-static mounts (tmpfs, ext2).
+/// Whole-file read for exec of non-static mounts (tmpfs, ext2). `None`
+/// also when the heap has no room for the file ([`crate::heap::try_zeroed`]).
 pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
     if let Some(b) = lookup(path) {
         if b.len() > max {
             return None;
         }
-        return Some(b.to_vec());
+        let mut v = crate::heap::try_zeroed(b.len())?;
+        v.copy_from_slice(b);
+        return Some(v);
     }
     let _tree = tree_read();
     let (idx, ref rel) = resolve_index(path)?;
@@ -529,7 +532,7 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
     if size == 0 || size > max {
         return None;
     }
-    let mut buf = alloc::vec![0u8; size];
+    let mut buf = crate::heap::try_zeroed(size)?;
     let n = backend_read(idx, rel, 0, &mut buf);
     if n == 0 {
         return None;
