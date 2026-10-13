@@ -198,6 +198,29 @@ ctrl_c() {
 	[ $rc -eq 130 ]
 }
 t ctrl_c ctrl_c
+# Caps Lock on the keyboard: letters take the other case, Shift with it
+# gives lowercase, digits stay. QEMU's VNC server types an uppercase letter
+# sent without Shift (a pasted one) as Caps Lock around it. The line is read
+# from the console (this shell's stdin, through fd 4: a background job's
+# stdin is /dev/null) by a job that is killed after 30 s.
+caps_lock() {
+	: > /tmp/caps.out
+	exec 4<&0
+	head -n 1 <&4 > /tmp/caps.out &
+	pid=$!
+	exec 4<&-
+	echo "HOST c-smokes sendkey caps_lock a 1 shift-b caps_lock c ret" >&3
+	i=0
+	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	echo "read: $(cat /tmp/caps.out)"
+	[ "$(cat /tmp/caps.out)" = "A1bc" ]
+}
+t caps_lock caps_lock
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong", then 280 KB of numbered lines (more than
