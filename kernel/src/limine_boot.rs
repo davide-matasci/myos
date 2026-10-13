@@ -79,6 +79,12 @@ pub fn kernel_virt_to_phys(va: usize) -> u64 {
     (va as u64) - r.virtual_base + r.physical_base
 }
 
+/// The bytes of all usable memory regions.
+pub fn usable_total() -> u64 {
+    let entries = MEMMAP.response().expect("Limine memmap").entries();
+    entries.iter().filter(|e| e.type_ == memmap::MEMMAP_USABLE).map(|e| e.length).sum()
+}
+
 /// Length of the largest usable memory region.
 pub fn largest_usable() -> u64 {
     let entries = MEMMAP.response().expect("Limine memmap").entries();

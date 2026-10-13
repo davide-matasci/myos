@@ -273,7 +273,7 @@ fn prove_heap() {
     v.push(*boxed + 1);
     let _ = boxed;
     let _ = v;
-    console::status_ok("heap");
+    console::status_ok(&alloc::format!("heap: {} MiB", heap::size() >> 20));
     // A device's DMA run (`mm::alloc_contiguous_pages`) is one even when the
     // freelist is not in order.
     if mm::dma_pages_smoke() {

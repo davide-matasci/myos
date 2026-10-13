@@ -47,15 +47,24 @@ unsafe impl GlobalAlloc for IrqSafeHeap {
 /// Physical end of the heap (the frame allocator starts after it).
 static PHYS_END: AtomicU64 = AtomicU64::new(0);
 
-/// A quarter of the largest usable memory region, within
-/// [`MIN_SIZE`, `MAX_SIZE`], in whole 2 MiB: 256 MiB with the 1 GiB the CI
-/// guests get.
-fn size_for(largest_region: u64) -> u64 {
-    (largest_region / 4).clamp(MIN_SIZE, MAX_SIZE) & !(2 * 1024 * 1024 - 1)
+/// A quarter of the usable memory, within [`MIN_SIZE`, `MAX_SIZE`], in
+/// whole 2 MiB: 1 GiB with the 4 GiB the CI guests get. The heap is one
+/// piece of one region, so it takes at most half the largest: a firmware
+/// that splits the memory (riscv64's EDK2 gave a 4 GiB guest a largest
+/// region under 2 GiB) does not halve the heap with it, as a quarter of the
+/// largest region did (494 MiB, which the full boot's packages in /tmp
+/// filled).
+fn size_for(usable: u64, largest_region: u64) -> u64 {
+    (usable / 4).clamp(MIN_SIZE, MAX_SIZE).min((largest_region / 2).max(MIN_SIZE)) & !(2 * 1024 * 1024 - 1)
+}
+
+/// The heap's size, as [`init`] chose it.
+pub fn size() -> usize {
+    usage().0
 }
 
 pub fn init() {
-    let size = size_for(limine_boot::largest_usable());
+    let size = size_for(limine_boot::usable_total(), limine_boot::largest_usable());
     let start = limine_boot::alloc_usable(size as usize);
     PHYS_END.store(start as u64 - limine_boot::hhdm_offset() + size, Ordering::SeqCst);
     unsafe {

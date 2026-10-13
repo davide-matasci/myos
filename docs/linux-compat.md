@@ -551,8 +551,9 @@ three, the kernel crate itself an hour. Known gaps:
     tasks (threads and processes) in total, 64 pipes in the system (and 24 named FIFOs), each with a
     4 KiB buffer;
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
-    kernel heap (a quarter of the memory, 64 MiB to 1 GiB: 256 MiB in the
-    1 GiB CI guests).
+    kernel heap (a quarter of the memory, 64 MiB to 1 GiB and at most
+    half its largest region: 1 GiB in the 4 GiB CI guests; the boot's
+    `[ OK ] heap: N MiB` line says how much).
 
 ## Debugging
 
