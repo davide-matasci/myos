@@ -1132,20 +1132,29 @@ lx_evfd_root() {
 	contains "LINUX-EVFD OK" $OUT/lx-evfd-root.log
 }
 # musl's resolver from a root (Alpine's programs) whose resolv.conf names
-# the system's nameserver first and a dead address second: it asks both at
-# once from one socket and takes the answer from whichever (the layer's
-# recvfrom reports each datagram's sender).
+# a dead address first and the system's nameserver second: it asks both
+# at once from one socket and takes the answer from whichever (the layer's
+# recvfrom reports each datagram's sender; the smoke checks that too). The
+# dead one goes first because QEMU's user network keeps one host socket
+# per guest source port, with the last destination sent to as its peer,
+# and turns a DNS answer's source back into the virtual nameserver only
+# while that peer is it: listed second, the dead server made the answers
+# arrive from the real server's address, which musl ignores.
 lx_dns_root() {
 	mkdir -p /tmp/lxroot/etc && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
 	ns=$(sed -n 's/^[[:space:]]*dns=//p' /net/ndb | head -1)
 	[ -n "$ns" ] || return 1
-	# musl's default (5 s, one retransmit at 2.5 s) is too little for a
-	# CI runner's first lookup of a name through QEMU's user network, which
-	# has taken over 5 s there; the point here is the dead second server.
-	printf 'nameserver %s\nnameserver 192.0.2.1\noptions timeout:20 attempts:4\n' "$ns" > /tmp/lxroot/etc/resolv.conf
-	capture $OUT/lx-dns-root.log linux --root /tmp/lxroot /linux-smoke dns
+	printf 'nameserver 192.0.2.1\nnameserver %s\noptions timeout:10 attempts:3\n' "$ns" > /tmp/lxroot/etc/resolv.conf
+	capture $OUT/lx-dns-root.log linux --root /tmp/lxroot /linux-smoke dns "$ns" 192.0.2.1
 	cat $OUT/lx-dns-root.log
-	contains "LINUX-DNS OK" $OUT/lx-dns-root.log
+	contains "LINUX-DNS OK" $OUT/lx-dns-root.log && return 0
+	# What the smoke's probes do not say: the system's resolver, and musl
+	# without the dead server, right after.
+	cat /net/ndb
+	dns example.com
+	printf 'nameserver %s\n' "$ns" > /tmp/lxroot/etc/resolv.conf
+	linux --root /tmp/lxroot /linux-smoke dns "$ns" 192.0.2.1
+	return 1
 }
 # getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
 # kernel finds the cwd where it is stored, /tmp/mnt/..., and still names

@@ -355,7 +355,12 @@ whichever; `send`, `write`, `recv` and `read` are the bare datagrams of
 up, and `get-alpine` gives a new root an `/etc/resolv.conf` for musl naming
 the DNS servers the system uses: the `dns=` lines of `/net/ndb`, QEMU's
 `10.0.2.3` without any. It is written once, when the root has none, so a
-root moved to another network needs it edited or removed. Every root also
+root moved to another network needs it edited or removed. (Under QEMU's
+user network, a server listed after the lease's loses that one's answers:
+QEMU keeps one host socket per guest source port, with the last address
+sent to as its peer, and gives an answer the virtual nameserver's address
+only while that peer is it; musl asks every server at once, from one
+socket, and ignores an answer from an address it did not ask.) Every root also
 gets Alpine's CA bundle (`ca-certificates-bundle`,
 `/etc/ssl/certs/ca-certificates.crt`, where OpenSSL's `/etc/ssl/cert.pem`
 points): Alpine has it from `alpine-base`, and `python3`, `curl` or `wget`

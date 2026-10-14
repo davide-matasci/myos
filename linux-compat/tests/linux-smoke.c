@@ -7,6 +7,7 @@
  * on aarch64/riscv64, which this build does not ship.
  */
 #define _GNU_SOURCE 1 /* memfd_create */
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1133,6 +1134,121 @@ static void check_toolchain_calls(char *self) {
     }
 }
 
+/* One raw query for example.com's A record, sent as the resolver sends
+ * it (`__res_msend`), with what came back: run when `dns` failed, to say
+ * which step loses the answer. Each probe has its own socket: a query to
+ * `ns` alone; to `ns` then to `dead`; to `dead` then to `ns`, and `ns`
+ * again after a wait. (No printf: musl's wants the quad-float builtins the
+ * static link has not.) */
+static void out_num(long n) {
+    char b[24];
+    int i = sizeof b;
+    unsigned long u = n < 0 ? -(unsigned long)n : (unsigned long)n;
+    b[--i] = 0;
+    do {
+        b[--i] = '0' + u % 10;
+        u /= 10;
+    } while (u);
+    if (n < 0) {
+        b[--i] = '-';
+    }
+    out(b + i);
+}
+
+static void probe_wait(int fd, const char *what) {
+    struct pollfd p = { .fd = fd, .events = POLLIN };
+    struct sockaddr_in from = { 0 };
+    socklen_t fl = sizeof from;
+    unsigned char a[512];
+    int ready = poll(&p, 1, 3000);
+    ssize_t n = ready > 0 ? recvfrom(fd, a, sizeof a, 0, (struct sockaddr *)&from, &fl) : -1;
+    out("probe: ");
+    out(what);
+    out(": poll ");
+    out_num(ready);
+    out(", recvfrom ");
+    out_num(n);
+    if (n < 0) {
+        out(" ");
+        out(strerror(errno));
+    }
+    out(" from ");
+    // (inet_ntoa is a printf too.)
+    for (int i = 0; i < 4; i++) {
+        out_num(((unsigned char *)&from.sin_addr)[i]);
+        out(i < 3 ? "." : ":");
+    }
+    out_num(ntohs(from.sin_port));
+    out(" rcode ");
+    out_num(n >= 4 ? a[3] & 15 : -1);
+    out("\n");
+}
+
+static void probe_send(int fd, const unsigned char *q, size_t len, const struct sockaddr_in *to, const char *what) {
+    ssize_t n = sendto(fd, q, len, 0, (const struct sockaddr *)to, sizeof *to);
+    out("probe: sendto ");
+    out(what);
+    out(" ");
+    out_num(n);
+    if (n < 0) {
+        out(" ");
+        out(strerror(errno));
+    }
+    out("\n");
+}
+
+static void dns_probe(const char *ns, const char *dead) {
+    static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
+                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns;
+    inet_pton(AF_INET, ns, &to_ns.sin_addr);
+    inet_pton(AF_INET, dead, &to_dead.sin_addr);
+    for (int step = 0; step < 3; step++) {
+        int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+        if (step == 2) {
+            probe_send(fd, q, sizeof q, &to_dead, "dead");
+            probe_send(fd, q, sizeof q, &to_ns, "ns");
+        } else {
+            probe_send(fd, q, sizeof q, &to_ns, "ns");
+            if (step == 1) {
+                probe_send(fd, q, sizeof q, &to_dead, "dead");
+            }
+        }
+        probe_wait(fd, step == 0 ? "ns alone" : step == 1 ? "ns then dead" : "dead then ns");
+        if (step == 2) {
+            probe_send(fd, q, sizeof q, &to_ns, "ns again");
+            probe_wait(fd, "ns again");
+        }
+        close(fd);
+    }
+}
+
+/* The answer to a query sent to `ns` is read after a query to `dead` went
+ * from the same socket: it is still there, and from `ns` (a layer that
+ * connected the socket to the last address sent to reported that as the
+ * sender, and dropped what the earlier one had answered). */
+static void dns_sender(const char *ns, const char *dead) {
+    static const unsigned char q[] = { 0x56, 0x78, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
+                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns, from = { 0 };
+    struct pollfd p;
+    socklen_t fl = sizeof from;
+    unsigned char a[512];
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    inet_pton(AF_INET, ns, &to_ns.sin_addr);
+    inet_pton(AF_INET, dead, &to_dead.sin_addr);
+    p.fd = fd;
+    p.events = POLLIN;
+    int sent = sendto(fd, q, sizeof q, 0, (struct sockaddr *)&to_ns, sizeof to_ns) == (ssize_t)sizeof q;
+    int ready = sent && poll(&p, 1, 10000) == 1;
+    int later = ready && sendto(fd, q, sizeof q, 0, (struct sockaddr *)&to_dead, sizeof to_dead) == (ssize_t)sizeof q;
+    ssize_t n = later ? recvfrom(fd, a, sizeof a, 0, (struct sockaddr *)&from, &fl) : -1;
+    check(n >= 12 && a[0] == 0x56 && a[1] == 0x78 && from.sin_addr.s_addr == to_ns.sin_addr.s_addr &&
+              from.sin_port == htons(53),
+          "a datagram's sender is its own, after a send elsewhere");
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -1170,17 +1286,25 @@ int main(int argc, char **argv) {
         out(failures ? "LINUX-CWD FAIL\n" : "LINUX-CWD OK\n");
         return failures != 0;
     }
-    /* `dns`: musl's resolver (Alpine's programs: GLib, python), from a
-     * root whose /etc/resolv.conf names the system's nameserver first and
-     * a dead address second. It asks both at once from one socket and
-     * takes the answer from whichever: the layer must report each
-     * datagram's real sender (`hdata`), not the last address sent to. */
+    /* `dns NS DEAD`: musl's resolver (Alpine's programs: GLib, python),
+     * from a root whose /etc/resolv.conf names a dead address and the
+     * system's nameserver NS (kernel.sh says why in that order). It asks
+     * both at once from one socket and takes the answer from whichever:
+     * the layer must report each datagram's real sender (`hdata`), not the
+     * last address sent to, which `dns_sender` checks directly. */
     if (argc > 1 && strcmp(argv[1], "dns") == 0) {
         struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
         int r = getaddrinfo("example.com", "80", &hints, &res);
         check(r == 0 && res != NULL, r == 0 ? "getaddrinfo" : gai_strerror(r));
         if (res != NULL) {
             freeaddrinfo(res);
+        }
+        if (argc > 3) {
+            if (r == 0) {
+                dns_sender(argv[2], argv[3]);
+            } else {
+                dns_probe(argv[2], argv[3]);
+            }
         }
         out(failures ? "LINUX-DNS FAIL\n" : "LINUX-DNS OK\n");
         return failures != 0;
