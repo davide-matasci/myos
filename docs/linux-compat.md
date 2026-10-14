@@ -544,7 +544,8 @@ three, the kernel crate itself an hour. Known gaps:
   `O_NOFOLLOW` and `O_DIRECTORY` are kept (`ELOOP`, `ENOTDIR`). `link` and
   `linkat` fail with `EPERM`: myos has no hard links.
   `pwrite` past the end of a file leaves zeros in the gap.
-- `chmod`, `chown` and `fsync` succeed and do nothing: what a program may
+- `chmod`, `chown` and `fsync` succeed and do nothing (`lchown` and the
+  `at` forms with `AT_SYMLINK_NOFOLLOW` on a dangling link too): what a program may
   do to a file is the security policy's (`docs/security.md`), and ext2
   writes a file back when its last fd closes. `stat`'s permission bits are
   the owner's only and say what the calling program may do; the layer's
