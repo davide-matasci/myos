@@ -1,6 +1,7 @@
 # get-alpine, installed as an app (the full list, which has the network): it
 # fetches jq with its dependencies from Alpine's mirror into a root given
-# with -r, checks them, and records them in ROOT/.get-alpine; nothing of
+# with -r, checks them, and records them in ROOT/.get-alpine, then netpbm,
+# whose package metadata is long; nothing of
 # Alpine's runs here (that is the Linux layer's test, lx_alpine in
 # user/tests/kernel.sh, with the module loaded).
 get_alpine_fetch() {
@@ -16,6 +17,10 @@ get_alpine_fetch() {
 	run-myos get-alpine -r $r jq > /tmp/get-alpine-again.out 2>&1 || return 1
 	cat /tmp/get-alpine-again.out
 	! grep -q '^get-alpine: jq ' /tmp/get-alpine-again.out || return 1
+	# A package whose .PKGINFO runs past 8 KiB (netpbm: a line for each of
+	# the 370 programs it provides), with its datahash on the last line.
+	run-myos get-alpine -r $r netpbm || return 1
+	[ -s $r/.get-alpine/pkgs/netpbm ] && [ -x $r/usr/bin/anytopnm ] || { ls -a $r/.get-alpine/pkgs; return 1; }
 	rm -r $r
 }
 t get_alpine get_alpine_fetch
