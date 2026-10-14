@@ -86,7 +86,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         47 => ret(net::recvmsg(a[0], a[1], a[2])),
         48 => ret(net::shutdown(a[0], a[1])),
         49 => ret(net::bind(a[0], a[1], a[2])),
-        54 => ret(net::ignored(a[0])), // setsockopt
+        54 => ret(net::setsockopt(a[0], a[1], a[2], a[3], a[4])),
         51 => ret(net::getsockname(a[0], a[1], a[2])),
         52 => ret(net::getpeername(a[0], a[1], a[2])),
         53 => ret(net::socketpair(a[0], a[1], a[3])),
@@ -126,7 +126,10 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         118 | 120 => ret(sys::getresid(a[0], a[1], a[2])), // getresuid, getresgid
         140 => 20, // getpriority: nice 0 (the result is 20 - nice)
         141 => 0,  // setpriority: accepted; the core schedules
-        157 => ret(sys::prctl(a[0])),
+        157 => ret(sys::prctl(a[0], a[1])),
+        272 => ret(sys::unshare(a[0])),
+        125 => ret(sys::capget(a[0], a[1])),
+        126 => ret(sys::capset(a[0], a[1])),
         187 => 0, // readahead: a hint
         25 => ret(sys::mremap(a[0], a[1], a[2])),
         285 => ret(sys::fallocate(a[0], a[1], a[2], a[3])),

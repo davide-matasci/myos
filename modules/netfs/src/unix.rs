@@ -21,6 +21,10 @@
 //!   the conversation, for every fd it still carries. `norights` lets go
 //!   of the fds `rights` took when the write they were for failed.
 //!
+//! `N/from` gives the pid of the process whose write the last read of
+//! `data` returned bytes of (`"12\n"`, nothing before a read):
+//! `SCM_CREDENTIALS`. A read never returns the bytes of two writers.
+//!
 //! Each end buffers what its peer wrote, up to [`BUF_CAP`] bytes (allocated
 //! as it fills, let go of once it is drained). As for
 //! tcp, reads and writes never wait: an empty `data` reads 0 bytes (`status`
@@ -88,6 +92,11 @@ struct Conv {
     pending: Vec<usize>,
     /// Fds that came with the last read of `data`, for `rights`.
     delivered: Vec<usize>,
+    /// Where in this end's stream each writer's bytes start (an entry when
+    /// the writer changes), with its pid.
+    writers: VecDeque<(u64, u32)>,
+    /// The pid of the writer of the last read's bytes, for `from` (0: none).
+    from: u32,
 }
 
 impl Conv {
@@ -104,6 +113,8 @@ impl Conv {
         marks: VecDeque::new(),
         pending: Vec::new(),
         delivered: Vec::new(),
+        writers: VecDeque::new(),
+        from: 0,
     };
 
     /// Every fd it carries, to be let go of.
@@ -230,6 +241,7 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
             Node::Status(_, id) => (id, 3),
             Node::Listen(_, id) => (id, 4),
             Node::Rights(_, id) => (id, 5),
+            Node::From(_, id) => (id, 6),
             Node::Root | Node::Ndb | Node::Ifaddrs | Node::Hdata(_) => return None,
         };
         let c = get_own(convs, id)?;
@@ -256,7 +268,7 @@ pub fn listdir(node: Node, dst: &mut [u8], n: &mut usize) -> bool {
             true
         }
         Node::ConvDir(_, id) if get_own(convs, id).is_some() => {
-            for leaf in [&b"ctl"[..], b"data", b"status", b"listen", b"rights"] {
+            for leaf in [&b"ctl"[..], b"data", b"status", b"listen", b"rights", b"from"] {
                 let _ = put_bytes(dst, n, leaf);
             }
             true
@@ -324,6 +336,16 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             if n > 0 && c.marks.front().is_some_and(|(at, _)| *at == start) {
                 c.delivered = c.marks.pop_front().map(|(_, fds)| fds).unwrap_or_default();
             }
+            // Nor bytes of the next writer.
+            while c.writers.get(1).is_some_and(|&(at, _)| at <= start) {
+                c.writers.pop_front();
+            }
+            if let Some(&(at, _)) = c.writers.get(1) {
+                n = n.min((at - start) as usize);
+            }
+            if n > 0 {
+                c.from = c.writers.front().map_or(0, |&(_, pid)| pid);
+            }
             for (o, b) in out.iter_mut().zip(c.rx.drain(..n)) {
                 *o = b;
             }
@@ -353,6 +375,15 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
         }
         Node::Ctl(_, id) => {
             if get_own(convs, id).is_none() { -1 } else { 0 }
+        }
+        Node::From(_, id) => {
+            let Some(c) = get_own(convs, id) else {
+                return -1;
+            };
+            if pos > 0 || c.from == 0 {
+                return 0;
+            }
+            crate::copy_at(alloc::format!("{}\n", c.from).as_bytes(), 0, out)
         }
         Node::Rights(_, id) => {
             let Some(c) = get_own(convs, id) else {
@@ -406,11 +437,15 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             let n = src.len().min(BUF_CAP - p.rx.len());
             // Full (or no heap for it): the library waits for the reader and
             // retries.
-            if n == 0 || p.rx.try_reserve(n).is_err() || p.marks.try_reserve(1).is_err() {
+            if n == 0 || p.rx.try_reserve(n).is_err() || p.marks.try_reserve(1).is_err() || p.writers.try_reserve(1).is_err() {
                 return -1;
             }
             let at = p.rx_base + p.rx.len() as u64;
             p.rx.extend(&src[..n]);
+            let pid = crate::api().current_pid() as u32;
+            if p.writers.back().is_none_or(|&(_, last)| last != pid) {
+                p.writers.push_back((at, pid));
+            }
             // The fds `rights` took come with this write's first byte.
             let fds = core::mem::take(&mut convs[id as usize].pending);
             if !fds.is_empty() {

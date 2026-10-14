@@ -59,8 +59,8 @@ it already owns the screen and paints the text console on it.
   write-back). That is right for `ramfb`, which is guest RAM, and fine
   under QEMU; real hardware with the framebuffer in a PCI BAR would want a
   write-combining or uncached mapping.
-- The framebuffer must fit in the process's mmap window (128 MiB on
-  x86_64, 64 MiB on aarch64 and riscv64).
+- The framebuffer must fit in the process's mmap window (64 GiB,
+  `docs/linux-compat.md`).
 - No mouse yet, and keyboard input still reaches programs only as tty bytes
   (`kernel/src/input.rs`); a raw input device is the next step for a GUI.
 - Programs written for Linux's `/dev/fb0` (fbdev ioctls) need a small shim

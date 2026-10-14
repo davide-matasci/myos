@@ -68,6 +68,14 @@ linux --root ROOT PROGRAM [ARG...]
 3. Alpine keeps `/lib` and `/usr/lib` separate, so no symlinks are needed:
    the dynamic linker is `/lib/ld-musl-<arch>.so.1`.
 
+Since the install scripts do not run, what they would generate is made
+in the root by hand, with the programs Alpine installs for it: a GTK
+program's GSettings schemas (`glib-compile-schemas
+/usr/share/glib-2.0/schemas`; WebKitGTK's network process aborts without
+`gsettings-desktop-schemas`), the image loaders
+(`gdk-pixbuf-query-loaders --update-cache`) and the MIME database
+(`update-mime-database /usr/share/mime`).
+
 `linux --root ROOT` chroots into `ROOT` (the native `chroot`) before the
 exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
 objects and data files at their Alpine paths. Before the chroot it
@@ -252,8 +260,13 @@ the kernel's way: `exec` on the script and its `exec` rule apply,
 (uid and gid 0 whoever runs the program: what it may do is the security
 policy's, `docs/security.md`), `getpriority` (nice 0) and `setpriority`
 (accepted; the core schedules), `prctl` (`PR_SET_NAME` and `PR_SET_VMA`
-accepted and not kept, `PR_GET_DUMPABLE` set; any other option, seccomp
-included, `EINVAL`), `sched_yield`.
+accepted and not kept, `PR_GET_DUMPABLE` set, `PR_SET_PDEATHSIG` and
+`PR_SET_NO_NEW_PRIVS` accepted and not done; any other option, seccomp
+included, `EINVAL`), `sched_yield`. No namespaces: `unshare` of anything
+and `clone` with a `CLONE_NEW*` flag are `EINVAL` (bubblewrap says so and
+glycin, WebKitGTK's image loader, runs its loaders without a sandbox);
+`capget` reports no capabilities and `capset` grants none;
+`/proc/sys/kernel/overflowuid` and `overflowgid` read 65534.
 
 Threads: `clone` with `CLONE_THREAD` (and `CLONE_VM`, `CLONE_FS`,
 `CLONE_FILES`, `CLONE_SIGHAND`; `CLONE_SETTLS`, `CLONE_PARENT_SETTID`,
@@ -284,8 +297,14 @@ Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 (`AF_UNIX`), `sendto`, `recvfrom`, `sendmsg`, `recvmsg` (with fds,
 `SCM_RIGHTS`, on a unix socket: `docs/sockets-unix.md`), `shutdown`,
 `getsockname`, `getpeername`, `getsockopt` (`SO_ERROR`, `SO_TYPE`,
-`SO_SNDBUF`/`SO_RCVBUF`: 64 KiB for a unix socket, 8 KiB otherwise),
-`setsockopt` (accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
+`SO_SNDBUF`/`SO_RCVBUF`: 64 KiB for a unix socket, 8 KiB otherwise,
+`SO_PASSCRED`; `SO_PEERCRED` gives the caller's own pid, uid and gid 0;
+`SO_PEERSEC`, `SO_PEERGROUPS` and `SO_PEERPIDFD` are `ENOPROTOOPT`, as on
+a kernel without them: zbus would take an answer of 0 for a pidfd and
+close fd 0),
+`setsockopt` (`SO_PASSCRED` on a unix socket: each read comes with the
+sender's pid as `SCM_CREDENTIALS`, `/net/unix`'s `from`,
+`docs/sockets-unix.md`; anything else accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
 Time and misc: `clock_gettime` (the time of day for every clock but the
@@ -294,8 +313,9 @@ process's and the thread's CPU-time clocks, which are their CPU time),
 thread's or the reaped children's CPU time, all as user time; the other
 fields 0),
 `nanosleep`, `clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
-created and unlinked at once, as libgloss's; sealing is accepted and not
-done); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
+created and unlinked at once, as libgloss's; `F_ADD_SEALS` and
+`F_GET_SEALS` keep and report a memfd's seals, from any fd naming it, and
+do not enforce them; the last 256 sealed memfds are remembered); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
 readiness: readable on `POLLIN`, `POLLHUP` or `POLLERR`, writable on
 `POLLOUT` or `POLLERR`, no exceptional conditions; the signal mask is not
 applied and `select` does not update its timeout), which FLTK's event loop
@@ -326,12 +346,21 @@ its `status` and the bytes waiting in `data`. The `/net` files never block,
 so a blocking read or connect sleeps until netd's next reply wakes the
 pollers (a write retries while netd's request ring is full, or a TCP
 conversation has no send room left: 8 KiB queued in netd). A datagram
-socket sends to the last address it was given, and reads one datagram at a
-time. A chrooted process reaches `/net` through the bind `linux --root` sets
+socket's `sendto`, `sendmsg`, `recvfrom` and `recvmsg` go through the
+conversation's `hdata` (`docs/sockets-curl.md`): each datagram carries its
+destination or its sender, so musl's resolver, which asks every
+nameserver from one socket and takes the first answer, gets it from
+whichever; `send`, `write`, `recv` and `read` are the bare datagrams of
+`data`, to and from the peer `connect` set. A chrooted process reaches `/net` through the bind `linux --root` sets
 up, and `get-alpine` gives a new root an `/etc/resolv.conf` for musl naming
 the DNS servers the system uses: the `dns=` lines of `/net/ndb`, QEMU's
 `10.0.2.3` without any. It is written once, when the root has none, so a
-root moved to another network needs it edited or removed. Every root also
+root moved to another network needs it edited or removed. (Under QEMU's
+user network, a server listed after the lease's loses that one's answers:
+QEMU keeps one host socket per guest source port, with the last address
+sent to as its peer, and gives an answer the virtual nameserver's address
+only while that peer is it; musl asks every server at once, from one
+socket, and ignores an answer from an address it did not ask.) Every root also
 gets Alpine's CA bundle (`ca-certificates-bundle`,
 `/etc/ssl/certs/ca-certificates.crt`, where OpenSSL's `/etc/ssl/cert.pem`
 points): Alpine has it from `alpine-base`, and `python3`, `curl` or `wget`
@@ -407,8 +436,8 @@ reserved first. That needed core `mmap` work, which native programs share:
 - `munmap` of any range in the `mmap` window (holes included) and
   `mprotect` of part of a mapping split the mapping;
 - free address space is reused (first fit) instead of only growing;
-- a larger window (4 GiB on x86_64, 960 MiB on aarch64 / riscv64, whose
-  user address spaces span 1 GiB) and 4096 mappings per process.
+- a larger window (64 GiB, on every arch: WebKit's JavaScript engine
+  reserves 4 GiB aligned to 4 GiB) and 4096 mappings per process.
 
 ## Signal handlers
 
@@ -540,8 +569,9 @@ three, the kernel crate itself an hour. Known gaps:
     its size (Alpine's cargo is 23 MB). Any other program is read whole: a
     file of at most 16 MiB from a writable filesystem (the initramfs has
     no limit) whose loaded image spans at most 1152 pages (4.5 MiB);
-  - a per-process `mmap` window of 4 GiB (x86_64) / 960 MiB (aarch64,
-    riscv64) with at most 4096 mappings; adjacent mappings with the same
+  - a per-process `mmap` window of 64 GiB (every arch: the process span
+    is 65 GiB, the image, stack and heap in its first gigabyte) with at
+    most 4096 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
     small neighbouring ones: jq peaks at 188; rustc's Scudo allocator
     needs more than 256 to compile `core`). At most 1024 distinct files
@@ -616,7 +646,9 @@ call, shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`);
 `linux --root` of a bare root with the smoke's event fd checks
 (`linux-smoke evfd`, `LINUX-EVFD OK`) runs them through the root's bind
-of `/dev`; `linux_trace` turns the trace on, checks that a syscall no arch
+of `/dev`, and with a `resolv.conf` naming the system's nameserver and
+then a dead address, musl's resolver (`linux-smoke dns`, `LINUX-DNS OK`)
+gets the answer from the live one; `linux_trace` turns the trace on, checks that a syscall no arch
 has still gets `ENOSYS` (`linux-smoke enosys`), and off again. A fault
 cannot be a boot test (the host takes the kernel's `user fault` line for a
 crash), so the fault's location is not tested in the boot.

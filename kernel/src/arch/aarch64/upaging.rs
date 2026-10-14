@@ -1,5 +1,6 @@
 //! User address spaces on aarch64 4 KiB granule paging (TTBR0): a private
-//! L0/L1/L2 tree with up to [`USER_L2_TABLES`] L3 tables for the process span.
+//! L0 and L1, and under the L1's user slots ([`USER_L1_TABLES`] of them,
+//! from L1[1]) private L2 and L3 tables made as pages are mapped.
 
 use crate::mm;
 use crate::task;
@@ -18,9 +19,16 @@ const PA: u64 = 0x0000_FFFF_FFFF_F000;
 
 /// Pages per L3 table (2 MiB).
 pub const USER_L3_PAGES: usize = 512;
-/// L3 tables (2 MiB each, allocated as pages are mapped) a user aspace may
-/// use under its L2 table: the whole L1[1] gigabyte.
+/// L3 tables under an L2 table (1 GiB).
 pub const USER_L2_TABLES: usize = 512;
+/// L1 slots of the process span, from L1[1] (the gigabyte the image loads
+/// at, `DEFAULT_USER_BASE`): 65 GiB, the image, stack and heap in the
+/// first and the 64 GiB mmap window after them. The kernel's TTBR0 maps
+/// devices in L1[0] and from L1[256] (the PCIe windows): nothing of the
+/// kernel's is in between.
+pub const USER_L1_TABLES: usize = 65;
+/// The first L1 slot of the process span.
+const USER_L1_FIRST: usize = 1;
 
 /// Physical address of `va` in `aspace`, if mapped.
 pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
@@ -32,25 +40,36 @@ fn aarch64_user_page_idx(va: u64) -> usize {
     va.saturating_sub(base) as usize / PAGE
 }
 
-/// Return the L3 table for `page` (allocating L2/L3 spill slots as needed).
-fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
-    const TABLE: u64 = 0b11;
-    let l2_idx = page / USER_L3_PAGES;
-    if l2_idx >= USER_L2_TABLES {
+/// The L1, L2 and L3 indices of user page `page`; none past the span.
+fn table_indices(page: usize) -> Option<(usize, usize, usize)> {
+    let l1_idx = USER_L1_FIRST + page / (USER_L2_TABLES * USER_L3_PAGES);
+    if l1_idx >= USER_L1_FIRST + USER_L1_TABLES {
         return None;
     }
+    Some((l1_idx, page / USER_L3_PAGES % USER_L2_TABLES, page % USER_L3_PAGES))
+}
+
+/// The L1 table of `l0_phys` (every user aspace has its own).
+unsafe fn l1_table(l0_phys: u64) -> Option<*mut [u64; 512]> {
+    let l0 = unsafe { &*mm::table(l0_phys) };
+    let l1_phys = l0[0] & PA;
+    if l1_phys == 0 {
+        return None;
+    }
+    Some(mm::table(l1_phys))
+}
+
+/// Return the L3 table for `page` (allocating the L2 and L3 tables as needed).
+fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
+    const TABLE: u64 = 0b11;
+    let (l1_idx, l2_idx, _) = table_indices(page)?;
     unsafe {
-        let l0 = &*mm::table(l0_phys);
-        let l1_phys = l0[0] & PA;
-        if l1_phys == 0 {
-            return None;
+        let l1 = &mut *l1_table(l0_phys)?;
+        if l1[l1_idx] & 0b11 != TABLE {
+            let l2 = mm::alloc_frame_site(3);
+            l1[l1_idx] = l2 | TABLE;
         }
-        let l1 = &*mm::table(l1_phys);
-        let l2_phys = l1[1] & PA;
-        if l2_phys == 0 {
-            return None;
-        }
-        let l2 = &mut *mm::table(l2_phys);
+        let l2 = &mut *mm::table(l1[l1_idx] & PA);
         if l2[l2_idx] & 0b11 != TABLE {
             let l3 = mm::alloc_frame_site(3);
             l2[l2_idx] = l3 | TABLE;
@@ -59,36 +78,55 @@ fn aarch64_l3_table_mut(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
     }
 }
 
+/// The L3 table for `page` if it exists (allocates nothing).
+fn aarch64_l3_table(l0_phys: u64, page: usize) -> Option<*mut [u64; 512]> {
+    const TABLE: u64 = 0b11;
+    let (l1_idx, l2_idx, _) = table_indices(page)?;
+    unsafe {
+        let l1 = &*l1_table(l0_phys)?;
+        if l1[l1_idx] & 0b11 != TABLE {
+            return None;
+        }
+        let l2 = &*mm::table(l1[l1_idx] & PA);
+        if l2[l2_idx] & 0b11 != TABLE {
+            return None;
+        }
+        Some(mm::table(l2[l2_idx] & PA))
+    }
+}
+
+/// The end of the span around `va` that has no L3 table (an L1 or L2
+/// entry absent, or `va` past the span): every page in it is unmapped.
+/// `None` when `va`'s L3 table exists (the page itself may be unmapped).
+/// Walking a range page by page skips its empty tables with this.
+pub fn unmapped_span_end(aspace: u64, va: u64) -> Option<u64> {
+    const TABLE: u64 = 0b11;
+    let Some((l1_idx, l2_idx, _)) = table_indices(aarch64_user_page_idx(va)) else {
+        return Some((va | ((1 << 30) - 1)) + 1);
+    };
+    unsafe {
+        let Some(l1) = l1_table(aspace) else {
+            return Some((va | ((1 << 30) - 1)) + 1);
+        };
+        if (*l1)[l1_idx] & 0b11 != TABLE {
+            return Some((va | ((1 << 30) - 1)) + 1);
+        }
+        let l2 = &*mm::table((*l1)[l1_idx] & PA);
+        if l2[l2_idx] & 0b11 != TABLE {
+            return Some((va | ((1 << 21) - 1)) + 1);
+        }
+    }
+    None
+}
+
 fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
     let page = aarch64_user_page_idx(va);
-    let l3_idx = page % USER_L3_PAGES;
-    let l2_idx = page / USER_L3_PAGES;
-    if l2_idx >= USER_L2_TABLES {
+    let l3 = aarch64_l3_table(l0_phys, page)?;
+    let pte = unsafe { (*l3)[page % USER_L3_PAGES] };
+    if pte & 0b11 != PAGE_DESC {
         return None;
     }
-    unsafe {
-        let l0 = &*mm::table(l0_phys);
-        let l1_phys = l0[0] & PA;
-        if l1_phys == 0 {
-            return None;
-        }
-        let l1 = &*mm::table(l1_phys);
-        let l2_phys = l1[1] & PA;
-        if l2_phys == 0 {
-            return None;
-        }
-        let l2 = &*mm::table(l2_phys);
-        let l3_phys = l2[l2_idx] & PA;
-        if l3_phys == 0 {
-            return None;
-        }
-        let l3 = &*mm::table(l3_phys);
-        let pte = l3[l3_idx];
-        if pte & 0b11 != 0b11 {
-            return None;
-        }
-        Some(pte & PA)
-    }
+    Some(pte & PA)
 }
 
 /// The VA where user images are loaded.
@@ -129,10 +167,11 @@ pub fn switch_aspace(aspace: u64) {
 /// Free private user page tables for an abandoned aspace (data pages must
 /// already be unmapped and freed, and no CPU may have it loaded).
 ///
-/// `create_aspace_aarch64` gives each aspace its own L0, the L1 under L0[0]
-/// and the L2 under L1[1], and `aarch64_l3_table_mut` adds L3 tables under
-/// that L2. Only that tree is freed (L3 → L2 → L1 → L0): the other L0 and L1
-/// entries are value-copies of the kernel's and point at its tables.
+/// `create_aspace_aarch64` gives each aspace its own L0 and the L1 under
+/// L0[0], and `aarch64_l3_table_mut` adds L2 tables under the L1's user
+/// slots and L3 tables under those. Only that tree is freed (L3 → L2 → L1
+/// → L0): the other L0 and L1 entries are value-copies of the kernel's and
+/// point at its tables.
 pub fn free_user_page_tables(aspace: u64) {
     const TABLE: u64 = 0b11;
     let l0_phys = aspace & PA;
@@ -144,8 +183,11 @@ pub fn free_user_page_tables(aspace: u64) {
         if l0[0] & 0b11 == TABLE {
             let l1_phys = l0[0] & PA;
             let l1 = &mut *mm::table(l1_phys);
-            if l1[1] & 0b11 == TABLE {
-                let l2_phys = l1[1] & PA;
+            for l1_slot in l1[USER_L1_FIRST..USER_L1_FIRST + USER_L1_TABLES].iter_mut() {
+                if *l1_slot & 0b11 != TABLE {
+                    continue;
+                }
+                let l2_phys = *l1_slot & PA;
                 let l2 = &mut *mm::table(l2_phys);
                 for slot in l2.iter_mut() {
                     if *slot & 0b11 == TABLE {
@@ -154,7 +196,7 @@ pub fn free_user_page_tables(aspace: u64) {
                     }
                 }
                 mm::free_frame(l2_phys);
-                l1[1] = 0;
+                *l1_slot = 0;
             }
             mm::free_frame(l1_phys);
             l0[0] = 0;
@@ -180,14 +222,12 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
 
     let l0 = mm::alloc_frame_site(3);
     let l1 = mm::alloc_frame_site(3);
-    let l2 = mm::alloc_frame_site(3);
-    let l3 = mm::alloc_frame_site(3);
 
     unsafe {
         let l0_t = &mut *mm::table(l0);
         let l1_t = &mut *mm::table(l1);
-        let l2_t = &mut *mm::table(l2);
-        // Copy kernel TTBR0 extras (high PCI) and L1 device blocks. L1[1] is user.
+        // Copy kernel TTBR0 extras (high PCI) and L1 device blocks; the
+        // user slots of L1 stay empty (`aarch64_l3_table_mut` fills them).
         for i in 0..512 {
             if i != 0 && k_l0_t[i] != 0 {
                 l0_t[i] = k_l0_t[i];
@@ -195,12 +235,11 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
         }
         l0_t[0] = l1 | TABLE;
         for i in 0..512 {
-            if i != 1 && k_l1[i] != 0 {
+            let user = (USER_L1_FIRST..USER_L1_FIRST + USER_L1_TABLES).contains(&i);
+            if !user && k_l1[i] != 0 {
                 l1_t[i] = k_l1[i];
             }
         }
-        l1_t[1] = l2 | TABLE;
-        l2_t[0] = l3 | TABLE;
         // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.
         for (i, &phys) in code.iter().enumerate() {
             let Some(l3p) = aarch64_l3_table_mut(l0, i) else {
@@ -268,34 +307,13 @@ const AP_READ_ONLY: u64 = 1 << 7;
 /// the page table, for the `leaf_*` helpers to read and change it in
 /// place. Allocates nothing.
 pub fn leaf_mut(aspace: u64, va: u64) -> Option<*mut u64> {
-    const TABLE: u64 = 0b11;
     let page = aarch64_user_page_idx(va);
+    let l3 = unsafe { &mut *aarch64_l3_table(aspace, page)? };
     let l3_idx = page % USER_L3_PAGES;
-    let l2_idx = page / USER_L3_PAGES;
-    if l2_idx >= USER_L2_TABLES {
+    if l3[l3_idx] & 0b11 != PAGE_DESC {
         return None;
     }
-    unsafe {
-        let l0 = &*mm::table(aspace);
-        let l1_phys = l0[0] & PA;
-        if l1_phys == 0 {
-            return None;
-        }
-        let l1 = &*mm::table(l1_phys);
-        let l2_phys = l1[1] & PA;
-        if l2_phys == 0 {
-            return None;
-        }
-        let l2 = &*mm::table(l2_phys);
-        if l2[l2_idx] & 0b11 != TABLE {
-            return None;
-        }
-        let l3 = &mut *mm::table(l2[l2_idx] & PA);
-        if l3[l3_idx] & 0b11 != PAGE_DESC {
-            return None;
-        }
-        Some(&mut l3[l3_idx] as *mut u64)
-    }
+    Some(&mut l3[l3_idx] as *mut u64)
 }
 
 /// Set the leaf entry of `va` to `pte` as it is (the tables made as needed).

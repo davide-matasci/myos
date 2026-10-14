@@ -96,6 +96,12 @@ fn share_mmap_pages(src: u64, dst: u64, regions: &[task::MmapRegion]) {
         let mut va = r.va;
         let end = r.va.saturating_add(r.pages as u64 * PAGE as u64);
         while va < end {
+            // Most of a large reservation was never touched: skip its
+            // empty page tables (asked at each table's first page).
+            if let Some(skip) = (va == r.va || va % TABLE_SPAN == 0).then(|| unmapped_span_end(src, va)).flatten() {
+                va = skip;
+                continue;
+            }
             if same {
                 if let Some(p) = leaf_mut(src, va) {
                     let pte = unsafe { *p };
@@ -112,6 +118,10 @@ fn share_mmap_pages(src: u64, dst: u64, regions: &[task::MmapRegion]) {
         }
     }
 }
+
+/// What the smallest page table maps (2 MiB on every arch): a page walk
+/// that skips empty tables asks `unmapped_span_end` once per table.
+const TABLE_SPAN: u64 = 1 << 21;
 
 pub(super) fn heap_base_va(base: u64, stack_off: u64) -> u64 {
     base + stack_off + (USER_STACK_PAGES * PAGE) as u64
@@ -133,7 +143,7 @@ pub(super) fn align_up_usize(v: usize, align: usize) -> usize {
     (v + align - 1) & !(align - 1)
 }
 
-pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_heap_page, map_user_code_page, map_user_stack_page, pick_user_base, unmap_user_page, virt_to_phys};
+pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_heap_page, map_user_code_page, map_user_stack_page, pick_user_base, unmap_user_page, unmapped_span_end, virt_to_phys};
 pub use crate::arch::upaging::{read_aspace, switch_aspace};
 /// Frames unmapped from an address space that another CPU has loaded (a
 /// thread of the process runs there), with that address space: the next
@@ -233,14 +243,19 @@ pub(super) fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
         // Concurrent SMP float once saw a torn/corrupt region and
         // `va + i*PAGE` overflow-panicked in debug. Bound + checked math.
         let pages = (r.pages as usize).min(MMAP_AREA_PAGES);
-        for i in 0..pages {
-            let Some(off) = (i as u64).checked_mul(PAGE as u64) else {
-                break;
-            };
-            let Some(va) = r.va.checked_add(off) else {
-                break;
-            };
+        let Some(end) = r.va.checked_add((pages * PAGE) as u64) else {
+            continue;
+        };
+        let mut va = r.va;
+        while va < end {
+            // Most of a large reservation was never touched: skip its
+            // empty page tables (asked at each table's first page).
+            if let Some(skip) = (va == r.va || va % TABLE_SPAN == 0).then(|| unmapped_span_end(aspace, va)).flatten() {
+                va = skip;
+                continue;
+            }
             release_mmap_page(aspace, va, r.prot & task::MMAP_DEVICE != 0);
+            va += PAGE as u64;
         }
     }
 }
@@ -248,12 +263,22 @@ pub(super) fn free_mmap_regions(aspace: u64, mmap: &[task::MmapRegion]) {
 /// Unmap the mmap pages `[va, va + pages)` as `mmap` (the table before the
 /// range was removed from it) describes them: freed, or a device's left to it.
 pub(super) fn release_mmap_range(aspace: u64, mmap: &[task::MmapRegion], va: u64, pages: usize) {
-    for i in 0..pages {
-        let page_va = va + (i * PAGE) as u64;
-        // Most pages of a lazy mapping were never touched.
-        if virt_to_phys(aspace, page_va).is_none() {
+    let end = va + (pages * PAGE) as u64;
+    let mut page_va = va;
+    while page_va < end {
+        // Most pages of a lazy mapping were never touched: skip its empty
+        // page tables (asked at each table's first page), and the pages of
+        // the others that are not mapped.
+        if let Some(skip) = (page_va == va || page_va % TABLE_SPAN == 0).then(|| unmapped_span_end(aspace, page_va)).flatten() {
+            page_va = skip;
             continue;
         }
+        let this = page_va;
+        page_va += PAGE as u64;
+        if virt_to_phys(aspace, this).is_none() {
+            continue;
+        }
+        let page_va = this;
         let device = mmap.iter().any(|r| {
             r.pages != 0
                 && r.prot & task::MMAP_DEVICE != 0

@@ -20,6 +20,8 @@ const CLONE_SETTLS: usize = 0x8_0000;
 const CLONE_PARENT_SETTID: usize = 0x10_0000;
 const CLONE_CHILD_CLEARTID: usize = 0x20_0000;
 const CLONE_CHILD_SETTID: usize = 0x100_0000;
+/// The namespace flags (mount, cgroup, UTS, IPC, user, PID, network).
+const CLONE_NEW: usize = 0x2_0000 | 0x200_0000 | 0x400_0000 | 0x800_0000 | 0x1000_0000 | 0x2000_0000 | 0x4000_0000;
 
 /// Per thread slot: where the thread's end stores 0 and wakes a waiter
 /// (`set_tid_address`, `CLONE_CHILD_CLEARTID`); 0 = nowhere.
@@ -37,7 +39,11 @@ pub fn on_new_task(slot: usize) {
 /// (`CLONE_VM | CLONE_VFORK` on the parent's stack: a fork, as x86_64's
 /// `vfork` syscall is; the child's memory is a copy the parent never sees,
 /// which a `vfork` child that only execs does not mind), and posix_spawn's.
+/// A new namespace is `EINVAL`, as from a kernel without namespaces.
 pub fn clone(regs: &SyscallRegs, flags: usize, stack: usize, ptid: usize, tls: usize, ctid: usize) -> R {
+    if flags & CLONE_NEW != 0 {
+        return Err(EINVAL);
+    }
     if flags & CLONE_THREAD == 0 {
         return match (flags & !0xff, stack) {
             (0, 0) => sys::fork(regs),

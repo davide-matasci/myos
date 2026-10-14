@@ -7,11 +7,14 @@
  * on aarch64/riscv64, which this build does not ship.
  */
 #define _GNU_SOURCE 1 /* memfd_create */
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stddef.h>
@@ -370,6 +373,102 @@ static int recv_fds(int sock, char *buf, int len, int *fds, int room, int *n, in
     return r;
 }
 
+/* Seals on a memfd (glycin's image loaders seal the ones they pass back):
+ * kept and reported, those of the memfd whichever fd names it (one
+ * received over a unix socket too); F_SEAL_SEAL stops more; a file that
+ * is no memfd has none (EINVAL). */
+static const char *memfd_seals(void) {
+    const int all = F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL;
+    int fd = memfd_create("linux-smoke-seals", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    int sv[2], got[4], n = 0, fl;
+    char c;
+    if (fd < 0) {
+        return "seals: memfd_create(MFD_ALLOW_SEALING)";
+    }
+    if (fcntl(fd, F_GET_SEALS) != 0) {
+        return "seals: none on a new memfd";
+    }
+    if (fcntl(fd, F_ADD_SEALS, F_SEAL_GROW) != 0 || fcntl(fd, F_GET_SEALS) != F_SEAL_GROW) {
+        return "seals: F_ADD_SEALS kept";
+    }
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || send_fds(sv[0], 's', &fd, 1) != 0 ||
+        recv_fds(sv[1], &c, 1, got, 4, &n, &fl) != 1 || n != 1) {
+        return "seals: send a memfd";
+    }
+    if (fcntl(got[0], F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL) != 0) {
+        return "seals: F_ADD_SEALS on the received memfd";
+    }
+    if (fcntl(got[0], F_GET_SEALS) != all || fcntl(fd, F_GET_SEALS) != all) {
+        return "seals: the memfd's, whichever fd names it";
+    }
+    if (fcntl(fd, F_ADD_SEALS, F_SEAL_GROW) != -1 || errno != EPERM) {
+        return "seals: F_SEAL_SEAL stops more";
+    }
+    close(got[0]);
+    close(sv[0]);
+    close(sv[1]);
+    close(fd);
+    fd = open("/tmp/linux-smoke-seals", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || fcntl(fd, F_GET_SEALS) != -1 || errno != EINVAL) {
+        return "seals: none on a file";
+    }
+    close(fd);
+    unlink("/tmp/linux-smoke-seals");
+    return NULL;
+}
+
+/* The sender's pid of what a read returns (SO_PASSCRED, SCM_CREDENTIALS):
+ * how WebKit learns its web process's pid. A read never returns two
+ * senders' bytes. */
+static pid_t recv_cred(int sock) {
+    char c, control[CMSG_SPACE(sizeof(struct ucred))];
+    struct iovec iov = { &c, 1 };
+    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof control };
+    if (recvmsg(sock, &msg, 0) != 1) {
+        return -1;
+    }
+    struct cmsghdr *h = CMSG_FIRSTHDR(&msg);
+    if (h == NULL || h->cmsg_level != SOL_SOCKET || h->cmsg_type != SCM_CREDENTIALS ||
+        h->cmsg_len != CMSG_LEN(sizeof(struct ucred))) {
+        return -1;
+    }
+    struct ucred cred;
+    memcpy(&cred, CMSG_DATA(h), sizeof cred);
+    return cred.uid == 0 && cred.gid == 0 ? cred.pid : -1;
+}
+
+static const char *pass_creds(void) {
+    int sv[2], on = 1, got = 0;
+    socklen_t len = sizeof got;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || setsockopt(sv[0], SOL_SOCKET, SO_PASSCRED, &on, sizeof on) != 0 ||
+        getsockopt(sv[0], SOL_SOCKET, SO_PASSCRED, &got, &len) != 0 || got != 1) {
+        return "SCM_CREDENTIALS: SO_PASSCRED";
+    }
+    /* The peer's pidfd is not there, as on a kernel without it: an answer of
+     * 0 would be taken for a pidfd (zbus then closes fd 0, its stdin). */
+    if (getsockopt(sv[0], SOL_SOCKET, 77 /* SO_PEERPIDFD */, &got, &len) != -1 || errno != ENOPROTOOPT) {
+        return "SO_PEERPIDFD: ENOPROTOOPT";
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        _exit(write(sv[1], "k", 1) != 1);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+        write(sv[1], "p", 1) != 1) {
+        return "SCM_CREDENTIALS: a child writes";
+    }
+    if (recv_cred(sv[0]) != pid) {
+        return "SCM_CREDENTIALS: the child's pid";
+    }
+    if (recv_cred(sv[0]) != getpid()) {
+        return "SCM_CREDENTIALS: the next read, the parent's";
+    }
+    close(sv[0]);
+    close(sv[1]);
+    return NULL;
+}
+
 /* Fds over a unix socket (SCM_RIGHTS): each comes with the message it was
  * sent with; a pipe end from a child that has exited still reads what the
  * child wrote; a socket received works; fds a too small control buffer
@@ -501,6 +600,10 @@ static void check_unix_sockets(void) {
     close(ls);
     const char *e = pass_fds();
     check(e == NULL, e != NULL ? e : "SCM_RIGHTS");
+    e = memfd_seals();
+    check(e == NULL, e != NULL ? e : "memfd seals");
+    e = pass_creds();
+    check(e == NULL, e != NULL ? e : "SCM_CREDENTIALS");
 }
 
 /* select and pselect (musl: the select syscall on x86_64, pselect6 on
@@ -798,6 +901,29 @@ static void check_misc_calls(void) {
           "getpriority, setpriority");
     check(prctl(PR_SET_NAME, "smoke") == 0 && prctl(PR_GET_SECCOMP) == -1 && errno == EINVAL,
           "prctl: a name, no seccomp");
+    /* What bubblewrap and glycin (WebKitGTK's image loaders) set up a
+     * sandbox with: no namespaces (glycin then runs its loaders as they
+     * are), no capabilities, the parent-death signal and no_new_privs
+     * accepted, the overflow ids. */
+    int pdeath = -1;
+    check(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0 && prctl(PR_GET_PDEATHSIG, &pdeath) == 0 &&
+              prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1,
+          "prctl: pdeathsig, no_new_privs");
+    check(unshare(0) == 0 && unshare(CLONE_NEWUSER) == -1 && errno == EINVAL &&
+              syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, 0, 0, 0, 0) == -1 && errno == EINVAL,
+          "unshare, clone: no namespaces");
+    struct { uint32_t version; int pid; } caphdr = { 0x20080522, 0 };
+    uint32_t caps[6] = { 1, 1, 1, 1, 1, 1 };
+    check(syscall(SYS_capget, &caphdr, caps) == 0 && !(caps[0] | caps[1] | caps[2] | caps[3] | caps[4] | caps[5]) &&
+              syscall(SYS_capset, &caphdr, caps) == 0,
+          "capget: none");
+    caphdr.version = 1;
+    check(syscall(SYS_capget, &caphdr, NULL) == -1 && errno == EINVAL && caphdr.version == 0x20080522,
+          "capget: an unknown version is told the current one");
+    char ov[16] = "";
+    fd = open("/proc/sys/kernel/overflowuid", O_RDONLY);
+    check(fd >= 0 && read(fd, ov, sizeof ov - 1) == 6 && strcmp(ov, "65534\n") == 0, "overflowuid");
+    close(fd);
     char *m = mmap(NULL, 3 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     check(m != MAP_FAILED && mremap(m, 3 * 4096, 4096, 0) == m && mremap(m, 4096, 8192, MREMAP_MAYMOVE) == MAP_FAILED &&
               errno == ENOMEM,
@@ -805,6 +931,19 @@ static void check_misc_calls(void) {
     if (m != MAP_FAILED) {
         munmap(m, 4096);
         check(mremap(m, 4096, 8192, 0) == MAP_FAILED && errno == EFAULT, "mremap of a hole: EFAULT");
+    }
+    /* A reservation bigger than the memory (WebKit's JavaScript engine
+     * takes 4 GiB aligned to 4 GiB): address space only, its pages
+     * mapped as they are touched; unmapped again at once. */
+    const size_t big = (size_t)5 << 30;
+    char *r5 = mmap(NULL, big, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    check(r5 != MAP_FAILED, "mmap: a 5 GiB reservation");
+    if (r5 != MAP_FAILED) {
+        char *last = r5 + big - 4096;
+        check(mprotect(r5, 4096, PROT_READ | PROT_WRITE) == 0 && mprotect(last, 4096, PROT_READ | PROT_WRITE) == 0 &&
+                  (r5[0] = 1, last[0] = 2, r5[0] + last[0] == 3),
+              "mmap: both ends of the reservation usable");
+        check(munmap(r5, big) == 0, "munmap: the reservation");
     }
     // musl measures the main thread's stack by growing one page after
     // another below it until mremap says EFAULT.
@@ -995,6 +1134,121 @@ static void check_toolchain_calls(char *self) {
     }
 }
 
+/* One raw query for example.com's A record, sent as the resolver sends
+ * it (`__res_msend`), with what came back: run when `dns` failed, to say
+ * which step loses the answer. Each probe has its own socket: a query to
+ * `ns` alone; to `ns` then to `dead`; to `dead` then to `ns`, and `ns`
+ * again after a wait. (No printf: musl's wants the quad-float builtins the
+ * static link has not.) */
+static void out_num(long n) {
+    char b[24];
+    int i = sizeof b;
+    unsigned long u = n < 0 ? -(unsigned long)n : (unsigned long)n;
+    b[--i] = 0;
+    do {
+        b[--i] = '0' + u % 10;
+        u /= 10;
+    } while (u);
+    if (n < 0) {
+        b[--i] = '-';
+    }
+    out(b + i);
+}
+
+static void probe_wait(int fd, const char *what) {
+    struct pollfd p = { .fd = fd, .events = POLLIN };
+    struct sockaddr_in from = { 0 };
+    socklen_t fl = sizeof from;
+    unsigned char a[512];
+    int ready = poll(&p, 1, 3000);
+    ssize_t n = ready > 0 ? recvfrom(fd, a, sizeof a, 0, (struct sockaddr *)&from, &fl) : -1;
+    out("probe: ");
+    out(what);
+    out(": poll ");
+    out_num(ready);
+    out(", recvfrom ");
+    out_num(n);
+    if (n < 0) {
+        out(" ");
+        out(strerror(errno));
+    }
+    out(" from ");
+    // (inet_ntoa is a printf too.)
+    for (int i = 0; i < 4; i++) {
+        out_num(((unsigned char *)&from.sin_addr)[i]);
+        out(i < 3 ? "." : ":");
+    }
+    out_num(ntohs(from.sin_port));
+    out(" rcode ");
+    out_num(n >= 4 ? a[3] & 15 : -1);
+    out("\n");
+}
+
+static void probe_send(int fd, const unsigned char *q, size_t len, const struct sockaddr_in *to, const char *what) {
+    ssize_t n = sendto(fd, q, len, 0, (const struct sockaddr *)to, sizeof *to);
+    out("probe: sendto ");
+    out(what);
+    out(" ");
+    out_num(n);
+    if (n < 0) {
+        out(" ");
+        out(strerror(errno));
+    }
+    out("\n");
+}
+
+static void dns_probe(const char *ns, const char *dead) {
+    static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
+                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns;
+    inet_pton(AF_INET, ns, &to_ns.sin_addr);
+    inet_pton(AF_INET, dead, &to_dead.sin_addr);
+    for (int step = 0; step < 3; step++) {
+        int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+        if (step == 2) {
+            probe_send(fd, q, sizeof q, &to_dead, "dead");
+            probe_send(fd, q, sizeof q, &to_ns, "ns");
+        } else {
+            probe_send(fd, q, sizeof q, &to_ns, "ns");
+            if (step == 1) {
+                probe_send(fd, q, sizeof q, &to_dead, "dead");
+            }
+        }
+        probe_wait(fd, step == 0 ? "ns alone" : step == 1 ? "ns then dead" : "dead then ns");
+        if (step == 2) {
+            probe_send(fd, q, sizeof q, &to_ns, "ns again");
+            probe_wait(fd, "ns again");
+        }
+        close(fd);
+    }
+}
+
+/* The answer to a query sent to `ns` is read after a query to `dead` went
+ * from the same socket: it is still there, and from `ns` (a layer that
+ * connected the socket to the last address sent to reported that as the
+ * sender, and dropped what the earlier one had answered). */
+static void dns_sender(const char *ns, const char *dead) {
+    static const unsigned char q[] = { 0x56, 0x78, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
+                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns, from = { 0 };
+    struct pollfd p;
+    socklen_t fl = sizeof from;
+    unsigned char a[512];
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    inet_pton(AF_INET, ns, &to_ns.sin_addr);
+    inet_pton(AF_INET, dead, &to_dead.sin_addr);
+    p.fd = fd;
+    p.events = POLLIN;
+    int sent = sendto(fd, q, sizeof q, 0, (struct sockaddr *)&to_ns, sizeof to_ns) == (ssize_t)sizeof q;
+    int ready = sent && poll(&p, 1, 10000) == 1;
+    int later = ready && sendto(fd, q, sizeof q, 0, (struct sockaddr *)&to_dead, sizeof to_dead) == (ssize_t)sizeof q;
+    ssize_t n = later ? recvfrom(fd, a, sizeof a, 0, (struct sockaddr *)&from, &fl) : -1;
+    check(n >= 12 && a[0] == 0x56 && a[1] == 0x78 && from.sin_addr.s_addr == to_ns.sin_addr.s_addr &&
+              from.sin_port == htons(53),
+          "a datagram's sender is its own, after a send elsewhere");
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -1030,6 +1284,29 @@ int main(int argc, char **argv) {
         close(d);
         rmdir("/d");
         out(failures ? "LINUX-CWD FAIL\n" : "LINUX-CWD OK\n");
+        return failures != 0;
+    }
+    /* `dns NS DEAD`: musl's resolver (Alpine's programs: GLib, python),
+     * from a root whose /etc/resolv.conf names a dead address and the
+     * system's nameserver NS (kernel.sh says why in that order). It asks
+     * both at once from one socket and takes the answer from whichever:
+     * the layer must report each datagram's real sender (`hdata`), not the
+     * last address sent to, which `dns_sender` checks directly. */
+    if (argc > 1 && strcmp(argv[1], "dns") == 0) {
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
+        int r = getaddrinfo("example.com", "80", &hints, &res);
+        check(r == 0 && res != NULL, r == 0 ? "getaddrinfo" : gai_strerror(r));
+        if (res != NULL) {
+            freeaddrinfo(res);
+        }
+        if (argc > 3) {
+            if (r == 0) {
+                dns_sender(argv[2], argv[3]);
+            } else {
+                dns_probe(argv[2], argv[3]);
+            }
+        }
+        out(failures ? "LINUX-DNS FAIL\n" : "LINUX-DNS OK\n");
         return failures != 0;
     }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root

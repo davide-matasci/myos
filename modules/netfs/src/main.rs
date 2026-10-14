@@ -331,6 +331,9 @@ enum Node {
     /// `/net/unix/N/rights`: the fds that came with the last read of
     /// `data` (`SCM_RIGHTS`).
     Rights(u8, u16),
+    /// `/net/unix/N/from`: the pid of the writer of the last read of
+    /// `data` (`SCM_CREDENTIALS`).
+    From(u8, u16),
     /// `/net/udp/N/hdata`: `data` with the datagrams' headers.
     Hdata(u16),
 }
@@ -345,7 +348,8 @@ impl Node {
             | Node::Data(p, _)
             | Node::Status(p, _)
             | Node::Listen(p, _)
-            | Node::Rights(p, _) => Some(p),
+            | Node::Rights(p, _)
+            | Node::From(p, _) => Some(p),
             Node::Hdata(_) => Some(PROTO_UDP),
         }
     }
@@ -388,6 +392,9 @@ fn parse_path(path: &str) -> Option<Node> {
                 }
                 Some("rights") if it.next().is_none() && proto == PROTO_UNIX => {
                     Some(Node::Rights(proto, conv))
+                }
+                Some("from") if it.next().is_none() && proto == PROTO_UNIX => {
+                    Some(Node::From(proto, conv))
                 }
                 _ => None,
             }
@@ -856,7 +863,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             }
             (S_IFDIR | 0o755, 0, 100 + id as u32)
         }
-        Node::Listen(_, _) | Node::Rights(_, _) => return -1,
+        Node::Listen(_, _) | Node::Rights(_, _) | Node::From(_, _) => return -1,
         Node::Hdata(id) => {
             if !conv_ok(&st.convs, id, PROTO_UDP) {
                 return -1;

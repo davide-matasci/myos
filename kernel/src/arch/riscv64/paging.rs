@@ -84,8 +84,11 @@ pub fn map_devices() {
     }
 }
 
-/// Sv39 root[1] is user space (`0x4000_0000`). Relocate that window's BAR.
-const RELOC_VA: u64 = 0x1_0000_0000;
+/// Where a BAR inside the user span (`upaging::USER_ROOT_SLOTS` from
+/// `DEFAULT_USER_BASE`: QEMU `virt`'s 32-bit PCIe window at 1 GiB and its
+/// 64-bit one at 16 GiB are) is mapped instead, at the same offset: 128
+/// GiB, above the span and below the upper half.
+pub const RELOC_VA: u64 = 0x20_0000_0000;
 
 fn map_2m(root: &mut [u64; 512], pa: u64, va: u64) {
     let i2 = ((va >> 30) & 0x1ff) as usize;
@@ -103,7 +106,7 @@ fn map_2m(root: &mut [u64; 512], pa: u64, va: u64) {
     }
 }
 
-/// Identity-map device MMIO. If `phys` sits in the user gigabyte, map it at
+/// Identity-map device MMIO. If `phys` sits in the user span, map it from
 /// [`RELOC_VA`] instead so syscalls (user satp) can still reach the BAR.
 pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
     if size == 0 {
@@ -121,20 +124,16 @@ pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
         return None;
     }
     let root = unsafe { &mut *crate::mm::table(satp_root_phys(satp)) };
-    let conflict = phys < 0x8000_0000 && end > 0x4000_0000;
-    let pa0 = phys & !0x1F_FFFF;
-    let va_base = if conflict {
-        RELOC_VA + (phys - pa0)
-    } else {
-        phys
-    };
+    let user_base = super::user::DEFAULT_USER_BASE;
+    let conflict = phys < user_base + super::user::USER_WINDOW && end > user_base;
+    let relocate = |pa: u64| if conflict { pa - user_base + RELOC_VA } else { pa };
     let pa_end = (end + 0x1F_FFFF) & !0x1F_FFFF;
-    let mut pa = pa0;
+    let mut pa = phys & !0x1F_FFFF;
     while pa < pa_end {
-        let va = if conflict { RELOC_VA + (pa - pa0) } else { pa };
-        map_2m(root, pa, va);
+        map_2m(root, pa, relocate(pa));
         pa += 0x20_0000;
     }
+    let va_base = relocate(phys);
     unsafe {
         asm!("sfence.vma", options(nostack));
     }

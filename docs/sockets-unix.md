@@ -8,7 +8,7 @@ through netd: the bytes stay in the kernel.
 
 ## `/net/unix`
 
-The files are those of `/net/tcp`, plus `listen` and `rights`:
+The files are those of `/net/tcp`, plus `listen`, `rights` and `from`:
 
 | File | |
 |------|-|
@@ -18,6 +18,7 @@ The files are those of `/net/tcp`, plus `listen` and `rights`:
 | `N/status` | `open`, `announced`, `connected` or `hangup` |
 | `N/listen` | reading it hands out the next connection queued here (`"M\n"`, nothing when none waits); `st_size` is how many wait |
 | `N/rights` | reading it makes the fds that came with the last read of `data` the reader's, and gives their numbers (`"5 6\n"`) |
+| `N/from` | the pid of the process whose write the last read of `data` returned bytes of (`"12\n"`; nothing before a read) |
 
 - `announce NAME` makes the conversation a listener under NAME. NAME is a
   name in `/net/unix` only: nothing is created in the filesystem, and the
@@ -43,6 +44,10 @@ The files are those of `/net/tcp`, plus `listen` and `rights`:
   `rights` took when the write it was for failed (a retry sends them
   again). At most 253 fds per write. A socket passed over itself, or in
   a cycle of sockets nobody holds, stays open: there is no collector.
+- Each write is recorded with its writer's pid, and a read of `data`
+  never returns the bytes of two writers: `from` then names the one it
+  returned (`SCM_CREDENTIALS`, the Linux layer's `SO_PASSCRED`; WebKit
+  learns its web process's pid that way).
 
 Each end buffers up to 64 KiB written by its peer, allocated as it fills
 and let go of once read. Reads and writes never
@@ -85,8 +90,9 @@ Linux and native programs connect to each other by name.
 
 ## Not yet
 
-- Credentials (`SCM_CREDENTIALS`, `SO_PEERCRED`): issue #340. File
-  descriptors pass (`SCM_RIGHTS`, above), and shared memory between
+- Credentials in libgloss, and a true `SO_PEERCRED` (the Linux layer's
+  gives the caller's own pid): issue #340. The sender's pid of what a
+  read returns is there (`from`, above). File descriptors pass (`SCM_RIGHTS`, above), and shared memory between
   processes is there (`shm_open`, `memfd_create`, System V `shmget`,
   `MAP_SHARED`: README).
 

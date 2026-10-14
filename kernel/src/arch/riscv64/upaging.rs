@@ -1,5 +1,6 @@
 //! User address spaces on Sv39: a private root table cloned from the
-//! kernel's, with private mid/leaf tables under root[1].
+//! kernel's, with private mid/leaf tables under the root's user slots
+//! ([`USER_ROOT_SLOTS`] of them, from root[1]).
 
 use crate::mm;
 use crate::task;
@@ -7,6 +8,15 @@ use crate::user::PAGE;
 
 use super::paging;
 use super::user::DEFAULT_USER_BASE;
+
+/// Root slots of the process span, from root[1] (the gigabyte the image
+/// loads at, `DEFAULT_USER_BASE`): 65 GiB, the image, stack and heap in
+/// the first and the 64 GiB mmap window after them. The kernel's root
+/// maps devices in root[0] and, for a BAR inside the span, from
+/// `paging::RELOC_VA`: nothing of the kernel's is in between.
+pub const USER_ROOT_SLOTS: usize = 65;
+/// The first root slot of the process span.
+const USER_ROOT_FIRST: usize = 1;
 
 /// Physical address of `va` in `aspace`, if mapped.
 pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
@@ -79,6 +89,26 @@ fn virt_to_phys_riscv64(satp: u64, va: u64) -> Option<u64> {
     }
 }
 
+/// The end of the span around `va` that has no leaf table (a root or mid
+/// entry absent, or a huge page): every page in it is unmapped. `None`
+/// when `va`'s leaf table exists (the page itself may be unmapped).
+/// Walking a range page by page skips its empty tables with this.
+pub fn unmapped_span_end(aspace: u64, va: u64) -> Option<u64> {
+    let i2 = ((va >> 30) & 0x1ff) as usize;
+    let i1 = ((va >> 21) & 0x1ff) as usize;
+    unsafe {
+        let root = &*mm::table(satp_ppn(aspace));
+        if !paging::pte_is_table(root[i2]) {
+            return Some((va | ((1 << 30) - 1)) + 1);
+        }
+        let mid = &*mm::table(paging::pte_phys(root[i2]));
+        if !paging::pte_is_table(mid[i1]) {
+            return Some((va | ((1 << 21) - 1)) + 1);
+        }
+    }
+    None
+}
+
 /// The VA where user images are loaded.
 pub fn pick_user_base() -> u64 {
     DEFAULT_USER_BASE
@@ -116,10 +146,10 @@ pub fn free_user_page_tables(aspace: u64) {
 
 /// Tear down Sv39 tables owned by a user aspace.
 ///
-/// `create_aspace_riscv64` clones the kernel root then clears `root[1]` and
-/// allocates private mid/leaf tables under VPN[2]=1 (VA `0x4000_0000`). Only
-/// that private tree is freed (leaf → mid → root). Other root slots are
-/// value-copies of kernel PTEs and must not be freed.
+/// `create_aspace_riscv64` clones the kernel root then clears the user
+/// slots, and `ensure_riscv_leaf` allocates private mid/leaf tables under
+/// them. Only that private tree is freed (leaf → mid → root). Other root
+/// slots are value-copies of kernel PTEs and must not be freed.
 fn free_user_page_tables_riscv(satp: u64) {
     let root_phys = paging::satp_root_phys(satp);
     if root_phys == 0 {
@@ -131,10 +161,11 @@ fn free_user_page_tables_riscv(satp: u64) {
     }
     unsafe {
         let root = &mut *mm::table(root_phys);
-        // User image lives in root[1] (DEFAULT_USER_BASE = 0x4000_0000).
-        const USER_ROOT_IDX: usize = 1;
-        let mid_pte = root[USER_ROOT_IDX];
-        if mid_pte & paging::PTE_V != 0 && paging::pte_is_table(mid_pte) {
+        for slot in root[USER_ROOT_FIRST..USER_ROOT_FIRST + USER_ROOT_SLOTS].iter_mut() {
+            let mid_pte = *slot;
+            if mid_pte & paging::PTE_V == 0 || !paging::pte_is_table(mid_pte) {
+                continue;
+            }
             let mid_phys = paging::pte_phys(mid_pte);
             let mid = &mut *mm::table(mid_phys);
             for i in 0..512 {
@@ -145,7 +176,7 @@ fn free_user_page_tables_riscv(satp: u64) {
                 }
             }
             mm::free_frame(mid_phys);
-            root[USER_ROOT_IDX] = 0;
+            *slot = 0;
         }
         // Private root copy (kernel PTEs were value-copies into this frame).
         mm::free_frame(root_phys);
@@ -166,9 +197,9 @@ fn create_aspace_riscv64(code: &[u64], stack: &[u64], base: u64, stack_off: u64)
         let k_root = &*mm::table(k_root_phys);
         let root_t = &mut *mm::table(root);
         root_t.copy_from_slice(k_root);
-        // User lives in Sv39 root[1] (0x4000_0000). Clear any stale kernel
-        // entry so ensure_riscv_leaf owns mid/leaf allocation for this aspace.
-        root_t[1] = 0;
+        // Clear any stale kernel entry in the user slots so ensure_riscv_leaf
+        // owns mid/leaf allocation for this aspace.
+        root_t[USER_ROOT_FIRST..USER_ROOT_FIRST + USER_ROOT_SLOTS].fill(0);
     }
     let satp = make_satp(root);
     for (i, &phys) in code.iter().enumerate() {
