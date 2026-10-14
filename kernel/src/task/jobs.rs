@@ -143,8 +143,13 @@ pub(super) fn named_ids(tasks: &TaskTable) -> TaskBits {
     out
 }
 
-fn task_exists(t: &Task) -> bool {
+/// Whether a pid still names a task: one in the table whose exit has not
+/// been reported yet. `wait_child` leaves a reaped child's slot `Dead`
+/// while the child is still leaving its CPU (`reapable`), with no parent;
+/// the pid is gone all the same (`getpgid` on it is ESRCH, issue #375).
+pub(super) fn task_exists(t: &Task) -> bool {
     !matches!(t.state, State::Unused | State::Claimed)
+        && !((t.state == State::Dead || t.exited) && t.ppid == super::lifecycle::NO_PARENT)
 }
 
 /// `getpgid(pid)`: `pid == 0` means the caller. Returns the process group id,

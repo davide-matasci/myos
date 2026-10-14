@@ -1,7 +1,7 @@
 /* child-smoke: boot-CI guest test for kill(pid, 0) and zombie-free children.
  *
  * kill(pid, 0) finds this process, a running child and this process group,
- * and says ESRCH for a reaped child. A plain parent keeps its exited child
+ * and says ESRCH for a reaped child, as getpgid does. A plain parent keeps its exited child
  * as a zombie for waitpid; one with SA_NOCLDWAIT on SIGCHLD (reported back
  * by sigaction), or ignoring SIGCHLD, gets none: waitpid finds no child
  * (ECHILD), whether asked after the exit or while waiting for it. A parent
@@ -386,6 +386,11 @@ int main(void) {
     errno = 0;
     if (kill(pid, 0) != -1 || errno != ESRCH) {
         return fail("kill(reaped child, 0) is not ESRCH");
+    }
+    /* Gone for getpgid too, however briefly its slot outlives the reap. */
+    errno = 0;
+    if (getpgid(pid) != -1 || errno != ESRCH) {
+        return fail("getpgid(reaped child) is not ESRCH");
     }
 
     /* A plain parent: the exited child waits as a zombie. */

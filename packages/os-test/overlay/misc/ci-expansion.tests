@@ -109,6 +109,7 @@ TESTS += process/fork-setsid-setpgid-in-parent
 TESTS += process/fork-setsid-setpgid-in-parent-move
 TESTS += process/fork-setsid-setpgid-move
 TESTS += process/zombie-getpgid
+TESTS += process/limbo-getpgid
 TESTS += process/zombie-setpgid
 TESTS += process/zombie-setpgid-leader
 

@@ -44,9 +44,9 @@ pub struct ThreadInfo {
     pub sig_blocked: u32,
 }
 
-/// A slot `/proc` shows: one that holds a task.
+/// A slot `/proc` shows: one that holds a task whose pid still exists.
 fn live(t: &Task) -> bool {
-    !matches!(t.state, State::Unused | State::Claimed)
+    super::jobs::task_exists(t)
 }
 
 fn state_name(t: &Task) -> &'static str {
