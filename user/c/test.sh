@@ -7,6 +7,9 @@ t ptys /bin/etc/pty_smoke 4
 # Writers faster than their reader: a write into a full pty waits for room,
 # also on the reader's CPU (pty_smoke.c).
 t pty_flood /bin/etc/pty_smoke 5
+# A session's claim on a pair ends with its leader: the next session leader
+# with its pid does not hold it, the next claim goes through (pty_smoke.c).
+t pty_reclaim /bin/etc/pty_smoke 6
 t urandom /bin/etc/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
 t tty /bin/etc/tty_smoke

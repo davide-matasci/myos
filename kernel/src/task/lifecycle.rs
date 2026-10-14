@@ -614,6 +614,8 @@ pub fn die() -> ! {
     let mut fds_to_drop: Option<[FdEntry; MAX_FDS]> = None;
     // Its record locks go with it (`fs::lock`).
     let mut lock_owner = None;
+    // A session leader's: its ptys' claims end with it (`pty::session_ended`).
+    let mut session = None;
     let reclaim = {
         let mut tasks = TASKS.lock();
         let id = current_slot();
@@ -621,6 +623,7 @@ pub fn die() -> ! {
         orphan_children(&mut tasks, id);
         if tasks[id].user_rip != 0 {
             chld_parent = tasks[id].ppid;
+            session = tasks.proc_opt(id).filter(|p| p.sid == id).map(|_| id);
             // A parent ignoring SIGCHLD (or with SA_NOCLDWAIT) gets no
             // zombie: the exit is reported to nobody and the slot is freed
             // like an orphan's. Its `wait` sees one child fewer (ECHILD when
@@ -661,6 +664,9 @@ pub fn die() -> ! {
     }
     if let Some(owner) = lock_owner {
         crate::fs::lock::release(owner);
+    }
+    if let Some(sid) = session {
+        crate::pty::session_ended(sid);
     }
     // Notify the parent now that the TASKS lock is dropped: the exit status
     // is final, so the parent can reap it while this task still frees its

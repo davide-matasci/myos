@@ -186,9 +186,10 @@ terminal: a session leader (a process that called `setsid`, which also
 drops the console as its terminal) claims it with `ctty` on the pair's `ctl`
 (`TIOCSCTTY`, what `forkpty`'s child, dropbear's login and st do). From then
 on the pair is the controlling terminal of every process in that session,
-its `/dev/tty` and `/proc/self/tty`, until the leader exits; a claim by a
-process that leads no session, or of a pair another live session holds, is
-ignored. The pair's termios, window size and session belong to
+its `/dev/tty` and `/proc/self/tty`, until the leader exits (then the pair
+is nobody's: a later session leader with the same pid, a reused task slot,
+neither holds it nor keeps the next claim out); a claim by a process that
+leads no session, or of a pair another live session holds, is ignored. The pair's termios, window size and session belong to
 the pair: both ends see them. When the last fd on both ends is closed the
 directory disappears. Closing the last master fd hangs up the session
 (`SIGHUP` to the session leader's process group, then `EIO` on the slave),
