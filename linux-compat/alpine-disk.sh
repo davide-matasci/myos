@@ -2,12 +2,15 @@
 # alpine-disk.sh ARCH OUT PACKAGE...
 #
 # An ext2 image OUT whose /alpine is an Alpine Linux root for ARCH with
-# PACKAGE... and their dependencies installed: what
-#     get-alpine -r /mnt/alpine PACKAGE...
+# PACKAGE... and their dependencies unpacked: what
+#     get-alpine -n -r /mnt/alpine PACKAGE...
 # leaves on a disk, made on the host by get-alpine itself, built for the
-# host. The full boot test attaches it to the guest (docs/testing.md):
-# installing a toolchain in the emulated guest takes hours, mounting one
-# takes seconds. Nothing is redone while OUT exists.
+# host. -n, since the host has no Linux layer to run apk under: no install
+# script or trigger runs, and apk's database in the root knows nothing (a
+# root bootstrapped in the guest has both). The full boot test attaches it
+# to the guest (docs/testing.md): installing a toolchain in the emulated
+# guest takes hours, mounting one takes seconds. Nothing is redone while
+# OUT exists.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -42,7 +45,7 @@ cc -O2 -DALPINE_ARCH="\"$arch\"" -I"$ROOT/user/get-myos" -I"$zsrc" \
   -o "$work/get-alpine"
 
 echo "==> Alpine $arch root with $* (for $out)"
-"$work/get-alpine" -r "$work/root/alpine" "$@"
+"$work/get-alpine" -n -r "$work/root/alpine" "$@"
 # The same ext2 features as mkfs.ext2 (`-d` copies the tree in).
 mke2fs -q -F -t ext2 -b 4096 -O ^resize_inode,^dir_index,^ext_attr \
   -d "$work/root" "$out.tmp" 2G

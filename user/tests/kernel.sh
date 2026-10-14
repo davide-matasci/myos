@@ -1203,15 +1203,15 @@ lx_pagecache() {
 	LD_LIBRARY_PATH=/tmp/pc linux /bin/linux/linux-dyn && rm -r /tmp/pc
 }
 # A real Alpine package, downloaded at run time (jq + oniguruma + musl) by
-# get-alpine (a package, installed by the full list like the others) into
-# the default root, /data/alpine on the boot disk's data partition (mounted
-# at /data), with get-alpine's records in ROOT/.get-alpine, and run chrooted
-# in that root: it counts the binds of /dev, /proc and /net into the root it
+# get-alpine (a package, installed by the full list like the others): it
+# bootstraps apk in the default root, /data/alpine on the boot disk's data
+# partition (mounted at /data), and apk installs jq there. Run chrooted in
+# that root, jq counts the binds of /dev, /proc and /net into the root it
 # sees in /proc/mounts (3, doubled).
 lx_alpine() {
 	grep -q ' /data ' /proc/mounts || { echo "no /data"; return 1; }
 	run-myos get-alpine jq || return 1
-	[ -s /data/alpine/.get-alpine/pkgs/jq ] || { ls -a /data/alpine /data/alpine/.get-alpine; return 1; }
+	grep -q '^P:jq$' /data/alpine/lib/apk/db/installed || { ls -a /data/alpine; cat /data/alpine/etc/apk/world; return 1; }
 	out=$(linux --root /data/alpine jq -Rrn '[inputs|select(test("/data/alpine/"))]|"ALPINE-JQ \(length*2)"' /proc/mounts)
 	echo "$out"
 	[ "$out" = "ALPINE-JQ 6" ]

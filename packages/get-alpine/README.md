@@ -1,9 +1,11 @@
 # get-alpine
 
-The Alpine Linux package fetcher of the optional Linux layer
-(`docs/linux-compat.md`): it downloads Alpine packages with their run-time
-dependencies into a Linux root, checks them and unpacks them, for
-`linux --root ROOT PROGRAM` to run with the `linux` module loaded.
+The Alpine Linux package installer of the optional Linux layer
+(`docs/linux-compat.md`): it bootstraps a Linux root with Alpine's own
+package manager, `apk` (downloaded with its dependencies, checked and
+unpacked natively), and has apk, run under the layer, install the packages
+asked for, scripts and triggers included, for `linux --root ROOT PROGRAM`
+to run. From then on `linux --root ROOT apk ...` manages the root.
 
 A native myos program (newlib, the zlib port and get-myos's download, tar
 and gzip code, `user/get-myos/pkgtools.c`), so a package: not in the
@@ -14,12 +16,17 @@ get-myos get-alpine                 # install it (an app, docs/packages.md)
 insmod /lib/modules/linux           # unless the image loads the layer at boot
 run-myos get-alpine jq              # into /data/alpine (/tmp/alpine without /data)
 linux --root /data/alpine jq -n '1+1'
+linux --root /data/alpine apk add python3   # or get-alpine python3
 ```
 
-Besides the packages asked for, a root always gets Alpine's CA bundle
-(`ca-certificates-bundle`), the trust store of TLS clients such as Python,
-curl and wget, which do not depend on it.
+Besides the packages asked for, a root always gets the bootstrap set:
+`apk-tools`, `alpine-keys`, `busybox`, `busybox-binsh`, `alpine-baselayout`
+and Alpine's CA bundle (`ca-certificates-bundle`, the trust store of TLS
+clients such as Python, curl and wget, which do not depend on it).
+`-n` unpacks the packages natively instead, without apk (and without their
+install scripts): what `linux-compat/alpine-disk.sh` does on the host.
 
-`test.sh` (full mode, after the install) fetches jq into a scratch root and
-checks the files and the records in `ROOT/.get-alpine`; running what it
-fetched is the Linux layer's test (`lx_alpine` in `user/tests/kernel.sh`).
+`test.sh` (full mode, after the install) installs jq into a scratch root
+and checks the files, apk's database and busybox's trigger; running what
+it installed is the Linux layer's test (`lx_alpine` in
+`user/tests/kernel.sh`).
