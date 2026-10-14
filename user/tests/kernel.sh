@@ -1139,7 +1139,10 @@ lx_dns_root() {
 	mkdir -p /tmp/lxroot/etc && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
 	ns=$(sed -n 's/^[[:space:]]*dns=//p' /net/ndb | head -1)
 	[ -n "$ns" ] || return 1
-	printf 'nameserver %s\nnameserver 192.0.2.1\n' "$ns" > /tmp/lxroot/etc/resolv.conf
+	# musl's default (5 s, one retransmit at 2.5 s) is too little for a
+	# CI runner's first lookup of a name through QEMU's user network, which
+	# has taken over 5 s there; the point here is the dead second server.
+	printf 'nameserver %s\nnameserver 192.0.2.1\noptions timeout:20 attempts:4\n' "$ns" > /tmp/lxroot/etc/resolv.conf
 	capture $OUT/lx-dns-root.log linux --root /tmp/lxroot /linux-smoke dns
 	cat $OUT/lx-dns-root.log
 	contains "LINUX-DNS OK" $OUT/lx-dns-root.log
