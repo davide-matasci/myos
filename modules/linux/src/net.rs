@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use super::abi::*;
 use super::files;
-use super::sys::{get_bytes, native, put, R};
+use super::sys::{get_bytes, get_u64, native, put, R};
 use crate::k::{fs, signal, task, time, user};
 
 const AF_UNIX: usize = 1;
@@ -37,6 +37,12 @@ const SO_SNDBUF: usize = 7;
 const SO_RCVBUF: usize = 8;
 const SO_PASSCRED: usize = 16;
 const SO_PEERCRED: usize = 17;
+/// The peer's security label, groups and pidfd: what a kernel without
+/// them answers (`ENOPROTOOPT`); an answer of 0 would be taken for a
+/// label, a group or an fd (zbus closes a "pidfd" 0: the program's stdin).
+const SO_PEERSEC: usize = 31;
+const SO_PEERGROUPS: usize = 59;
+const SO_PEERPIDFD: usize = 77;
 
 const EADDRINUSE: usize = 98;
 const EISCONN: usize = 106;
@@ -377,18 +383,52 @@ pub fn send(fd: usize, mut io: impl FnMut() -> R) -> R {
     }
 }
 
-/// A datagram socket sends to `to`: connect it there first.
-fn send_to(fd: usize, to: usize, len: usize) -> Result<(), usize> {
+/// A UDP datagram's header in a conversation's `hdata`
+/// (`docs/sockets-curl.md`): the remote address and port, the local ones.
+const UDP_HDR: usize = 12;
+/// The most a datagram carries.
+const UDP_MAX: usize = 65535;
+
+/// `sendto` on a datagram socket: the datagram `data` to `to`, with its
+/// header, through the conversation's `hdata` (a connected socket's peer
+/// is not touched: musl's resolver asks every nameserver from one socket
+/// and takes the first answer, from whichever).
+fn send_datagram(fd: usize, data: &[u8], to: usize, tolen: usize) -> R {
     let (conv, s) = sock(fd)?;
-    if to == 0 || s.stream {
-        return Ok(());
+    let ([a, b, c, d], port) = get_addr(to, tolen)?;
+    let mut msg = alloc::vec![0u8; UDP_HDR + data.len()];
+    msg[..4].copy_from_slice(&[a, b, c, d]);
+    msg[8..10].copy_from_slice(&port.to_be_bytes());
+    msg[UDP_HDR..].copy_from_slice(data);
+    // netd's request ring may be full: a blocking socket retries.
+    loop {
+        let seq = task::wait_seq();
+        if fs::write(&format!("{conv}/hdata"), 0, &msg).is_some() {
+            return Ok(data.len());
+        }
+        if s.nonblock {
+            return Err(EAGAIN);
+        }
+        if signal::interrupt_wait() {
+            return Err(EINTR);
+        }
+        task::block_until(task::WAIT_ANY, seq, time::monotonic_ns() + RETRY_NS);
     }
-    let peer = get_addr(to, len)?;
-    if s.peer != Some(peer) {
-        ctl_connect(&conv, peer)?;
-        files::with_sock(fd, |s| s.peer = Some(peer));
+}
+
+/// `recvfrom` on a datagram socket: the next datagram from `hdata`, its
+/// sender from its header.
+fn recv_datagram(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fromlen: usize) -> R {
+    let (conv, _) = sock(fd)?;
+    let mut msg = alloc::vec![0u8; UDP_HDR + len.min(UDP_MAX)];
+    let got = recv(fd, flags & MSG_DONTWAIT != 0, || Ok(fs::read(&format!("{conv}/hdata"), 0, &mut msg).unwrap_or(0)))?;
+    if got < UDP_HDR {
+        return Ok(0);
     }
-    Ok(())
+    let n = got - UDP_HDR;
+    put(buf, &msg[UDP_HDR..UDP_HDR + n])?;
+    put_addr(from, fromlen, ([msg[0], msg[1], msg[2], msg[3]], u16::from_be_bytes([msg[8], msg[9]])))?;
+    Ok(n)
 }
 
 fn ctl_connect(conv: &str, ([a, b, c, d], port): Addr) -> Result<(), usize> {
@@ -396,14 +436,31 @@ fn ctl_connect(conv: &str, ([a, b, c, d], port): Addr) -> Result<(), usize> {
     fs::write(&format!("{conv}/ctl"), 0, cmd.as_bytes()).map(|_| ()).ok_or(EIO)
 }
 
+/// Whether `fd` is an `AF_INET` datagram socket (`hdata` carries its
+/// addressed datagrams).
+fn is_datagram(s: &Sock) -> bool {
+    !s.stream && s.unix.is_none()
+}
+
 pub fn sendto(fd: usize, buf: usize, len: usize, to: usize, tolen: usize) -> R {
-    send_to(fd, to, tolen)?;
+    let s = sock(fd)?.1;
+    if to != 0 && is_datagram(&s) {
+        if len > UDP_MAX {
+            return Err(EMSGSIZE);
+        }
+        let mut data = alloc::vec![0u8; len];
+        get_bytes(buf, &mut data)?;
+        return send_datagram(fd, &data, to, tolen);
+    }
     super::sys::write(fd, buf, len)
 }
 
 pub fn recvfrom(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fromlen: usize) -> R {
-    let n = recv(fd, flags & MSG_DONTWAIT != 0, || native(user::sys_read(fd, buf, len), EBADF))?;
     let s = sock(fd)?.1;
+    if is_datagram(&s) {
+        return recv_datagram(fd, buf, len, flags, from, fromlen);
+    }
+    let n = recv(fd, flags & MSG_DONTWAIT != 0, || native(user::sys_read(fd, buf, len), EBADF))?;
     if let Some(peer) = s.peer {
         put_addr(from, fromlen, peer)?;
     } else if s.unix.is_some() && from != 0 {
@@ -474,7 +531,23 @@ fn sent_rights(msg: usize) -> Result<Vec<i32>, usize> {
 pub fn sendmsg(fd: usize, msg: usize) -> R {
     let [name, namelen, iov, iovlen] = msghdr(msg)?;
     let fds = sent_rights(msg)?;
-    send_to(fd, name, namelen)?;
+    if name != 0 && is_datagram(&sock(fd)?.1) {
+        // One datagram of the gathered pieces.
+        if iovlen > 1024 {
+            return Err(EINVAL);
+        }
+        let mut data = Vec::new();
+        for i in 0..iovlen {
+            let (base, len) = (get_u64(iov + i * 16)? as usize, get_u64(iov + i * 16 + 8)? as usize);
+            if data.len() + len > UDP_MAX {
+                return Err(EMSGSIZE);
+            }
+            let at = data.len();
+            data.resize(at + len, 0);
+            get_bytes(base, &mut data[at..])?;
+        }
+        return send_datagram(fd, &data, name, namelen);
+    }
     if fds.is_empty() {
         return super::sys::rw_vec(fd, iov, iovlen, true);
     }
@@ -543,8 +616,35 @@ fn adopt(fd: usize) {
 /// `SO_PASSCRED`.
 pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     let [name, _, iov, iovlen] = msghdr(msg)?;
-    let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
     let (conv, s) = sock(fd)?;
+    if is_datagram(&s) {
+        // One datagram, scattered over the pieces, its sender named (how
+        // musl's resolver reads its answers); no control data.
+        if iovlen > 1024 {
+            return Err(EINVAL);
+        }
+        let mut room = 0usize;
+        for i in 0..iovlen {
+            room = room.saturating_add(get_u64(iov + i * 16 + 8)? as usize);
+        }
+        let mut data = alloc::vec![0u8; UDP_HDR + room.min(UDP_MAX)];
+        let got = recv(fd, flags & MSG_DONTWAIT != 0, || Ok(fs::read(&format!("{conv}/hdata"), 0, &mut data).unwrap_or(0)))?;
+        let n = got.saturating_sub(UDP_HDR);
+        let mut left = &data[UDP_HDR..UDP_HDR + n];
+        for i in 0..iovlen {
+            let (base, len) = (get_u64(iov + i * 16)? as usize, get_u64(iov + i * 16 + 8)? as usize);
+            let take = len.min(left.len());
+            put(base, &left[..take])?;
+            left = &left[take..];
+        }
+        if got >= UDP_HDR {
+            put_addr(name, msg + 8, ([data[0], data[1], data[2], data[3]], u16::from_be_bytes([data[8], data[9]])))?;
+        }
+        put(msg + 40, &0u64.to_le_bytes())?;
+        put(msg + 48, &0u32.to_le_bytes())?;
+        return Ok(n);
+    }
+    let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
     if let Some(peer) = s.peer {
         put_addr(name, msg + 8, peer)?;
     } else if s.unix.is_some() && name != 0 {
@@ -648,7 +748,8 @@ pub fn getpeername(fd: usize, addr: usize, alen: usize) -> R {
 /// `getsockopt`: the type, a failed connection's error, and the buffer
 /// sizes: 64 KiB each way for a unix socket (`docs/sockets-unix.md`), the
 /// 8 KiB netd queues per TCP conversation otherwise. Firefox's IPC
-/// sizes its writes by `SO_SNDBUF` and aborts on 0. Anything else reads 0.
+/// sizes its writes by `SO_SNDBUF` and aborts on 0. The peer's label,
+/// groups and pidfd are not there (`ENOPROTOOPT`); anything else reads 0.
 pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -> R {
     let (conv, s) = sock(fd)?;
     // The peer's credentials (`struct ucred`: pid, uid, gid): the layer
@@ -662,6 +763,7 @@ pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
         return Ok(0);
     }
     let v: i32 = match (level, opt) {
+        (SOL_SOCKET, SO_PEERSEC | SO_PEERGROUPS | SO_PEERPIDFD) => return Err(ENOPROTOOPT),
         (SOL_SOCKET, SO_TYPE) => (if s.stream { SOCK_STREAM } else { SOCK_DGRAM }) as i32,
         (SOL_SOCKET, SO_ERROR) if state(&conv) == State::Failed => ECONNREFUSED as i32,
         (SOL_SOCKET, SO_SNDBUF | SO_RCVBUF) => if s.unix.is_some() { 64 << 10 } else { 8 << 10 },

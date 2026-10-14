@@ -298,7 +298,10 @@ Sockets: `socket` (`AF_INET` stream and datagram, `AF_UNIX` stream),
 `SCM_RIGHTS`, on a unix socket: `docs/sockets-unix.md`), `shutdown`,
 `getsockname`, `getpeername`, `getsockopt` (`SO_ERROR`, `SO_TYPE`,
 `SO_SNDBUF`/`SO_RCVBUF`: 64 KiB for a unix socket, 8 KiB otherwise,
-`SO_PASSCRED`; `SO_PEERCRED` gives the caller's own pid, uid and gid 0),
+`SO_PASSCRED`; `SO_PEERCRED` gives the caller's own pid, uid and gid 0;
+`SO_PEERSEC`, `SO_PEERGROUPS` and `SO_PEERPIDFD` are `ENOPROTOOPT`, as on
+a kernel without them: zbus would take an answer of 0 for a pidfd and
+close fd 0),
 `setsockopt` (`SO_PASSCRED` on a unix socket: each read comes with the
 sender's pid as `SCM_CREDENTIALS`, `/net/unix`'s `from`,
 `docs/sockets-unix.md`; anything else accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
@@ -343,8 +346,12 @@ its `status` and the bytes waiting in `data`. The `/net` files never block,
 so a blocking read or connect sleeps until netd's next reply wakes the
 pollers (a write retries while netd's request ring is full, or a TCP
 conversation has no send room left: 8 KiB queued in netd). A datagram
-socket sends to the last address it was given, and reads one datagram at a
-time. A chrooted process reaches `/net` through the bind `linux --root` sets
+socket's `sendto`, `sendmsg`, `recvfrom` and `recvmsg` go through the
+conversation's `hdata` (`docs/sockets-curl.md`): each datagram carries its
+destination or its sender, so musl's resolver, which asks every
+nameserver from one socket and takes the first answer, gets it from
+whichever; `send`, `write`, `recv` and `read` are the bare datagrams of
+`data`, to and from the peer `connect` set. A chrooted process reaches `/net` through the bind `linux --root` sets
 up, and `get-alpine` gives a new root an `/etc/resolv.conf` for musl naming
 the DNS servers the system uses: the `dns=` lines of `/net/ndb`, QEMU's
 `10.0.2.3` without any. It is written once, when the root has none, so a
@@ -634,7 +641,9 @@ call, shared data, a relocated function pointer and a thread-local in
 `libsmoke.so`, `printf` from `libc.so`, `dlopen`/`dlsym` of `libsmoke2.so`);
 `linux --root` of a bare root with the smoke's event fd checks
 (`linux-smoke evfd`, `LINUX-EVFD OK`) runs them through the root's bind
-of `/dev`; `linux_trace` turns the trace on, checks that a syscall no arch
+of `/dev`, and with a `resolv.conf` naming the system's nameserver and
+then a dead address, musl's resolver (`linux-smoke dns`, `LINUX-DNS OK`)
+gets the answer from the live one; `linux_trace` turns the trace on, checks that a syscall no arch
 has still gets `ENOSYS` (`linux-smoke enosys`), and off again. A fault
 cannot be a boot test (the host takes the kernel's `user fault` line for a
 crash), so the fault's location is not tested in the boot.

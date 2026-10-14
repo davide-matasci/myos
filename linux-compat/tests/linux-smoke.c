@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -441,6 +442,11 @@ static const char *pass_creds(void) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || setsockopt(sv[0], SOL_SOCKET, SO_PASSCRED, &on, sizeof on) != 0 ||
         getsockopt(sv[0], SOL_SOCKET, SO_PASSCRED, &got, &len) != 0 || got != 1) {
         return "SCM_CREDENTIALS: SO_PASSCRED";
+    }
+    /* The peer's pidfd is not there, as on a kernel without it: an answer of
+     * 0 would be taken for a pidfd (zbus then closes fd 0, its stdin). */
+    if (getsockopt(sv[0], SOL_SOCKET, 77 /* SO_PEERPIDFD */, &got, &len) != -1 || errno != ENOPROTOOPT) {
+        return "SO_PEERPIDFD: ENOPROTOOPT";
     }
     pid_t pid = fork();
     if (pid == 0) {
@@ -1162,6 +1168,21 @@ int main(int argc, char **argv) {
         close(d);
         rmdir("/d");
         out(failures ? "LINUX-CWD FAIL\n" : "LINUX-CWD OK\n");
+        return failures != 0;
+    }
+    /* `dns`: musl's resolver (Alpine's programs: GLib, python), from a
+     * root whose /etc/resolv.conf names the system's nameserver first and
+     * a dead address second. It asks both at once from one socket and
+     * takes the answer from whichever: the layer must report each
+     * datagram's real sender (`hdata`), not the last address sent to. */
+    if (argc > 1 && strcmp(argv[1], "dns") == 0) {
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
+        int r = getaddrinfo("example.com", "80", &hints, &res);
+        check(r == 0 && res != NULL, r == 0 ? "getaddrinfo" : gai_strerror(r));
+        if (res != NULL) {
+            freeaddrinfo(res);
+        }
+        out(failures ? "LINUX-DNS FAIL\n" : "LINUX-DNS OK\n");
         return failures != 0;
     }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root
