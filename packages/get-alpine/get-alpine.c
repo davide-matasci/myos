@@ -491,8 +491,11 @@ typedef struct {
     sha1 control;
     sha256 data;
     tar t;
-    char pkginfo[8192];
-    size_t pn;
+    /* .PKGINFO, grown as it comes: one line per dependency and per
+     * provided name makes it tens of KB for some packages (gst-plugins-bad,
+     * abseil-cpp-dev), and "datahash" is its last line. */
+    char *pkginfo;
+    size_t pn, pcap;
     int in_pkginfo;
 } verify;
 
@@ -516,9 +519,20 @@ static int pkginfo_entry(tar *t, char type, const char *name, const char *link, 
 
 static void pkginfo_data(tar *t, const uint8_t *p, size_t n) {
     verify *v = t->ctx;
-    size_t k = n < sizeof v->pkginfo - 1 - v->pn ? n : sizeof v->pkginfo - 1 - v->pn;
-    memcpy(v->pkginfo + v->pn, p, k);
-    v->pn += k;
+    if (v->pn + n + 1 > v->pcap) {
+        size_t cap = v->pcap != 0 ? v->pcap : 8192;
+        while (cap < v->pn + n + 1) {
+            cap *= 2;
+        }
+        char *grown = realloc(v->pkginfo, cap);
+        if (grown == NULL) {
+            return; /* no datahash then: a mismatch, which refuses the package */
+        }
+        v->pkginfo = grown;
+        v->pcap = cap;
+    }
+    memcpy(v->pkginfo + v->pn, p, n);
+    v->pn += n;
 }
 
 static void verify_out(void *ctx, int member, const uint8_t *p, size_t n) {
@@ -538,23 +552,19 @@ static int check_apk(const char *path, const char *csum) {
     v.t.ctx = &v;
     int members = gunzip_members(path, verify_in, verify_out, &v);
     free(v.t.meta);
-    if (members != 3) {
-        return -1;
-    }
+    int ok = 0;
     uint8_t digest[20];
     char b64[29], hex[65];
     sha1_final(&v.control, digest);
     base64_20(digest, b64);
-    if (strncmp(csum, "Q1", 2) != 0 || strcmp(csum + 2, b64) != 0) {
-        return -1;
-    }
-    v.pkginfo[v.pn] = '\0';
-    const char *dh = strstr(v.pkginfo, "\ndatahash = ");
-    if (dh == NULL) {
-        return -1;
-    }
     sha256_hex(&v.data, hex);
-    return strncmp(dh + 12, hex, 64) == 0 ? 0 : -1;
+    if (members == 3 && strncmp(csum, "Q1", 2) == 0 && strcmp(csum + 2, b64) == 0 && v.pkginfo != NULL) {
+        v.pkginfo[v.pn] = '\0';
+        const char *dh = strstr(v.pkginfo, "\ndatahash = ");
+        ok = dh != NULL && strncmp(dh + 12, hex, 64) == 0;
+    }
+    free(v.pkginfo);
+    return ok ? 0 : -1;
 }
 
 static int installed(const char *name) {
