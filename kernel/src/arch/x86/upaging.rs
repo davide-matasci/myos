@@ -45,6 +45,31 @@ fn virt_to_phys_x86(pml4_phys: u64, va: u64) -> Option<u64> {
     }
 }
 
+/// The end of the span around `va` that has no page table (a PML4, PDPT
+/// or PD entry absent, or a huge page): every page in it is unmapped.
+/// `None` when `va`'s page table exists (the page itself may be unmapped).
+/// Walking a range page by page skips its empty tables with this.
+pub fn unmapped_span_end(aspace: u64, va: u64) -> Option<u64> {
+    let i4 = ((va >> 39) & 0x1ff) as usize;
+    let i3 = ((va >> 30) & 0x1ff) as usize;
+    let i2 = ((va >> 21) & 0x1ff) as usize;
+    unsafe {
+        let pml4 = &*mm::table(aspace & !0xfff);
+        if pml4[i4] & PRESENT == 0 {
+            return Some((va | ((1 << 39) - 1)) + 1);
+        }
+        let pdpt = &*mm::table(pml4[i4]);
+        if pdpt[i3] & PRESENT == 0 || pdpt[i3] & HUGE != 0 {
+            return Some((va | ((1 << 30) - 1)) + 1);
+        }
+        let pd = &*mm::table(pdpt[i3]);
+        if pd[i2] & PRESENT == 0 || pd[i2] & HUGE != 0 {
+            return Some((va | ((1 << 21) - 1)) + 1);
+        }
+    }
+    None
+}
+
 /// The VA where user images are loaded.
 ///
 /// Prefer DEFAULT (PML4[1]). If Limine already occupied that slot (common on

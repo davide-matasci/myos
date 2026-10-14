@@ -5,22 +5,22 @@
 use crate::smp::MAX_CPUS;
 use crate::task::STACK_SIZE;
 
-/// User images load at Sv39 root[1] on QEMU virt RAM.
+/// User images load at Sv39 root[1].
 pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
 /// The span above the user base that user mappings may lie in (the
 /// kernel's own mappings start outside it): what a user pointer may name.
-pub const USER_WINDOW: u64 = 1 << 30;
-/// The mmap window (after the brk heap), see x86: 960 MiB, the rest of the
-/// 1 GiB span after the largest image, the stack and the heap.
-pub const MMAP_AREA_PAGES: usize = 245760;
+/// 65 GiB: the root slots of `upaging`.
+pub const USER_WINDOW: u64 = (super::upaging::USER_ROOT_SLOTS as u64) << 30;
+/// The mmap window (after the brk heap), see x86: 64 GiB.
+pub const MMAP_AREA_PAGES: usize = 1 << 24;
 /// User stack below the heap: 1 MiB.
 pub const USER_STACK_PAGES: usize = 256;
 /// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
 /// and GNU make's report over the curated os-test lists needs more than
 /// 4 MiB; 16 MiB, as on the other arches.
 pub const HEAP_PAGES: usize = 4096;
-/// The process lives in Sv39 root[1]: 1 GiB.
-pub const USER_SPAN_PAGES: usize = 1 << 18;
+/// The process lives in the root's user slots: 65 GiB.
+pub const USER_SPAN_PAGES: usize = super::upaging::USER_ROOT_SLOTS << 18;
 
 /// The user registers a new task starts with (fork child, thread).
 #[derive(Clone, Copy)]

@@ -424,8 +424,8 @@ reserved first. That needed core `mmap` work, which native programs share:
 - `munmap` of any range in the `mmap` window (holes included) and
   `mprotect` of part of a mapping split the mapping;
 - free address space is reused (first fit) instead of only growing;
-- a larger window (64 GiB on x86_64, 960 MiB on aarch64 / riscv64, whose
-  user address spaces span 1 GiB) and 4096 mappings per process.
+- a larger window (64 GiB, on every arch: WebKit's JavaScript engine
+  reserves 4 GiB aligned to 4 GiB) and 4096 mappings per process.
 
 ## Signal handlers
 
@@ -557,9 +557,9 @@ three, the kernel crate itself an hour. Known gaps:
     its size (Alpine's cargo is 23 MB). Any other program is read whole: a
     file of at most 16 MiB from a writable filesystem (the initramfs has
     no limit) whose loaded image spans at most 1152 pages (4.5 MiB);
-  - a per-process `mmap` window of 64 GiB (x86_64: WebKit's JavaScript
-    engine reserves 4 GiB aligned to 4 GiB) / 960 MiB (aarch64,
-    riscv64) with at most 4096 mappings; adjacent mappings with the same
+  - a per-process `mmap` window of 64 GiB (every arch: the process span
+    is 65 GiB, the image, stack and heap in its first gigabyte) with at
+    most 4096 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
     small neighbouring ones: jq peaks at 188; rustc's Scudo allocator
     needs more than 256 to compile `core`). At most 1024 distinct files

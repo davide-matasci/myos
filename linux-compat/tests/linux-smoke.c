@@ -925,6 +925,19 @@ static void check_misc_calls(void) {
         munmap(m, 4096);
         check(mremap(m, 4096, 8192, 0) == MAP_FAILED && errno == EFAULT, "mremap of a hole: EFAULT");
     }
+    /* A reservation bigger than the memory (WebKit's JavaScript engine
+     * takes 4 GiB aligned to 4 GiB): address space only, its pages
+     * mapped as they are touched; unmapped again at once. */
+    const size_t big = (size_t)5 << 30;
+    char *r5 = mmap(NULL, big, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    check(r5 != MAP_FAILED, "mmap: a 5 GiB reservation");
+    if (r5 != MAP_FAILED) {
+        char *last = r5 + big - 4096;
+        check(mprotect(r5, 4096, PROT_READ | PROT_WRITE) == 0 && mprotect(last, 4096, PROT_READ | PROT_WRITE) == 0 &&
+                  (r5[0] = 1, last[0] = 2, r5[0] + last[0] == 3),
+              "mmap: both ends of the reservation usable");
+        check(munmap(r5, big) == 0, "munmap: the reservation");
+    }
     // musl measures the main thread's stack by growing one page after
     // another below it until mremap says EFAULT.
     pthread_attr_t a;

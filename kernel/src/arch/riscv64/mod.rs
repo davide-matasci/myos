@@ -90,8 +90,8 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
     let hz = p.timer_hz.ok_or("platform: no timebase-frequency")?.value;
     clock::set_timebase(hz);
     let host = p.pci.ok_or("platform: no PCIe host bridge")?.value;
-    // The 64-bit window: the 32-bit one (0x4000_0000 on QEMU `virt`) is
-    // user address space in Sv39 root[1].
+    // The 64-bit window (the 32-bit one, at 0x4000_0000 on QEMU `virt`, is
+    // in the user address space; a BAR there is relocated, `paging`).
     let (mmio, mmio_size) = p
         .pci_windows
         .and_then(|w| w.value.mmio64)
