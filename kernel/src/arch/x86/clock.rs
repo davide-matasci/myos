@@ -221,25 +221,46 @@ mod cmos {
         t
     }
 
+    /// The time registers (seconds, minutes, hours, day, month, year,
+    /// century) and status B, one read each.
+    fn read_regs() -> [u8; 8] {
+        [
+            cmos_read(0x00),
+            cmos_read(0x02),
+            cmos_read(0x04),
+            cmos_read(0x07),
+            cmos_read(0x08),
+            cmos_read(0x09),
+            cmos_read(0x32),
+            cmos_read(0x0b),
+        ]
+    }
+
     fn read_clock() -> Option<i64> {
         // UIP wait: keep this tiny. Under QEMU TCG each `in`/`out` is
         // expensive; the old 10_000-iteration spin dominated every
         // gettimeofday when UIP looked set (or when callers hammered us).
-        // A few polls is enough — if UIP is still set we read anyway
-        // (worst case a torn BCD field, corrected on the next cache refresh).
+        // A few polls is enough — if UIP is still set we read anyway.
         for _ in 0..32 {
             if cmos_read(0x0a) & 0x80 == 0 {
                 break;
             }
         }
-        let s = cmos_read(0x00);
-        let mi = cmos_read(0x02);
-        let h = cmos_read(0x04);
-        let d = cmos_read(0x07);
-        let mo = cmos_read(0x08);
-        let y = cmos_read(0x09);
-        let century = cmos_read(0x32);
-        let status_b = cmos_read(0x0b);
+        // The registers are read one at a time, and the clock may tick
+        // between two of them (QEMU computes each from the host's time as
+        // it is read): a seconds field of the new second with the minutes
+        // of the old one is a minute off, and such a torn read moved the
+        // wall clock by a second (issue #435). Two reads in a row have to
+        // agree.
+        let mut regs = read_regs();
+        for _ in 0..4 {
+            let again = read_regs();
+            if again == regs {
+                break;
+            }
+            regs = again;
+        }
+        let [s, mi, h, d, mo, y, century, status_b] = regs;
 
         let (sec, min, hour, day, month, year, cent) = if status_b & 0x04 != 0 {
             // Binary mode
@@ -265,7 +286,7 @@ mod cmos {
             // QEMU usually sets century; fall back to 2000+.
             2000 + year as i64
         };
-        // A torn read (century or year caught mid-update) is no date.
+        // Not a date (an RTC never set, or a read torn past the retries).
         if !(1970..2200).contains(&full_year) {
             return None;
         }
