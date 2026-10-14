@@ -437,8 +437,13 @@ pub fn fd_noop(fd: usize) -> R {
 }
 
 /// `chmod`, `chown` and their `at` forms: done once the file exists.
-pub fn path_noop(dirfd: usize, path: usize) -> R {
-    let real = real_path(&path_at(dirfd, path)?)?;
+/// `chmod`, `chown` and their `at` forms: nothing to do, once the path
+/// is there. `flags` is the `at` form's; `AT_SYMLINK_NOFOLLOW` (and
+/// `lchown`) names the link itself, which may dangle: apk sets a `.so.N`
+/// link's owner before it unpacks the library behind it.
+pub fn path_noop(dirfd: usize, path: usize, flags: usize) -> R {
+    let p = path_at(dirfd, path)?;
+    let real = if flags & AT_SYMLINK_NOFOLLOW != 0 { real_path_nofollow(&p)? } else { real_path(&p)? };
     fs::stat(&real).map(|_| 0).ok_or(ENOENT)
 }
 

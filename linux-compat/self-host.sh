@@ -34,8 +34,9 @@ say() {
 
 # 1. Alpine's Rust (stable, with its library sources for build-std), lld
 # for the kernel's link, clang and bash for the C bits and port scripts,
-# git, and busybox's tools (get-alpine runs no install scripts, so its
-# links are made here).
+# git, and busybox's tools (apk's busybox trigger makes the applet links;
+# a root unpacked on the host by alpine-disk.sh, without scripts, gets
+# them here).
 if [ ! -x $R/usr/bin/cargo ]; then
 	say "installing the toolchain into $R"
 	get-myos get-alpine && run-myos get-alpine -r $R rust cargo rust-src lld clang bash busybox git || exit 1

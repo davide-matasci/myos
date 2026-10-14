@@ -6,9 +6,9 @@
 > the module ABI. Every image carries the module under `/lib/modules/linux`
 > and the `linux` launcher; the `linux_compat` Cargo feature (off by
 > default) loads the module at boot and adds the musl test binaries.
-> `get-alpine`, which fetches Alpine Linux packages, is a myos package
-> (`get-myos get-alpine`). Nothing about native myos programs changes when it is
-> loaded. myos's own syscall ABI stays the primary interface; this layer is
+> `get-alpine`, which installs Alpine Linux packages (with Alpine's own
+> `apk`, run under the layer), is a myos package (`get-myos get-alpine`).
+> Nothing about native myos programs changes when it is loaded. myos's own syscall ABI stays the primary interface; this layer is
 > an add-on for running some unmodified Linux binaries.
 
 With the module loaded, a Linux binary linked against musl (x86_64, aarch64
@@ -21,9 +21,10 @@ cargo run --features linux_compat -- aarch64   # (or riscv64)
 # in the guest:
 linux /bin/linux/linux-smoke               # prints LINUX-SMOKE OK
 linux /bin/linux/linux-dyn                 # dynamic: prints LINUX-DYN OK
-get-myos get-alpine                        # the Alpine package fetcher, a package
+get-myos get-alpine                        # the Alpine package installer, a package
 run-myos get-alpine jq                     # Alpine Linux packages, into /data/alpine
 linux --root /data/alpine jq -n '1+1'      # (/tmp/alpine without a /data)
+linux --root /data/alpine apk add python3  # apk itself, once the root has it
 ```
 
 In a default build the kernel does not load the module at boot; the boot
@@ -38,43 +39,62 @@ packages.
 
 Nothing from Alpine is in the image: `get-alpine`
 (`packages/get-alpine/get-alpine.c`, a native program for x86_64, aarch64
-and riscv64, all three of which Alpine has repositories for) downloads
-packages at run time with the guest's `curl`. It is a package
-(`docs/packages.md`), not in the image: `get-myos get-alpine` installs it
-as an app, `run-myos get-alpine` runs it, whether or not the image was
-built with the layer.
+and riscv64, all three of which Alpine has repositories for) bootstraps
+a Linux root at run time and has Alpine's own package manager, `apk`,
+install the packages into it. It is a package (`docs/packages.md`), not
+in the image: `get-myos get-alpine` installs it as an app, `run-myos
+get-alpine` runs it, with the layer loaded (apk runs under it).
 
 ```sh
-run-myos get-alpine [-r ROOT] [-u] PACKAGE...   # ROOT: /data/alpine or /tmp/alpine
+run-myos get-alpine [-r ROOT] [-u] [-n] [PACKAGE...]   # ROOT: /data/alpine or /tmp/alpine
+linux --root ROOT apk add|del|upgrade|info ...      # apk itself, afterwards (no PACKAGE: just the bootstrap)
 linux --root ROOT PROGRAM [ARG...]
 ```
 
-1. The `main` and `community` indexes (`APKINDEX.tar.gz`) are downloaded
-   once and reduced, streaming, to `ROOT/.get-alpine/index`: one
-   line per package with its repository, version, control checksum,
-   dependencies and provides (`so:`, `cmd:`, ...). `-u` refreshes it.
-2. Each package and, recursively, its dependencies (`musl` included; a
-   `so:libfoo.so.1` dependency resolves to the package providing it) is
-   downloaded and checked before anything is written: an `.apk` is three
+1. **Bootstrap** (once per root, natively, with the guest's `curl`): the
+   `main` and `community` indexes (`APKINDEX.tar.gz`) are downloaded and
+   reduced, streaming, to `ROOT/.get-alpine/index` (one line per package
+   with its repository, version, control checksum, dependencies and
+   provides: `so:`, `cmd:`, ...), and what apk needs to run is fetched
+   through it: `apk-tools`, `alpine-keys` (the keys apk checks the
+   repositories with), `busybox` and `busybox-binsh` (`/bin/sh` and the
+   tools install scripts use), `alpine-baselayout` (the users and
+   directories they expect) and `ca-certificates-bundle` (the trust
+   store of every TLS client, which python3, curl or wget alone do not
+   pull in), with their dependencies (`musl`, `libapk`, `libcrypto3`,
+   ...). Each is checked before anything is written: an `.apk` is three
    concatenated gzip members (signature, control, data); the SHA-1 of the
    control member must match the index's `C:Q1...` and the SHA-256 of the
-   data member the `datahash` in the control's `.PKGINFO`. The data tar is
-   then unpacked into `ROOT`. Installed packages
-   (`ROOT/.get-alpine/pkgs/`) are skipped. Install scripts are not
-   run, and the index signature is not checked (the download is HTTPS).
-   A dropped download resumes where it stopped (or starts over from a
-   server that cannot resume); three attempts in a row that get no further
-   give up.
-3. Alpine keeps `/lib` and `/usr/lib` separate, so no symlinks are needed:
+   data member the `datahash` in the control's `.PKGINFO`. The data tar
+   is then unpacked into `ROOT` and the package recorded in
+   `ROOT/.get-alpine/pkgs/`. (The index signature is not checked here,
+   the download is HTTPS; apk checks it next, with the keys just
+   unpacked.) The root also gets `/etc/apk/repositories` (the mirror and
+   branch of this run) and an `/etc/resolv.conf` (below). A dropped
+   download resumes where it stopped (or starts over from a server that
+   cannot resume); three attempts in a row that get no further give up.
+2. **apk**: `linux --root ROOT apk add --initdb --no-progress BASE...
+   PACKAGE...` (`BASE` the bootstrap set, so apk's world lists it from
+   the start; `--initdb` makes the database on the first run and is
+   nothing afterwards) resolves the dependencies, downloads the packages
+   (with musl's networking over the layer), checks the repository
+   signatures and the package checksums, unpacks them, runs their
+   install scripts and triggers (busybox's applet links, GSettings
+   schemas, gdk-pixbuf loaders, the MIME database, users and groups:
+   what the by-hand steps of a scriptless unpack were), and records them
+   in `ROOT/lib/apk/db` and `ROOT/etc/apk/world`. On the first run it
+   installs the bootstrap set once more, over the unpacked files, so the
+   database owns it too. An installed package costs nothing; `-u`
+   (`--update-cache`) refreshes the indexes first. From then on
+   `linux --root ROOT apk ...` is the whole package manager: `add`,
+   `del`, `upgrade`, `info`, `fix`.
+3. `-n` leaves apk out: the packages asked for are fetched, checked and
+   unpacked natively, as the bootstrap set is, without their install
+   scripts and unknown to apk's database. The layer need not be loaded;
+   `linux-compat/alpine-disk.sh` uses it on the host, which has no layer
+   to run apk under.
+4. Alpine keeps `/lib` and `/usr/lib` separate, so no symlinks are needed:
    the dynamic linker is `/lib/ld-musl-<arch>.so.1`.
-
-Since the install scripts do not run, what they would generate is made
-in the root by hand, with the programs Alpine installs for it: a GTK
-program's GSettings schemas (`glib-compile-schemas
-/usr/share/glib-2.0/schemas`; WebKitGTK's network process aborts without
-`gsettings-desktop-schemas`), the image loaders
-(`gdk-pixbuf-query-loaders --update-cache`) and the MIME database
-(`update-mime-database /usr/share/mime`).
 
 `linux --root ROOT` chroots into `ROOT` (the native `chroot`) before the
 exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
@@ -102,10 +122,12 @@ linux --root /mnt/alpine rustc --version
 ```
 
 Under emulation that download takes a couple of hours (the mirror drops
-long transfers; each one resumes). The same root made on the host is
+long transfers; a package whose transfer apk loses is installed by the
+next run). The same root made on the host is
 quicker: `linux-compat/alpine-disk.sh ARCH OUT.img PACKAGE...` builds
-get-alpine for the host (`-DALPINE_ARCH`), installs the packages for ARCH
-into a directory and makes an ext2 image of it, to attach as a disk.
+get-alpine for the host (`-DALPINE_ARCH`), unpacks the packages for ARCH
+into a directory (`-n`: without their install scripts, and apk's database
+in that root is empty) and makes an ext2 image of it, to attach as a disk.
 
 ## Turning it on
 
@@ -157,7 +179,7 @@ Linux ones. It is killed by its own fault; the kernel stays up.
 | `linux-compat/launcher.c` | the `linux` command |
 | `linux-compat/tests/linux-smoke.c` | Linux-side boot smoke (musl, static) |
 | `linux-compat/tests/linux-dyn.c`, `libsmoke*.c` | dynamically linked smoke and its shared objects |
-| `packages/get-alpine/get-alpine.c` | the Alpine package fetcher (a package, linked with the zlib port) |
+| `packages/get-alpine/get-alpine.c` | the Alpine package installer: bootstraps apk, which installs (a package, linked with the zlib port) |
 
 ### The personality ABI
 
@@ -544,7 +566,8 @@ three, the kernel crate itself an hour. Known gaps:
   `O_NOFOLLOW` and `O_DIRECTORY` are kept (`ELOOP`, `ENOTDIR`). `link` and
   `linkat` fail with `EPERM`: myos has no hard links.
   `pwrite` past the end of a file leaves zeros in the gap.
-- `chmod`, `chown` and `fsync` succeed and do nothing: what a program may
+- `chmod`, `chown` and `fsync` succeed and do nothing (`lchown` and the
+  `at` forms with `AT_SYMLINK_NOFOLLOW` on a dangling link too): what a program may
   do to a file is the security policy's (`docs/security.md`), and ext2
   writes a file back when its last fd closes. `stat`'s permission bits are
   the owner's only and say what the calling program may do; the layer's
@@ -655,8 +678,8 @@ crash), so the fault's location is not tested in the boot.
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
 `run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the
-default root on the test disk's data partition, with get-alpine's records
-in `/data/alpine/.get-alpine/`), which counts the binds of `/dev`, `/proc`
+default root on the test disk's data partition, bootstrapped by get-alpine
+and installed by apk under the layer, recorded in `/data/alpine/lib/apk/db`), which counts the binds of `/dev`, `/proc`
 and `/net` it sees in the root and expects `ALPINE-JQ 6`, then installs
 Python into `/tmp/alpine` (python3 and its 19 dependencies, ~45 MB, more
 than the 64 MiB data partition holds) and runs

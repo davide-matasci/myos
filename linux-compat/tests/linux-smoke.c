@@ -1121,6 +1121,13 @@ static void check_toolchain_calls(char *self) {
     check(open("/tmp/linux-smoke.trunc", O_RDONLY | O_DIRECTORY) < 0 && errno == ENOTDIR, "O_DIRECTORY");
     unlink("/tmp/linux-smoke.link");
     unlink("/tmp/linux-smoke.trunc");
+    /* A dangling link's own owner and mode can be set (apk sets a .so.N
+     * link's before it unpacks the library), not what it points to. */
+    check(symlink("linux-smoke.nothing", "/tmp/linux-smoke.dangle") == 0 && lchown("/tmp/linux-smoke.dangle", 0, 0) == 0 &&
+              fchownat(AT_FDCWD, "/tmp/linux-smoke.dangle", 0, 0, AT_SYMLINK_NOFOLLOW) == 0 &&
+              chown("/tmp/linux-smoke.dangle", 0, 0) < 0 && errno == ENOENT,
+          "lchown of a dangling link");
+    unlink("/tmp/linux-smoke.dangle");
 
     /* MADV_DONTNEED: the pages read as zero again (allocators count on it). */
     char *m = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

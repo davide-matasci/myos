@@ -1,25 +1,40 @@
 /*
- * get-alpine [-r ROOT] [-u] PACKAGE...
+ * get-alpine [-r ROOT] [-u] [-n] [PACKAGE...]
  *
- * Download Alpine Linux packages, with their run-time dependencies, into a
+ * Install Alpine Linux packages, with their run-time dependencies, into a
  * Linux root (default /data/alpine with the boot disk's data partition
  * mounted at /data, else /tmp/alpine), to run them with
  *     linux --root ROOT PROGRAM [ARG...]
  * Part of the optional Linux compatibility layer (docs/linux-compat.md):
  * nothing from Alpine is in the image, everything is fetched at run time.
  *
- * The repository indexes (main and community: APKINDEX.tar.gz) are
- * downloaded once and reduced to ROOT/.get-alpine/index, one line
- * per package: repository, name, version, checksum, dependencies, provides.
- * -u refreshes them. Dependencies ("so:libonig.so.5", "cmd:sh", names) are
- * resolved through package names and provides.
+ * Alpine's own package manager does the installing: a root is bootstrapped
+ * with apk-tools and what it needs to run (the `base` set below), fetched,
+ * checked and unpacked here, then
+ *     linux --root ROOT apk add --initdb BASE... PACKAGE...
+ * installs the packages asked for under the Linux layer: apk resolves the
+ * dependencies, checks the repository signatures (alpine-keys) and the
+ * packages, runs their install scripts and triggers, and records them in
+ * its database (ROOT/lib/apk/db, ROOT/etc/apk/world), so `apk upgrade`,
+ * `apk del` and the rest work on the root too. -u refreshes the indexes.
+ * -n leaves apk out: the packages are fetched, checked and unpacked here,
+ * without their scripts (what alpine-disk.sh does on the host, which has
+ * no layer to run apk under).
  *
- * A package (.apk) is three concatenated gzip streams: signature, control
- * (.PKGINFO) and data. The index's checksum is the SHA-1 of the control
- * stream, whose .PKGINFO holds the SHA-256 of the data stream ("datahash"):
- * both are checked before anything is unpacked into ROOT. (The repository
- * signature is not checked; the index comes over HTTPS.) Install scripts
- * are not run.
+ * The native part: the repository indexes (main and community:
+ * APKINDEX.tar.gz) are downloaded once and reduced to
+ * ROOT/.get-alpine/index, one line per package: repository, name,
+ * version, checksum, dependencies, provides. Dependencies
+ * ("so:libonig.so.5", "cmd:sh", names) are resolved through package names
+ * and provides. A package (.apk) is three concatenated gzip streams:
+ * signature, control (.PKGINFO) and data. The index's checksum is the
+ * SHA-1 of the control stream, whose .PKGINFO holds the SHA-256 of the
+ * data stream ("datahash"): both are checked before anything is unpacked
+ * into ROOT. (The repository signature is not checked here; the index
+ * comes over HTTPS. apk checks it afterwards, with the keys the bootstrap
+ * unpacked.) What the bootstrap unpacked is recorded in
+ * ROOT/.get-alpine/pkgs, so a second run does not fetch it again; apk's
+ * first run installs the same packages over it, into its database.
  *
  * Alpine has x86_64, aarch64 and riscv64 repositories. ALPINE_MIRROR
  * overrides https://dl-cdn.alpinelinux.org/alpine and ALPINE_BRANCH
@@ -58,6 +73,14 @@
 #define DEFAULT_BRANCH "latest-stable"
 static char mirror[160], branch[64];
 static const char *const repos[] = {"main", "community"};
+/* What apk needs to run in the root: apk itself, the keys it checks the
+ * repositories with, /bin/sh and the tools install scripts use, the users
+ * and directories they expect, the CAs of every TLS client (what OpenSSL's
+ * /etc/ssl/cert.pem points at; python3, curl or wget alone do not pull
+ * them in). Their dependencies (musl, libapk, libcrypto3, ...) follow. */
+static const char *const base[] = {"apk-tools", "alpine-keys", "busybox", "busybox-binsh", "alpine-baselayout",
+                                   "ca-certificates-bundle"};
+#define NBASE (sizeof base / sizeof base[0])
 
 /* ---- sha1 --------------------------------------------------------------- */
 
@@ -695,8 +718,57 @@ static void write_resolv_conf(FILE *f) {
     }
 }
 
+/* `linux --root ROOT apk add --initdb [-U] BASE... PACKAGE...`: apk's exit
+ * status, 127 when it did not run. --initdb makes the database on the first
+ * run and is nothing afterwards; the base set is in every `add`, so apk's
+ * world lists it from the start and an already installed package costs
+ * nothing. apk is quiet about progress: the console is a serial line as
+ * often as not. */
+static int run_apk(int update, int npkgs, char **pkgs) {
+    char **args = calloc(10 + NBASE + (size_t)npkgs, sizeof *args);
+    if (args == NULL) {
+        return die("out of memory", NULL);
+    }
+    size_t n = 0;
+    args[n++] = "linux";
+    args[n++] = "--root";
+    args[n++] = (char *)pkg_root;
+    args[n++] = "apk";
+    args[n++] = "add";
+    args[n++] = "--initdb";
+    args[n++] = "--no-progress";
+    if (update) {
+        args[n++] = "--update-cache";
+    }
+    for (size_t k = 0; k < NBASE; k++) {
+        args[n++] = (char *)base[k];
+    }
+    for (int k = 0; k < npkgs; k++) {
+        args[n++] = pkgs[k];
+    }
+    args[n] = NULL;
+    pid_t pid = fork();
+    if (pid < 0) {
+        free(args);
+        return die("cannot fork", NULL);
+    }
+    if (pid == 0) {
+        execvp("linux", args);
+        _exit(127);
+    }
+    free(args);
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
+        return die("apk did not finish", NULL);
+    }
+    if (WEXITSTATUS(status) == 127) {
+        return die("cannot run the linux launcher: is the module loaded (insmod /lib/modules/linux)?", NULL);
+    }
+    return WEXITSTATUS(status);
+}
+
 int main(int argc, char **argv) {
-    int update = 0, i = 1;
+    int update = 0, native = 0, i = 1;
     pkg_prog = "get-alpine";
     pkg_root = data_mounted() ? "/data/alpine" : "/tmp/alpine";
     for (; i < argc && argv[i][0] == '-'; i++) {
@@ -704,16 +776,22 @@ int main(int argc, char **argv) {
             pkg_root = argv[++i];
         } else if (strcmp(argv[i], "-u") == 0) {
             update = 1;
+        } else if (strcmp(argv[i], "-n") == 0) {
+            native = 1;
         } else {
             break;
         }
     }
-    if (i >= argc && !update) {
-        fputs("usage: get-alpine [-r ROOT] [-u] PACKAGE...\n"
+    if (native && i >= argc && !update) {
+        fputs("usage: get-alpine [-r ROOT] [-u] [-n] [PACKAGE...]\n"
               "  Install Alpine Linux (" ALPINE_ARCH ") packages and their dependencies\n"
-              "  into ROOT (default /data/alpine with /data mounted, else /tmp/alpine);\n"
-              "  run them with: linux --root ROOT PROGRAM\n"
-              "  -u  refresh the repository indexes\n",
+              "  into ROOT (default /data/alpine with /data mounted, else /tmp/alpine):\n"
+              "  the root gets apk, which installs them (scripts included) and\n"
+              "  everything later: linux --root ROOT apk add|del|upgrade ...\n"
+              "  (no PACKAGE: just that); run them with: linux --root ROOT PROGRAM\n"
+              "  -u  refresh the repository indexes\n"
+              "  -n  no apk: fetch, check and unpack the packages here, without\n"
+              "      their install scripts (the Linux layer need not be loaded)\n",
               stderr);
         return 2;
     }
@@ -723,7 +801,7 @@ int main(int argc, char **argv) {
     if (pkg_root[0] != '/' || strlen(pkg_root) > 100) {
         return die("ROOT must be an absolute path of at most 100 bytes: ", pkg_root);
     }
-    static const char *dirs[] = {"dev", "proc", "tmp", "etc", ".get-alpine/pkgs"};
+    static const char *dirs[] = {"dev", "proc", "net", "tmp", "etc/apk", ".get-alpine/pkgs"};
     char path[PATH_MAX_GV];
     mkdirs(pkg_root, 1);
     for (size_t k = 0; k < sizeof dirs / sizeof dirs[0]; k++) {
@@ -740,21 +818,48 @@ int main(int argc, char **argv) {
             fclose(f);
         }
     }
-    char index[PATH_MAX_GV];
-    db_path(index, "index");
-    if ((update || access(index, F_OK) != 0) && update_index() != 0) {
-        return 1;
-    }
-    for (; i < argc; i++) {
-        if (install(argv[i], 0) != 0) {
-            return 1;
+    /* The repositories apk reads, the mirror and branch of this run. */
+    if (under_root(path, "etc/apk/repositories") == 0 && access(path, F_OK) != 0) {
+        FILE *f = fopen(path, "w");
+        if (f != NULL) {
+            for (size_t r = 0; r < sizeof repos / sizeof repos[0]; r++) {
+                fputs(mirror, f);
+                fputc('/', f);
+                fputs(branch, f);
+                fputc('/', f);
+                fputs(repos[r], f);
+                fputc('\n', f);
+            }
+            fclose(f);
         }
     }
-    /* The CAs a TLS client trusts (/etc/ssl/certs/ca-certificates.crt, what
-     * OpenSSL's /etc/ssl/cert.pem points at): Alpine has them from
-     * alpine-base, and python3, curl or wget alone do not pull them in. */
-    if (!installed("ca-certificates") && install("ca-certificates-bundle", 1) != 0) {
+    char index[PATH_MAX_GV];
+    db_path(index, "index");
+    int bootstrapped = under_root(path, "sbin/apk") == 0 && access(path, X_OK) == 0;
+    if ((native || !bootstrapped) && (update || access(index, F_OK) != 0) && update_index() != 0) {
         return 1;
+    }
+    if (native) {
+        for (; i < argc; i++) {
+            if (install(argv[i], 0) != 0) {
+                return 1;
+            }
+        }
+        if (!installed("ca-certificates") && install("ca-certificates-bundle", 1) != 0) {
+            return 1;
+        }
+    } else {
+        if (!bootstrapped) {
+            say("bootstrapping apk in ", pkg_root, NULL);
+            for (size_t k = 0; k < NBASE; k++) {
+                if (install(base[k], 0) != 0) {
+                    return 1;
+                }
+            }
+        }
+        if (run_apk(update, argc - i, argv + i) != 0) {
+            return die("apk failed in ", pkg_root);
+        }
     }
     say("done; run with: linux --root ", pkg_root, " PROGRAM");
     return 0;

@@ -35,7 +35,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         49 => ret(sys::chdir(a[0])),
         50 => ret(sys::fchdir(a[0])),
         52 | 55 => ret(sys::fd_noop(a[0])),         // fchmod, fchown
-        53 | 54 => ret(sys::path_noop(a[0], a[1])), // fchmodat, fchownat
+        53 => ret(sys::path_noop(a[0], a[1], a[3])), // fchmodat
+        54 => ret(sys::path_noop(a[0], a[1], a[4])), // fchownat
         56 => ret(sys::openat(a[0], a[1], a[2])),
         57 => ret(sys::close(a[0])),
         59 => ret(sys::pipe2(a[0], a[1])),
