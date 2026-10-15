@@ -90,7 +90,10 @@ void mkdirs(const char *path, int self) {
 
 /* ---- running curl ------------------------------------------------------- */
 
-/* curl's exit status when the server cannot resume a transfer. */
+/* curl's exit statuses for a host it could not resolve or connect to, and
+ * for a server that cannot resume a transfer. */
+#define CURL_NO_RESOLVE 6
+#define CURL_NO_CONNECT 7
 #define CURL_CANNOT_RESUME 33
 
 /* One curl run, appending to what earlier runs left in dest (-C -): curl's
@@ -156,17 +159,31 @@ int download_close(int fd, int pid) {
     return 0;
 }
 
-/* A transient connect failure should not fail the whole install. */
+/* A transient network failure should not fail the whole install. */
 int download(const char *url, const char *dest) {
     /* Mirrors drop long transfers: each retry resumes where the last one
      * stopped (or starts over from a server that cannot resume), and three
-     * in a row that get no further than before give up. */
+     * in a row that get no further than before give up. A host that cannot
+     * be resolved or reached is the network coming and going (the resolver
+     * of a CI runner was gone for 20 s once, in the middle of a half-hour
+     * boot): that is retried for about two minutes with a growing pause. */
     unlink(dest);
     long long best = 0;
+    unsigned pause = 2;
     for (int stuck = 0;;) {
         int rc = download_once(url, dest);
         if (rc == 0) {
             return 0;
+        }
+        if (rc == CURL_NO_RESOLVE || rc == CURL_NO_CONNECT) {
+            if (pause > 64) {
+                unlink(dest);
+                return -1;
+            }
+            say("retrying ", url, NULL);
+            sleep(pause);
+            pause *= 2;
+            continue;
         }
         long long now = file_size(dest);
         stuck = now > best ? 0 : stuck + 1;
