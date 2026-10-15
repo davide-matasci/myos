@@ -13,7 +13,7 @@
 #
 # `mini` and `full` are the two lists of old; anything else is passed to
 # the launcher's `test` command (docs/testing.md): `--tags smoke`,
-# `--skip heavy`, `--only ssh`.
+# `--skip heavy`, `--tags ssh` (a test's name is one of its tags).
 set -euo pipefail
 ARCH="${1:-bios}"
 LIST="${2:-mini}"

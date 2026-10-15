@@ -23,12 +23,11 @@ use std::time::{Duration, Instant};
 /// the packages installed as apps, `heavy`: minutes long, `install`: the
 /// boot disk upgraded or installed, checked by the boots that follow,
 /// `alpine-disk`: the Alpine roots on the disk the host prepares) and
-/// what it covers (a module's or a port's name). The runner takes the
-/// tests named by `only`, else those with any of `tags` (all of them with
+/// what it covers (a module's or a port's name), and its own name is one
+/// too. The runner takes the tests with any of `tags` (all of them with
 /// none), minus those with any of `skip`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Selection {
-    pub only: Vec<String>,
     pub tags: Vec<String>,
     pub skip: Vec<String>,
     /// `--budget MINUTES`: the whole run's, instead of the one the tags
@@ -41,8 +40,8 @@ const MINI_SKIPS: &str = "net,pkg,heavy,install,alpine-disk";
 
 impl Selection {
     /// The `test` command's options from the launcher's arguments:
-    /// `--only NAME,...`, `--tags TAG,...`, `--skip TAG,...`, `--budget
-    /// MINUTES`; `test-mini` and `test-full` stand for the two lists of
+    /// `--tags TAG,...`, `--skip TAG,...`, `--budget MINUTES`;
+    /// `test-mini` and `test-full` stand for the two lists of
     /// old. `None` without a test command.
     pub fn parse(args: &[String]) -> Option<Selection> {
         let mut sel = Selection::default();
@@ -58,7 +57,6 @@ impl Selection {
                     found = true;
                     sel.skip = list(Some(&MINI_SKIPS.to_string()));
                 }
-                "--only" => sel.only = list(it.next()),
                 "--tags" => sel.tags = list(it.next()),
                 "--skip" => sel.skip = list(it.next()),
                 "--budget" => {
@@ -93,7 +91,7 @@ impl Selection {
     /// The runner's arguments.
     fn args(&self) -> String {
         let mut s = String::new();
-        for (opt, list) in [("--only", &self.only), ("--tags", &self.tags), ("--skip", &self.skip)] {
+        for (opt, list) in [("--tags", &self.tags), ("--skip", &self.skip)] {
             if !list.is_empty() {
                 s.push_str(&format!(" {opt} {}", list.join(",")));
             }
@@ -129,7 +127,7 @@ impl Mode {
         match self {
             Mode::Tests(sel) => sel.args(),
             Mode::Reboot { app: true } => " reboot".into(),
-            Mode::Reboot { app: false } => " reboot --only booted_slot_b".into(),
+            Mode::Reboot { app: false } => " reboot --skip app_kept".into(),
             Mode::Installed => " installed".into(),
         }
     }
@@ -681,12 +679,11 @@ mod tests {
         let sel = Selection::parse(&args("test-full")).unwrap();
         assert_eq!(sel, Selection::default());
         assert!(!sel.quick() && sel.needs_network() && sel.needs_alpine_disk());
-        let sel = Selection::parse(&args("test --tags smoke,netfs --skip heavy --only a,b --budget 7")).unwrap();
-        assert_eq!(sel.only, ["a", "b"]);
+        let sel = Selection::parse(&args("test --tags smoke,netfs --skip heavy --budget 7")).unwrap();
         assert_eq!(sel.budget, Some(Duration::from_secs(420)));
-        assert_eq!(Mode::Tests(sel).args(), " --only a,b --tags smoke,netfs --skip heavy");
+        assert_eq!(Mode::Tests(sel).args(), " --tags smoke,netfs --skip heavy");
         assert_eq!(Mode::Reboot { app: true }.args(), " reboot");
-        assert_eq!(Mode::Reboot { app: false }.args(), " reboot --only booted_slot_b");
+        assert_eq!(Mode::Reboot { app: false }.args(), " reboot --skip app_kept");
     }
 
     #[test]

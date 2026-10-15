@@ -6,3 +6,4 @@
 .vscode/
 **/Cargo.lock
 user/uutils-coreutils/
+__pycache__/

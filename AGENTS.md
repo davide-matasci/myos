@@ -80,7 +80,7 @@ takes minutes.
 cargo run -- test-mini                     # the quick tests: --skip net,pkg,heavy,install,alpine-disk
 cargo run -- aarch64 test-mini             # also riscv64, uefi
 cargo run -- test                          # every test: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
-cargo run -- test --tags netfs --skip heavy   # a selection by tag; --only NAME,... by name
+cargo run -- test --tags netfs --skip heavy   # a selection by tag; a test's name is one of its tags
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode -p ext2fs -p fatvol   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
