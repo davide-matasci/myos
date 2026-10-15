@@ -100,28 +100,36 @@ selected() {
 
 # t [-t TAGS] NAME COMMAND...: run one test, if the selection takes it.
 # FILE_TAGS are the tags of the file being sourced (its port's name, `pkg`
-# for a package's), on every test of it.
+# for a package's), on every test of it. In the first pass over the files
+# (LISTING set) nothing runs: the selected tests' names and tags are
+# listed, for what the run needs before the tests (the packages).
 t() {
-	tags=$FILE_TAGS
+	t_tags=$FILE_TAGS
 	if [ "$1" = -t ]; then
-		tags="$2,$tags"
+		t_tags="$2,$t_tags"
 		shift 2
 	fi
-	name=$1
+	t_name=$1
 	shift
-	if ! selected "$name" "$tags"; then
-		skipped=$((skipped + 1))
+	if [ -z "$FORCE" ] && ! selected "$t_name" "$t_tags"; then
+		[ -n "$LISTING" ] || skipped=$((skipped + 1))
+		return 0
+	fi
+	if [ -n "$LISTING" ]; then
+		echo "$t_name $t_tags" >> $OUT/selected
 		return 0
 	fi
 	total=$((total + 1))
-	capture $OUT/$name.out "$@"
-	rc=$?
-	if [ $rc -eq 0 ]; then
+	# The test runs in this shell (a function sets what later ones read):
+	# the runner's own variables are named so that none clobbers them.
+	capture $OUT/$t_name.out "$@"
+	t_rc=$?
+	if [ $t_rc -eq 0 ]; then
 		passed=$((passed + 1))
-		echo "TEST $name PASS"
+		echo "TEST $t_name PASS"
 	else
-		echo "TEST $name FAIL (exit $rc)"
-		tail -n 40 $OUT/$name.out | sed 's/^/    /'
+		echo "TEST $t_name FAIL (exit $t_rc)"
+		tail -n 40 $OUT/$t_name.out | sed 's/^/    /'
 	fi
 }
 
@@ -131,12 +139,12 @@ t() {
 # disk).
 LAST=
 t_last() {
-	tags=$FILE_TAGS
+	t_tags=$FILE_TAGS
 	if [ "$1" = -t ]; then
-		tags="$2,$tags"
+		t_tags="$2,$t_tags"
 		shift 2
 	fi
-	LAST="$LAST $1:$tags"
+	LAST="$LAST $1:$t_tags"
 }
 
 # contains NEEDLE FILE: the file has the string somewhere.
@@ -177,11 +185,11 @@ fi
 
 echo "tests: only=${ONLY:--} tags=${TAGS:--} skip=${SKIP:--}"
 
-# The packages: every one of this build from the host's mirror first
+# The packages: every one of this build from the host's mirror
 # (docs/packages.md; packages.txt names the ports the image lacks, the
 # index has the image's ports too), as apps under /tmp/apps (all of them
-# do not fit the boot disk's data partition): the packages' tests, which
-# come with them, run them with run-myos.
+# do not fit the boot disk's data partition): the packages' tests run
+# them with run-myos.
 install_packages() {
 	names=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
 	echo "packages: $names"
@@ -205,34 +213,48 @@ install_packages() {
 	fi
 	get-myos -m $MIRROR $names
 }
-# The apps' tests need the apps: they are sourced only when the install
-# ran (and the tests of a package the install missed fail on their own).
-if selected packages net,pkg; then
-	export MYOS_APPS=/tmp/apps
-fi
-t -t net,pkg packages install_packages
-
-# The image's tests, then the installed apps' (each app has its port's at
-# lib/myos-tests/ports/), all in the order of their names. A ports file is
+# source_tests: the kernel's tests, then every port's (the packages' are
+# in the image too), in the order of their names. A ports file is
 # `<group>-<name>.sh`: its tests are tagged with the port's name, a
-# package's (group 2) with `pkg` too.
-. $TESTS/kernel.sh
-for f in $TESTS/ports/*.sh ${MYOS_APPS:-/nonexistent}/*/lib/myos-tests/ports/*.sh; do
-	[ -f "$f" ] && echo "${f##*/} $f"
-done | sort | cut -d' ' -f2 > /tmp/myos-tests-list
-for f in $(cat /tmp/myos-tests-list); do
-	name=${f##*/}
-	name=${name%.sh}
-	FILE_TAGS=${name#*-}
-	case $name in
-	2-*) FILE_TAGS=$FILE_TAGS,pkg ;;
-	esac
-	. "$f"
-done
-FILE_TAGS=
-for f in $LAST; do
-	t -t "${f#*:}" "${f%%:*}" "${f%%:*}"
-done
+# package's (group 2) with `pkg` too; the deferred ones (t_last) last.
+ls $TESTS/ports/*.sh | sort > /tmp/myos-tests-list
+source_tests() {
+	LAST=
+	FILE_TAGS=
+	. $TESTS/kernel.sh
+	for f in $(cat /tmp/myos-tests-list); do
+		name=${f##*/}
+		name=${name%.sh}
+		FILE_TAGS=${name#*-}
+		case $name in
+		2-*) FILE_TAGS=$FILE_TAGS,pkg ;;
+		esac
+		. "$f"
+	done
+	FILE_TAGS=
+	for f in $LAST; do
+		t -t "${f#*:}" "${f%%:*}" "${f%%:*}"
+	done
+}
+
+# The first pass lists the selected tests; a `pkg` one among them needs the
+# packages installed as apps: the `packages` test runs before the others,
+# whatever the selection says (its failure fails them on their own). Then
+# the second pass runs them.
+rm -f $OUT/selected
+LISTING=1
+source_tests
+LISTING=
+if [ -s $OUT/selected ]; then
+	echo "selected: $(wc -l < $OUT/selected) tests"
+fi
+if cut -d' ' -f2 $OUT/selected 2>/dev/null | grep -q -E "(^|,)pkg(,|$)"; then
+	export MYOS_APPS=/tmp/apps
+	FORCE=1
+	t -t net,pkg packages install_packages
+	FORCE=
+fi
+source_tests
 
 echo "TESTS DONE $passed/$total"
 echo "TESTS SKIPPED $skipped"

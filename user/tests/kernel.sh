@@ -1390,12 +1390,12 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache
 	# The Alpine packages (get-alpine, an app: the packages and the network).
-	t -t linux,net,heavy,alpine alpine_jq lx_alpine
-	t -t linux,net,heavy,python alpine_python lx_python
-	t -t linux,net,heavy,python,netfs alpine_python_net lx_python_net
-	t -t linux,net,heavy,python,events alpine_python_asyncio lx_python_asyncio
-	t -t linux,net,heavy,x11 alpine_x11 lx_x11
-	t -t linux,net,alpine alpine_rustc lx_rustc
+	t -t linux,net,pkg,heavy,alpine alpine_jq lx_alpine
+	t -t linux,net,pkg,heavy,python alpine_python lx_python
+	t -t linux,net,pkg,heavy,python,netfs alpine_python_net lx_python_net
+	t -t linux,net,pkg,heavy,python,events alpine_python_asyncio lx_python_asyncio
+	t -t linux,net,pkg,heavy,x11 alpine_x11 lx_x11
+	t -t linux,net,pkg,alpine alpine_rustc lx_rustc
 else
 	t -t linux linux_insmod lx_insmod
 fi

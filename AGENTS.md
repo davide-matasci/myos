@@ -173,14 +173,20 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   its plan job, `scripts/ci-ports-plan.sh`, starts a toolchain or port job
   only for what the registry lacks) and `ci-runtime.yml` (build job → boot
   jobs).
-- Pull requests run **test-mini** on bios, uefi, aarch64 and riscv64. The
-  Linux layer's musl pieces are built and cached like a port
-  (`linux-compat`) in every run.
-- **Full boot** (`test-full` in all four boot jobs, every image with the
-  Linux layer built in by `MYOS_CI_FEATURES=linux_compat`, every package
-  installed from the build's own mirror) runs daily on master and on
-  demand: dispatch `ci.yml` with `full_boot: true` on the branch. Run it
-  for kernel, libc, port or CI changes that the mini list does not cover.
+- Pull requests boot **what the change needs**: the `plan` job
+  (`scripts/ci-select.py`, `docs/testing.md` "In CI") selects the tests by
+  tag from the changed paths (a port's directory its tests and its
+  dependents', a module's its tag, the kernel or the toolchain
+  everything, documentation nothing) and runs them on bios, uefi, aarch64,
+  aarch64-gicv3 and riscv64, the long groups (os-test, Python, X11, Alpine)
+  each in a boot of its own. The Linux layer's musl pieces are built and
+  cached like a port (`linux-compat`) in every run.
+- **Everything** runs on a push to master, daily, on a dispatch of
+  `ci.yml` with `full_boot: true` and on a pull request labelled
+  `ci:full`; a `linux` test in the selection puts the layer in the image
+  (`MYOS_CI_FEATURES=linux_compat`), and every package is installed from
+  the build's own mirror before a `pkg` test. Label a pull request
+  `ci:full` when the planner's rules would miss what it touches.
 - On master (a push or the daily run) the **iso** job builds the x86_64
   hybrid ISO with the Linux layer in it and the **publish** job uploads it
   and the packages to the rolling GitHub release `rolling`, get-myos's

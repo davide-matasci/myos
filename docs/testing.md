@@ -191,6 +191,36 @@ whole scratch disk; kept as `target/installed-<name>.img`) as the boot disk, by 
 bios job and UEFI on the others, and `run.sh installed` checks it came up
 from its slot `a`.
 
+## In CI
+
+`ci-runtime.yml` boots nothing fixed: its `plan` job runs
+`scripts/ci-select.py`, which reads every test's tags (the `t -t` lines,
+the ports' names from the descriptors) and the paths the change touches,
+and writes the boot job's matrix. A path selects tags:
+
+| changed | selects |
+|---|---|
+| a port's or a package's directory | its tests (its name), those of the ports built on it or needing it (`PORT_DEPS`, `PORT_RDEPS`) and what it implements (netd: `netfs`; mkfs.ext2: `ext2`; get-myos: `install`, `pkg`) |
+| `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`; the USB ones: `usb`; virtio_net: `virtio_net`, `netfs`); `modules/abi`, `acpi` and `pci_enum`: everything |
+| `linux-compat/` | `linux` |
+| `kernel/src/arch/<arch>` | everything on that arch's machines, `smoke` on the others |
+| `kernel/`, `toolchain/`, `src/`, `build.rs`, `scripts/`, `.github/`, `etc/`, `user/init`, `user/tests`, anything else | everything |
+| documentation (`*.md`, `docs/`, `licenses/`) | nothing: no boot |
+
+`smoke` is always in. A push to master, the daily run, a dispatch with
+`full_boot` and a pull request labelled `ci:full` run everything. The image
+carries the Linux layer (`linux_compat`) when a `linux` test runs.
+
+The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
+GICv3, riscv64) in parallel boots: the long tests' groups (`ostest`,
+`python`, `x11`, `alpine`) each in a boot of their own, whole (their tests
+build on each other), and one boot with everything else, so a full run is
+five boots of ten minutes per machine instead of one of thirty. Each boot
+gets a budget from what it runs (riscv64 half as much again), and a
+selection without `net` tests skips the mirror and the Alpine disk. The
+plan is in the run's summary; `scripts/ci-select.py --changed PATH...`
+prints it locally for any set of paths, `--all` the full one.
+
 ## Adding a test
 
 - A port's or a program's behaviour: a function and a `t -t tags name

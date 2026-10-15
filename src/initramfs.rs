@@ -337,6 +337,18 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
     for port in &image_ports {
         install_port(&mut entries, port, manifest_dir, arch);
     }
+    // The packages' boot tests too (`lib/myos-tests/ports/2-<name>.sh`,
+    // docs/testing.md): the runner reads every test's tags before it runs
+    // any, and installs the packages only when a selected test needs them.
+    for port in all_ports.iter().filter(|p| p.role == crate::ports::Role::Package) {
+        for f in &port.files {
+            if let crate::ports::FileSpec::File { src, path } = f {
+                if path.starts_with("lib/myos-tests/") {
+                    add(&mut entries, path, read(&manifest_dir.join(&port.dir).join(src)));
+                }
+            }
+        }
+    }
 
     // /usr skeleton for the os-test paths suite (/usr, /usr/bin, /usr/bin/env,
     // /usr/lib): access(F_OK) only, so a placeholder is enough; the directory
