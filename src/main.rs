@@ -747,7 +747,7 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     }
     if ok && ran("boot_upgrade") {
         eprintln!("boot test: the upgraded disk boots again");
-        ok = boot_test::run(spawn(&disk), &Mode::Reboot, linux).ok;
+        ok = boot_test::run(spawn(&disk), &Mode::Reboot { app: ran("apps_data") }, linux).ok;
     }
     if ok && ran("boot_install_local") {
         eprintln!("boot test: the disk get-myos --install made boots");

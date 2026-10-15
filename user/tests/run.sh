@@ -164,8 +164,9 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	if [ "$MODE" = reboot ]; then
 		t booted_slot_b booted_slot b
 		# The app the first boot installed on the data partition
-		# (user/get-myos/test.sh's apps_data) runs as it did: an app is
-		# its directory, nothing to redo after a reboot.
+		# (user/get-myos/test.sh's apps_data; the host selects this
+		# test out when that one did not run) runs as it did: an app
+		# is its directory, nothing to redo after a reboot.
 		t app_kept sh -c '[ "$(run-myos clear -T linux)" = "$(printf "\033[H\033[J")" ]'
 	else
 		t booted_installed booted_slot a

@@ -107,8 +107,10 @@ impl Selection {
 pub enum Mode {
     Tests(Selection),
     /// The second boot, of the disk the first one upgraded: it comes up
-    /// from the other slot (`run.sh reboot`, docs/install.md).
-    Reboot,
+    /// from the other slot (`run.sh reboot`, docs/install.md), with the app
+    /// the first boot's `apps_data` installed on the data partition when
+    /// that test ran.
+    Reboot { app: bool },
     /// The third, of the disk `get-myos --install` made on the scratch
     /// disk: it comes up from slot a (`run.sh installed`).
     Installed,
@@ -119,7 +121,8 @@ impl Mode {
     fn args(&self) -> String {
         match self {
             Mode::Tests(sel) => sel.args(),
-            Mode::Reboot => " reboot".into(),
+            Mode::Reboot { app: true } => " reboot".into(),
+            Mode::Reboot { app: false } => " reboot --only booted_slot_b".into(),
             Mode::Installed => " installed".into(),
         }
     }
@@ -133,7 +136,7 @@ impl Mode {
             Mode::Tests(sel) if sel.budget.is_some() => sel.budget.unwrap(),
             Mode::Tests(sel) if sel.quick() => Duration::from_secs(if linux_compat { 300 } else { 240 }),
             Mode::Tests(_) => Duration::from_secs(3000),
-            Mode::Reboot | Mode::Installed => Duration::from_secs(300),
+            Mode::Reboot { .. } | Mode::Installed => Duration::from_secs(300),
         }
     }
 
@@ -675,7 +678,8 @@ mod tests {
         assert_eq!(sel.only, ["a", "b"]);
         assert_eq!(sel.budget, Some(Duration::from_secs(420)));
         assert_eq!(Mode::Tests(sel).args(), " --only a,b --tags smoke,netfs --skip heavy");
-        assert_eq!(Mode::Reboot.args(), " reboot");
+        assert_eq!(Mode::Reboot { app: true }.args(), " reboot");
+        assert_eq!(Mode::Reboot { app: false }.args(), " reboot --only booted_slot_b");
     }
 
     #[test]
