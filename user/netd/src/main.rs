@@ -184,7 +184,8 @@ struct Conv {
     /// connect() (aarch64 socket_smoke connect fail on tip 0b4444e).
     from_accept: bool,
     /// UDP: the local address (unspecified: any) and port (0: not bound
-    /// yet; the first connect or send picks one).
+    /// yet; the first connect or send picks one). A TCP listener: the
+    /// address it listens on (unspecified: any), its port `listen_port`.
     local4: Ipv4Address,
     local_port: u16,
     /// UDP: a `bind` named that address / port; otherwise connect chose
@@ -507,6 +508,15 @@ fn is_local(iface: &Interface, a: Ipv4Address) -> bool {
     a.is_loopback() || a.is_unspecified() || iface.has_ip_addr(a)
 }
 
+/// Where TCP listener conv `c` listens: its port, on the address its
+/// announce named (any when that was unspecified).
+fn listen_endpoint(c: &Conv) -> IpListenEndpoint {
+    IpListenEndpoint {
+        addr: (!c.local4.is_unspecified()).then_some(IpAddress::Ipv4(c.local4)),
+        port: c.listen_port,
+    }
+}
+
 /// The source address of what goes to `dst`, as on Linux: 127.0.0.1 to
 /// 127.0.0.0/8, the host's own address to itself, otherwise the NIC's
 /// (none before DHCP is done). smoltcp's loopback interface would take its
@@ -710,28 +720,42 @@ fn handle_ctl(
         handle_udp_ctl(convs, sockets, iface, chan, i, cmd, local_ports);
         return;
     }
-    // Plan 9 announce: start a TCP listener on this conv ("announce <port>").
+    // Plan 9 announce: start a TCP listener on this conv ("announce
+    // [a.b.c.d!]<port>": on that address, one of the host's, else on any).
     if let Some(rest) = cmd.strip_prefix(b"announce") {
-        let port = match parse_port(trim(rest)) {
-            Some(p) if p != 0 => p,
-            _ => {
-                reply(chan, REP_ERR, conv, -1, b"need port");
-                return;
-            }
+        let rest = trim(rest);
+        let (addr, port) = match parse_endpoint(rest) {
+            Some((a, p)) if p != 0 => (a, p),
+            _ => match parse_port(rest) {
+                Some(p) if p != 0 => (Ipv4Address::UNSPECIFIED, p),
+                _ => {
+                    reply(chan, REP_ERR, conv, -1, b"need port");
+                    return;
+                }
+            },
         };
+        if !is_local(iface, addr) {
+            reply(chan, REP_ERR, conv, -1, b"addrnotavail");
+            return;
+        }
         match convs[i].kind {
             Kind::Tcp => {
                 let Some(h) = convs[i].handle else {
                     reply(chan, REP_ERR, conv, -1, b"no conv");
                     return;
                 };
+                convs[i].local4 = addr;
+                convs[i].listen_port = port;
                 let s = sockets.get_mut::<tcp::Socket>(h);
-                match s.listen(port) {
+                match s.listen(listen_endpoint(&convs[i])) {
                     Ok(()) => {
-                        convs[i].listen_port = port;
                         reply(chan, REP_STATUS, conv, 0, b"listening");
                     }
-                    Err(_) => reply(chan, REP_ERR, conv, -1, b"listen"),
+                    Err(_) => {
+                        convs[i].local4 = Ipv4Address::UNSPECIFIED;
+                        convs[i].listen_port = 0;
+                        reply(chan, REP_ERR, conv, -1, b"listen");
+                    }
                 }
             }
             _ => reply(chan, REP_ERR, conv, -1, b"tcp only"),
@@ -1098,7 +1122,7 @@ fn udp_disconnect(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: 
 /// Listen state, an incoming connection landed. Hand it to a fresh conv,
 /// re-arm a listener on the same port, and complete any parked "accept".
 fn rearm_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
-    let port = convs[i].listen_port;
+    let ep = listen_endpoint(&convs[i]);
     if let Some(h) = convs[i].handle.take() {
         {
             let s = sockets.get_mut::<tcp::Socket>(h);
@@ -1113,7 +1137,7 @@ fn rearm_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: 
     let nh = sockets.add(tcp::Socket::new(rx, tx));
     {
         let ls = sockets.get_mut::<tcp::Socket>(nh);
-        let _ = ls.listen(port);
+        let _ = ls.listen(ep);
     }
     convs[i].handle = Some(nh);
 }
@@ -1221,9 +1245,9 @@ fn pump_accepts(
         match st {
             tcp::State::Listen => continue,
             tcp::State::Closed => {
-                let port = convs[i].listen_port;
+                let ep = listen_endpoint(&convs[i]);
                 let s = sockets.get_mut::<tcp::Socket>(h);
-                let _ = s.listen(port);
+                let _ = s.listen(ep);
                 continue;
             }
             tcp::State::SynReceived | tcp::State::Established => {}
@@ -1299,7 +1323,7 @@ fn pump_accepts(
                 }
             }
         };
-        let port = convs[i].listen_port;
+        let ep = listen_endpoint(&convs[i]);
         convs[n] = Conv {
             kind: Kind::Tcp,
             handle: Some(h),
@@ -1328,7 +1352,7 @@ fn pump_accepts(
         let nh = sockets.add(tcp::Socket::new(rx, tx));
         {
             let ls = sockets.get_mut::<tcp::Socket>(nh);
-            match ls.listen(port) {
+            match ls.listen(ep) {
                 Ok(()) => {}
                 Err(_) => {}
             }

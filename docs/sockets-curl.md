@@ -106,7 +106,11 @@ and hands the room back with `REP_TXCREDIT`.
 A write with no room left is refused, and the library waits for POLLOUT.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
-server). Most `SO_*`/`TCP_*` are ignored. `AF_UNIX` stream sockets go over
+server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's
+own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname` reports
+it; `listen` writes `announce a.b.c.d!port` (a bare `announce port` is any
+address), and netd's listener takes only connections to that address.
+Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go over
 `/net/unix` instead, served by the kernel without netd
 (`docs/sockets-unix.md`).
 
