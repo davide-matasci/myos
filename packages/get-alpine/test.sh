@@ -8,7 +8,9 @@
 # user/tests/kernel.sh).
 get_alpine_fetch() {
 	r=/tmp/get-alpine-test
-	run-myos get-alpine -r $r jq || return 1
+	# apk's lines go to the console (fd 3): the host ends a boot that is
+	# silent for 600 s, and this install takes minutes under emulation.
+	run-myos get-alpine -r $r jq >&3 2>&1 || return 1
 	for p in apk-tools; do
 		[ -s $r/.get-alpine/pkgs/$p ] || { echo "no record of $p"; ls -a $r $r/.get-alpine; return 1; }
 	done
@@ -29,6 +31,11 @@ get_alpine_fetch() {
 	# 370 programs it provides), with its datahash on the last line.
 	run-myos get-alpine -n -r $r netpbm || return 1
 	[ -s $r/.get-alpine/pkgs/netpbm ] && [ -x $r/usr/bin/anytopnm ] || { ls -a $r/.get-alpine/pkgs; return 1; }
-	rm -r $r
+	# linux --root bound /dev, /proc and /net into the root for apk, and the
+	# binds stay: rm must not go through them (it emptied /dev/shm once, and
+	# the shared-memory tests after it failed).
+	for f in $r/* $r/.[!.]*; do
+		case ${f##*/} in dev | proc | net) ;; *) rm -rf "$f" ;; esac
+	done
 }
 t get_alpine get_alpine_fetch
