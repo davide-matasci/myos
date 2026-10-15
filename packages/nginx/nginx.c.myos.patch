@@ -1,0 +1,21 @@
+--- a/src/core/nginx.c
++++ b/src/core/nginx.c
+@@ -290,6 +290,18 @@
+         return 1;
+     }
+ 
++#ifdef NGX_MYOS_RUN_PATH
++    /* myos has no /var: the pid, the logs and the temporary files are in
++     * a directory of /tmp, made here when it is not there yet */
++
++    if (ngx_create_dir((u_char *) NGX_MYOS_RUN_PATH, 0755) == NGX_FILE_ERROR
++        && ngx_errno != NGX_EEXIST)
++    {
++        ngx_log_stderr(ngx_errno, "mkdir() \"" NGX_MYOS_RUN_PATH "\" failed");
++        return 1;
++    }
++#endif
++
+     cycle = ngx_init_cycle(&init_cycle);
+     if (cycle == NULL) {
+         if (ngx_test_config) {

@@ -1,4 +1,6 @@
-/* myos freestanding TLS *client* config for mbedtls 3.6.x */
+/* myos freestanding TLS config for mbedtls 3.6.x: the clients (curl, lynx,
+ * user/tls) and nginx's server; --gc-sections drops what a program does not
+ * call. */
 #ifndef MYOS_MBEDTLS_CONFIG_H
 #define MYOS_MBEDTLS_CONFIG_H
 
@@ -53,11 +55,13 @@
 #define MBEDTLS_ECP_NIST_OPTIM
 #define MBEDTLS_X509_USE_C
 #define MBEDTLS_X509_CRT_PARSE_C
+#define MBEDTLS_X509_CRL_PARSE_C
 #define MBEDTLS_X509_RSASSA_PSS_SUPPORT
 
-/* TLS client */
+/* TLS client and server */
 #define MBEDTLS_SSL_TLS_C
 #define MBEDTLS_SSL_CLI_C
+#define MBEDTLS_SSL_SRV_C
 #define MBEDTLS_SSL_PROTO_TLS1_2
 #define MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED
@@ -66,6 +70,9 @@
 #define MBEDTLS_SSL_ENCRYPT_THEN_MAC
 #define MBEDTLS_SSL_EXTENDED_MASTER_SECRET
 #define MBEDTLS_SSL_RENEGOTIATION
+/* The peer's certificate after the handshake (nginx's client certificates
+ * and its check of an upstream's name). */
+#define MBEDTLS_SSL_KEEP_PEER_CERTIFICATE
 
 /* Time for cert verify */
 #define MBEDTLS_HAVE_TIME

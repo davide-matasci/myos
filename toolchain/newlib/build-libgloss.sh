@@ -176,15 +176,24 @@ for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs s
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
 
-# POSIX regex (regcomp/regexec/regerror/regfree + engine) from newlib's own
-# libc/posix — not wired into this newlib target's libc build, but os-test
-# regex/*.c need the full API. Compile the upstream sources verbatim.
+# POSIX regex (regcomp/regexec/regerror/regfree + engine), glob and
+# fnmatch from newlib's own libc/posix — not wired into this newlib target's
+# libc build, but os-test regex/*.c need the full API and nginx's `include`
+# globs. Compile the upstream sources verbatim.
 if [[ -d "$NEWLIB_SRC/newlib/libc/posix" ]]; then
-  # collate.c + collcmp.c back the locale hooks regex uses
+  # collate.c + collcmp.c back the locale hooks regex and glob use
   # (__collate_load_error, __collate_range_cmp); same -I as the regex sources.
   for rf in regcomp regexec regerror regfree collate collcmp; do
     "$CC" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -I"$NEWLIB_SRC/newlib/libc/posix" \
+      -c "$NEWLIB_SRC/newlib/libc/posix/${rf}.c" -o "$out/obj/${rf}.o"
+  done
+  # glob reads directories (libgloss's <sys/dirent.h>, from -I"$PORT") and
+  # calls lstat (<sys/myos_extra.h>: newlib declares it on Cygwin and RTEMS);
+  # both use the GNU flags of <fnmatch.h> (FNM_CASEFOLD, FNM_LEADING_DIR).
+  for rf in glob fnmatch; do
+    "$CC" -ffreestanding -fPIC -O2 -D_GNU_SOURCE -I"$PORT" -isystem "$inc" \
+      -I"$NEWLIB_SRC/newlib/libc/posix" -include sys/myos_extra.h \
       -c "$NEWLIB_SRC/newlib/libc/posix/${rf}.c" -o "$out/obj/${rf}.o"
   done
 fi
@@ -235,6 +244,7 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 mkdir -p "$inc/arpa" "$inc/netinet" "$inc/net"
 cp "$ROOT/toolchain/newlib/libgloss/myos/arpa/inet.h" "$inc/arpa/inet.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/in.h" "$inc/netinet/in.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/netinet/tcp.h" "$inc/netinet/tcp.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/net/if.h" "$inc/net/if.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/ifaddrs.h" "$inc/ifaddrs.h"

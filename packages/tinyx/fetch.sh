@@ -20,17 +20,30 @@ if [[ ! -d "$SRC/tinyx/.git" ]] || [[ "$(git -C "$SRC/tinyx" rev-parse HEAD 2>/d
   git -C "$SRC/tinyx" checkout -q "$TINYX_REV"
 fi
 
-# fetch NAME VERSION SHA256
+# fetch NAME VERSION SHA256 EXT MIRROR...: NAME-VERSION.tar.EXT from the
+# first of x.org and the mirrors that answers, checked against the pin,
+# unpacked into SRC.
 fetch() {
-  local name="$1" version="$2" sha="$3"
-  local tarball="$CACHE/$name-$version.tar.gz"
+  local name="$1" version="$2" sha="$3" ext="$4"
+  shift 4
+  local tarball="$CACHE/$name-$version.tar.$ext"
   if [[ -f "$SRC/$name-$version/configure" ]]; then
     return
   fi
   if [[ ! -f "$tarball" ]]; then
     echo "==> fetch $name $version"
-    curl -L --fail --retry 5 --retry-delay 2 -o "$tarball.partial" \
-      "$X11_LIB_URL/$name-$version.tar.gz"
+    local url base
+    for base in "$X11_LIB_URL" "$@"; do
+      url="$base/$name-$version.tar.$ext"
+      # The X.Org server resets CI's connections for hours at a time, which
+      # --retry alone does not get past; the next URL is a mirror.
+      if curl -L --fail --connect-timeout 20 --retry 3 --retry-delay 10 --retry-all-errors -o "$tarball.partial" "$url"; then
+        break
+      fi
+      echo "fetch $url failed; trying the next mirror" >&2
+      rm -f "$tarball.partial"
+    done
+    [[ -f "$tarball.partial" ]] || { echo "error: cannot fetch $name $version" >&2; exit 1; }
     mv "$tarball.partial" "$tarball"
   fi
   local got
@@ -41,10 +54,18 @@ fetch() {
     exit 1
   fi
   rm -rf "$SRC/$name-$version"
-  tar -xzf "$tarball" -C "$SRC"
+  if [[ "$ext" == xz ]] && ! command -v xz >/dev/null 2>&1; then
+    # The CI image has python3 but no xz.
+    python3 -c 'import lzma, sys; sys.stdout.buffer.write(lzma.decompress(sys.stdin.buffer.read()))' \
+      < "$tarball" | tar -xf - -C "$SRC"
+  else
+    tar -xf "$tarball" -C "$SRC"
+  fi
 }
 
-fetch libfontenc "$LIBFONTENC_VERSION" "$LIBFONTENC_SHA256"
-fetch libXfont "$LIBXFONT_VERSION" "$LIBXFONT_SHA256"
-fetch libXdmcp "$LIBXDMCP_VERSION" "$LIBXDMCP_SHA256"
+# shellcheck disable=SC2086 # the mirror lists are space-separated
+fetch libfontenc "$LIBFONTENC_VERSION" "$LIBFONTENC_SHA256" xz $X11_MIRROR_URLS
+fetch libXfont "$LIBXFONT_VERSION" "$LIBXFONT_SHA256" gz "$LIBXFONT_MIRROR_URL"
+# shellcheck disable=SC2086
+fetch libXdmcp "$LIBXDMCP_VERSION" "$LIBXDMCP_SHA256" xz $X11_MIRROR_URLS
 echo "tinyx sources -> $SRC"

@@ -129,6 +129,13 @@ uid_t geteuid(void) {
     return myos_ctx();
 }
 
+/* An exec never changes the user (a transition changes the domain only,
+ * docs/security.md): a program always runs with its caller's ids, and
+ * glob trusts $HOME for `~`. */
+int issetugid(void) {
+    return 0;
+}
+
 char *getlogin(void) {
     (void)myos_ctx();
     return ctx_name;

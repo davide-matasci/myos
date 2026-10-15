@@ -1,12 +1,13 @@
 /* tcp-listen-smoke: boot-CI guest test for netd listen/accept.
  *
- * Plan 9 flow over /net/tcp: bind() stores the port, listen() announces it
- * (ctl "announce <port>"), accept() writes ctl "accept" and polls the
- * listener status for "accepted <N>". The boot test's host side connects
- * from the runner through QEMU slirp hostfwd and sends "ping"; the smoke
- * answers "pong", then sends BULK_LINES numbered lines (far more than netd
- * buffers: the writes wait for room) and closes. The host checks every byte
- * and connects again to report "good" (or "bad <bytes>").
+ * Plan 9 flow over /net/tcp: bind() stores the address and port, listen()
+ * announces them (ctl "announce 0.0.0.0!2323"), accept() writes ctl
+ * "accept" and polls the listener status for "accepted <N>". The boot
+ * test's host side connects from the runner through QEMU slirp hostfwd and
+ * sends "ping"; the smoke answers "pong", then sends BULK_LINES numbered
+ * lines (far more than netd buffers: the writes wait for room) and closes.
+ * The host checks every byte and connects again to report "good" (or "bad
+ * <bytes>").
  */
 #include <arpa/inet.h>
 #include <errno.h>

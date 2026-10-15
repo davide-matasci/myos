@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -69,7 +70,8 @@ struct myos_sock {
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
     struct sockaddr_in peer;
     int peer_set;
-    unsigned short bind_port; /* listener port after bind() */
+    struct in_addr bind_addr; /* TCP: the address and port bind() named */
+    unsigned short bind_port;
     int accept_armed;  /* listener: "accept" ctl written, waiting for status */
     int last_accept_seq; /* listener: seq of the last accepted handoff */
     int taken_seq;     /* listener: seq named by the last "taken <seq>" sent */
@@ -806,6 +808,27 @@ static void un_put_name(const char *name, struct sockaddr *addr, socklen_t *addr
     *addrlen = len;
 }
 
+/* What a TCP socket may bind, as on Linux: any address, 127.0.0.0/8 and
+ * the host's own (/net/ifaddrs). */
+static int host_addr(struct in_addr a) {
+    struct ifaddrs *ifs, *p;
+    int found = 0;
+    if (a.s_addr == INADDR_ANY || (ntohl(a.s_addr) >> 24) == 127) {
+        return 1;
+    }
+    if (getifaddrs(&ifs) != 0) {
+        return 0;
+    }
+    for (p = ifs; p != NULL; p = p->ifa_next) {
+        if (p->ifa_addr != NULL && p->ifa_addr->sa_family == AF_INET
+            && ((struct sockaddr_in *)p->ifa_addr)->sin_addr.s_addr == a.s_addr) {
+            found = 1;
+        }
+    }
+    freeifaddrs(ifs);
+    return found;
+}
+
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     struct myos_sock *s = sock_lookup(sockfd);
     if (s == NULL) {
@@ -837,15 +860,39 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     }
     if (addr != NULL && addr->sa_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
-        /* INADDR_ANY / unspecified only (netd owns the single interface). */
-        if (in->sin_addr.s_addr != INADDR_ANY && in->sin_addr.s_addr != 0) {
-            errno = EOPNOTSUPP;
+        if (!host_addr(in->sin_addr)) {
+            errno = EADDRNOTAVAIL;
             return -1;
         }
-        /* Remember the port; the listener is started by listen(). */
-        s->bind_port = in->sin_port; /* already network order; netd wants text */
+        /* Remembered; the listener is started by listen(). */
+        s->bind_addr = in->sin_addr;
+        s->bind_port = in->sin_port;
     }
     return 0;
+}
+
+/* "<verb> a.b.c.d!port" into `cmd`. */
+static int endpoint_cmd(char *cmd, size_t cap, const char *verb,
+    const struct sockaddr_in *in) {
+    char ip[INET_ADDRSTRLEN];
+    size_t pos;
+    int n;
+    if (inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip) == NULL) {
+        return -1;
+    }
+    n = myos_cpy(cmd, cap, verb);
+    if (n < 0) {
+        return -1;
+    }
+    pos = (size_t)n;
+    n = myos_cpy(cmd + pos, cap - pos, ip);
+    if (n < 0 || pos + (size_t)n + 1 >= cap) {
+        return -1;
+    }
+    pos += (size_t)n;
+    cmd[pos++] = '!';
+    n = myos_u16_dec(cmd + pos, cap - pos, ntohs(in->sin_port));
+    return n < 0 ? -1 : (int)(pos + (size_t)n);
 }
 
 /* Listener ctl helper: write a command to the conv's ctl file. */
@@ -1066,7 +1113,7 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
 
 int listen(int sockfd, int backlog) {
     struct myos_sock *s = sock_lookup(sockfd);
-    char cmd[32];
+    char cmd[sizeof "announce 255.255.255.255!65535"];
     (void)backlog; /* netd keeps a one-connection ready queue (smoltcp listener) */
     if (s == NULL) {
         errno = ENOTSOCK;
@@ -1095,27 +1142,19 @@ int listen(int sockfd, int backlog) {
         errno = EINVAL;
         return -1;
     }
-    unsigned short p = s->bind_port;
-    unsigned short hp = (unsigned short)((p >> 8) | (p << 8)); /* net order -> host */
-    /* Hand-format "announce <port>" via myos_u16_dec: pulling snprintf into
-     * this TU drags newlib's float printf machinery into the riscv64
-     * soft-float link (undefined __adddf3 et al.). */
-    size_t cmd_pos = 0;
     {
-        const char ann[] = "announce ";
-        memcpy(cmd + cmd_pos, ann, sizeof ann - 1);
-        cmd_pos += sizeof ann - 1;
-    }
-    {
-        size_t used = myos_u16_dec(cmd + cmd_pos, sizeof cmd - cmd_pos - 1,
-            (unsigned)hp);
-        if (used == 0) {
+        /* "announce a.b.c.d!port": netd listens on that address (0.0.0.0:
+         * any) and port. */
+        struct sockaddr_in in;
+        memset(&in, 0, sizeof in);
+        in.sin_family = AF_INET;
+        in.sin_addr = s->bind_addr;
+        in.sin_port = s->bind_port;
+        if (endpoint_cmd(cmd, sizeof cmd, "announce ", &in) < 0) {
             errno = EINVAL;
             return -1;
         }
-        cmd_pos += used;
     }
-    cmd[cmd_pos] = '\0';
     if (listener_ctl(s, cmd) < 0) {
         return -1;
     }
@@ -1555,6 +1594,10 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     local.sin_port = 0;
     if (s->type == SOCK_DGRAM) {
         local = s->local;
+    } else if (s->bind_port != 0) {
+        /* A bound or listening TCP socket: what bind() named. */
+        local.sin_addr = s->bind_addr;
+        local.sin_port = s->bind_port;
     }
     if (*addrlen > sizeof local) {
         *addrlen = sizeof local;
@@ -1601,12 +1644,53 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
     return write(sockfd, buf, len);
 }
 
+/* MSG_PEEK on a stream: what the conversation's `peek` gives, which netfs
+ * leaves for `data`; waiting for it as a read of `data` would. */
+static ssize_t tcp_peek(struct myos_sock *s, void *buf, size_t len, int flags) {
+    char path[64];
+    ssize_t n;
+    int fd;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "peek") < 0) {
+        errno = EIO;
+        return -1;
+    }
+    for (;;) {
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            errno = ENOTCONN;
+            return -1;
+        }
+        n = read(fd, buf, len);
+        close(fd);
+        if (n > 0 || len == 0) {
+            return n;
+        }
+        switch (rx_state(s)) {
+        case 0:
+            continue;
+        case 1:
+            return 0;
+        }
+        if (s->nonblock || (flags & MSG_DONTWAIT)) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (wait_readable(s) < 0) {
+            errno = EINTR;
+            return -1;
+        }
+    }
+}
+
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     ssize_t n;
     struct myos_sock *s = sock_lookup(sockfd);
     int restore = 0;
     if (is_dgram(sockfd)) {
         return udp_recv(s, buf, len, flags, NULL, NULL);
+    }
+    if (s != NULL && (flags & MSG_PEEK) && s->family == AF_INET && s->state == SOCK_CONNECTED) {
+        return tcp_peek(s, buf, len, flags);
     }
     /* MSG_DONTWAIT: force nonblock for this call only (read path checks s->nonblock). */
     if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
@@ -2035,33 +2119,9 @@ static int udp_ctl(struct myos_sock *s, const char *cmd) {
     }
 }
 
-/* "<verb> a.b.c.d!port" into `cmd`. */
-static int udp_endpoint_cmd(char *cmd, size_t cap, const char *verb,
-    const struct sockaddr_in *in) {
-    char ip[INET_ADDRSTRLEN];
-    size_t pos;
-    int n;
-    if (inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip) == NULL) {
-        return -1;
-    }
-    n = myos_cpy(cmd, cap, verb);
-    if (n < 0) {
-        return -1;
-    }
-    pos = (size_t)n;
-    n = myos_cpy(cmd + pos, cap - pos, ip);
-    if (n < 0 || pos + (size_t)n + 1 >= cap) {
-        return -1;
-    }
-    pos += (size_t)n;
-    cmd[pos++] = '!';
-    n = myos_u16_dec(cmd + pos, cap - pos, ntohs(in->sin_port));
-    return n < 0 ? -1 : (int)(pos + (size_t)n);
-}
-
 static int udp_bind(struct myos_sock *s, const struct sockaddr_in *in) {
     char cmd[48];
-    int n = udp_endpoint_cmd(cmd, sizeof cmd - 6, "bind ", in);
+    int n = endpoint_cmd(cmd, sizeof cmd - 6, "bind ", in);
     if (n < 0) {
         errno = EINVAL;
         return -1;
@@ -2092,7 +2152,7 @@ static int udp_connect(struct myos_sock *s, const struct sockaddr *addr, socklen
         errno = EAFNOSUPPORT;
         return -1;
     }
-    if (addrlen < sizeof *in || udp_endpoint_cmd(cmd, sizeof cmd, "connect ", in) < 0) {
+    if (addrlen < sizeof *in || endpoint_cmd(cmd, sizeof cmd, "connect ", in) < 0) {
         errno = EINVAL;
         return -1;
     }

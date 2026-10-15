@@ -7,7 +7,11 @@
  * (recvfrom), a second bind of a taken port fails, connect and unconnect
  * (AF_UNSPEC), a datagram to a port nobody bound refuses the next send
  * (ECONNREFUSED), the host's own address is local too. TCP: a listener
- * accepts a connection to 127.0.0.1 and both ends talk. An unconnected UDP
+ * accepts a connection to 127.0.0.1 and both ends talk (a MSG_PEEK first,
+ * which leaves the bytes for the read); one bound to
+ * 127.0.0.1 has that address (getsockname), accepts there and refuses a
+ * connection to the host's address, and an address not the host's is not
+ * bindable (EADDRNOTAVAIL). An unconnected UDP
  * socket passed by exec: the new program reads a bare datagram with
  * read(), then uses the fd as the socket it is (getsockname, sendto,
  * recvfrom). Prints [ OK ] loopback.
@@ -26,6 +30,7 @@
 
 #define TCP_PORT 7701
 #define CLOSED_PORT 7702
+#define BOUND_PORT 7703
 
 static int fail(const char *what) {
     printf("[ FAIL ] loopback %s (errno %d)\n", what, errno);
@@ -187,11 +192,59 @@ static int tcp(void) {
     if (s < 0) {
         return fail("tcp accept");
     }
-    if (write(c, "hi", 2) != 2 || read(s, buf, sizeof buf) != 2 || memcmp(buf, "hi", 2) != 0
+    if (write(c, "hi", 2) != 2) {
+        return fail("tcp write");
+    }
+    /* MSG_PEEK leaves the bytes for the next read. */
+    if (recv(s, buf, sizeof buf, MSG_PEEK) != 2 || memcmp(buf, "hi", 2) != 0) {
+        return fail("tcp peek");
+    }
+    if (read(s, buf, sizeof buf) != 2 || memcmp(buf, "hi", 2) != 0
         || write(s, "yo", 2) != 2 || read(c, buf, sizeof buf) != 2 || memcmp(buf, "yo", 2) != 0) {
         return fail("tcp exchange");
     }
     close(c);
+    close(s);
+    close(l);
+    return 0;
+}
+
+/* A listener on 127.0.0.1 only: not on `own`, the host's address. */
+static int tcp_bound(in_addr_t own) {
+    struct sockaddr_in lo = addr_of(htonl(INADDR_LOOPBACK), BOUND_PORT);
+    struct sockaddr_in host = addr_of(own, BOUND_PORT);
+    struct sockaddr_in other = addr_of(inet_addr("192.0.2.1"), BOUND_PORT);
+    struct sockaddr_in got;
+    char buf[8];
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    int d = socket(AF_INET, SOCK_STREAM, 0);
+    int s;
+    if (l < 0 || c < 0 || d < 0) {
+        return fail("tcp bound socket");
+    }
+    if (bind(d, (struct sockaddr *)&other, sizeof other) == 0 || errno != EADDRNOTAVAIL) {
+        return fail("tcp bind of an address not the host's");
+    }
+    if (bind(l, (struct sockaddr *)&lo, sizeof lo) < 0 || listen(l, 4) < 0) {
+        return fail("tcp listen on 127.0.0.1");
+    }
+    if (local_of(l, &got) < 0 || got.sin_addr.s_addr != lo.sin_addr.s_addr
+        || got.sin_port != lo.sin_port) {
+        return fail("tcp getsockname of the listener");
+    }
+    if (connect(d, (struct sockaddr *)&host, sizeof host) == 0 || errno != ECONNREFUSED) {
+        return fail("tcp connect to the host's address refused");
+    }
+    if (connect(c, (struct sockaddr *)&lo, sizeof lo) < 0) {
+        return fail("tcp connect to the bound listener");
+    }
+    s = accept(l, NULL, NULL);
+    if (s < 0 || write(c, "hi", 2) != 2 || read(s, buf, sizeof buf) != 2) {
+        return fail("tcp bound exchange");
+    }
+    close(c);
+    close(d);
     close(s);
     close(l);
     return 0;
@@ -259,7 +312,7 @@ int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "exec") == 0) {
         return exec_child(atoi(argv[2]), (unsigned short)atoi(argv[3]));
     }
-    if (interfaces(&own) || udp(own) || tcp() || exec_udp()) {
+    if (interfaces(&own) || udp(own) || tcp() || tcp_bound(own) || exec_udp()) {
         return 1;
     }
     printf("[ OK ] loopback\n");
