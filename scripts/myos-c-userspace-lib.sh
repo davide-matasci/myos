@@ -50,6 +50,7 @@ MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
 MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
+MYOS_PCRE2_VERSION="$MYOS_ROOT/target/.myos-pcre2-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
@@ -995,6 +996,28 @@ myos_zlib_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/zlib-${arch}/lib/libz.a" ]] || return 1
+  done
+}
+
+myos_pcre2_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      find "$(myos_port_dir pcre2)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_pcre2_is_current() {
+  local arch
+  [[ -f "$MYOS_PCRE2_VERSION" ]] \
+    && [[ "$(cat "$MYOS_PCRE2_VERSION")" == "$(myos_pcre2_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/pcre2-${arch}/lib/libpcre2-8.a" ]] || return 1
   done
 }
 
