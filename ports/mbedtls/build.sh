@@ -64,7 +64,7 @@ NAMES=(
   constant_time ctr_drbg ecdh ecdsa ecp ecp_curves entropy error gcm md
   memory_buffer_alloc oid pem pk pk_ecc pk_wrap pkparse pkwrite platform platform_util
   rsa rsa_alt_helpers sha1 sha256 sha512 ssl_ciphersuites ssl_client ssl_msg
-  ssl_tls ssl_tls12_client version x509 x509_crl x509_crt
+  ssl_tls ssl_tls12_client ssl_tls12_server version x509 x509_crl x509_crt
 )
 
 build_arch() {
