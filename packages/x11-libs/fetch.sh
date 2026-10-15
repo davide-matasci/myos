@@ -11,17 +11,30 @@ SRC="$ROOT/target/x11-libs-src"
 CACHE="$ROOT/target/crate-fetch-x11"
 mkdir -p "$SRC" "$CACHE"
 
-# fetch DIR NAME VERSION SHA256: DIR is proto/ or lib/ on the X.Org server.
+# fetch DIR NAME VERSION SHA256: DIR is proto/ or lib/ on the X.Org server;
+# the tarball from the first of it and the mirrors that answers.
 fetch() {
   local dir="$1" name="$2" version="$3" sha="$4"
-  local tarball="$CACHE/$name-$version.tar.gz"
+  local tarball="$CACHE/$name-$version.tar.xz"
   if [[ -f "$SRC/$name-$version/configure" ]]; then
     return
   fi
   if [[ ! -f "$tarball" ]]; then
     echo "==> fetch $name $version"
-    curl -L --fail --retry 5 --retry-delay 2 -o "$tarball.partial" \
-      "$X11_BASE_URL/$dir/$name-$version.tar.gz"
+    local url mirror urls=("$X11_BASE_URL/$dir/$name-$version.tar.xz")
+    for mirror in $X11_MIRROR_URLS; do
+      urls+=("$mirror/$name-$version.tar.xz")
+    done
+    for url in "${urls[@]}"; do
+      # The X.Org server resets CI's connections for hours at a time, which
+      # --retry alone does not get past; the next URL is a mirror.
+      if curl -L --fail --connect-timeout 20 --retry 3 --retry-delay 10 --retry-all-errors -o "$tarball.partial" "$url"; then
+        break
+      fi
+      echo "fetch $url failed; trying the next mirror" >&2
+      rm -f "$tarball.partial"
+    done
+    [[ -f "$tarball.partial" ]] || { echo "error: cannot fetch $name $version" >&2; exit 1; }
     mv "$tarball.partial" "$tarball"
   fi
   local got
@@ -32,7 +45,13 @@ fetch() {
     exit 1
   fi
   rm -rf "$SRC/$name-$version"
-  tar -xzf "$tarball" -C "$SRC"
+  if command -v xz >/dev/null 2>&1; then
+    tar -xJf "$tarball" -C "$SRC"
+  else
+    # The CI image has python3 but no xz.
+    python3 -c 'import lzma, sys; sys.stdout.buffer.write(lzma.decompress(sys.stdin.buffer.read()))' \
+      < "$tarball" | tar -xf - -C "$SRC"
+  fi
 }
 
 fetch proto xorgproto "$XORGPROTO_VERSION" "$XORGPROTO_SHA256"
