@@ -5,6 +5,9 @@
 # test. It prints a `[ OK ] <stage>` line per stage and `[ OK ] smoke` at
 # the end.
 heap_smoke() {
+	# The two runs share a boot: heap's find and git stages skip themselves
+	# when their scratch directories are a previous run's.
+	rm -rf /tmp/findnest /tmp/gittest
 	if [ "$1" = full ]; then
 		# Its uutils and git stages: the apps' programs at their paths.
 		capture $OUT/heap.log run-myos git,coreutils:/bin/custom/heap
