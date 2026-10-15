@@ -11,7 +11,9 @@
  * which leaves the bytes for the read); one bound to
  * 127.0.0.1 has that address (getsockname), accepts there and refuses a
  * connection to the host's address, and an address not the host's is not
- * bindable (EADDRNOTAVAIL). An unconnected UDP
+ * bindable (EADDRNOTAVAIL). A connection whose peer hung up keeps its
+ * conversation: the next connection accepted, on another listener, is
+ * not seen on the old socket. An unconnected UDP
  * socket passed by exec: the new program reads a bare datagram with
  * read(), then uses the fd as the socket it is (getsockname, sendto,
  * recvfrom). Prints [ OK ] loopback.
@@ -31,6 +33,8 @@
 #define TCP_PORT 7701
 #define CLOSED_PORT 7702
 #define BOUND_PORT 7703
+#define HUNG_PORT 7704
+#define NEXT_PORT 7705
 
 static int fail(const char *what) {
     printf("[ FAIL ] loopback %s (errno %d)\n", what, errno);
@@ -209,6 +213,61 @@ static int tcp(void) {
     return 0;
 }
 
+/* A connection whose peer hung up keeps its conversation until this end
+ * closes it: the next connection accepted, on another listener, must not
+ * show up on the old socket (netd used to free the index at the hangup and
+ * hand it to the next connection while this end still read and wrote it). */
+static int tcp_hungup(void) {
+    struct sockaddr_in any1 = addr_of(htonl(INADDR_ANY), HUNG_PORT);
+    struct sockaddr_in any2 = addr_of(htonl(INADDR_ANY), NEXT_PORT);
+    struct sockaddr_in to1 = addr_of(htonl(INADDR_LOOPBACK), HUNG_PORT);
+    struct sockaddr_in to2 = addr_of(htonl(INADDR_LOOPBACK), NEXT_PORT);
+    struct timeval tv = {1, 0};
+    char buf[8];
+    int l1 = socket(AF_INET, SOCK_STREAM, 0);
+    int l2 = socket(AF_INET, SOCK_STREAM, 0);
+    int c1 = socket(AF_INET, SOCK_STREAM, 0);
+    int c2 = socket(AF_INET, SOCK_STREAM, 0);
+    int s1;
+    int s2;
+    if (l1 < 0 || l2 < 0 || c1 < 0 || c2 < 0
+        || bind(l1, (struct sockaddr *)&any1, sizeof any1) < 0 || listen(l1, 4) < 0
+        || bind(l2, (struct sockaddr *)&any2, sizeof any2) < 0 || listen(l2, 4) < 0) {
+        return fail("tcp hungup listen");
+    }
+    if (connect(c1, (struct sockaddr *)&to1, sizeof to1) < 0 || (s1 = accept(l1, NULL, NULL)) < 0) {
+        return fail("tcp hungup accept");
+    }
+    /* The peer hangs up; netd closes the socket within a few ticks. */
+    close(c1);
+    select(0, NULL, NULL, NULL, &tv);
+    if (connect(c2, (struct sockaddr *)&to2, sizeof to2) < 0 || (s2 = accept(l2, NULL, NULL)) < 0) {
+        return fail("tcp hungup next accept");
+    }
+    if (write(c2, "new", 3) != 3 || write(s2, "ok", 2) != 2) {
+        return fail("tcp hungup next write");
+    }
+    /* The old socket: end of file, nothing of the new connection; what is
+     * written to it goes nowhere (netd dropped its socket at the hangup),
+     * not to the new connection's peer. */
+    if (read(s1, buf, sizeof buf) > 0) {
+        return fail("tcp hungup read");
+    }
+    (void)write(s1, "old", 3);
+    if (read(c2, buf, sizeof buf) != 2 || memcmp(buf, "ok", 2) != 0) {
+        return fail("tcp hungup next read");
+    }
+    if (read(s2, buf, sizeof buf) != 3 || memcmp(buf, "new", 3) != 0) {
+        return fail("tcp hungup next data");
+    }
+    close(s1);
+    close(c2);
+    close(s2);
+    close(l1);
+    close(l2);
+    return 0;
+}
+
 /* A listener on 127.0.0.1 only: not on `own`, the host's address. */
 static int tcp_bound(in_addr_t own) {
     struct sockaddr_in lo = addr_of(htonl(INADDR_LOOPBACK), BOUND_PORT);
@@ -312,7 +371,7 @@ int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "exec") == 0) {
         return exec_child(atoi(argv[2]), (unsigned short)atoi(argv[3]));
     }
-    if (interfaces(&own) || udp(own) || tcp() || tcp_bound(own) || exec_udp()) {
+    if (interfaces(&own) || udp(own) || tcp() || tcp_hungup() || tcp_bound(own) || exec_udp()) {
         return 1;
     }
     printf("[ OK ] loopback\n");

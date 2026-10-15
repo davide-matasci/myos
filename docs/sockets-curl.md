@@ -107,6 +107,15 @@ moves it into the smoltcp socket (32 KiB) in order as the TCP window allows
 and hands the room back with `REP_TXCREDIT`.
 A write with no room left is refused, and the library waits for POLLOUT.
 
+A conversation's index (`/net/tcp/N`) belongs to the process holding its
+files until that process closes them: when the peer hangs up first, netd
+closes the socket but keeps the index as a tombstone (status `hangup`,
+reads end, writes fail) until the close, and only then may a new
+connection, accepted or cloned, get it. Freeing it at the hangup let the
+next accepted connection land on an index an HTTP server's keepalive
+connection still held, which answered an SSH client's banner with an HTTP
+response.
+
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
 server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's
 own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname` reports
