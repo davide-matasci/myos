@@ -44,7 +44,12 @@ jobs:
           args=(--event "${{ github.event_name }}")
           if [[ "${{ inputs.full_boot }}" == true ]]; then args+=(--all); fi
           if [[ "${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}" == true ]]; then args+=(--full-label); fi
-          if [[ -n "${{ github.event.pull_request.base.sha }}" ]]; then args+=(--base "${{ github.event.pull_request.base.sha }}" --head HEAD); fi
+          if [[ -n "${{ github.event.pull_request.base.sha }}" ]]; then
+            args+=(--base "${{ github.event.pull_request.base.sha }}" --head HEAD)
+          elif [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.full_boot }}" != true ]]; then
+            # A dispatch on a branch without full_boot: what the branch changes.
+            args+=(--base origin/master --head HEAD)
+          fi
           python3 scripts/ci-select.py "${args[@]}"
 
   build:
