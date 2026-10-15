@@ -129,13 +129,32 @@ The `ctl` commands name the member by an fd of the writing process:
 | `del FD` | leaves |
 
 `EVENTS` is a comma list of `in`, `out`, `et` (edge-triggered: a readiness
-is reported once, and again only once something happened since, any wake
-in the system; Linux reports every new event and nothing else, so a busy
-myos reports a few more, which an edge-triggered reader takes as a read
-that finds nothing), `oneshot`
+is reported once, and again only once the member's object changed since,
+as Linux reports an fd again when its object woke its waiters), `oneshot`
 (reported once, then disabled until a `mod`), or `none` (errors and
 hangups only). `status` reads `members N` and one `FD EVENTS COOKIE` line
 per member, ` disabled` after a fired `oneshot`.
+
+Every object a set can hold keeps a **change count** for `et`
+(`entry_poll_changes` in `kernel/src/task/fd.rs`): a number that moves
+whenever its readiness may have changed. A pipe's moves with every write
+(new data is an edge, as on Linux, which wakes a polled pipe's readers on
+every write), a read that made room in a full pipe or an end closed
+(either end's: Linux wakes an epoll on a pipe from both of its wait
+queues too), a pty's with its bytes either way; an event counter's with
+its count,
+a timer's with an expiry or an arming, a signal fd's with its mask and
+with the reading process's pending signals, a set's with its `ctl` and
+its members' counts, the console's with its input; a module file's (a
+socket's `/net` data, the raw keyboard, a network device's `data`) comes
+from the module through its `poll` hook (`changes` in
+`ModuleVfsOps::poll` and `ModuleChrOps::poll`, `modules/abi`: netfs
+counts per conversation, bytes in or out, netd's replies, a hangup, the
+peer's state for a unix socket). The count is read before the readiness
+it goes with, so a change during a scan shows as a move at the next one
+and an edge is never missed. Before this (issue #456) an `et` member was
+reported again after any wake in the system, which a busy system did
+between two `epoll_wait` calls.
 
 A member is the open object, not the fd number: a `dup` of the fd or the
 same fd in a forked child refer to the same member, and closing the
@@ -185,7 +204,8 @@ timers through libgloss: the count, `EAGAIN`, `EINVAL`, the semaphore
 mode, a read woken by a forked child's write, `status`, a one-shot and a
 periodic timer, `gettime`, `disarm`, an absolute time.
 `user/c/epoll_smoke.c` (`t epoll`) runs the wait sets: pipes and an event
-counter as members, a timeout, a child's write ending a wait, `et`,
+counter as members, a timeout, a child's write ending a wait, `et` (once;
+again for new data; not for another pipe's traffic; on a unix socket too),
 `oneshot`, the errors, a member gone with its fd, a set in a set, the set
 shared with a fork. `user/c/sigfd_smoke.c` (`t sigfd`) runs the signal
 fds: a blocked signal read instead of delivered, one outside the mask

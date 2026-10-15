@@ -70,8 +70,9 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
     vfs::device_frame(node, offset)
 }
 
-/// `poll` readiness of a device or module file (see [`vfs::poll`]).
-pub fn poll(node: &Vnode) -> Option<u32> {
+/// `poll` readiness of a device or module file, with its change count (see
+/// [`vfs::poll`]).
+pub fn poll(node: &Vnode) -> Option<(u32, u64)> {
     vfs::poll(node)
 }
 

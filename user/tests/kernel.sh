@@ -1220,7 +1220,10 @@ lx_alpine() {
 # disk's data partition: in /tmp): the standard library, and the json and
 # sqlite3 C extension modules.
 lx_python() {
-	run-myos get-alpine -r /tmp/alpine python3 || return 1
+	# apk's lines go to the console (fd 3): the host ends a boot that is
+	# silent for 600 s, and this install took 9 minutes on x86 and longer
+	# on riscv64.
+	run-myos get-alpine -r /tmp/alpine python3 >&3 2>&1 || return 1
 	out=$(linux --root /tmp/alpine python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])')
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]
@@ -1304,6 +1307,14 @@ PY
 	echo "$out"
 	[ "$out" = "ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0" ]
 }
+# Empty an Alpine root: linux --root bound /dev, /proc and /net into it
+# (get-alpine runs apk under the layer), and the binds stay: rm must not go
+# through them.
+clean_root() {
+	for f in $1/* $1/.[!.]*; do
+		case ${f##*/} in dev | proc | net) ;; *) rm -rf "$f" ;; esac
+	done
+}
 # An Alpine X client on the native X server (the tinyx package, installed
 # as an app): xdpyinfo reaches Xfbdev's /tmp/.X11-unix/X0 over AF_UNIX and
 # describes the display. The server takes the screen (/dev/fb/ctl says
@@ -1314,7 +1325,7 @@ PY
 # Python root already fills.
 lx_x11() {
 	r=/tmp/alpine-x11
-	run-myos get-alpine -r $r xdpyinfo || { rm -rf $r; return 1; }
+	run-myos get-alpine -r $r xdpyinfo >&3 2>&1 || { clean_root $r; return 1; }
 	run-myos tinyx:Xfbdev :0 -br > $OUT/lx-x11-server.log 2>&1 &
 	xpid=$!
 	i=0
@@ -1345,11 +1356,7 @@ lx_x11() {
 	done
 	kill -9 $xpid 2>/dev/null
 	wait $xpid 2>/dev/null
-	# linux --root bound /dev, /proc and /net into the root, and the binds
-	# stay: rm must not go through them.
-	for f in $r/* $r/.[!.]*; do
-		case ${f##*/} in dev | proc | net) ;; *) rm -rf "$f" ;; esac
-	done
+	clean_root $r
 	[ $ok = 1 ] && return 0
 	echo "after $try tries:"
 	head -20 $OUT/lx-x11.out

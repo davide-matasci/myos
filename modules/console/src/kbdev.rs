@@ -62,10 +62,12 @@ unsafe extern "C" fn kbd_release(path: *const u8, len: usize) -> i32 {
     0
 }
 
-/// Readable while events are queued. A keyboard without an interrupt is
-/// polled: pollers re-check it.
-unsafe extern "C" fn kbd_poll(_: *const u8, _: usize) -> u32 {
+/// Readable while events are queued, the queue's changes as the change
+/// count. A keyboard without an interrupt is polled: pollers re-check it.
+unsafe extern "C" fn kbd_poll(_: *const u8, _: usize, changes: *mut u64) -> u32 {
     keyboard::pump();
+    // SAFETY: the kernel passes a live out-parameter.
+    unsafe { *changes = kbd::raw_changes() };
     let recheck = if keyboard::irq() { 0 } else { MYOS_POLL_RECHECK };
     recheck | if kbd::raw_pending() { MYOS_POLLIN } else { 0 }
 }

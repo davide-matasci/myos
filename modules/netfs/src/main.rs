@@ -114,6 +114,9 @@ struct RingBuf {
     head: u16,
     tail: u16,
     count: u16,
+    /// Requests in and out so far: the change count `/dev/net/data`'s
+    /// `poll` reports.
+    ops: u64,
 }
 
 impl RingBuf {
@@ -122,6 +125,7 @@ impl RingBuf {
         head: 0,
         tail: 0,
         count: 0,
+        ops: 0,
     };
 
     fn push(&mut self, src: &[u8]) -> bool {
@@ -133,6 +137,7 @@ impl RingBuf {
         self.slots[i].buf[..src.len()].copy_from_slice(src);
         self.head = self.head.wrapping_add(1);
         self.count += 1;
+        self.ops = self.ops.wrapping_add(1);
         true
     }
 
@@ -151,6 +156,7 @@ impl RingBuf {
         self.slots[i].len = 0;
         self.tail = self.tail.wrapping_add(1);
         self.count -= 1;
+        self.ops = self.ops.wrapping_add(1);
         Some(n)
     }
 }
@@ -226,6 +232,11 @@ impl Conv {
 struct State {
     req: RingBuf,
     convs: [Conv; MAX_CONV],
+    /// Per conversation, how many times it changed (netd's replies, a read,
+    /// a write, a hangup): the change count its `data`'s `poll` reports,
+    /// what an edge-triggered wait set member is reported against. Beside
+    /// the slot, so that its reuse does not reset it.
+    changes: [u64; MAX_CONV],
     ndb_len: u16,
     ndb: [u8; NDB_CAP],
     ifaddrs_len: u16,
@@ -236,6 +247,7 @@ struct State {
 static STATE: Lock<State> = Lock::new(State {
     req: RingBuf::EMPTY,
     convs: [Conv::EMPTY; MAX_CONV],
+    changes: [0; MAX_CONV],
     ndb_len: 0,
     ndb: [0; NDB_CAP],
     ifaddrs_len: 0,
@@ -557,6 +569,14 @@ fn conv_mut(convs: &mut [Conv; MAX_CONV], id: u16) -> Option<&mut Conv> {
     convs.get_mut(id as usize).filter(|c| c.used)
 }
 
+/// Conversation `id` changed: its readiness may have, and an edge-triggered
+/// poller of its `data` is told again ([`State::changes`]).
+fn changed(st: &mut State, id: u16) {
+    if let Some(c) = st.changes.get_mut(id as usize) {
+        *c = c.wrapping_add(1);
+    }
+}
+
 fn set_status(c: &mut Conv, s: &[u8]) {
     let n = s.len().min(STATUS_CAP);
     c.status[..n].copy_from_slice(&s[..n]);
@@ -660,6 +680,8 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         st.ifaddrs_len = n as u16;
         return;
     }
+    // Whatever netd says about a conversation may change its readiness.
+    changed(st, conv);
     // CLONE_OK must (re)install over an unused *or closing* slot.
     // Pump-accept reuses netd indices as soon as TCP hits Closed while netfs
     // may still hold used+closing for the prior occupant. Leaving that
@@ -1055,6 +1077,7 @@ unsafe extern "C" fn net_read(
             c.data_len = (have - used) as u16;
             c.data_off = if used < have { (off + used) as u16 } else { 0 };
             c.credit += used as u16;
+            changed(st, id);
             return_credit(st, id, p);
             n as i32
         }
@@ -1154,6 +1177,7 @@ fn teardown_conv(st: &mut State, id: u16) {
         return;
     }
     set_status(&mut st.convs[i], b"hangup");
+    changed(st, id);
     if !enqueue_req(&mut st.req, REQ_CLOSE, id, st.convs[i].proto, &[]) {
         // Ring full: leave used+hangup for second-pass reclaim; clone's
         // drop_conv still cleans netd when the id is reused.
@@ -1200,6 +1224,7 @@ unsafe extern "C" fn net_write(
                     }
                     set_status(c, b"hangup");
                 }
+                changed(st, id);
                 if !enqueue_req(&mut st.req, REQ_CLOSE, id, p, &[]) {
                     return -1;
                 }
@@ -1211,6 +1236,7 @@ unsafe extern "C" fn net_write(
                 // The library consumed that accept: no longer pollable.
                 if let Some(seq) = cmd.strip_prefix(b"taken ").and_then(parse_u32) {
                     st.convs[id as usize].taken = seq;
+                    changed(st, id);
                 }
             }
             src.len() as i32
@@ -1252,6 +1278,7 @@ unsafe extern "C" fn net_write(
             }
             if p == PROTO_TCP {
                 st.convs[id as usize].tx_room -= n as u16;
+                changed(st, id);
             }
             n as i32
         }
@@ -1262,19 +1289,21 @@ unsafe extern "C" fn net_write(
 /// `poll` readiness of a conversation's `data` (the socket's fd): bytes or a
 /// hangup to read, a connection up for writing, a connection to accept.
 /// netd's replies arrive as writes to `/dev/netd`, which wake the pollers.
-unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
+unsafe extern "C" fn net_poll(path: *const u8, path_len: usize, changes: *mut u64) -> u32 {
     let st = &mut *lock();
     let Some(node) = (unsafe { c_str(path, path_len) }).and_then(parse_path) else {
         return MYOS_POLLERR | MYOS_POLLHUP;
     };
     if node.proto() == Some(PROTO_UNIX) {
-        return unix::poll(node);
+        return unix::poll(node, changes);
     }
     let (p, id) = match node {
         Node::Data(p, id) => (p, id),
         Node::Hdata(id) => (PROTO_UDP, id),
         _ => return MYOS_POLLIN | MYOS_POLLOUT,
     };
+    // SAFETY: the kernel passes a live out-parameter.
+    unsafe { *changes = st.changes.get(id as usize).copied().unwrap_or(0) };
     if !conv_ok(&st.convs, id, p) {
         return MYOS_POLLERR | MYOS_POLLHUP;
     }
@@ -1306,8 +1335,11 @@ unsafe extern "C" fn net_poll(path: *const u8, path_len: usize) -> u32 {
 }
 
 /// `poll` bits of `/dev/netd/data`: readable while a request waits for netd.
-unsafe extern "C" fn chr_poll() -> u32 {
-    if lock().req.count != 0 { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
+unsafe extern "C" fn chr_poll(changes: *mut u64) -> u32 {
+    let st = lock();
+    // SAFETY: the kernel passes a live out-parameter.
+    unsafe { *changes = st.req.ops };
+    if st.req.count != 0 { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
 }
 
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {

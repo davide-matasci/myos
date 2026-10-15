@@ -61,7 +61,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 43: the console has text screens ([`CONSOLE_SCREENS`], `docs/tty.md`):
 /// [`ModuleConsoleOps::write_kind`] names the screen, `show` switches, and
 /// `keyboard_poll` reports Alt+digit ([`CONSOLE_KEY_SCREEN`]).
-pub const ABI_VERSION: u32 = 43;
+pub const ABI_VERSION: u32 = 44;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -200,8 +200,14 @@ pub struct ModuleVfsOps {
     /// the caller asked for; without it a file is always readable and
     /// writable. Must not block. When readiness changes other than through a
     /// write or the last close of one of its files (both wake pollers), the
-    /// backend calls `KernelApi::wake_any`.
-    pub poll: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> u32>,
+    /// backend calls `KernelApi::wake_any`. Into `changes` goes the file's
+    /// change count (ABI 44): a number that moves, by any amount, whenever
+    /// the file's readiness may have changed (bytes in or out, its peer's
+    /// state, a hangup), read before the bits or under the same lock. An
+    /// edge-triggered wait set member on the file (`EPOLLET`,
+    /// `docs/events.md`) is reported again only once it moved, so a backend
+    /// that left it still would starve such a reader.
+    pub poll: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, changes: *mut u64) -> u32>,
     // --- ABI 20: exclusive files ---
     /// Optional: an `open(2)` of `path` (not a `dup` or a `fork`): 0 lets it
     /// through, negative refuses it (a file one program holds at a time).
@@ -573,11 +579,13 @@ pub struct ModuleChrOps {
     pub read: unsafe extern "C" fn(buf: *mut u8, buf_len: usize) -> i32,
     pub write: unsafe extern "C" fn(buf: *const u8, buf_len: usize) -> i32,
     /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`], ...)
-    /// of `data` now. `None`: always readable and writable. The module wakes
-    /// the pollers itself (`KernelApi::wake_any`) when readiness changes
-    /// other than through its own `read`/`write`: an interrupt, a request
-    /// queued from another module.
-    pub poll: Option<unsafe extern "C" fn() -> u32>,
+    /// of `data` now, and into `changes` its change count (ABI 44), as
+    /// [`ModuleVfsOps::poll`]'s: moved by every frame or request in or out.
+    /// `None`: always readable and writable. The module wakes the pollers
+    /// itself (`KernelApi::wake_any`) when readiness changes other than
+    /// through its own `read`/`write`: an interrupt, a request queued from
+    /// another module.
+    pub poll: Option<unsafe extern "C" fn(changes: *mut u64) -> u32>,
     /// Optional: the text of `ctl` into `buf` (cut at `cap`): its full
     /// length, or negative. `None` (with `ctl_write`): no `ctl` file.
     pub ctl_read: Option<unsafe extern "C" fn(buf: *mut u8, cap: usize) -> i32>,

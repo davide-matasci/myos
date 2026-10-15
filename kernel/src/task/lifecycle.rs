@@ -301,6 +301,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         // POSIX: the child inherits dispositions and the blocked mask, but
         // starts with no pending signals.
         sig_pending: 0,
+        sig_changes: 0,
         sig_blocked,
         // Sequential / init→getty (no ctty): inherit. Ctty parent with an
         // active sibling (make -j / pipelines): fresh AP RR home. Exec keeps
@@ -533,6 +534,7 @@ fn spawn_inner(
         term_sig: 0,
         exited: false,
         sig_pending: 0,
+        sig_changes: 0,
         sig_blocked: 0,
         affinity: if aspace != 0 { user_affinity() } else { None },
         wait_key: 0,

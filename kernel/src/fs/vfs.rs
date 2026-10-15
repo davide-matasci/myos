@@ -114,8 +114,11 @@ pub struct MountOps {
     /// Read symlink target into `buf`; returns bytes written.
     pub readlink: fn(&str, &mut [u8]) -> Option<usize>,
     /// Optional `poll` readiness of a path relative to this mount: the bits
-    /// that hold now, or `None` for a file that is always ready.
-    pub poll: Option<fn(&str) -> Option<u32>>,
+    /// that hold now and the file's change count (a number that moves
+    /// whenever its readiness may have changed, what an edge-triggered
+    /// wait set member is reported against: `docs/events.md`), or `None`
+    /// for a file that is always ready.
+    pub poll: Option<fn(&str) -> Option<(u32, u64)>>,
     /// Optional: set a path's access and modification times (seconds since
     /// the epoch; `None` keeps one). `None` for a mount that keeps no times.
     pub set_times: Option<fn(&str, Option<u64>, Option<u64>) -> bool>,
@@ -803,10 +806,10 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
     (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(phys)
 }
 
-/// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node`, from
-/// its backend's `poll` hook; `None` when there is none (a file that is
-/// always ready).
-pub fn poll(node: &Vnode) -> Option<u32> {
+/// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node` and
+/// its change count, from its backend's `poll` hook; `None` when there is
+/// none (a file that is always ready).
+pub fn poll(node: &Vnode) -> Option<(u32, u64)> {
     let _tree = tree_read();
     let (idx, rel) = node::location(node)?;
     let backend = MOUNTS.lock().get(idx)?.backend;
@@ -815,7 +818,9 @@ pub fn poll(node: &Vnode) -> Option<u32> {
         MountBackend::Kernel(ops) => (ops.poll?)(rel),
         MountBackend::Module(ops) => {
             let poll = ops.poll?;
-            Some(unsafe { poll(rel.as_ptr(), rel.len()) })
+            let mut changes = 0u64;
+            let bits = unsafe { poll(rel.as_ptr(), rel.len(), &mut changes) };
+            Some((bits, changes))
         }
     }
 }

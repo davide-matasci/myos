@@ -151,6 +151,7 @@ fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usiz
         return 0;
     }
     tasks[id].sig_pending |= bit;
+    tasks[id].sig_changes += 1;
     // A signal that acts ends any blocking wait (EINTR / termination).
     if !blocked {
         return wake_task_locked(tasks, id);
@@ -218,6 +219,7 @@ pub fn signal_next(id: usize) -> SigNext {
             };
             let bit = 1u32 << sig;
             tasks[id].sig_pending &= !bit;
+            tasks[id].sig_changes += 1;
             match disposition(tasks, tabs, id, sig) {
                 Disposition::Ignore => continue,
                 Disposition::Terminate => return SigNext::Terminate(sig),
@@ -289,6 +291,7 @@ pub fn signal_set_action(
         let discard = |tasks: &mut TaskTable| {
             for t in tasks.iter_mut().filter(|t| t.tgid == pid && t.state != State::Unused) {
                 t.sig_pending &= !bit;
+                t.sig_changes += 1;
             }
         };
         match handler {
@@ -343,6 +346,15 @@ pub fn signal_pending(id: usize) -> u32 {
     with_sig(|tasks, _| tasks[id].sig_pending)
 }
 
+/// How many times `id`'s pending signals changed so far (one arrived, one
+/// was delivered or taken).
+pub fn signal_changes(id: usize) -> u64 {
+    if id >= MAX_TASKS {
+        return 0;
+    }
+    with_sig(|tasks, _| tasks[id].sig_changes)
+}
+
 /// Consume the lowest pending signal of `id` that is in `set` (`sigwait`).
 pub fn signal_take_from(id: usize, set: u32) -> Option<u32> {
     if id >= MAX_TASKS {
@@ -355,6 +367,7 @@ pub fn signal_take_from(id: usize, set: u32) -> Option<u32> {
         }
         let sig = hit.trailing_zeros();
         tasks[id].sig_pending &= !(1 << sig);
+        tasks[id].sig_changes += 1;
         Some(sig)
     })
 }

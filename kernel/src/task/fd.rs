@@ -461,12 +461,12 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
             Some(if !pipe::write_would_block(id) { 2 } else { 0 })
         }
         FdEntry::Event(id) => {
-            let (readable, writable) = crate::evfd::event_poll(id);
+            let (readable, writable, _) = crate::evfd::event_poll(id);
             Some(u32::from(readable) | u32::from(writable) << 1)
         }
-        FdEntry::Timer(id) => Some(u32::from(crate::evfd::timer_poll(id))),
+        FdEntry::Timer(id) => Some(u32::from(crate::evfd::timer_poll(id).0)),
         FdEntry::Wait(id) => Some(u32::from(crate::evfd::wait_ready(id).0)),
-        FdEntry::Sig(id) => Some(u32::from(crate::evfd::sig_poll(id))),
+        FdEntry::Sig(id) => Some(u32::from(crate::evfd::sig_poll(id).0)),
         _ => None,
     }
 }
@@ -490,32 +490,49 @@ pub fn fd_poll(fd: usize) -> (u16, bool) {
 
 /// [`fd_poll`] of what an fd refers to (a wait set's member, `crate::evfd`).
 pub fn entry_poll(entry: FdEntry) -> (u16, bool) {
+    let (bits, tty, _) = entry_poll_changes(entry);
+    (bits, tty)
+}
+
+/// [`entry_poll`] with the object's change count: a number that moves
+/// whenever the object's readiness may have changed (a write, a read, a
+/// close, its peer's; a module file's from its `poll` hook), what an `et`
+/// wait set member is reported against (`crate::evfd::wait_scan`). The
+/// count is read before the readiness, so a change in between shows as a
+/// move at the next look. An object that never changes (a plain file)
+/// reports `u64::MAX`.
+pub fn entry_poll_changes(entry: FdEntry) -> (u16, bool, u64) {
     let tty = || {
+        let changes = crate::input::changes();
         let readable = if crate::input::readable() { POLLIN } else { 0 };
-        (readable | POLLOUT, true)
+        (readable | POLLOUT, true, changes)
     };
     match entry {
-        FdEntry::Empty => (POLLNVAL, false),
+        FdEntry::Empty => (POLLNVAL, false, u64::MAX),
         FdEntry::Stdin | FdEntry::Console => tty(),
         FdEntry::File(_) if fd_is_console_tty(entry) => tty(),
         FdEntry::PipeRead(id) => {
+            let changes = pipe::changes(id);
             let mut bits = if pipe::read_would_block(id) { 0 } else { POLLIN };
             if pipe::read_closed(id) {
                 // Writers gone: end of file is readable.
                 bits |= POLLIN | POLLHUP;
             }
-            (bits, false)
+            (bits, false, changes)
         }
         FdEntry::PipeWrite(id) => {
-            if pipe::readers_gone(id) {
-                (POLLERR, false)
+            let changes = pipe::changes(id);
+            let bits = if pipe::readers_gone(id) {
+                POLLERR
             } else if pipe::write_would_block(id) {
-                (0, false)
+                0
             } else {
-                (POLLOUT, false)
-            }
+                POLLOUT
+            };
+            (bits, false, changes)
         }
         FdEntry::PtyMaster(id) | FdEntry::PtySlave(id) => {
+            let changes = crate::pty::changes(id);
             let master = matches!(entry, FdEntry::PtyMaster(_));
             let (readable, writable, hup) = crate::pty::poll_state(id, master);
             let mut bits = 0;
@@ -529,10 +546,10 @@ pub fn entry_poll(entry: FdEntry) -> (u16, bool) {
                 // The peer is gone: reads report it (EIO / end of file).
                 bits |= POLLIN | POLLHUP;
             }
-            (bits, false)
+            (bits, false, changes)
         }
         FdEntry::Event(id) => {
-            let (readable, writable) = crate::evfd::event_poll(id);
+            let (readable, writable, changes) = crate::evfd::event_poll(id);
             let mut bits = 0;
             if readable {
                 bits |= POLLIN;
@@ -540,23 +557,30 @@ pub fn entry_poll(entry: FdEntry) -> (u16, bool) {
             if writable {
                 bits |= POLLOUT;
             }
-            (bits, false)
+            (bits, false, changes)
         }
-        FdEntry::Timer(id) => (if crate::evfd::timer_poll(id) { POLLIN } else { 0 }, false),
+        FdEntry::Timer(id) => {
+            let (ready, changes) = crate::evfd::timer_poll(id);
+            (if ready { POLLIN } else { 0 }, false, changes)
+        }
         FdEntry::Wait(id) => {
-            let (ready, tty) = crate::evfd::wait_ready(id);
-            (if ready { POLLIN } else { 0 }, tty)
+            let (ready, tty, changes) = crate::evfd::wait_ready(id);
+            (if ready { POLLIN } else { 0 }, tty, changes)
         }
-        FdEntry::Sig(id) => (if crate::evfd::sig_poll(id) { POLLIN } else { 0 }, false),
+        FdEntry::Sig(id) => {
+            let (ready, changes) = crate::evfd::sig_poll(id);
+            (if ready { POLLIN } else { 0 }, false, changes)
+        }
         FdEntry::File(id) => {
-            // A module file (a socket's /net data) knows its readiness; any
-            // other file is always readable and writable.
-            let bits = open_file_node(id)
+            // A module file (a socket's /net data) knows its readiness and
+            // counts its changes; any other file is always readable and
+            // writable, and never changes.
+            let (bits, changes) = open_file_node(id)
                 .and_then(|node| crate::fs::poll(&node))
-                .unwrap_or((POLLIN | POLLOUT) as u32);
+                .unwrap_or(((POLLIN | POLLOUT) as u32, u64::MAX));
             // A polled device (the raw keyboard) is re-checked like the tty.
             let recheck = bits & myos_abi::MYOS_POLL_RECHECK != 0;
-            (bits as u16, recheck)
+            (bits as u16, recheck, changes)
         }
     }
 }
@@ -771,7 +795,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                     if crate::signal::interrupt_wait() {
                         return 0;
                     }
-                    let polled = crate::fs::poll(&node).is_some_and(|b| b & myos_abi::MYOS_POLL_RECHECK != 0);
+                    let polled = crate::fs::poll(&node).is_some_and(|(b, _)| b & myos_abi::MYOS_POLL_RECHECK != 0);
                     block_until(WAIT_ANY, seq, if polled { deadline_ms(10) } else { 0 });
                     continue;
                 };
@@ -891,7 +915,7 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                     return usize::MAX;
                 }
                 let seq = wait_seq();
-                let (records, tty) = crate::evfd::wait_scan(id, len.min(FILE_READ_TMP) / 16, true);
+                let (records, tty, _) = crate::evfd::wait_scan(id, len.min(FILE_READ_TMP) / 16, true);
                 if records.is_empty() {
                     // As `poll`: a signal that runs a handler ends the
                     // wait, never a restart.

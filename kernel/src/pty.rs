@@ -25,7 +25,7 @@
 //! UART instead of a ring a master reads ([`Sink`]); they hold the first
 //! [`TERMS`] ids, so pair `N` of `/dev/pts` is id `TERMS + N`.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use alloc::boxed::Box;
@@ -75,6 +75,10 @@ pub struct Pty {
     /// `ctty`), its leader's pid. `usize::MAX` when unset; a claim lasts
     /// while the leader lives ([`crate::task::session_alive`]).
     session: AtomicUsize,
+    /// How many times the pair changed (bytes either way, an end closed):
+    /// what an `et` wait set member on either end is reported against
+    /// (`crate::evfd`).
+    changes: AtomicU64,
 }
 
 struct OutRing {
@@ -162,6 +166,7 @@ fn new_pty(sink: Sink) -> Pty {
         master_refs: AtomicUsize::new(1),
         slave_refs: AtomicUsize::new(0),
         session: AtomicUsize::new(usize::MAX),
+        changes: AtomicU64::new(0),
     }
 }
 
@@ -200,6 +205,7 @@ pub fn alloc() -> Option<usize> {
         master_refs: AtomicUsize::new(1),
         slave_refs: AtomicUsize::new(0),
         session: AtomicUsize::new(usize::MAX),
+        changes: AtomicU64::new(0),
     })?;
     let mut ptys = PTYS.lock();
     if let Some(id) = ptys.iter().position(Option::is_none) {
@@ -431,8 +437,16 @@ pub fn master_write(id: usize, data: &[u8]) -> usize {
 
 /// Wake tasks blocked on this pair (either end) and any poller.
 fn notify(id: usize) {
+    if let Some(p) = pty_at(id) {
+        p.changes.fetch_add(1, Ordering::SeqCst);
+    }
     crate::task::wake(crate::task::key_pty(id));
     crate::task::wake_any();
+}
+
+/// How many times pair `id` changed so far ([`notify`]).
+pub fn changes(id: usize) -> u64 {
+    pty_at(id).map_or(0, |p| p.changes.load(Ordering::SeqCst))
 }
 
 /// Read from the slave: committed discipline output. Blocks until at least

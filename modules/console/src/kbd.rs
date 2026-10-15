@@ -198,12 +198,16 @@ struct RawQueue {
     ev: [RawEvent; 128],
     head: usize,
     len: usize,
+    /// How many times the queue changed (an event in, events out, a grab):
+    /// the change count `/dev/console/kbd`'s `poll` reports.
+    changes: u64,
 }
 
 static RAW: Lock<RawQueue> = Lock::new(RawQueue {
     ev: [RawEvent { code: 0, pressed: false, ch: 0 }; 128],
     head: 0,
     len: 0,
+    changes: 0,
 });
 
 /// Take the keyboard for `/dev/console/kbd`; false if someone holds it.
@@ -213,6 +217,7 @@ pub fn grab() -> bool {
         let mut q = RAW.lock();
         q.head = 0;
         q.len = 0;
+        q.changes = q.changes.wrapping_add(1);
     }
     taken
 }
@@ -257,12 +262,18 @@ pub fn raw_key(code: u16, pressed: bool) {
         let i = (q.head + q.len) % q.ev.len();
         q.ev[i] = RawEvent { code, pressed, ch };
         q.len += 1;
+        q.changes = q.changes.wrapping_add(1);
     }
 }
 
 /// Events are waiting for `/dev/console/kbd`.
 pub fn raw_pending() -> bool {
     RAW.lock().len > 0
+}
+
+/// How many times the queue changed so far.
+pub fn raw_changes() -> u64 {
+    RAW.lock().changes
 }
 
 /// As many whole event lines as fit in `out` (`d 30 a`, `u 30`); bytes
@@ -280,6 +291,9 @@ pub fn raw_read(out: &mut [u8]) -> usize {
         n += len;
         q.head = (q.head + 1) % q.ev.len();
         q.len -= 1;
+    }
+    if n != 0 {
+        q.changes = q.changes.wrapping_add(1);
     }
     n
 }

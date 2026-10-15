@@ -12,7 +12,7 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use myos_abi::{ABI_VERSION, ApiCell, KernelApi, Lock, MYOS_POLLIN, MYOS_POLLOUT, ModuleChrOps, status_ok};
 use myos_virtio::virtio_drivers::PAGE_SIZE;
@@ -65,6 +65,9 @@ static NETS: [Lock<Option<Net>>; MAX_NET] = [const { Lock::new(None) }; MAX_NET]
 /// Per slot, how the interrupt handler acknowledges the device
 /// ([`IrqAck::to_usize`]); 0 before the device is up.
 static ACK: [AtomicUsize; MAX_NET] = [const { AtomicUsize::new(0) }; MAX_NET];
+/// Per slot, how many times `data`'s readiness may have changed (an
+/// interrupt, a frame read): the change count its `poll` reports.
+static CHANGES: [AtomicU64; MAX_NET] = [const { AtomicU64::new(0) }; MAX_NET];
 static API: ApiCell = ApiCell::new();
 
 macro_rules! chr_ops {
@@ -75,8 +78,8 @@ macro_rules! chr_ops {
         unsafe extern "C" fn $write(buf: *const u8, buf_len: usize) -> i32 {
             net_write_n($n, buf, buf_len)
         }
-        unsafe extern "C" fn $poll() -> u32 {
-            net_poll_n($n)
+        unsafe extern "C" fn $poll(changes: *mut u64) -> u32 {
+            net_poll_n($n, changes)
         }
         unsafe extern "C" fn $ctl(buf: *mut u8, cap: usize) -> i32 {
             net_ctl_n($n, buf, cap)
@@ -161,14 +164,19 @@ fn with_net<R>(idx: usize, f: impl FnOnce(&mut Net) -> R) -> Option<R> {
 unsafe extern "C" fn net_irq(ctx: *mut core::ffi::c_void) {
     let idx = ctx as usize;
     IrqAck::from_usize(ACK.get(idx).map_or(0, |a| a.load(Ordering::Acquire))).ack();
+    if let Some(c) = CHANGES.get(idx) {
+        c.fetch_add(1, Ordering::SeqCst);
+    }
     if let Some(api) = API.try_get() {
         api.wake_any();
     }
 }
 
 /// `poll` bits of `data`: readable when the RX ring holds a frame, always
-/// writable.
-fn net_poll_n(idx: usize) -> u32 {
+/// writable; the slot's change count, read first.
+fn net_poll_n(idx: usize, changes: *mut u64) -> u32 {
+    // SAFETY: the kernel passes a live out-parameter.
+    unsafe { *changes = CHANGES.get(idx).map_or(0, |c| c.load(Ordering::SeqCst)) };
     let readable = with_net(idx, |net| net.dev.poll_receive().is_some()).unwrap_or(false);
     if readable { MYOS_POLLIN | MYOS_POLLOUT } else { MYOS_POLLOUT }
 }
@@ -212,7 +220,13 @@ fn net_read_n(idx: usize, buf: *mut u8, buf_len: usize) -> i32 {
     if buf.is_null() {
         return -1;
     }
-    with_net(idx, |net| read_frame(net, buf, buf_len)).unwrap_or(-1)
+    let n = with_net(idx, |net| read_frame(net, buf, buf_len)).unwrap_or(-1);
+    if n > 0 {
+        if let Some(c) = CHANGES.get(idx) {
+            c.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    n
 }
 
 /// The next received frame into `buf`; 0 when none waits.

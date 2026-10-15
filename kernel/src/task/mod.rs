@@ -143,6 +143,9 @@ struct Task {
     exited: bool,
     /// Pending signals bitmask (bit N = signal N, N in 1..31). See `signal`.
     sig_pending: u32,
+    /// How many times `sig_pending` changed: what an `et` wait set member
+    /// on a signal fd is reported against (`crate::evfd`).
+    sig_changes: u64,
     /// Blocked signal mask (SYS_SIGPROCMASK, `SIG_BLOCK`/`SIG_SETMASK`).
     /// Blocked does not mean discarded: still accumulates in `sig_pending`,
     /// delivered when unblocked.
@@ -195,6 +198,7 @@ const EMPTY: Task = Task {
     term_sig: 0,
     exited: false,
     sig_pending: 0,
+    sig_changes: 0,
     sig_blocked: 0,
     affinity: None,
     wait_key: 0,

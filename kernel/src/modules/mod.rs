@@ -1092,7 +1092,7 @@ unsafe extern "C" fn api_irq_enable(
 }
 
 unsafe extern "C" fn api_console_input() {
-    crate::task::wake(crate::task::KEY_CONSOLE);
+    crate::input::notify();
 }
 
 unsafe extern "C" fn api_fd_lockctl(fd: usize, cmd: usize, lock: *mut myos_abi::MyosLockRange) -> usize {
