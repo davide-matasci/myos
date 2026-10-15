@@ -13,6 +13,13 @@
  * four), each with its own two-digit-capable name and inode numbers and a
  * line through it, and a closed pair's index used again.
  *
+ * `pty_smoke 6`: a session's claim on a pair ends with its leader. A child
+ * makes a session, claims the slave (TIOCSCTTY) and exits; the next session
+ * leader to get its pid (pids are task slots, reused at once) does not hold
+ * the pair, and a third session's claim goes through: /proc/self/tty names
+ * the pair (issue #448: a getty respawned on ttyS0 while a daemon had taken
+ * the dead one's pid logged in without a controlling terminal).
+ *
  * `pty_smoke 5`: writers faster than their reader. Children each write
  * eight times what a pair's output ring holds to their slave while the
  * parent drains the masters one after the other: a writer waits for room,
@@ -25,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 extern void *memmem(const void *, size_t, const void *, size_t);
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -162,8 +170,93 @@ static int flood(void) {
     return 0;
 }
 
+/* A session leader that claims the slave `s` and exits with `code`. */
+static pid_t claimant(int s, int code) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        if (ioctl(s, TIOCSCTTY, 0) != 0) {
+            _exit(2);
+        }
+        char tty[64];
+        ssize_t n = readlink("/proc/self/tty", tty, sizeof tty - 1);
+        _exit(n > 0 && strncmp(tty, "/dev/pts/", 9) == 0 ? code : 3);
+    }
+    return pid;
+}
+
+static int reclaim(void) {
+    int m = -1, s = -1;
+    if (openpty(&m, &s, NULL, NULL, NULL) != 0) {
+        printf("[ FAIL ] s6 openpty (%s)\n", strerror(errno));
+        return 1;
+    }
+    int status = 0;
+    pid_t first = claimant(s, 0);
+    if (first < 0 || waitpid(first, &status, 0) != first || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("[ FAIL ] s6 first claim (status %d)\n", status);
+        return 1;
+    }
+    /* Session leaders kept alive until one has the first claimant's pid
+     * (the first fork after the reap usually does); each says when it leads
+     * its session. */
+    pid_t kept[16];
+    int nkept = 0, reused = 0;
+    int hold[2]; /* the leaders wait on its read end until it is closed */
+    if (pipe(hold) != 0) {
+        printf("[ FAIL ] s6 pipe (%s)\n", strerror(errno));
+        return 1;
+    }
+    while (nkept < 16 && !reused) {
+        int fds[2];
+        if (pipe(fds) != 0) {
+            break;
+        }
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(fds[0]);
+            close(hold[1]);
+            setsid();
+            if (write(fds[1], "s", 1) != 1) {
+                _exit(1);
+            }
+            char c;
+            (void)read(hold[0], &c, 1);
+            _exit(0);
+        }
+        close(fds[1]);
+        char c;
+        if (pid < 0 || read(fds[0], &c, 1) != 1) {
+            close(fds[0]);
+            break;
+        }
+        close(fds[0]);
+        kept[nkept++] = pid;
+        reused = pid == first;
+    }
+    if (!reused) {
+        printf("[ INFO ] s6 pid %d not reused by %d leaders\n", (int)first, nkept);
+    }
+    pid_t third = claimant(s, 0);
+    int ok = third > 0 && waitpid(third, &status, 0) == third && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (!ok) {
+        printf("[ FAIL ] s6 claim after the leader's pid was reused (status %d)\n", status);
+    }
+    close(hold[1]);
+    close(hold[0]);
+    for (int i = 0; i < nkept; i++) {
+        waitpid(kept[i], NULL, 0);
+    }
+    close(s);
+    close(m);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     int stage = (argc > 1) ? atoi(argv[1]) : 0;
+    if (stage == 6) {
+        return reclaim();
+    }
     if (stage == 5) {
         return flood();
     }

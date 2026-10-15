@@ -360,7 +360,12 @@ static int cond_wait(pthread_cond_t *c, pthread_mutex_t *m, clockid_t clock, con
     if (deadline && !(ns = ns_until(clock, deadline))) {
         rc = ETIMEDOUT;
     } else {
-        rc = futex_wait(&c->__seq, seq, ns);
+        /* The kernel counts the wait on its monotonic clock; the deadline is
+         * on `clock`, which it is checked against before the wait ends as
+         * a timeout (POSIX: not before the absolute time has passed on that
+         * clock, whatever moved it meanwhile; issue #435). */
+        while ((rc = futex_wait(&c->__seq, seq, ns)) == ETIMEDOUT && deadline && (ns = ns_until(clock, deadline)) != 0) {
+        }
     }
     lock_word(&m->__state, CLOCK_REALTIME, NULL);
     m->__owner = tid;

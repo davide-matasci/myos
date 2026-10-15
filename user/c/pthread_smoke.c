@@ -146,12 +146,32 @@ static int alone(void) {
         return fail("timedwait", rc);
     }
     long waited = now_ms() - start;
-    if (waited < 190) {
+    if (waited < 200) {
         printf("[ FAIL ] pthread timedwait returned after %ld ms of 200\n", waited);
         return 1;
     }
     if ((rc = pthread_mutex_trylock(&m)) != EBUSY) {
         return fail("mutex not retaken after timedwait", rc);
+    }
+    /* Never before the deadline by its own clock, short waits included
+     * (issue #435: one came back 11 ms early). */
+    for (int i = 0; i < 25; i++) {
+        gettimeofday(&tv, NULL);
+        start = now_ms();
+        deadline.tv_sec = tv.tv_sec;
+        deadline.tv_nsec = tv.tv_usec * 1000L + 20000000L;
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+        if ((rc = pthread_cond_timedwait(&c, &m, &deadline)) != ETIMEDOUT) {
+            return fail("short timedwait", rc);
+        }
+        waited = now_ms() - start;
+        if (waited < 20) {
+            printf("[ FAIL ] pthread timedwait %d returned after %ld ms of 20\n", i, waited);
+            return 1;
+        }
     }
     pthread_mutex_unlock(&m);
 

@@ -302,6 +302,20 @@ pub fn claim_session(id: usize) {
         .compare_exchange(held, me, Ordering::SeqCst, Ordering::SeqCst);
 }
 
+/// Session `sid`'s leader is gone: the pairs it claimed are nobody's. Its
+/// pid may be reused by another session leader at once (a getty respawned
+/// into the slot of a daemon that died, or a daemon into a getty's), which
+/// must not find itself the holder, nor keep the next claimant out
+/// (issue #448: a login on `ttyS0` without a controlling terminal).
+pub fn session_ended(sid: usize) {
+    let ptys = PTYS.lock();
+    for p in ptys.iter().flatten() {
+        let _ = p
+            .session
+            .compare_exchange(sid, usize::MAX, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
 /// The pty that `pid`'s session claimed, if any: its controlling terminal,
 /// what `/dev/tty` and `/proc/self/tty` mean to it.
 pub fn for_session(pid: usize) -> Option<usize> {
