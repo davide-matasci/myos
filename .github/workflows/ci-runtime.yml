@@ -184,6 +184,23 @@ jobs:
           # Fail hard if incomplete; never rebuild here.
           ./scripts/ci-assert-boot-artifacts.sh
 
+      # The Alpine disk the `alpine-disk` tests mount (rustc, Python, an X
+      # client: linux-compat/alpine-disks.sh), made once per key (the
+      # scripts that make it) and cached; a miss makes it here, and the
+      # cache takes it after the boot.
+      - name: Alpine disk cache key
+        if: matrix.alpine == 'true'
+        id: alpine
+        run: echo "key=alpine-disk-${{ matrix.arch }}-$(./linux-compat/alpine-disks.sh --hash)" >> "$GITHUB_OUTPUT"
+      - name: Alpine disk
+        if: matrix.alpine == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/alpine-${{ matrix.arch }}.img
+            target/.myos-alpine-disks-${{ matrix.arch }}-version
+          key: ${{ steps.alpine.outputs.key }}
+
       - name: Boot and test in QEMU
         continue-on-error: ${{ !matrix.required }}
         env:

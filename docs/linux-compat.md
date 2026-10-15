@@ -124,10 +124,12 @@ linux --root /mnt/alpine rustc --version
 Under emulation that download takes a couple of hours (the mirror drops
 long transfers; a package whose transfer apk loses is installed by the
 next run). The same root made on the host is
-quicker: `linux-compat/alpine-disk.sh ARCH OUT.img PACKAGE...` builds
-get-alpine for the host (`-DALPINE_ARCH`), unpacks the packages for ARCH
-into a directory (`-n`: without their install scripts, and apk's database
-in that root is empty) and makes an ext2 image of it, to attach as a disk.
+quicker: `linux-compat/alpine-disk.sh ARCH OUT.img [NAME=]PACKAGE[,...]...`
+builds get-alpine for the host (`-DALPINE_ARCH`), unpacks the packages
+for ARCH into a directory (`-n`: without their install scripts, and apk's
+database in that root is empty; `NAME=` for a root `/NAME`, several of
+them in one image) and makes an ext2 image of it, as big as its content,
+to attach as a disk.
 
 ## Turning it on
 
@@ -680,9 +682,9 @@ reference. The full list then runs
 `run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the
 default root on the test disk's data partition, bootstrapped by get-alpine
 and installed by apk under the layer, recorded in `/data/alpine/lib/apk/db`), which counts the binds of `/dev`, `/proc`
-and `/net` it sees in the root and expects `ALPINE-JQ 6`, then installs
-Python into `/tmp/alpine` (python3 and its 19 dependencies, ~45 MB, more
-than the 64 MiB data partition holds) and runs
+and `/net` it sees in the root and expects `ALPINE-JQ 6`, then, from the
+Python root of the Alpine disk the launcher prepares (below; python3 and
+its 19 dependencies, ~45 MB, mounted at `/tmp/alpine/python`), runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
 and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
@@ -692,13 +694,16 @@ the end-to-end test of the event fds, `docs/events.md`), whose selector is
 and whose subprocess is watched from a thread: an echo over an `AF_UNIX`
 socket, a timer, a timeout, `SIGUSR1` handled by the loop and a child's
 output,
-expecting `ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0`. Last, it
-mounts the disk the launcher made on the
-host with `linux-compat/alpine-disk.sh ARCH target/alpine-rust-ARCH.img
-rust` (kept in `target/`: remove it for newer packages) and attached as
-`/dev/nvme2n1/data` (writes go to a QEMU snapshot), and runs `rustc --version`
-from it, expecting `rustc 1.`. They need the Alpine mirror and
-`example.com` to be reachable.
+expecting `ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0`; an X
+client (`xdpyinfo`, the disk's `/x11` root) on the native X server; and
+`rustc --version` from its `/rust` root, expecting `rustc 1.`. The disk
+is `target/alpine-ARCH.img`, made on the host by
+`linux-compat/alpine-disks.sh ARCH` (`alpine-disk.sh` with the three
+roots, `get-alpine -n`: no install script runs, which rustc, Python and
+xdpyinfo do without; `docs/testing.md` says how CI caches it) and
+attached as `/dev/nvme2n1/data` (writes go to a QEMU snapshot). The jq
+test and the Python fetch need the Alpine mirror and `example.com` to be
+reachable.
 
 Without the feature (the quick list, the normal PR CI), the test instead
 expects the module in `/proc/modules`, loaded by the boot script's

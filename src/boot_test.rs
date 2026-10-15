@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 /// Which tests the guest runs (docs/testing.md): every test carries tags,
 /// what it needs (`net`: the host's network and the package mirror, `pkg`:
 /// the packages installed as apps, `heavy`: minutes long, `install`: the
-/// boot disk upgraded or installed, checked by the boots that follow) and
+/// boot disk upgraded or installed, checked by the boots that follow,
+/// `alpine-disk`: the Alpine roots on the disk the host prepares) and
 /// what it covers (a module's or a port's name). The runner takes the
 /// tests named by `only`, else those with any of `tags` (all of them with
 /// none), minus those with any of `skip`.
@@ -36,7 +37,7 @@ pub struct Selection {
 }
 
 /// What the quick list of old skips: `test-mini` is `test --skip` this.
-const MINI_SKIPS: &str = "net,pkg,heavy,install";
+const MINI_SKIPS: &str = "net,pkg,heavy,install,alpine-disk";
 
 impl Selection {
     /// The `test` command's options from the launcher's arguments:
@@ -78,9 +79,15 @@ impl Selection {
     }
 
     /// Whether a test needing the host's network may run: the package
-    /// mirror is served and the Alpine disk prepared then.
+    /// mirror is served then.
     pub fn needs_network(&self) -> bool {
         !self.skips("net")
+    }
+
+    /// Whether a test needing the Alpine disk may run: it is prepared
+    /// (fetched once, minutes) and attached then.
+    pub fn needs_alpine_disk(&self) -> bool {
+        !self.skips("alpine-disk")
     }
 
     /// The runner's arguments.
@@ -668,12 +675,12 @@ mod tests {
         let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
         assert_eq!(Selection::parse(&args("uefi")), None);
         let sel = Selection::parse(&args("uefi test-mini")).unwrap();
-        assert_eq!(sel.skip, ["net", "pkg", "heavy", "install"]);
-        assert!(sel.quick() && !sel.needs_network());
-        assert_eq!(Mode::Tests(sel).args(), " --skip net,pkg,heavy,install");
+        assert_eq!(sel.skip, ["net", "pkg", "heavy", "install", "alpine-disk"]);
+        assert!(sel.quick() && !sel.needs_network() && !sel.needs_alpine_disk());
+        assert_eq!(Mode::Tests(sel).args(), " --skip net,pkg,heavy,install,alpine-disk");
         let sel = Selection::parse(&args("test-full")).unwrap();
         assert_eq!(sel, Selection::default());
-        assert!(!sel.quick() && sel.needs_network());
+        assert!(!sel.quick() && sel.needs_network() && sel.needs_alpine_disk());
         let sel = Selection::parse(&args("test --tags smoke,netfs --skip heavy --only a,b --budget 7")).unwrap();
         assert_eq!(sel.only, ["a", "b"]);
         assert_eq!(sel.budget, Some(Duration::from_secs(420)));

@@ -1216,21 +1216,35 @@ lx_alpine() {
 	echo "$out"
 	[ "$out" = "ALPINE-JQ 6" ]
 }
-# Python (python3 and its 19 dependencies, ~45 MB, too big for the test
-# disk's data partition: in /tmp): the standard library, and the json and
-# sqlite3 C extension modules.
+# The Alpine disk the launcher prepares on the host (linux-compat/
+# alpine-disks.sh: the roots of rustc, Python and an X client, from
+# get-alpine -n, without their install scripts; /dev/nvme2n1/data, its
+# writes dropped with the boot), mounted once at /tmp/alpine for the
+# tests below: installing a toolchain in the emulated guest takes hours,
+# Python ten minutes, mounting them seconds.
+alpine_disk() {
+	grep -q ' /tmp/alpine ' /proc/mounts && return 0
+	mkdir -p /tmp/alpine && mount /dev/nvme2n1/data /tmp/alpine ext2 || return 1
+	# get-alpine wrote the roots' resolv.conf on the host, for the host:
+	# this system's resolver (the lease's dns= lines of /net/ndb, QEMU's
+	# user network's when it names none), as it writes it in the guest.
+	for r in /tmp/alpine/*/; do
+		sed -n 's/^[[:space:]]*dns=/nameserver /p' /net/ndb > $r/etc/resolv.conf
+		[ -s $r/etc/resolv.conf ] || echo "nameserver 10.0.2.3" > $r/etc/resolv.conf
+	done
+}
+# Python (python3 and its 19 dependencies, ~45 MB) from the disk: the
+# standard library, and the json and sqlite3 C extension modules.
 lx_python() {
-	# apk's lines go to the console (fd 3): the host ends a boot that is
-	# silent for 600 s, and this install took 9 minutes on x86 and longer
-	# on riscv64.
-	run-myos get-alpine -r /tmp/alpine python3 >&3 2>&1 || return 1
-	out=$(linux --root /tmp/alpine python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])')
+	alpine_disk || return 1
+	out=$(linux --root /tmp/alpine/python python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])')
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]
 }
 # ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP).
 lx_python_net() {
-	out=$(linux --root /tmp/alpine python3 -c 'import urllib.request as u;print("HTTP",u.urlopen("http://example.com/").status)')
+	alpine_disk || return 1
+	out=$(linux --root /tmp/alpine/python python3 -c 'import urllib.request as u;print("HTTP",u.urlopen("http://example.com/").status)')
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
 }
@@ -1246,8 +1260,9 @@ lx_python_net() {
 # itself hang, so a step that never ends fails the test instead of
 # stalling the boot.
 lx_python_asyncio() {
-	mkdir -p /tmp/alpine/tmp
-	cat > /tmp/alpine/tmp/asyncio_smoke.py <<'PY'
+	alpine_disk || return 1
+	mkdir -p /tmp/alpine/python/tmp
+	cat > /tmp/alpine/python/tmp/asyncio_smoke.py <<'PY'
 import asyncio, os, selectors, signal, sys
 sel = type(selectors.DefaultSelector()).__name__
 def step(what):
@@ -1289,7 +1304,7 @@ async def main():
     print('ASYNCIO', sel, echoed.decode(), slept, timed_out, sig, out.strip().decode(), p.returncode)
 asyncio.run(asyncio.wait_for(main(), 60))
 PY
-	linux --root /tmp/alpine python3 /tmp/asyncio_smoke.py > $OUT/asyncio.out 2> $OUT/asyncio.err &
+	linux --root /tmp/alpine/python python3 /tmp/asyncio_smoke.py > $OUT/asyncio.out 2> $OUT/asyncio.err &
 	apid=$!
 	i=0
 	while [ $i -lt 120 ] && kill -0 $apid 2>/dev/null; do
@@ -1307,25 +1322,15 @@ PY
 	echo "$out"
 	[ "$out" = "ASYNCIO EpollSelector ASYNCIO True True USR1 sub 0" ]
 }
-# Empty an Alpine root: linux --root bound /dev, /proc and /net into it
-# (get-alpine runs apk under the layer), and the binds stay: rm must not go
-# through them.
-clean_root() {
-	for f in $1/* $1/.[!.]*; do
-		case ${f##*/} in dev | proc | net) ;; *) rm -rf "$f" ;; esac
-	done
-}
-# An Alpine X client on the native X server (the tinyx package, installed
-# as an app): xdpyinfo reaches Xfbdev's /tmp/.X11-unix/X0 over AF_UNIX and
-# describes the display. The server takes the screen (/dev/fb/ctl says
-# graphics) before it answers clients; xdpyinfo gives up at once while it
-# does not answer yet, so it is run again, each run killed after 30 s: the
-# whole test stays well under the boot test's 600 s without output. Its
-# root is its own and emptied after: /tmp is in the kernel heap, which the
-# Python root already fills.
+# An Alpine X client (xdpyinfo, from the disk) on the native X server (the
+# tinyx package, installed as an app): it reaches Xfbdev's
+# /tmp/.X11-unix/X0 over AF_UNIX and describes the display. The server
+# takes the screen (/dev/fb/ctl says graphics) before it answers clients;
+# xdpyinfo gives up at once while it does not answer yet, so it is run
+# again, each run killed after 30 s.
 lx_x11() {
-	r=/tmp/alpine-x11
-	run-myos get-alpine -r $r xdpyinfo >&3 2>&1 || { clean_root $r; return 1; }
+	alpine_disk || return 1
+	r=/tmp/alpine/x11
 	run-myos tinyx:Xfbdev :0 -br > $OUT/lx-x11-server.log 2>&1 &
 	xpid=$!
 	i=0
@@ -1356,20 +1361,18 @@ lx_x11() {
 	done
 	kill -9 $xpid 2>/dev/null
 	wait $xpid 2>/dev/null
-	clean_root $r
 	[ $ok = 1 ] && return 0
 	echo "after $try tries:"
 	head -20 $OUT/lx-x11.out
 	cat $OUT/lx-x11-server.log
 	return 1
 }
-# Alpine's rustc (rust, LLVM and gcc: ~600 MB) from the disk the launcher
-# prepares on the host (linux-compat/alpine-disk.sh, /dev/nvme2n1/data): its
+# Alpine's rustc (rust, LLVM and gcc: ~600 MB) from the disk: its
 # libraries and allocator reservation need over 500 MiB of address space,
 # of which `--version` touches some 30 MiB.
 lx_rustc() {
-	mkdir -p /tmp/alpine-rust && mount /dev/nvme2n1/data /tmp/alpine-rust ext2 || return 1
-	out=$(linux --root /tmp/alpine-rust/alpine rustc --version)
+	alpine_disk || return 1
+	out=$(linux --root /tmp/alpine/rust rustc --version)
 	echo "$out"
 	case "$out" in "rustc 1."*) ;; *) return 1 ;; esac
 }
@@ -1391,11 +1394,11 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_pagecache lx_pagecache
 	# The Alpine packages (get-alpine, an app: the packages and the network).
 	t -t linux,net,pkg,heavy,alpine alpine_jq lx_alpine
-	t -t linux,net,pkg,heavy,python alpine_python lx_python
-	t -t linux,net,pkg,heavy,python,netfs alpine_python_net lx_python_net
-	t -t linux,net,pkg,heavy,python,events alpine_python_asyncio lx_python_asyncio
-	t -t linux,net,pkg,heavy,x11 alpine_x11 lx_x11
-	t -t linux,net,pkg,alpine alpine_rustc lx_rustc
+	t -t linux,python,alpine-disk alpine_python lx_python
+	t -t linux,python,alpine-disk,net,netfs alpine_python_net lx_python_net
+	t -t linux,python,alpine-disk,events alpine_python_asyncio lx_python_asyncio
+	t -t linux,x11,pkg,alpine-disk alpine_x11 lx_x11
+	t -t linux,alpine-disk alpine_rustc lx_rustc
 else
 	t -t linux linux_insmod lx_insmod
 fi

@@ -77,7 +77,7 @@ while the host watches the console for `TEST <name> PASS|FAIL` lines
 takes minutes.
 
 ```sh
-cargo run -- test-mini                     # the quick tests: --skip net,pkg,heavy,install (what PR CI runs)
+cargo run -- test-mini                     # the quick tests: --skip net,pkg,heavy,install,alpine-disk
 cargo run -- aarch64 test-mini             # also riscv64, uefi
 cargo run -- test                          # every test: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
 cargo run -- test --tags netfs --skip heavy   # a selection by tag; --only NAME,... by name
@@ -178,8 +178,10 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   tag from the changed paths (a port's directory its tests and its
   dependents', a module's its tag, the kernel or the toolchain
   everything, documentation nothing) and runs them on bios, uefi, aarch64,
-  aarch64-gicv3 and riscv64, the long groups (os-test, Python, X11, Alpine)
-  each in a boot of its own. The Linux layer's musl pieces are built and
+  aarch64-gicv3 and riscv64, the long groups (os-test, the Alpine apk
+  installs) each in a boot of its own; the Alpine roots the Linux layer
+  tests mount (rustc, Python, an X client) come from a disk made once and
+  cached. The Linux layer's musl pieces are built and
   cached like a port (`linux-compat`) in every run.
 - **Everything** runs on a push to master, daily, on a dispatch of
   `ci.yml` with `full_boot: true` and on a pull request labelled

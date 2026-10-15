@@ -7,7 +7,7 @@ watches the serial console for the result.
 ```sh
 cargo run -- test                    # x86_64 BIOS, every test (needs the network)
 cargo run -- aarch64 test            # also uefi, riscv64
-cargo run -- test --skip net,pkg,heavy,install   # the quick list: no network, a few minutes (`test-mini`)
+cargo run -- test --skip net,pkg,heavy,install,alpine-disk   # the quick list: no network, a few minutes (`test-mini`)
 cargo run -- test --tags smoke       # the smoke set alone
 cargo run -- test --only ssh,https   # these two
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full|test args...]   # the same, with the OOM/TCG settings for a loaded host
@@ -22,13 +22,14 @@ Every test carries **tags**: what it needs and what it covers. `test`
 takes the tests named by `--only`, else those with any of the `--tags`
 (all of them without), minus those with any of the `--skip` tags.
 `test-mini` and `test-full` are the two lists of old: `test --skip
-net,pkg,heavy,install` and `test`.
+net,pkg,heavy,install,alpine-disk` and `test`.
 
 | tag | the tests that |
 |---|---|
 | `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
 | `pkg` | need the packages of this build installed as apps (`packages`, the first test, installs them from the mirror; every package's own test has it) |
-| `heavy` | take minutes under TCG: the curated os-test list, the Alpine installs (jq, Python, X11), the heavy smoke with the apps |
+| `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
+| `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
 | `install` | change the boot disk: `get-myos --upgrade` (Limine made stale first) and `--install` on the scratch disk; when they passed, the launcher boots the upgraded disk again, which must come up from slot `b`, and then the disk `--install --local` made, from its slot a (`docs/install.md`) |
 | `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
@@ -143,9 +144,11 @@ on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
 (`src/main.rs` sets up the machine, the disks, the network with the port
-forwards, and unless `net` is skipped the package mirror and, with the
-Linux layer, the Alpine Rust disk: `linux-compat/alpine-disk.sh` builds it once
-into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1/data` with its
+forwards, unless `net` is skipped the package mirror and, with the
+Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
+`linux-compat/alpine-disks.sh` builds it once into
+`target/alpine-<arch>.img`, the roots of rustc, Python and an X client
+from `get-alpine -n` on the host, attached as `/dev/nvme2n1/data` with its
 writes kept in a QEMU snapshot), waits for `login: ` on the serial port
 (`ttyS0`'s getty, `docs/tty.md`; a kernel status line that lands after a
 prompt is skipped), types `root`, an empty password and the command (each byte once its echo
@@ -213,13 +216,18 @@ carries the Linux layer (`linux_compat`) when a `linux` test runs.
 
 The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
 GICv3, riscv64) in parallel boots: the long tests' groups (`ostest`,
-`python`, `x11`, `alpine`) each in a boot of their own, whole (their tests
-build on each other), and one boot with everything else, so a full run is
-five boots of ten minutes per machine instead of one of thirty. Each boot
-gets a budget from what it runs (riscv64 half as much again), and a
-selection without `net` tests skips the mirror and the Alpine disk. The
-plan is in the run's summary; `scripts/ci-select.py --changed PATH...`
-prints it locally for any set of paths, `--all` the full one.
+`alpine`: the curated os-test list, the apk installs) each in a boot of
+their own, whole (their tests build on each other), and one boot with
+everything else, so a full run is three boots of ten minutes per machine
+instead of one of thirty. Each boot
+gets a budget from what it runs (riscv64 half as much again); a
+selection without `net` tests skips the mirror, one without `alpine-disk`
+tests the Alpine disk, which a boot that needs it restores from the
+Actions cache (keyed by `linux-compat/alpine-disks.sh --hash`: the scripts
+that make it; bump `FIXTURE` there for a fresh one, Alpine's
+latest-stable moves) or makes on a miss. The plan is in the run's summary;
+`scripts/ci-select.py --changed PATH...` prints it locally for any set of
+paths, `--all` the full one.
 
 ## Adding a test
 

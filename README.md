@@ -90,7 +90,7 @@ cargo run --release      # release build
 **Boot tests** — boot headless, log in and run the test list in the guest (`docs/testing.md`):
 
 ```sh
-cargo run -- test --skip net,pkg,heavy,install   # the quick tests (`test-mini`: every pull request runs it)
+cargo run -- test --skip net,pkg,heavy,install,alpine-disk   # the quick tests (`test-mini`)
 cargo run -- uefi test-mini
 cargo run -- aarch64 test         # every test: packages, HTTPS, SSH, os-test (needs the network)
 ```

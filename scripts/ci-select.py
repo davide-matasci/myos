@@ -14,9 +14,11 @@ request labelled `ci:full` run everything.
 The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
 GICv3, riscv64; a change under kernel/src/arch/<arch> runs everything on
 that arch's machines and the smoke set on the others), in parallel boots:
-the long tests' groups (`ostest`, `python`, `x11`, `alpine`: each a boot
-of its own, whole, as its tests build on each other) and one boot with
-the rest. Each boot gets a budget from what it runs.
+the long tests' groups (`ostest`, `alpine`: each a boot of its own, whole,
+as its tests build on each other) and one boot with the rest. Each boot
+gets a budget from what it runs, and says whether it needs the Alpine
+disk (`alpine`, the `alpine-disk` tag: the boot job restores it from the
+cache).
 
 Writes GitHub outputs ($GITHUB_OUTPUT, stdout without it):
   boots=<JSON>     the boot job's matrix (`[]`: no boot)
@@ -45,10 +47,10 @@ MACHINES = [
 ]
 # The long tests' groups, each a boot of its own (a `heavy` test outside
 # them, the heavy smoke, stays with the rest).
-HEAVY_GROUPS = ["ostest", "python", "x11", "alpine"]
+HEAVY_GROUPS = ["ostest", "alpine"]
 # The budget of a boot in minutes, by what it runs; riscv64 (the slowest
 # under TCG) gets half as much again.
-BUDGETS = {"light": 20, "smoke": 8, "ostest": 15, "python": 20, "x11": 12, "alpine": 12}
+BUDGETS = {"light": 20, "smoke": 8, "ostest": 15, "alpine": 12}
 # A module's directory selects these tags (its own name otherwise).
 MODULE_TAGS = {
     "console": {"console", "tty"},
@@ -222,23 +224,30 @@ def shards(mid, names, tests, tags_arg):
     slow = 1.5 if machine[2] == "riscv64" else 1.0
     out = []
 
-    def boot(shard, selection, budget):
+    def boot(shard, selection, budget, disk):
         args = (arch_word + " " if arch_word else "") + "test " + selection + f" --budget {int(BUDGETS[budget] * slow)}"
-        out.append({"id": f"{mid}-{shard}", "machine": mid, "args": args, "gic": machine[3], "required": True})
+        out.append({
+            "id": f"{mid}-{shard}", "machine": mid, "arch": machine[2], "args": args, "gic": machine[3],
+            "alpine": "true" if disk else "false", "required": True,
+        })
 
     groups = [g for g in HEAVY_GROUPS if any(g in tests[n] for n in names)]
     light = {n for n in names if not any(g in tests[n] for g in HEAVY_GROUPS)}
     skip = ",".join(HEAVY_GROUPS)
     if light:
+        # Nothing from the network: the quick budget, and the launcher
+        # serves no mirror (`net` skipped); nothing from the Alpine disk:
+        # it is neither fetched nor attached (`alpine-disk` skipped).
+        quick = not any("net" in tests[n] for n in light)
+        disk = any("alpine-disk" in tests[n] for n in light)
         if tags_arg is None:
-            boot("light", f"--skip {skip}", "light")
+            boot("light", f"--skip {skip}", "light", disk)
         else:
-            # Nothing from the network: the quick budget, and the launcher
-            # serves no mirror and prepares no Alpine disk (`net` skipped).
-            quick = not any("net" in tests[n] for n in light)
-            boot("light", f"--tags {tags_arg} --skip {skip}{',net' if quick else ''}", "smoke" if quick else "light")
+            skips = skip + (",net" if quick else "") + ("" if disk else ",alpine-disk")
+            boot("light", f"--tags {tags_arg} --skip {skips}", "smoke" if quick else "light", disk)
     for g in groups:
-        boot(g, f"--tags {g}", g)
+        disk = any("alpine-disk" in tests[n] and g in tests[n] for n in names)
+        boot(g, f"--tags {g}" + ("" if disk else " --skip alpine-disk"), g, disk)
     return out
 
 

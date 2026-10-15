@@ -142,7 +142,7 @@ Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--only NAME,...] [--tags 
   test       Headless: log in, run the tests in the guest, exit with its result. Every test
              carries tags (docs/testing.md): --only names the tests, --tags takes those with
              any of the tags, --skip leaves out those with any; `test-mini` is
-             `test --skip net,pkg,heavy,install` (no network, a few minutes), `test-full` is `test`
+             `test --skip net,pkg,heavy,install,alpine-disk` (no network, a few minutes), `test-full` is `test`
   iso        Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
   packages   Write the package tarballs and indexes of the three arches to target/packages/",
     );
@@ -240,26 +240,24 @@ fn write_scratch_image() {
     write_scratch_gpt_image(&scratch_img_path(), SCRATCH_BYTES);
 }
 
-/// The full test with the Linux layer runs Alpine's rustc from a disk the
-/// host prepares (`linux-compat/alpine-disk.sh`, kept in `target/`): the
-/// third NVMe controller, `/dev/nvme2n1/data`, its writes dropped with the boot.
+/// The Linux layer tests tagged `alpine-disk` run Alpine's rustc, Python
+/// and an X client from roots on a disk the host prepares
+/// (`linux-compat/alpine-disks.sh`, kept in `target/`): the third NVMe
+/// controller, `/dev/nvme2n1/data`, its writes dropped with the boot.
 static ALPINE_DISK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 fn prepare_alpine_disk(arch: &str, mode: &Mode) {
     let Mode::Tests(sel) = mode else { return };
-    if !sel.needs_network() || !linux_compat_enabled() {
+    if !sel.needs_alpine_disk() || !linux_compat_enabled() {
         return;
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let img = root.join(format!("target/alpine-rust-{arch}.img"));
-    let status = Command::new(root.join("linux-compat/alpine-disk.sh"))
+    let status = Command::new(root.join("linux-compat/alpine-disks.sh"))
         .arg(arch)
-        .arg(&img)
-        .arg("rust")
         .status()
-        .expect("run linux-compat/alpine-disk.sh");
-    assert!(status.success(), "linux-compat/alpine-disk.sh {arch} failed");
-    let _ = ALPINE_DISK.set(img);
+        .expect("run linux-compat/alpine-disks.sh");
+    assert!(status.success(), "linux-compat/alpine-disks.sh {arch} failed");
+    let _ = ALPINE_DISK.set(root.join(format!("target/alpine-{arch}.img")));
 }
 
 fn add_nvme(cmd: &mut Command) {
