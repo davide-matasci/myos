@@ -740,13 +740,16 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     let outcome = boot_test::run(spawn(&disk), &mode, linux);
     let mut ok = outcome.ok;
     let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
+    // The installed disk is kept before the next boot makes a new scratch disk.
+    let installed = target.join(format!("installed-{name}.img"));
+    if ok && ran("boot_install_local") {
+        limine_image::copy_sparse(&scratch_img_path(), &installed);
+    }
     if ok && ran("boot_upgrade") {
         eprintln!("boot test: the upgraded disk boots again");
         ok = boot_test::run(spawn(&disk), &Mode::Reboot, linux).ok;
     }
     if ok && ran("boot_install_local") {
-        let installed = target.join(format!("installed-{name}.img"));
-        limine_image::copy_sparse(&scratch_img_path(), &installed);
         eprintln!("boot test: the disk get-myos --install made boots");
         ok = boot_test::run(spawn(&installed), &Mode::Installed, linux).ok;
     }
