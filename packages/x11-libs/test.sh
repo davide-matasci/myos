@@ -3,4 +3,4 @@
 # the C locale's Compose file (dmenu's XOpenIM opens its input method); the
 # client's threads share its display (Xlib's constructor called
 # XInitThreads).
-t x11 run-myos x11-libs:/bin/sh -c '[ -f /lib/X11/XErrorDB ] && [ -f /lib/X11/locale/iso8859-1/Compose ] && /bin/etc/x11_smoke'
+t -t x11 x11 run-myos x11-libs:/bin/sh -c '[ -f /lib/X11/XErrorDB ] && [ -f /lib/X11/locale/iso8859-1/Compose ] && /bin/etc/x11_smoke'

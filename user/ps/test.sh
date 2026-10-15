@@ -19,4 +19,4 @@ ps_list() {
 	cat /tmp/ps.out /tmp/ps-e.out /tmp/ps-eL.out
 	return 1
 }
-t ps ps_list
+t -t proc,smoke ps ps_list

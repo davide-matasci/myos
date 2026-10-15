@@ -1,10 +1,11 @@
 # The heavy smoke: std and C programs, sbase, find, ripgrep, tcc, the socket
-# and ping clients, FPU state across preemption, threads; uutils and git's
-# porcelain in the full mode (apps, installed before the tests, which
-# heap runs in their view: run-myos). It
-# prints a `[ OK ] <stage>` line per stage and `[ OK ] smoke` at the end.
+# and ping clients, FPU state across preemption, threads (`heap mini`, the
+# `heap_mini` test); with uutils and git's porcelain (apps, installed
+# before the tests, which heap runs in their view: run-myos) as the `heap`
+# test. It prints a `[ OK ] <stage>` line per stage and `[ OK ] smoke` at
+# the end.
 heap_smoke() {
-	if [ "$MODE" = full ]; then
+	if [ "$1" = full ]; then
 		# Its uutils and git stages: the apps' programs at their paths.
 		capture $OUT/heap.log run-myos git,coreutils:/bin/custom/heap
 	else
@@ -17,7 +18,7 @@ heap_smoke() {
 		threads smoke; do
 		contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 	done
-	if [ "$MODE" = full ]; then
+	if [ "$1" = full ]; then
 		for n in "uutils echo" "uutils true" "uutils false" "uutils cat" "uutils ls"; do
 			contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 		done
@@ -28,7 +29,7 @@ heap_smoke() {
 			contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 		done
 	fi
-	if [ "$MODE" = full ]; then
+	if [ "$1" = full ]; then
 		for n in git "git commit"; do
 			contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 		done
@@ -37,4 +38,5 @@ heap_smoke() {
 	# such as EAI_FAIL.c in a listing is not one.
 	! grep -q -E "(^| )FAIL" $OUT/heap.log
 }
-t heap heap_smoke
+t -t smoke heap_mini heap_smoke mini
+t -t heavy,pkg heap heap_smoke full

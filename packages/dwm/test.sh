@@ -43,4 +43,4 @@ dwm_run() {
 	cat /tmp/dwm.log /tmp/dwm-server.log
 	[ $ok = 1 ]
 }
-t dwm dwm_run
+t -t x11 dwm dwm_run

@@ -2,10 +2,9 @@
 # signal handlers, myos chroot/FIFO, the udp suite and the rest of the
 # suite that passes; 1041 prebuilt tests): a thin writable copy of the
 # suite under /tmp/o,
-# `make report`, and every test must pass.
-# Full mode only (the list takes a while under TCG). The report's progress
-# goes to the console: one line per test.
-[ "$MODE" = full ] || return 0
+# `make report`, and every test must pass. The list takes a while under
+# TCG (`heavy`). The report's progress goes to the console: one line per
+# test.
 
 ostest_report() {
 	run-myos os-test:/bin/sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o || return 1
@@ -25,5 +24,5 @@ ostest_setpwent() {
 	IFS= read -r outcome < /tmp/o/out/basic/pwd/setpwent.out
 	[ "$outcome" = "exit: 0" ]
 }
-t os_test ostest_report
-t os_test_setpwent ostest_setpwent
+t -t heavy,ostest os_test ostest_report
+t -t heavy,ostest os_test_setpwent ostest_setpwent

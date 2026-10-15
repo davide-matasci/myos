@@ -32,9 +32,9 @@ sh_path() {
 	echo "$p"
 	[ "$p" = /bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc ]
 }
-t shell_nosuch sh_nosuch
-t shell_echo sh_echo
-t shell_pipe sh_pipe
-t shell_redirect sh_redirect
-t shell_which sh_which
-t shell_path sh_path
+t -t smoke shell_nosuch sh_nosuch
+t -t smoke shell_echo sh_echo
+t -t smoke shell_pipe sh_pipe
+t -t smoke shell_redirect sh_redirect
+t -t smoke shell_which sh_which
+t -t smoke shell_path sh_path

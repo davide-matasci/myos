@@ -5,4 +5,4 @@ ok_checks() {
 	cat $OUT/ok.log
 	! contains "received: \\x" $OUT/ok.log
 }
-t ok ok_checks
+t -t smoke ok ok_checks

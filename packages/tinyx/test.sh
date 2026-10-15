@@ -30,4 +30,4 @@ tinyx_run() {
 	# The server's exit closed /dev/fb/ctl: the console has the screen back.
 	grep -q " text$" /dev/fb/ctl
 }
-t tinyx tinyx_run
+t -t x11 tinyx tinyx_run

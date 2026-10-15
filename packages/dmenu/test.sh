@@ -37,7 +37,7 @@ dmenu_pick() {
 	cat /tmp/dmenu.log /tmp/dmenu-server.log
 	[ $ok = 1 ]
 }
-t dmenu dmenu_pick
+t -t x11 dmenu dmenu_pick
 
 dmenu_run_pick() {
 	ok=0
@@ -68,4 +68,4 @@ dmenu_run_pick() {
 	cat /tmp/dmenu.log /tmp/dmenu-server.log 2>/dev/null
 	[ $ok = 1 ]
 }
-t dmenu_run dmenu_run_pick
+t -t x11 dmenu_run dmenu_run_pick

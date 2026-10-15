@@ -15,7 +15,7 @@ exec_limits() {
 	echo "args=$# env=${#Y}"
 	[ $# -eq 40 ] && [ ${#Y} -eq 711 ]
 }
-t exec_limits exec_limits
+t -t exec,smoke exec_limits exec_limits
 
 # #! scripts: exec runs the interpreter with the script's path in front of
 # its arguments, and the line's one argument before that; a missing
@@ -33,7 +33,7 @@ exec_script() {
 	[ -z "$out" ] || return 1
 	! /bin/sbase/env /tmp/script3 > /dev/null 2>&1
 }
-t exec_script exec_script
+t -t exec,smoke exec_script exec_script
 
 # One open file description per open, shared by a fork's and a dup's copies
 # of the fd (POSIX): a child's writes advance the offset the parent writes
@@ -55,7 +55,7 @@ three" ] || return 1
 b
 c" ]
 }
-t fd_offsets fd_offsets
+t -t fs,smoke fd_offsets fd_offsets
 
 # An fd holds its file, not its name: it follows a rename (of the file or
 # of a directory above it), a new file that takes the old name is not the
@@ -90,7 +90,7 @@ two" ] && [ "$(cat /tmp/fdi.a)" = new ] || return 1
 	[ "$got" = "one
 two" ] && [ "$listed" = 0 ]
 }
-t fd_identity fd_identity
+t -t fs,smoke fd_identity fd_identity
 
 # rmmod: a module that provides nothing (hello) unloads and loads again;
 # one with a registration (the block driver's disks) is refused and keeps
@@ -223,9 +223,9 @@ fstab_mount() {
 	[ "$(grep -c '^/dev/nvme1n1/p3 ' /proc/mounts)" -eq 1 ] || return 1
 	umount /mnt/scratch/p3 && mkdir -p /mnt/x && mount PARTUUID=$g /mnt/x fat && [ -d "/mnt/x/A dir" ] && umount /mnt/x
 }
-t rmmod_hello rmmod_hello
-t rmmod_busy rmmod_busy
-t pci_rescan pci_rescan
+t -t modules rmmod_hello rmmod_hello
+t -t modules rmmod_busy rmmod_busy
+t -t pci pci_rescan pci_rescan
 # The virtio-scsi disk (modules/virtio_scsi): the launcher gives every boot
 # a virtio-scsi host with one 1 MiB disk, the first `sd` disk (the USB
 # stick comes later, on the USB thread). It reads and writes by sector,
@@ -242,11 +242,11 @@ scsi_disk() {
 	[ "$(dd if=$d bs=512 skip=2047 count=1 2> /dev/null | wc -c)" -eq 512 ] || { echo "last sector"; return 1; }
 	[ "$(dd if=$d bs=512 skip=2048 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 }
-t scsi_disk scsi_disk
-t partitions partitions
-t boot_disk boot_disk
-t boot_rc boot_rc
-t fstab_mount fstab_mount
+t -t blk scsi_disk scsi_disk
+t -t blk,smoke partitions partitions
+t -t blk boot_disk boot_disk
+t -t smoke boot_rc boot_rc
+t -t fs,smoke fstab_mount fstab_mount
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
 # state as text. /proc/self/fd/N names what an fd is open on, /proc/self/tty
@@ -270,7 +270,7 @@ tty_ctl() {
 	echo bogus > $tty/ctl 2>/dev/null && return 1
 	grep -q '^winsize [0-9]* [0-9]*$' $tty/ctl
 }
-t tty_ctl tty_ctl
+t -t tty,console tty_ctl tty_ctl
 
 # The kernel's terminals (docs/tty.md): ttyS0 on the serial port (this
 # session's) and tty1…tty9 on the console's text screens, init's getty on
@@ -317,7 +317,7 @@ proc_exe() {
 	[ "$exe" = /bin/sbase/readlink ] || return 1
 	ls /proc/self | grep -qx exe
 }
-t proc_exe proc_exe
+t -t proc proc_exe proc_exe
 
 # /proc/self/fd listed while a file is open (here fd 7): its entry's path
 # takes the mount table's lock, which the listing held, and the system froze
@@ -334,7 +334,7 @@ proc_fd_listing() {
 	exec 7<&-
 	return $r
 }
-t proc_fd_listing proc_fd_listing
+t -t proc proc_fd_listing proc_fd_listing
 
 # A pty comes from /dev/pts/clone: the fd it returns is /dev/pts/N/master,
 # the pair's directory lists master, data and ctl, its window size is set
@@ -355,7 +355,7 @@ pty_clone() {
 	exec 6>&-
 	! [ -e $d/ctl ]
 }
-t pty_clone pty_clone
+t -t tty pty_clone pty_clone
 
 # The console's keyboard map is a line of its ctl (docs/keymap.md): init
 # loaded the Swiss one; `keymap PATH` loads another; a missing file is
@@ -373,7 +373,7 @@ keymap_ctl() {
 	exec 6>&-
 	echo 'keymap /lib/kbd/ch.map' > /dev/console/ctl
 }
-t keymap keymap_ctl
+t -t console keymap keymap_ctl
 
 # The board description (docs/pci-acpi-smp.md): one line per component,
 # each ending in the source it came from. The CPUs and the interrupt
@@ -396,7 +396,7 @@ platform() {
 	fi
 	! grep -q 'differs' /proc/platform
 }
-t platform platform
+t -t smoke platform platform
 
 # FAT read-write (the fat module, modules/fat/fatvol, host-tested against
 # dosfstools): on the launcher's FAT16 disk, which /ok mounted at /tmp/fat,
@@ -422,13 +422,13 @@ two" ] && cmp $d/dir2/sub/big /tmp/fat-big || return 1
 	case $l in *"Feb 03  2001"*) ;; *) return 1 ;; esac
 	rm -r $d/dir2 $d/moved.txt /tmp/fat-big && [ "$(ls $d)" = msg ]
 }
-t fat_rw fat_rw
+t -t fat fat_rw fat_rw
 # How full the FAT volume is (statvfs, the fat module's statfs): a file
 # takes its clusters and gives them back (fileio_smoke.c).
 fat_space() {
 	/bin/etc/fileio_smoke space /tmp/fat
 }
-t fat_space fat_space
+t -t fat fat_space fat_space
 
 # USB (docs/usb.md): every boot has an xHCI controller with a hub on its
 # first port and a memory stick behind the hub, the same FAT volume as
@@ -454,7 +454,7 @@ usb_disk() {
 	mkdir -p /tmp/usb && mount /dev/sdb/data /tmp/usb fat || return 1
 	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
-t usb_disk usb_disk
+t -t usb,blk usb_disk usb_disk
 
 # Every disk says what it is in /dev/<disk>/info: its name, its size and
 # its driver's description (where it is, model, serial). The launcher's
@@ -476,7 +476,7 @@ disk_info() {
 	id=$(grep ':usb_storage sdb$' /proc/usb | cut -d' ' -f1)
 	grep -Eq "^sdb [0-9]+ usb_storage usb $id [0-9a-f]{4}:[0-9a-f]{4} " /dev/sdb/info || { cat /dev/sdb/info /proc/usb; return 1; }
 }
-t disk_info disk_info
+t -t blk disk_info disk_info
 
 # mount(2) takes any existing directory that is not a mount point yet, at
 # the top level as below it, and umount gives the directory back; a busy
@@ -497,7 +497,7 @@ mount_rules() {
 	umount /tmp/a/b && rmdir /tmp/a/b /tmp/a || return 1
 	umount /tmp 2>&1 | grep -q 'not a mount point of a disk'
 }
-t mount_rules mount_rules
+t -t fs,sec mount_rules mount_rules
 
 # Hot-plug: the host plugs a second stick into a root port through the
 # QEMU monitor (user/tests/host.sh); it enumerates and reads; pulled out
@@ -514,7 +514,7 @@ usb_hotplug() {
 	cat /proc/usb
 	! grep -q gone /proc/usb
 }
-t usb_hotplug usb_hotplug
+t -t usb usb_hotplug usb_hotplug
 
 # Unplug while busy, then reuse. A disk pulled out while a filesystem is
 # mounted from it (or an fd holds it) cannot be unregistered, so it stays as a
@@ -549,7 +549,7 @@ usb_hotplug_busy_reuse() {
 	echo "HOST tests usb-unplug" >&3
 	wait_for 30 sh -c '! test -e /dev/sdc/data'
 }
-t usb_hotplug_busy_reuse usb_hotplug_busy_reuse
+t -t usb usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 
 # The hub pulled out and pushed back. Its stick goes with it; the hub comes
 # back into the same table entry, and its status-change endpoint must work
@@ -572,7 +572,7 @@ usb_hub_replug() {
 	/bin/sbase/dd if=/dev/sdb/data of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
 	[ "$(/bin/sbase/wc -c < /tmp/usb-sdb.bin)" -eq 512 ]
 }
-t usb_hub_replug usb_hub_replug
+t -t usb usb_hub_replug usb_hub_replug
 
 # Live frame count (allocated minus freed) from /proc/meminfo.
 frames_live() {
@@ -629,7 +629,7 @@ mem_fork_no_leak() {
 	echo "mem: fork/exit x60 FramesLive $before -> $after (delta $((after - before)))"
 	[ "$((after - before))" -le 8 ]
 }
-t mem_fork_no_leak mem_fork_no_leak
+t -t mm mem_fork_no_leak mem_fork_no_leak
 
 # The same across fork+exec+exit of a real program. Its code is cached on the
 # first run (PageCacheKiB), so after a warm-up the repeated runs must add no
@@ -647,7 +647,7 @@ mem_exec_no_leak() {
 	echo "mem: exec x40 FramesLive $before -> $after (delta $((after - before)))"
 	[ "$((after - before))" -le 16 ]
 }
-t mem_exec_no_leak mem_exec_no_leak
+t -t mm mem_exec_no_leak mem_exec_no_leak
 
 # A userspace memory hog must never abort the kernel, and its pages must all
 # come back. `memhog` mmaps and touches a large region in chunks; the kernel
@@ -668,7 +668,7 @@ mem_hog_survives() {
 	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)))"
 	[ -n "$after" ] && [ "$((after - before))" -le 64 ]
 }
-t mem_hog_survives mem_hog_survives
+t -t mm mem_hog_survives mem_hog_survives
 
 # /proc/<pid> (docs/proc.md): the shell running the tests is listed with its
 # one thread, a child it starts names it as its parent once it has exec'd,
@@ -689,7 +689,7 @@ proc_pid() {
 	wait $kid
 	[ $rc -eq 0 ] && cat /proc/*/status | grep -q " usb .* kernel$"
 }
-t proc_pid proc_pid
+t -t proc,smoke proc_pid proc_pid
 
 # CPU time: the shell's own grows as it computes, its children's once it
 # has waited for one that computed; the CPUs' idle time grows across a sleep.
@@ -709,7 +709,7 @@ proc_cpu_time() {
 	echo "idle $idle0 -> $idle1"
 	[ "$idle1" -gt "$idle0" ]
 }
-t proc_cpu_time proc_cpu_time
+t -t proc,sched proc_cpu_time proc_cpu_time
 
 # Tickless idle (issue #367): a CPU other than 0 with nothing to run stops
 # its 100 Hz tick while it halts, so its halts last far longer than the
@@ -735,7 +735,7 @@ idle_tickless() {
 	done
 	return 1
 }
-t idle_tickless idle_tickless
+t -t sched idle_tickless idle_tickless
 
 # The console's input interrupts (issue #367): the UART's receive interrupt
 # and the keyboard's (PS/2 IRQ 1 through the I/O APIC on x86_64, the
@@ -747,7 +747,7 @@ console_irqs() {
 		&& grep -Eq ' (ps2 keyboard|virtio-input)$' /proc/interrupts \
 		|| { cat /proc/interrupts; return 1; }
 }
-t console_irqs console_irqs
+t -t sched,console console_irqs console_irqs
 idle_cpu0() {
 	set -A s0 $(idle_stats)
 	n=$((${#s0[*]} / 2))
@@ -758,7 +758,7 @@ idle_cpu0() {
 	echo "CPU 0: $halts halts, $idle ms idle"
 	[ $idle -ge 1000 ] && [ $((halts * 20)) -lt $idle ]
 }
-t idle_cpu0 idle_cpu0
+t -t sched idle_cpu0 idle_cpu0
 
 # A module's character device is a directory: the NIC's `data` is the
 # device, its `ctl` names the MAC and whether its interrupt works.
@@ -769,7 +769,7 @@ net_ctl() {
 	grep -q '^mac [0-9a-f:]*$' /dev/net0/ctl || return 1
 	grep -q '^irq o' /dev/net0/ctl
 }
-t net_ctl net_ctl
+t -t netfs,virtio_net net_ctl net_ctl
 
 # netd's DHCP lease in /net/ndb: QEMU's, whose DNS server the launcher moves
 # to 10.0.2.4 (add_virtio_net); the full mode's lookups go there.
@@ -784,14 +784,14 @@ net_lease() {
 		&& grep -q '^	dns=10\.0\.2\.4$' /net/ndb \
 		|| { cat /net/ndb; return 1; }
 }
-t net_lease net_lease
+t -t netfs,virtio_net net_lease net_lease
 
 # isatty through the libc (the /proc/self/fd link, no ioctl): the shell's
 # stdin is the console, its captured stdout a file.
 isatty_fds() {
 	[ -t 0 ] && ! [ -t 1 ]
 }
-t isatty isatty_fds
+t -t tty isatty isatty_fds
 
 # CR on the screen goes back to the line's start, as a shell redrawing its
 # line needs (oksh on Up or Tab: CR, the prompt, the line). The top row's
@@ -823,7 +823,7 @@ console_cr() {
 	[ "$qq" != "$blank" ] || { echo "QQ did not reach the screen"; return 1; }
 	[ "$cr" = "$blank" ] || { echo "QQ, CR, spaces: the Qs are still there"; return 1; }
 }
-t console_cr console_cr
+t -t console,tty console_cr console_cr
 
 # Inserting and deleting lines moves the rows below the cursor (termcap `al`
 # and `dl`: vim opening a line with Enter or `o`), as does reverse index at
@@ -849,8 +849,8 @@ console_lines() {
 	echo "moved: $moved; IL: $il; RI: $ri; DL: $dl"
 	[ "$il" = "$moved" ] && [ "$ri" = "$moved" ] && [ "$dl" = "$up" ]
 }
-t console_lines console_lines
-t ttys ttys
+t -t console,tty console_lines console_lines
+t -t console,tty ttys ttys
 
 # Security (docs/security.md). The tests run as root in the admin domain.
 # A policy with three more users, alice and bob (passwords alice-pw and
@@ -1074,25 +1074,25 @@ sec_wildcard() {
 	fi
 	$SEC load /tmp/sec/policy
 }
-t sec_setup sec_setup
-t sec_users sec_users
-t sec_homes sec_homes
-t sec_untrusted sec_untrusted
-t sec_rename sec_rename
-t sec_append sec_append
-t sec_nologin sec_nologin
-t sec_mount sec_mount
-t sec_net sec_net
-t sec_signal sec_signal
-t sec_escalate sec_escalate
-t sec_wildcard sec_wildcard
-t sec_power sec_power
-t sec_ns sec_ns
-t sec_cap sec_cap
+t -t sec sec_setup sec_setup
+t -t sec sec_users sec_users
+t -t sec sec_homes sec_homes
+t -t sec sec_untrusted sec_untrusted
+t -t sec sec_rename sec_rename
+t -t sec sec_append sec_append
+t -t sec sec_nologin sec_nologin
+t -t sec sec_mount sec_mount
+t -t sec,netfs sec_net sec_net
+t -t sec sec_signal sec_signal
+t -t sec sec_escalate sec_escalate
+t -t sec sec_wildcard sec_wildcard
+t -t sec sec_power sec_power
+t -t sec sec_ns sec_ns
+t -t sec sec_cap sec_cap
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
-	t sec_linux sec_linux
+	t -t sec,linux sec_linux sec_linux
 fi
-t sec_restore sec_restore
+t -t sec sec_restore sec_restore
 
 linux_loaded() {
 	grep -q "^linux$" /proc/modules
@@ -1381,22 +1381,21 @@ lx_insmod() {
 }
 
 if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
-	t linux_smoke lx_smoke
-	t linux_dyn lx_dyn
-	t linux_unix lx_unix
-	t linux_evfd_root lx_evfd_root
-	t linux_dns_root lx_dns_root
-	t linux_cwd_bind lx_cwd_bind
-	t linux_trace lx_trace
-	t linux_pagecache lx_pagecache
-	if [ "$MODE" = full ]; then
-		t alpine_jq lx_alpine
-		t alpine_python lx_python
-		t alpine_python_net lx_python_net
-		t alpine_python_asyncio lx_python_asyncio
-		t alpine_x11 lx_x11
-		t alpine_rustc lx_rustc
-	fi
+	t -t linux linux_smoke lx_smoke
+	t -t linux linux_dyn lx_dyn
+	t -t linux,netfs linux_unix lx_unix
+	t -t linux,events linux_evfd_root lx_evfd_root
+	t -t linux,netfs linux_dns_root lx_dns_root
+	t -t linux linux_cwd_bind lx_cwd_bind
+	t -t linux linux_trace lx_trace
+	t -t linux linux_pagecache lx_pagecache
+	# The Alpine packages (get-alpine, an app: the packages and the network).
+	t -t linux,net,heavy,alpine alpine_jq lx_alpine
+	t -t linux,net,heavy,python alpine_python lx_python
+	t -t linux,net,heavy,python,netfs alpine_python_net lx_python_net
+	t -t linux,net,heavy,python,events alpine_python_asyncio lx_python_asyncio
+	t -t linux,net,heavy,x11 alpine_x11 lx_x11
+	t -t linux,net,alpine alpine_rustc lx_rustc
 else
-	t linux_insmod lx_insmod
+	t -t linux linux_insmod lx_insmod
 fi

@@ -142,6 +142,6 @@ CONF
 	return $ok
 }
 
-t nginx_conf nginx_conf
-t nginx_serve nginx_serve
-t nginx_https nginx_https
+t -t netfs nginx_conf nginx_conf
+t -t netfs nginx_serve nginx_serve
+t -t netfs nginx_https nginx_https

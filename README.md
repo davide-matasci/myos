@@ -90,9 +90,9 @@ cargo run --release      # release build
 **Boot tests** — boot headless, log in and run the test list in the guest (`docs/testing.md`):
 
 ```sh
-cargo run -- test-mini            # the quick list (every pull request runs it)
+cargo run -- test --skip net,pkg,heavy,install   # the quick tests (`test-mini`: every pull request runs it)
 cargo run -- uefi test-mini
-cargo run -- aarch64 test-full    # the full list: packages, HTTPS, SSH, os-test (needs the network)
+cargo run -- aarch64 test         # every test: packages, HTTPS, SSH, os-test (needs the network)
 ```
 
 **Interactive use** — type at `$` prompt (PS/2 keyboard in QEMU window on x86; serial on all arches):
@@ -379,7 +379,7 @@ Implemented libgloss hooks call real syscalls where they exist; stubs return ENO
 
 GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached. rust-cache restores `target/` with the Rust ports' cargo target dirs in it, and cargo does not track the std sysroot, newlib or target spec they were built against: each such dir carries a stamp of them and starts over when it differs (`myos_cargo_target_dir`, `toolchain/std/lib.sh`).
 
-Every run boots the four disk images with the quick test list (`test-mini`); the daily run and a dispatch with `full_boot` run the full list, which also installs the build's own packages into the guest with `get-myos` from a mirror the launcher serves. On master, the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`) and the packages go to the rolling `rolling` release, get-myos's default mirror (`docs/packages.md`, `docs/testing.md`).
+Every run boots the four disk images with the quick tests (`test-mini`: the tests tagged `net`, `pkg`, `heavy` or `install` skipped, `docs/testing.md`); the daily run and a dispatch with `full_boot` run every test (`test-full`), which also installs the build's own packages into the guest with `get-myos` from a mirror the launcher serves. On master, the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`) and the packages go to the rolling `rolling` release, get-myos's default mirror (`docs/packages.md`, `docs/testing.md`).
 
 ---
 

@@ -8,8 +8,8 @@
 //! cargo run -- riscv64      # QEMU virt + RISC-V UEFI, serial + ramfb
 //! cargo run -- iso          # write target/myos-x86_64.iso (no QEMU)
 //! cargo run -- packages     # write the package tarballs and indexes
-//! cargo run -- test-mini    # headless BIOS boot running the quick test list
-//! cargo run -- aarch64 test-full   # the full list (also uefi, riscv64)
+//! cargo run -- test --skip heavy      # headless BIOS boot running the tests but the long ones
+//! cargo run -- aarch64 test           # every test (also uefi, riscv64)
 //! ```
 
 mod boot_test;
@@ -20,7 +20,7 @@ mod packages;
 mod ports;
 mod release;
 
-use boot_test::Mode;
+use boot_test::{Mode, Selection};
 
 use limine_image::{
     DiskFile, fetch_limine, limine_conf, limine_esp_files, limine_version,
@@ -95,10 +95,10 @@ fn main() {
     }
 
     if args.iter().any(|a| a == "--ci") {
-        eprintln!("error: `--ci` is gone; run the boot tests with `test-mini` or `test-full` (docs/testing.md)");
+        eprintln!("error: `--ci` is gone; run the boot tests with `test` (docs/testing.md)");
         exit(2);
     }
-    let test = args.iter().find_map(|a| Mode::parse(a));
+    let test = Selection::parse(&args).map(Mode::Tests);
     let what = args
         .iter()
         .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso" | "packages"))
@@ -132,15 +132,17 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "\
-Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test-mini|test-full]
+Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--only NAME,...] [--tags TAG,...] [--skip TAG,...] [--budget MINUTES]]
        cargo run -- iso | packages
 
   bios       Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
   uefi       Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
   aarch64    Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
   riscv64    Boot the RISC-V64 kernel via Limine on QEMU virt + UEFI (serial + ramfb)
-  test-mini  Headless: log in, run the quick test list in the guest, exit with its result
-  test-full  The same with the full list (the packages, HTTPS, SSH, os-test; needs the network)
+  test       Headless: log in, run the tests in the guest, exit with its result. Every test
+             carries tags (docs/testing.md): --only names the tests, --tags takes those with
+             any of the tags, --skip leaves out those with any; `test-mini` is
+             `test --skip net,pkg,heavy,install` (no network, a few minutes), `test-full` is `test`
   iso        Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
   packages   Write the package tarballs and indexes of the three arches to target/packages/",
     );
@@ -243,8 +245,9 @@ fn write_scratch_image() {
 /// third NVMe controller, `/dev/nvme2n1/data`, its writes dropped with the boot.
 static ALPINE_DISK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-fn prepare_alpine_disk(arch: &str, mode: Mode) {
-    if mode != Mode::Full || !linux_compat_enabled() {
+fn prepare_alpine_disk(arch: &str, mode: &Mode) {
+    let Mode::Tests(sel) = mode else { return };
+    if !sel.needs_network() || !linux_compat_enabled() {
         return;
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -414,11 +417,13 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
 /// listening. QEMU `guestfwd=…-tcp:127.0.0.1:8765` aborts at startup with
 /// "Connection refused" if nothing is bound.
 ///
-/// The full test installs this build's packages: pack them for `arch` and
-/// serve `target/packages/` on the host loopback, which the guest reaches
-/// as http://10.0.2.2:8765. The mini list stays network-free.
-fn start_package_mirror(arch: &str, mode: Mode) {
-    if mode != Mode::Full {
+/// The `packages` test installs this build's packages: pack them for `arch`
+/// and serve `target/packages/` on the host loopback, which the guest
+/// reaches as http://10.0.2.2:8765. A run that skips `net` stays
+/// network-free.
+fn start_package_mirror(arch: &str, mode: &Mode) {
+    let Mode::Tests(sel) = mode else { return };
+    if !sel.needs_network() {
         return;
     }
     let dir = packages::build(&PathBuf::from(env!("CARGO_MANIFEST_DIR")), arch);
@@ -583,9 +588,9 @@ fn linux_compat_enabled() -> bool {
 }
 
 fn run_test_bios(bios_path: &str, mode: Mode) {
-    start_package_mirror("x86_64", mode);
-    prepare_alpine_disk("x86_64", mode);
-    test_boots("bios", Path::new(bios_path), mode, |disk, _| qemu_test_bios(disk));
+    start_package_mirror("x86_64", &mode);
+    prepare_alpine_disk("x86_64", &mode);
+    test_boots("bios", Path::new(bios_path), mode, |disk| qemu_test_bios(disk));
 }
 
 fn qemu_test_bios(disk: &Path) -> std::process::Child {
@@ -637,9 +642,9 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
 }
 
 fn run_test_uefi(uefi_path: &str, mode: Mode) {
-    start_package_mirror("x86_64", mode);
-    prepare_alpine_disk("x86_64", mode);
-    test_boots("uefi", Path::new(uefi_path), mode, |disk, _| qemu_test_uefi(disk));
+    start_package_mirror("x86_64", &mode);
+    prepare_alpine_disk("x86_64", &mode);
+    test_boots("uefi", Path::new(uefi_path), mode, |disk| qemu_test_uefi(disk));
 }
 
 fn qemu_test_uefi(disk: &Path) -> std::process::Child {
@@ -706,9 +711,9 @@ fn run_test_aarch64(mode: Mode) {
     // The image first: its kernel build makes the user programs the
     // packages' boot files (the initramfs) take.
     let image = build_aarch64_image();
-    start_package_mirror("aarch64", mode);
-    prepare_alpine_disk("aarch64", mode);
-    test_boots("aarch64", &image, mode, |disk, _| {
+    start_package_mirror("aarch64", &mode);
+    prepare_alpine_disk("aarch64", &mode);
+    test_boots("aarch64", &image, mode, |disk| {
         qemu_aarch64(disk, true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -719,29 +724,31 @@ fn run_test_aarch64(mode: Mode) {
 }
 
 /// The boot test of the boot disk `image`, on a copy of it
-/// (`target/boot-test-<name>.img`): the full list's `get-myos --upgrade`
-/// writes its other slot, and `get-myos --install` makes a boot disk of the
-/// scratch disk. When the list passed, the copy boots again
-/// ([`Mode::Reboot`]), which must come up from that slot, and then the
-/// installed disk ([`Mode::Installed`], kept as
+/// (`target/boot-test-<name>.img`): the `install` tests' `get-myos
+/// --upgrade` writes its other slot, and `get-myos --install` makes a boot
+/// disk of the scratch disk. When the tests passed and those ran, the copy
+/// boots again ([`Mode::Reboot`]), which must come up from that slot, and
+/// then the installed disk ([`Mode::Installed`], kept as
 /// `target/installed-<name>.img`: every boot makes a new scratch disk) as
 /// the boot disk, by BIOS on the bios job and UEFI elsewhere. The copy keeps
 /// the build's image as it was.
-fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path, Mode) -> std::process::Child) -> ! {
+fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std::process::Child) -> ! {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
     let disk = target.join(format!("boot-test-{name}.img"));
     limine_image::copy_sparse(image, &disk);
     let linux = linux_compat_enabled();
-    let mut ok = boot_test::run(spawn(&disk, mode), mode, linux);
-    if ok && mode == Mode::Full {
+    let outcome = boot_test::run(spawn(&disk), &mode, linux);
+    let mut ok = outcome.ok;
+    let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
+    if ok && ran("boot_upgrade") {
+        eprintln!("boot test: the upgraded disk boots again");
+        ok = boot_test::run(spawn(&disk), &Mode::Reboot, linux).ok;
+    }
+    if ok && ran("boot_install_local") {
         let installed = target.join(format!("installed-{name}.img"));
         limine_image::copy_sparse(&scratch_img_path(), &installed);
-        eprintln!("boot test: the upgraded disk boots again");
-        ok = boot_test::run(spawn(&disk, Mode::Reboot), Mode::Reboot, linux);
-        if ok {
-            eprintln!("boot test: the disk get-myos --install made boots");
-            ok = boot_test::run(spawn(&installed, Mode::Installed), Mode::Installed, linux);
-        }
+        eprintln!("boot test: the disk get-myos --install made boots");
+        ok = boot_test::run(spawn(&installed), &Mode::Installed, linux).ok;
     }
     exit(if ok { 0 } else { 1 })
 }
@@ -1205,9 +1212,9 @@ fn run_test_riscv64(mode: Mode) {
     // The image first: its kernel build makes the user programs the
     // packages' boot files (the initramfs) take.
     let image = build_riscv64_image();
-    start_package_mirror("riscv64", mode);
-    prepare_alpine_disk("riscv64", mode);
-    test_boots("riscv64", &image, mode, |disk, _| {
+    start_package_mirror("riscv64", &mode);
+    prepare_alpine_disk("riscv64", &mode);
+    test_boots("riscv64", &image, mode, |disk| {
         qemu_riscv64(disk, true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

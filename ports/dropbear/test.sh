@@ -7,9 +7,8 @@
 # Each session writes its PATH to a file in /tmp when it gets in: myos's
 # directories (DEFAULT_ROOT_PATH in localoptions.h; the shell keeps what it
 # inherits). Then a login on a pty: the pair is its session's controlling
-# terminal, /proc/self/tty names it and /dev/tty opens. Full mode only (the
-# host needs an ssh client and the time).
-[ "$MODE" = full ] || return 0
+# terminal, /proc/self/tty names it and /dev/tty opens. The host needs an
+# ssh client (the CI container has one).
 
 ssh_two_clients() {
 	rm -f /tmp/ssh-ok-a /tmp/ssh-ok-b /tmp/ssh-tty
@@ -32,4 +31,4 @@ ssh_two_clients() {
 	*) return 1 ;;
 	esac
 }
-t ssh ssh_two_clients
+t -t netfs,tty ssh ssh_two_clients

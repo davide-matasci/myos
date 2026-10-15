@@ -69,17 +69,18 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
 
 ## Testing
 
-The real test is booting: `test-mini` / `test-full` boot headless, log in
-and run a test list **in the guest** (the ports' `test.sh`, the kernel's
-`user/tests/kernel.sh`),
+The real test is booting: `test` boots headless, logs in and runs the
+selected tests **in the guest** (the ports' `test.sh`, the kernel's
+`user/tests/kernel.sh`; every test carries tags, `docs/testing.md`),
 while the host watches the console for `TEST <name> PASS|FAIL` lines
 (`src/boot_test.rs`, `docs/testing.md`). QEMU runs under TCG, so a boot
 takes minutes.
 
 ```sh
-cargo run -- test-mini                     # quick list (what PR CI runs)
+cargo run -- test-mini                     # the quick tests: --skip net,pkg,heavy,install (what PR CI runs)
 cargo run -- aarch64 test-mini             # also riscv64, uefi
-cargo run -- test-full                     # full list: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
+cargo run -- test                          # every test: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
+cargo run -- test --tags netfs --skip heavy   # a selection by tag; --only NAME,... by name
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode -p ext2fs -p fatvol   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
@@ -89,9 +90,11 @@ cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patch
 - Test on every arch you could have affected; arch-specific code needs all
   three. Don't over-test: a mini run per affected arch is usually enough
   locally, CI does the rest.
-- New behavior gets a test: a function and a `t` line in the `test.sh` of
-  the port or program it belongs to (`PORT_TEST` in its `port.env`; a
-  package's test runs in the full mode after the install; `host.sh` with
+- New behavior gets a test: a function and a `t -t tags` line in the
+  `test.sh` of the port or program it belongs to (`PORT_TEST` in its
+  `port.env`; tag what it needs, `net`/`pkg`/`heavy`/`install`, and what it
+  covers, a module's or area's name; a package's test runs after the
+  install; `host.sh` with
   `PORT_HOST` when the test needs a peer on the host), the kernel's own in
   `user/tests/kernel.sh`, a smoke program under `user/c`, or an os-test in
   the curated lists
