@@ -30,7 +30,8 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    net0 10.0.2.15 255.255.255.0 up,broadcast
    ```
    (`-` for the address and mask until DHCP is done)
-3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}`; a conversation's
+3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}` (and a tcp
+   conversation's `peek`); a conversation's
    files are the user's whose process read `clone` (an accepted
    connection: the listener's), no other user's (`docs/security.md`)
 
@@ -44,6 +45,7 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 | `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`, read conv id, open `ctl` + `data`; return **data fd** |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
 | `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. 127.0.0.0/8, the host's own address and 0.0.0.0 go over `lo`: a port nobody listens on is refused at once (**ECONNREFUSED**) |
+| `recv(MSG_PEEK)` (TCP) | a read of the conversation's `peek`, which gives what a read of `data` would and leaves it there; it waits (or says `EAGAIN`) as an empty read of `data` does (UDP: issue #454) |
 | `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks (in `SYS_POLL`) unless `O_NONBLOCK` (then EAGAIN); hangup → EOF. A TCP write takes what netd has room for (below): a blocking one waits for the rest, `O_NONBLOCK` gets a short write or EAGAIN, a hung-up peer EPIPE |
 | UDP `bind`/`connect`/`sendto`/`recvfrom` | see UDP below |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |

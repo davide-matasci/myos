@@ -16,6 +16,8 @@
 //! for the conversation (`refused`) fails its next write and leaves its
 //! reads nothing (the kernel makes a failed read an empty one), makes
 //! `poll` report POLLERR, and is what a read of its `ctl` returns (once).
+//! A tcp conversation's `peek` reads what `data` would, leaving it there
+//! (`recv` with `MSG_PEEK`).
 //!
 //! Module calls take no kernel lock: netd's replies (`/dev/netd` writes) land
 //! on one CPU while a reader drains `data` on another, so every entry point
@@ -336,6 +338,8 @@ enum Node {
     From(u8, u16),
     /// `/net/udp/N/hdata`: `data` with the datagrams' headers.
     Hdata(u16),
+    /// `/net/tcp/N/peek`: what a read of `data` would give, left there.
+    Peek(u8, u16),
 }
 
 impl Node {
@@ -349,7 +353,8 @@ impl Node {
             | Node::Status(p, _)
             | Node::Listen(p, _)
             | Node::Rights(p, _)
-            | Node::From(p, _) => Some(p),
+            | Node::From(p, _)
+            | Node::Peek(p, _) => Some(p),
             Node::Hdata(_) => Some(PROTO_UDP),
         }
     }
@@ -387,6 +392,9 @@ fn parse_path(path: &str) -> Option<Node> {
                     Some(Node::Hdata(conv))
                 }
                 Some("status") if it.next().is_none() => Some(Node::Status(proto, conv)),
+                Some("peek") if it.next().is_none() && proto == PROTO_TCP => {
+                    Some(Node::Peek(proto, conv))
+                }
                 Some("listen") if it.next().is_none() && proto == PROTO_UNIX => {
                     Some(Node::Listen(proto, conv))
                 }
@@ -871,13 +879,13 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             return_credit(st, id, PROTO_UDP);
             (S_IFREG | 0o666, st.convs[id as usize].data_len as u32, 200 + (id as u32) * 4)
         }
-        Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) => {
+        Node::Ctl(p, id) | Node::Data(p, id) | Node::Status(p, id) | Node::Peek(p, id) => {
             if !conv_ok(&st.convs, id, p) {
                 return -1;
             }
             let size = match node {
                 Node::Status(_, _) => st.convs[id as usize].status_len as u32,
-                Node::Data(p, _) => {
+                Node::Data(p, _) | Node::Peek(p, _) => {
                     return_credit(st, id, p);
                     st.convs[id as usize].data_len as u32
                 }
@@ -885,7 +893,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
             };
             let tag = match node {
                 Node::Ctl(_, _) => 1,
-                Node::Data(_, _) => 2,
+                Node::Data(_, _) | Node::Peek(_, _) => 2,
                 _ => 3,
             };
             (S_IFREG | 0o666, size, 200 + (id as u32) * 4 + tag)
@@ -952,6 +960,9 @@ unsafe extern "C" fn net_listdir(
             if p == PROTO_UDP {
                 let _ = put_bytes(dst, &mut n, b"hdata");
             }
+            if p == PROTO_TCP {
+                let _ = put_bytes(dst, &mut n, b"peek");
+            }
             let _ = put_bytes(dst, &mut n, b"status");
         }
         _ => return -1,
@@ -983,10 +994,11 @@ unsafe extern "C" fn net_read(
         return unix::read(node, pos, out);
     }
     let st = &mut *lock();
-    // hdata is data with the headers.
-    let (node, hdr) = match node {
-        Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true),
-        n => (n, false),
+    // hdata is data with the headers, peek data that stays.
+    let (node, hdr, peek) = match node {
+        Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true, false),
+        Node::Peek(p, id) => (Node::Data(p, id), false, true),
+        n => (n, false, false),
     };
     match node {
         Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
@@ -1052,6 +1064,9 @@ unsafe extern "C" fn net_read(
                 out[..n].copy_from_slice(&c.data[off..off + n]);
                 (n, n)
             };
+            if peek {
+                return n as i32;
+            }
             c.data_len = (have - used) as u16;
             c.data_off = if used < have { (off + used) as u16 } else { 0 };
             c.credit += used as u16;

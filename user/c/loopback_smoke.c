@@ -7,7 +7,8 @@
  * (recvfrom), a second bind of a taken port fails, connect and unconnect
  * (AF_UNSPEC), a datagram to a port nobody bound refuses the next send
  * (ECONNREFUSED), the host's own address is local too. TCP: a listener
- * accepts a connection to 127.0.0.1 and both ends talk; one bound to
+ * accepts a connection to 127.0.0.1 and both ends talk (a MSG_PEEK first,
+ * which leaves the bytes for the read); one bound to
  * 127.0.0.1 has that address (getsockname), accepts there and refuses a
  * connection to the host's address, and an address not the host's is not
  * bindable (EADDRNOTAVAIL). An unconnected UDP
@@ -191,7 +192,14 @@ static int tcp(void) {
     if (s < 0) {
         return fail("tcp accept");
     }
-    if (write(c, "hi", 2) != 2 || read(s, buf, sizeof buf) != 2 || memcmp(buf, "hi", 2) != 0
+    if (write(c, "hi", 2) != 2) {
+        return fail("tcp write");
+    }
+    /* MSG_PEEK leaves the bytes for the next read. */
+    if (recv(s, buf, sizeof buf, MSG_PEEK) != 2 || memcmp(buf, "hi", 2) != 0) {
+        return fail("tcp peek");
+    }
+    if (read(s, buf, sizeof buf) != 2 || memcmp(buf, "hi", 2) != 0
         || write(s, "yo", 2) != 2 || read(c, buf, sizeof buf) != 2 || memcmp(buf, "yo", 2) != 0) {
         return fail("tcp exchange");
     }

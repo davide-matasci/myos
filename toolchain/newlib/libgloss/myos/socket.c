@@ -1644,12 +1644,53 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
     return write(sockfd, buf, len);
 }
 
+/* MSG_PEEK on a stream: what the conversation's `peek` gives, which netfs
+ * leaves for `data`; waiting for it as a read of `data` would. */
+static ssize_t tcp_peek(struct myos_sock *s, void *buf, size_t len, int flags) {
+    char path[64];
+    ssize_t n;
+    int fd;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "peek") < 0) {
+        errno = EIO;
+        return -1;
+    }
+    for (;;) {
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            errno = ENOTCONN;
+            return -1;
+        }
+        n = read(fd, buf, len);
+        close(fd);
+        if (n > 0 || len == 0) {
+            return n;
+        }
+        switch (rx_state(s)) {
+        case 0:
+            continue;
+        case 1:
+            return 0;
+        }
+        if (s->nonblock || (flags & MSG_DONTWAIT)) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (wait_readable(s) < 0) {
+            errno = EINTR;
+            return -1;
+        }
+    }
+}
+
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     ssize_t n;
     struct myos_sock *s = sock_lookup(sockfd);
     int restore = 0;
     if (is_dgram(sockfd)) {
         return udp_recv(s, buf, len, flags, NULL, NULL);
+    }
+    if (s != NULL && (flags & MSG_PEEK) && s->family == AF_INET && s->state == SOCK_CONNECTED) {
+        return tcp_peek(s, buf, len, flags);
     }
     /* MSG_DONTWAIT: force nonblock for this call only (read path checks s->nonblock). */
     if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
