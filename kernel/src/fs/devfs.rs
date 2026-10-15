@@ -554,13 +554,16 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     }
 }
 
-/// `poll` readiness of a device ([`crate::fs::poll`]): a module device's
-/// `data` asks its module; everything else is always ready (`None`).
-pub fn poll(name: &str) -> Option<u32> {
+/// `poll` readiness of a device and its change count ([`crate::fs::poll`]):
+/// a module device's `data` asks its module; everything else is always
+/// ready (`None`).
+pub fn poll(name: &str) -> Option<(u32, u64)> {
     match parse(name)? {
         Node::ChrData(i) => {
             let f = chr(i)?.ops.poll?;
-            Some(unsafe { f() })
+            let mut changes = 0u64;
+            let bits = unsafe { f(&mut changes) };
+            Some((bits, changes))
         }
         _ => None,
     }

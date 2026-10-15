@@ -20,7 +20,7 @@
 //! bytes are pushed straight into the readable ring — including ESC — so TUIs
 //! get non-canonical input.
 
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::arch;
@@ -41,6 +41,22 @@ static IRQ_BUF: [AtomicU8; IRQ_RING] = {
 
 /// The console tty: one input line-discipline instance (termios + rings).
 static TTY: Mutex<crate::tty::TtyIn> = Mutex::new(crate::tty::TtyIn::new());
+/// How many times console input arrived ([`notify`]): what an `et` wait
+/// set member on the console is reported against (`crate::evfd`).
+static CHANGES: AtomicU64 = AtomicU64::new(0);
+
+/// Console input arrived: its readers (possibly another task than the one
+/// polling) and the pollers look again.
+pub fn notify() {
+    CHANGES.fetch_add(1, Ordering::SeqCst);
+    task::wake(task::KEY_CONSOLE);
+    task::wake_any();
+}
+
+/// How many times console input arrived so far.
+pub fn changes() -> u64 {
+    CHANGES.load(Ordering::SeqCst)
+}
 
 pub fn init() {
     IRQ_HEAD.store(0, Ordering::SeqCst);
@@ -209,9 +225,7 @@ fn push_byte(raw: u8) {
         let mut t = TTY.lock();
         t.push_raw(raw, &mut console_echo)
     };
-    // Readers (possibly another task than the one polling) and pollers.
-    task::wake(task::KEY_CONSOLE);
-    task::wake_any();
+    notify();
     if vintr {
         // Console foreground group (signal.rs resolves reader/last-input pgid).
         crate::signal::handle_ctrl_c();

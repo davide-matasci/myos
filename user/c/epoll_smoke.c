@@ -4,8 +4,10 @@
  * A set reports its ready members with their cookies: a pipe's write end
  * as writable, its read end once a byte is in it and not before; a
  * timeout that elapses; a forked child's write ending a wait (not before);
- * an event counter among the members; EPOLLET reporting a readiness once;
- * EPOLLONESHOT once until EPOLL_CTL_MOD; EEXIST, ENOENT, EBADF and ELOOP;
+ * an event counter among the members; EPOLLET reporting a readiness once,
+ * again for new data, not for other objects' activity, on a pipe and on a
+ * unix socket; EPOLLONESHOT once until EPOLL_CTL_MOD; EEXIST, ENOENT, EBADF
+ * and ELOOP;
  * a member gone with its last fd; a set in a set (readable with it); the
  * set shared with a fork (a member the child adds). Prints [ OK ] epoll.
  */
@@ -15,6 +17,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -80,7 +83,7 @@ static int members(int ep) {
 
 int main(void) {
     struct epoll_event ev[4];
-    int p[2], q[2], ep, ep2, efd, n, status = 0;
+    int p[2], q[2], r[2], s[2], ep, ep2, efd, n, status = 0;
     char c = 'x';
     long t0;
     pid_t pid;
@@ -170,6 +173,42 @@ int main(void) {
     if (write(q[1], &c, 1) != 1 || one(ep, 0, ev) != 0 || ev[0].data.u64 != 30 || read(q[0], &c, 1) != 1) {
         return fail("et: reported again after a drain");
     }
+    /* Only the member's own object counts: traffic on another pipe (a wake
+     * in the system, issue #456) does not report it again; a new byte
+     * does, drained or not. */
+    if (pipe(r) != 0 || write(q[1], &c, 1) != 1 || one(ep, 0, ev) != 0 || ev[0].data.u64 != 30) {
+        return fail("et: reported for a byte");
+    }
+    if (write(r[1], &c, 1) != 1 || read(r[0], &c, 1) != 1 || epoll_wait(ep, ev, 4, 0) != 0) {
+        return fail("et: another pipe's traffic is no edge");
+    }
+    if (write(q[1], &c, 1) != 1 || one(ep, 0, ev) != 0 || ev[0].data.u64 != 30 || epoll_wait(ep, ev, 4, 0) != 0) {
+        return fail("et: new data is a new edge, once");
+    }
+    if (read(q[0], &c, 1) != 1 || read(q[0], &c, 1) != 1 || epoll_wait(ep, ev, 4, 0) != 0) {
+        return fail("et: drained again");
+    }
+    /* The same on a unix socket (a /net file: its module counts the
+     * changes). */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, s) != 0 || add(ep, s[0], EPOLLIN | EPOLLET, 33) != 0) {
+        return fail("et: socketpair");
+    }
+    if (epoll_wait(ep, ev, 4, 0) != 0 || write(s[1], &c, 1) != 1 || one(ep, 0, ev) != 0 || ev[0].data.u64 != 33) {
+        return fail("et: a socket's byte is reported");
+    }
+    if (write(r[1], &c, 1) != 1 || read(r[0], &c, 1) != 1 || epoll_wait(ep, ev, 4, 0) != 0) {
+        return fail("et: a socket's byte is reported once, a pipe's traffic no edge");
+    }
+    if (write(s[1], &c, 1) != 1 || one(ep, 0, ev) != 0 || ev[0].data.u64 != 33 || epoll_wait(ep, ev, 4, 0) != 0) {
+        return fail("et: a socket's new byte is a new edge, once");
+    }
+    if (read(s[0], &c, 1) != 1 || read(s[0], &c, 1) != 1 || epoll_wait(ep, ev, 4, 0) != 0) {
+        return fail("et: a socket drained");
+    }
+    close(s[0]);
+    close(s[1]);
+    close(r[0]);
+    close(r[1]);
     /* One shot: once, until re-armed. */
     if (mod(ep, q[0], EPOLLIN | EPOLLONESHOT, 31) != 0 || write(q[1], &c, 1) != 1) {
         return fail("oneshot mod");

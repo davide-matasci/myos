@@ -72,6 +72,10 @@ enum State {
 
 struct Conv {
     state: State,
+    /// How many times the end changed (its state, bytes in or out of its
+    /// buffer, room in its peer's): the change count its `data`'s `poll`
+    /// reports. Kept across the slot's reuse ([`reset`]).
+    changes: u64,
     /// The uid of the user whose process read `clone` (a connection made
     /// by `connect`: the listener's), the only one whose processes may
     /// open its files.
@@ -102,6 +106,7 @@ struct Conv {
 impl Conv {
     const FREE: Self = Self {
         state: State::Free,
+        changes: 0,
         owner: crate::NO_OWNER,
         peer: None,
         name_len: 0,
@@ -145,6 +150,21 @@ fn with<R>(f: impl FnOnce(&mut Vec<Conv>) -> R) -> R {
     f(&mut CONVS.lock())
 }
 
+/// End `id` changed: its readiness may have, and an edge-triggered poller
+/// of its `data` is told again ([`Conv::changes`]).
+fn changed(convs: &mut [Conv], id: u16) {
+    if let Some(c) = convs.get_mut(id as usize) {
+        c.changes = c.changes.wrapping_add(1);
+    }
+}
+
+/// Slot `id` back to [`Conv::FREE`], its change count kept and moved.
+fn reset(convs: &mut [Conv], id: u16) {
+    let changes = convs[id as usize].changes;
+    convs[id as usize] = Conv::FREE;
+    convs[id as usize].changes = changes.wrapping_add(1);
+}
+
 /// [`with`] for a call that may let go of passed fds (into `drops`): they
 /// are released once the lock is dropped, as the last reference to a unix
 /// socket closes it, back into this module.
@@ -176,7 +196,7 @@ fn alloc(convs: &mut Vec<Conv>) -> Option<u16> {
         }
         None => return None,
     };
-    convs[i] = Conv::FREE;
+    reset(convs, i as u16);
     convs[i].state = State::Open;
     convs[i].owner = crate::uid();
     Some(i as u16)
@@ -188,6 +208,8 @@ fn link(convs: &mut Vec<Conv>, a: u16, b: u16) {
     convs[a as usize].peer = Some(b);
     convs[b as usize].state = State::Connected;
     convs[b as usize].peer = Some(a);
+    changed(convs, a);
+    changed(convs, b);
 }
 
 /// End `id`'s connection: both ends see `hangup`.
@@ -195,10 +217,12 @@ fn disconnect(convs: &mut Vec<Conv>, id: u16) {
     if let Some(peer) = convs[id as usize].peer.take() {
         convs[peer as usize].peer = None;
         convs[peer as usize].state = State::Hangup;
+        changed(convs, peer);
     }
     if convs[id as usize].state == State::Connected {
         convs[id as usize].state = State::Hangup;
     }
+    changed(convs, id);
 }
 
 /// The listener whose name is `name`.
@@ -216,6 +240,7 @@ fn enqueue(convs: &mut Vec<Conv>, on: u16, id: u16) -> bool {
     }
     c.queue[c.queued] = id;
     c.queued += 1;
+    changed(convs, on);
     true
 }
 
@@ -287,12 +312,15 @@ pub fn read(node: Node, pos: usize, out: &mut [u8]) -> i32 {
 }
 
 /// `poll` readiness: bytes (or a queued connection) to read, room in the
-/// peer's buffer to write, the peer gone.
-pub fn poll(node: Node) -> u32 {
+/// peer's buffer to write, the peer gone; the end's change count into
+/// `changes`.
+pub fn poll(node: Node, changes: *mut u64) -> u32 {
     with(|convs| {
         let (Node::Data(_, id) | Node::Listen(_, id)) = node else {
             return MYOS_POLLIN | MYOS_POLLOUT;
         };
+        // SAFETY: the kernel passes a live out-parameter.
+        unsafe { *changes = convs.get(id as usize).map_or(0, |c| c.changes) };
         let Some(c) = get_own(convs, id) else {
             return MYOS_POLLERR | MYOS_POLLHUP;
         };
@@ -353,6 +381,14 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             if c.rx.is_empty() && c.rx.capacity() > BUF_KEEP {
                 c.rx = VecDeque::new();
             }
+            if n > 0 {
+                // Room for the peer's writes too.
+                let peer = c.peer;
+                changed(convs, id);
+                if let Some(peer) = peer {
+                    changed(convs, peer);
+                }
+            }
             n as i32
         }
         Node::Status(_, id) => {
@@ -371,6 +407,7 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             let next = c.queue[0];
             c.queue.copy_within(1..c.queued, 0);
             c.queued -= 1;
+            changed(convs, id);
             dec(next, out)
         }
         Node::Ctl(_, id) => {
@@ -451,6 +488,9 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             if !fds.is_empty() {
                 convs[peer as usize].marks.push_back((at, fds));
             }
+            // Bytes for the peer; this end may have filled its buffer.
+            changed(convs, peer);
+            changed(convs, id);
             n as i32
         }
         _ => -1,
@@ -486,6 +526,7 @@ fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8], drops: &mut Vec<usize>) -> bo
         c.name[..name.len()].copy_from_slice(name);
         c.name_len = name.len();
         c.state = State::Listening;
+        changed(convs, id);
         return true;
     }
     if let Some(name) = cmd.strip_prefix(b"connect ") {
@@ -543,10 +584,10 @@ pub fn release(node: Node) {
         for &q in &queue[..queued] {
             disconnect(convs, q);
             convs[q as usize].take_rights(drops);
-            convs[q as usize] = Conv::FREE;
+            reset(convs, q);
         }
         disconnect(convs, id);
         convs[id as usize].take_rights(drops);
-        convs[id as usize] = Conv::FREE;
+        reset(convs, id);
     });
 }

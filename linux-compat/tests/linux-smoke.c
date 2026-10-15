@@ -779,6 +779,17 @@ static void check_epoll(void) {
     check(read(q[0], &c, 1) == 1 && read(q[0], &c, 1) == 1 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 &&
               ev[0].data.u64 == 30 && read(q[0], &c, 1) == 1,
           "EPOLLET: reported again after a drain");
+    /* Only the member's own object counts (issue #456): another pipe's
+     * traffic is no edge, a new byte is one, drained or not. */
+    int r[2] = {-1, -1};
+    check(pipe(r) == 0 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 && ev[0].data.u64 == 30 &&
+              write(r[1], &c, 1) == 1 && read(r[0], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 0,
+          "EPOLLET: another pipe's traffic is no edge");
+    check(write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 && ev[0].data.u64 == 30 && epoll_wait(ep, ev, 4, 0) == 0 &&
+              read(q[0], &c, 1) == 1 && read(q[0], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 0,
+          "EPOLLET: new data is a new edge, once");
+    close(r[0]);
+    close(r[1]);
     ev[0].events = EPOLLIN | EPOLLONESHOT;
     ev[0].data.u64 = 31;
     check(epoll_ctl(ep, EPOLL_CTL_MOD, q[0], &ev[0]) == 0 && write(q[1], &c, 1) == 1 && epoll_wait(ep, ev, 4, 0) == 1 &&

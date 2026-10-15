@@ -1,6 +1,7 @@
 //! In-kernel pipe ring buffers for `pipe(2)`.
 
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 /// Anonymous `pipe()` slots, system-wide: `0..ANON_PIPES`. A process
@@ -35,6 +36,10 @@ struct Pipe {
 }
 
 static PIPES: Mutex<[Option<Pipe>; MAX_PIPES]> = Mutex::new([const { None }; MAX_PIPES]);
+/// Per pipe, how many times it changed (a write, a read, an end closed):
+/// what an `et` wait set member on either end is reported against
+/// (`crate::evfd`). Kept across the slot's reuse.
+static CHANGES: [AtomicU64; MAX_PIPES] = [const { AtomicU64::new(0) }; MAX_PIPES];
 
 pub fn free(id: usize) {
     let mut pipes = PIPES.lock();
@@ -129,8 +134,21 @@ pub fn drop_writer(id: usize) -> bool {
 /// Wake tasks blocked on this pipe and any poller. Called after the PIPES
 /// lock is released so the woken side can take it at once.
 fn notify(id: usize) {
+    changed(id);
     crate::task::wake(crate::task::key_pipe(id));
     crate::task::wake_any();
+}
+
+/// The pipe changed: its count moves, for the `et` members on it.
+fn changed(id: usize) {
+    if let Some(c) = CHANGES.get(id) {
+        c.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// How many times pipe `id` changed so far ([`notify`]).
+pub fn changes(id: usize) -> u64 {
+    CHANGES.get(id).map_or(0, |c| c.load(Ordering::SeqCst))
 }
 
 /// Last end closed: free an anonymous pipe; a named FIFO keeps its slot but
@@ -234,7 +252,7 @@ pub fn read(id: usize, out: &mut [u8]) -> Option<usize> {
 }
 
 pub fn write(id: usize, data: &[u8]) -> usize {
-    let n = {
+    let (n, was_empty) = {
         let mut pipes = PIPES.lock();
         let Some(p) = pipes.get_mut(id).and_then(|s| s.as_mut()) else {
             return usize::MAX;
@@ -250,13 +268,22 @@ pub fn write(id: usize, data: &[u8]) -> usize {
         p.data[tail..tail + first].copy_from_slice(&data[..first]);
         p.data[..n - first].copy_from_slice(&data[first..n]);
         p.len += n;
-        if n == 0 || !was_empty {
+        if n == 0 {
             return n;
         }
-        n
+        (n, was_empty)
     };
-    // Data landed in an empty pipe: a blocked reader / poller can continue.
-    notify(id);
+    if was_empty {
+        // Data landed in an empty pipe: a blocked reader / poller can
+        // continue.
+        notify(id);
+    } else {
+        // More data: no reader is blocked, but new data is an edge for an
+        // `et` member, and its poller may wait for it (Linux wakes a polled
+        // pipe's readers on every write too).
+        changed(id);
+        crate::task::wake_any();
+    }
     n
 }
 

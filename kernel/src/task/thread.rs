@@ -178,6 +178,7 @@ fn kill_other_threads(mark: impl FnOnce(&mut Task)) -> usize {
         for j in tasks.slots() {
             if j != me && is_thread_of(&tasks, j, pid) {
                 tasks[j].sig_pending |= 1 << crate::signal::SIGKILL;
+                tasks[j].sig_changes += 1;
                 kicks |= wake_task_locked(&mut tasks, j);
             }
         }

@@ -545,7 +545,7 @@ three, the kernel crate itself an hour. Known gaps:
   layer flags the fd and turns each 16-byte record a read gives into a
   `struct signalfd_siginfo` (`ssi_signo` Linux's number, the rest 0).
   `EPOLLET` reports a readiness once, and again only
-  once something happened since (`docs/events.md`); `EPOLLPRI`,
+  once the fd's object changed (`docs/events.md`); `EPOLLPRI`,
   `EPOLLRDHUP`, `EPOLLEXCLUSIVE` and the signal mask of `epoll_pwait` are
   ignored. Every Linux
   clock is the one clock here, so a `TFD_TIMER_ABSTIME` value is taken

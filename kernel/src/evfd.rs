@@ -20,7 +20,7 @@
 //! `eventfd`, `timerfd`, `epoll` and `signalfd` are these (libgloss
 //! `evfd.c`, the Linux layer).
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use alloc::boxed::Box;
@@ -134,6 +134,9 @@ fn refs_drop(refs: &Refs) -> bool {
 pub struct Event {
     count: Mutex<u64>,
     semaphore: AtomicBool,
+    /// How many times the count moved: what an `et` wait set member is
+    /// reported against ([`wait_scan`]).
+    changes: AtomicU64,
     refs: Refs,
 }
 
@@ -141,7 +144,12 @@ static EVENTS: Table<Event> = Table::new();
 
 /// A new event counter (`clone`): its id.
 pub fn event_alloc() -> Option<usize> {
-    EVENTS.alloc(Event { count: Mutex::new(0), semaphore: AtomicBool::new(false), refs: Refs::new() })
+    EVENTS.alloc(Event {
+        count: Mutex::new(0),
+        semaphore: AtomicBool::new(false),
+        changes: AtomicU64::new(0),
+        refs: Refs::new(),
+    })
 }
 
 /// Whether event `id` is there, for the current process's user.
@@ -191,6 +199,7 @@ pub fn event_read(id: usize) -> Option<u64> {
         }
     };
     // Room for a writer that waited at the ceiling, and news for pollers.
+    e.changes.fetch_add(1, Ordering::SeqCst);
     crate::task::wake(crate::task::key_event(id));
     crate::task::wake_any();
     Some(taken)
@@ -220,20 +229,24 @@ pub fn event_write(id: usize, value: u64) -> EventWrite {
         }
     }
     if value != 0 {
+        e.changes.fetch_add(1, Ordering::SeqCst);
         crate::task::wake(crate::task::key_event(id));
         crate::task::wake_any();
     }
     EventWrite::Done
 }
 
-/// `(readable, writable)`: something to take, room for a write of 1.
-pub fn event_poll(id: usize) -> (bool, bool) {
+/// `(readable, writable, changes)`: something to take, room for a write of
+/// 1, and how many times the count moved so far (read first, as every
+/// object's: a move during the look shows at the next one).
+pub fn event_poll(id: usize) -> (bool, bool, u64) {
     match EVENTS.get(id) {
         Some(e) => {
+            let changes = e.changes.load(Ordering::SeqCst);
             let count = *e.count.lock();
-            (count > 0, count < COUNT_MAX)
+            (count > 0, count < COUNT_MAX, changes)
         }
-        None => (false, false),
+        None => (false, false, 0),
     }
 }
 
@@ -279,6 +292,9 @@ struct TimerState {
     interval_ns: u64,
     /// Expiries no read took yet.
     expirations: u64,
+    /// How many times the timer expired or was armed: what an `et` wait set
+    /// member is reported against ([`wait_scan`]).
+    changes: u64,
 }
 
 impl TimerState {
@@ -288,6 +304,7 @@ impl TimerState {
         if self.next_ns == 0 || self.next_ns > now {
             return false;
         }
+        self.changes = self.changes.wrapping_add(1);
         if self.interval_ns == 0 {
             self.expirations = self.expirations.saturating_add(1);
             self.next_ns = 0;
@@ -306,7 +323,7 @@ static TIMERS: Table<Timer> = Table::new();
 /// A new, disarmed timer (`clone`): its id.
 pub fn timer_alloc() -> Option<usize> {
     TIMERS.alloc(Timer {
-        state: Mutex::new(TimerState { next_ns: 0, interval_ns: 0, expirations: 0 }),
+        state: Mutex::new(TimerState { next_ns: 0, interval_ns: 0, expirations: 0, changes: 0 }),
         refs: Refs::new(),
     })
 }
@@ -351,12 +368,13 @@ pub fn timer_read(id: usize) -> Option<u64> {
     Some(core::mem::take(&mut s.expirations))
 }
 
-/// Readable: an expiry waits to be taken.
-pub fn timer_poll(id: usize) -> bool {
-    TIMERS.get(id).is_some_and(|t| {
+/// Readable (an expiry waits to be taken), and how many times the timer
+/// expired or was armed so far.
+pub fn timer_poll(id: usize) -> (bool, u64) {
+    TIMERS.get(id).map_or((false, 0), |t| {
         let mut s = t.state.lock();
         s.fire(crate::time::monotonic_ns());
-        s.expirations > 0
+        (s.expirations > 0, s.changes)
     })
 }
 
@@ -403,7 +421,7 @@ pub fn timer_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
     };
     {
         let mut s = t.state.lock();
-        *s = TimerState { next_ns, interval_ns, expirations: 0 };
+        *s = TimerState { next_ns, interval_ns, expirations: 0, changes: s.changes.wrapping_add(1) };
     }
     if next_ns != 0 {
         crate::task::deadline_soon(next_ns);
@@ -458,12 +476,13 @@ pub const WAIT_IN: u32 = 0x1;
 pub const WAIT_OUT: u32 = 0x4;
 pub const WAIT_ERR: u32 = 0x8;
 pub const WAIT_HUP: u32 = 0x10;
-/// `et`: a readiness is reported once, and again only once something
-/// happened since (any wake in the system, `crate::task::wait_seq`: the
-/// member's own new data among them). An edge, near enough: Linux reports
-/// every new event and nothing else; this reports a few more when the
-/// system is busy, which an edge-triggered reader takes as a read that
-/// finds nothing.
+/// `et`: a readiness is reported once, and again only once the member's
+/// object changed since: its change count moved (a write, a read, a close,
+/// its peer's; every object a set can hold keeps one,
+/// `crate::task::entry_poll_changes`). What Linux does: an fd is reported
+/// again when its object woke its waiters, not when anything else in the
+/// system did (issue #456 was a report keyed on the system-wide wake
+/// count).
 const WAIT_ET: u32 = 1 << 31;
 /// `oneshot`: reported once, then the member waits for a `mod`.
 const WAIT_ONESHOT: u32 = 1 << 30;
@@ -482,8 +501,9 @@ struct Member {
     target: FdEntry,
     events: u32,
     cookie: u64,
-    /// `et`: the wake sequence when its readiness was last reported, while
-    /// nothing happened since and it was not seen not ready.
+    /// `et`: the object's change count when its readiness was last
+    /// reported, while it did not move since and the member was not seen
+    /// not ready.
     reported: Option<u64>,
     /// `oneshot`: reported, waiting for a `mod`.
     disabled: bool,
@@ -491,6 +511,9 @@ struct Member {
 
 pub struct Wait {
     members: Mutex<Vec<Member>>,
+    /// How many `ctl` commands changed the set: with its members' counts,
+    /// what an `et` member on the set itself is reported against.
+    changes: AtomicU64,
     refs: Refs,
 }
 
@@ -498,7 +521,7 @@ static WAITS: Table<Wait> = Table::new();
 
 /// A new, empty wait set (`clone`): its id.
 pub fn wait_alloc() -> Option<usize> {
-    WAITS.alloc(Wait { members: Mutex::new(Vec::new()), refs: Refs::new() })
+    WAITS.alloc(Wait { members: Mutex::new(Vec::new()), changes: AtomicU64::new(0), refs: Refs::new() })
 }
 
 /// Whether wait set `id` is there, for the current process's user.
@@ -619,6 +642,7 @@ pub fn wait_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
         _ => return None,
     }
     // A member added or re-armed may be ready: the set's readers look.
+    w.changes.fetch_add(1, Ordering::SeqCst);
     crate::task::wake_any();
     Some(text.len())
 }
@@ -626,28 +650,32 @@ pub fn wait_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
 /// The ready members of set `id`, up to `max` of them, as `(cookie,
 /// readiness)`; with `take`, an `et` member's readiness counts as reported
 /// and a `oneshot` one is disabled (what a read does; `poll` only looks).
-/// The second result: whether a member is the console tty, which a waiter
-/// re-checks when the keyboard is polled.
-pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
+/// Then whether a member is the console tty, which a waiter re-checks when
+/// the keyboard is polled, and the set's own change count: its `ctl`
+/// changes and its members' counts together, what an `et` member on the
+/// set in another set is reported against.
+pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool, u64) {
     let mut out = Vec::new();
     let mut tty = false;
-    let Some(w) = WAITS.get(id) else { return (out, false) };
-    // Read before the readiness is: an event during the scan counts as
-    // after this report, so an `et` member's next one is not missed.
-    let seq = crate::task::wait_seq();
+    let Some(w) = WAITS.get(id) else { return (out, false, 0) };
+    // Every count is read before the readiness it goes with (here and in
+    // `entry_poll_changes`): a change during the scan then shows as a move
+    // at the next one, and an `et` member's edge is never missed.
+    let mut changes = w.changes.load(Ordering::SeqCst);
     // The members' readiness is asked outside the lock: a member that is
     // a set itself scans its own.
     let snapshot: Vec<(usize, FdEntry, u32)> =
         w.members.lock().iter().filter(|m| !m.disabled).map(|m| (m.fd, m.target, m.events)).collect();
     let mut ready = Vec::new();
     for (fd, target, events) in snapshot {
-        let (bits, is_tty) = crate::task::entry_poll(target);
+        let (bits, is_tty, count) = crate::task::entry_poll_changes(target);
+        changes = changes.wrapping_add(count);
         tty |= is_tty && events & WAIT_IN != 0;
         let hit = u32::from(bits) & (events & (WAIT_IN | WAIT_OUT) | WAIT_ERR | WAIT_HUP);
-        ready.push((fd, target, hit));
+        ready.push((fd, target, hit, count));
     }
     let mut members = w.members.lock();
-    for (fd, target, hit) in ready {
+    for (fd, target, hit, count) in ready {
         let Some(m) = members.iter_mut().find(|m| m.fd == fd && m.target == target) else { continue };
         if hit == 0 {
             if take {
@@ -655,7 +683,7 @@ pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
             }
             continue;
         }
-        if m.events & WAIT_ET != 0 && m.reported == Some(seq) {
+        if m.events & WAIT_ET != 0 && m.reported == Some(count) {
             continue;
         }
         if out.len() >= max {
@@ -664,7 +692,7 @@ pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
         }
         if take {
             if m.events & WAIT_ET != 0 {
-                m.reported = Some(seq);
+                m.reported = Some(count);
             }
             if m.events & WAIT_ONESHOT != 0 {
                 m.disabled = true;
@@ -672,14 +700,14 @@ pub fn wait_scan(id: usize, max: usize, take: bool) -> (Vec<(u64, u32)>, bool) {
         }
         out.push((m.cookie, hit));
     }
-    (out, tty)
+    (out, tty, changes)
 }
 
 /// Whether set `id` has a ready member (what `poll` reports for its fd),
-/// and whether one is the console tty.
-pub fn wait_ready(id: usize) -> (bool, bool) {
-    let (ready, tty) = wait_scan(id, 1, false);
-    (!ready.is_empty(), tty)
+/// whether one is the console tty, and the set's change count.
+pub fn wait_ready(id: usize) -> (bool, bool, u64) {
+    let (ready, tty, changes) = wait_scan(id, 1, false);
+    (!ready.is_empty(), tty, changes)
 }
 
 /// The object `target`'s last fd closed: no set holds it any more.
@@ -712,6 +740,10 @@ pub fn wait_status(id: usize) -> Option<Vec<u8>> {
 /// one is delivered before a read gets to it.
 pub struct Sig {
     mask: AtomicU32,
+    /// How many times the mask changed: with the reading process's count
+    /// of signal changes, what an `et` wait set member is reported against
+    /// ([`wait_scan`]).
+    changes: AtomicU64,
     refs: Refs,
 }
 
@@ -719,7 +751,7 @@ static SIGS: Table<Sig> = Table::new();
 
 /// A new signal fd with an empty mask (`clone`): its id.
 pub fn sig_alloc() -> Option<usize> {
-    SIGS.alloc(Sig { mask: AtomicU32::new(0), refs: Refs::new() })
+    SIGS.alloc(Sig { mask: AtomicU32::new(0), changes: AtomicU64::new(0), refs: Refs::new() })
 }
 
 /// Whether signal fd `id` is there, for the current process's user.
@@ -768,6 +800,7 @@ pub fn sig_ctl_write(id: usize, text: &[u8]) -> Option<usize> {
     }
     s.mask.store(mask, Ordering::SeqCst);
     // The reading process may have one of the new signals pending.
+    s.changes.fetch_add(1, Ordering::SeqCst);
     crate::task::wake_any();
     Some(text.len())
 }
@@ -780,10 +813,14 @@ pub fn sig_status(id: usize) -> Option<Vec<u8>> {
     Some(alloc::format!("mask {}\n", if list.is_empty() { String::from("none") } else { list.join(",") }).into_bytes())
 }
 
-/// Whether the current task has a signal of fd `id`'s mask pending.
-pub fn sig_poll(id: usize) -> bool {
-    SIGS.get(id).is_some_and(|s| {
-        crate::task::signal_pending(crate::task::current_id()) & s.mask.load(Ordering::SeqCst) != 0
+/// Whether the current task has a signal of fd `id`'s mask pending, and
+/// the fd's change count for that task: the mask's changes and the task's
+/// signal changes together.
+pub fn sig_poll(id: usize) -> (bool, u64) {
+    SIGS.get(id).map_or((false, 0), |s| {
+        let me = crate::task::current_id();
+        let changes = s.changes.load(Ordering::SeqCst).wrapping_add(crate::task::signal_changes(me));
+        (crate::task::signal_pending(me) & s.mask.load(Ordering::SeqCst) != 0, changes)
     })
 }
 
