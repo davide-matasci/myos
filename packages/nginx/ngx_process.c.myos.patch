@@ -1,0 +1,41 @@
+--- a/src/os/unix/ngx_process.c
++++ b/src/os/unix/ngx_process.c
+@@ -142,6 +142,9 @@
+             return NGX_INVALID_PID;
+         }
+ 
++#ifdef FIOASYNC
++        /* myos has no SIGIO on fds (the master ignores it anyway) */
++
+         on = 1;
+         if (ioctl(ngx_processes[s].channel[0], FIOASYNC, &on) == -1) {
+             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+@@ -156,6 +159,7 @@
+             ngx_close_channel(ngx_processes[s].channel, cycle->log);
+             return NGX_INVALID_PID;
+         }
++#endif
+ 
+         if (fcntl(ngx_processes[s].channel[0], F_SETFD, FD_CLOEXEC) == -1) {
+             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+@@ -441,16 +445,11 @@
+         break;
+     }
+ 
+-    if (siginfo && siginfo->si_pid) {
+-        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+-                      "signal %d (%s) received from %P%s",
+-                      signo, sig->signame, siginfo->si_pid, action);
++    /* myos: siginfo_t has no si_pid (issue #451) */
+ 
+-    } else {
+-        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+-                      "signal %d (%s) received%s",
+-                      signo, sig->signame, action);
+-    }
++    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
++                  "signal %d (%s) received%s",
++                  signo, sig->signame, action);
+ 
+     if (ignore) {
+         ngx_log_error(NGX_LOG_CRIT, ngx_cycle->log, 0,

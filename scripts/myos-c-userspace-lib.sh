@@ -51,6 +51,7 @@ MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_PCRE2_VERSION="$MYOS_ROOT/target/.myos-pcre2-version"
+MYOS_NGINX_VERSION="$MYOS_ROOT/target/.myos-nginx-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
@@ -1019,6 +1020,33 @@ myos_pcre2_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/pcre2-${arch}/lib/libpcre2-8.a" ]] || return 1
   done
+}
+
+# nginx: its source pin, build script, config and patches, and what it
+# links (newlib, zlib, PCRE2).
+myos_nginx_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_zlib_version_hash
+      myos_pcre2_version_hash
+      find "$(myos_port_dir nginx)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_nginx_is_current() {
+  local arch
+  [[ -f "$MYOS_NGINX_VERSION" ]] \
+    && [[ "$(cat "$MYOS_NGINX_VERSION")" == "$(myos_nginx_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/nginx-${arch}-unknown-none" ]] || return 1
+  done
+  [[ -f "$MYOS_ROOT/target/nginx-conf/mime.types" ]]
 }
 
 myos_git_version_hash() {
