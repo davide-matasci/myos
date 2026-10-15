@@ -18,6 +18,10 @@
 
 /* How long one DNS server gets to answer. */
 #define DNS_TIMEOUT_MS 5000
+/* A query is one datagram, lost at times, and the CI runner's resolver has
+ * taken over 5 s for a name's first lookup: an unanswered query is sent
+ * again, this many times in all (musl's resolver retransmits too). */
+#define DNS_ATTEMPTS 4
 #define DNS_BUF      1024
 #define MAX_DNS      3
 #define NDB_BUF      256
@@ -176,6 +180,7 @@ static int query_server(const struct in_addr *server, const unsigned char *query
     struct timeval start;
     ssize_t nr;
     int sock;
+    int attempt;
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
@@ -189,50 +194,57 @@ static int query_server(const struct in_addr *server, const unsigned char *query
         close(sock);
         return -1;
     }
-    if (send(sock, query, qlen, 0) < 0) {
-        close(sock);
-        return -1;
-    }
-    /* Wait for the answer in the kernel's poll (DNS_TIMEOUT_MS at most), not
-     * by reading the socket again and again: that spun for minutes, hogging
-     * a CPU and netd, when the server had nothing to say. The first answer
-     * is the server's word, an A record or not (a name it does not know):
-     * nothing more is waited for from it. */
+    /* Wait for the answer in the kernel's poll (DNS_TIMEOUT_MS at most per
+     * attempt), not by reading the socket again and again: that spun for
+     * minutes, hogging a CPU and netd, when the server had nothing to say.
+     * The first answer is the server's word, an A record or not (a name it
+     * does not know): nothing more is waited for from it. */
     (void)fcntl(sock, F_SETFL, O_NONBLOCK);
-    if (gettimeofday(&start, NULL) != 0) {
-        close(sock);
-        return -1;
-    }
-    for (;;) {
-        struct pollfd p;
-        long left = DNS_TIMEOUT_MS - elapsed_ms(&start);
-        int r;
-        if (left <= 0) {
-            break;
+    for (attempt = 0; attempt < DNS_ATTEMPTS; attempt++) {
+        if (send(sock, query, qlen, 0) < 0) {
+            close(sock);
+            return -1;
         }
-        p.fd = sock;
-        p.events = POLLIN;
-        p.revents = 0;
-        r = poll(&p, 1, (int)left);
-        if (r < 0 && errno == EINTR) {
-            continue;
+        if (gettimeofday(&start, NULL) != 0) {
+            close(sock);
+            return -1;
         }
-        if (r <= 0) {
-            break;
-        }
-        nr = recv(sock, rbuf, sizeof rbuf, 0);
-        if (nr < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        for (;;) {
+            struct pollfd p;
+            long left = DNS_TIMEOUT_MS - elapsed_ms(&start);
+            int r;
+            if (left <= 0) {
+                break;
+            }
+            p.fd = sock;
+            p.events = POLLIN;
+            p.revents = 0;
+            r = poll(&p, 1, (int)left);
+            if (r < 0 && errno == EINTR) {
                 continue;
             }
-            break;
+            if (r < 0) {
+                close(sock);
+                return -1;
+            }
+            if (r == 0) {
+                break;
+            }
+            nr = recv(sock, rbuf, sizeof rbuf, 0);
+            if (nr < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;
+                }
+                close(sock);
+                return -1;
+            }
+            if (nr == 0) {
+                continue;
+            }
+            r = parse_a_record(rbuf, (size_t)nr, ip);
+            close(sock);
+            return r == 0 ? 0 : -1;
         }
-        if (nr == 0) {
-            continue;
-        }
-        r = parse_a_record(rbuf, (size_t)nr, ip);
-        close(sock);
-        return r == 0 ? 0 : -1;
     }
     close(sock);
     return -1;
