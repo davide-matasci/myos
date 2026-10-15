@@ -9,7 +9,7 @@ cargo run -- test                    # x86_64 BIOS, every test (needs the networ
 cargo run -- aarch64 test            # also uefi, riscv64
 cargo run -- test --skip net,pkg,heavy,install,alpine-disk   # the quick list: no network, a few minutes (`test-mini`)
 cargo run -- test --tags smoke       # the smoke set alone
-cargo run -- test --only ssh,https   # these two
+cargo run -- test --tags ssh,https   # these two: a test's name is a tag of its own
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full|test args...]   # the same, with the OOM/TCG settings for a loaded host
 ```
 
@@ -18,9 +18,10 @@ is for).
 
 ## Selecting tests
 
-Every test carries **tags**: what it needs and what it covers. `test`
-takes the tests named by `--only`, else those with any of the `--tags`
-(all of them without), minus those with any of the `--skip` tags.
+Every test carries **tags**: what it needs, what it covers, and its own
+name. `test` takes the tests with any of the `--tags` (all of them
+without), minus those with any of the `--skip` tags; so `--tags dns` runs
+that one test and `--skip heap` leaves that one out.
 `test-mini` and `test-full` are the two lists of old: `test --skip
 net,pkg,heavy,install,alpine-disk` and `test`.
 
@@ -47,7 +48,7 @@ The runner is `/lib/myos-tests/run.sh` (from `user/tests`); after login
 the launcher types
 
 ```sh
-sh /lib/myos-tests/run.sh [--only NAME,...] [--tags TAG,...] [--skip TAG,...]
+sh /lib/myos-tests/run.sh [--tags TAG,...] [--skip TAG,...]
 ```
 
 which anyone can type at the prompt too (`mini` and `full` are the two
@@ -56,7 +57,7 @@ status decides. Its output goes to `/tmp/myos-tests/<name>.out` and is
 printed only when it fails, so the console shows one line per test:
 
 ```
-tests: only=- tags=- skip=net,pkg,heavy,install
+tests: tags=- skip=net,pkg,heavy,install
 TEST shell_echo PASS
 TEST heap FAIL (exit 1)
     smoke start

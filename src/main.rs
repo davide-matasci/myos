@@ -132,7 +132,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "\
-Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--only NAME,...] [--tags TAG,...] [--skip TAG,...] [--budget MINUTES]]
+Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--tags TAG,...] [--skip TAG,...] [--budget MINUTES]]
        cargo run -- iso | packages
 
   bios       Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
@@ -140,8 +140,8 @@ Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--only NAME,...] [--tags 
   aarch64    Boot the AArch64 kernel via Limine on QEMU virt + AAVMF (serial + ramfb)
   riscv64    Boot the RISC-V64 kernel via Limine on QEMU virt + UEFI (serial + ramfb)
   test       Headless: log in, run the tests in the guest, exit with its result. Every test
-             carries tags (docs/testing.md): --only names the tests, --tags takes those with
-             any of the tags, --skip leaves out those with any; `test-mini` is
+             carries tags (docs/testing.md), its own name among them: --tags takes those
+             with any of the tags, --skip leaves out those with any; `test-mini` is
              `test --skip net,pkg,heavy,install,alpine-disk` (no network, a few minutes), `test-full` is `test`
   iso        Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
   packages   Write the package tarballs and indexes of the three arches to target/packages/",

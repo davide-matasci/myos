@@ -2,14 +2,15 @@
 # The boot tests (docs/testing.md). `myos test` boots an image, logs in and
 # types
 #
-#   sh /lib/myos-tests/run.sh [--only NAME,...] [--tags TAG,...] [--skip TAG,...]
+#   sh /lib/myos-tests/run.sh [--tags TAG,...] [--skip TAG,...]
 #
 # which anyone can do by hand at the prompt too. Every test carries tags
 # (what it needs: `net`, `pkg`, `heavy`, `install`; what it covers: a
-# module's or a port's name); the selection runs the tests named by --only,
-# else those with any of the --tags (all of them without --tags), minus
-# those with any of the --skip tags. `mini` and `full` stand for the two
-# old lists: `--skip net,pkg,heavy,install` and everything. One line per
+# module's or a port's name; and its own name); the selection runs the
+# tests with any of the --tags (all of them without --tags), minus those
+# with any of the --skip tags, so `--tags dns` runs that one test. `mini`
+# and `full` stand for the two old lists: `--skip net,pkg,heavy,install`
+# and everything. One line per
 # test on the console, which the host watches on the serial port:
 #
 #   TEST <name> PASS
@@ -30,7 +31,6 @@
 # --install made: up from its slot a.
 
 MODE=tests
-ONLY=
 TAGS=
 SKIP=
 while [ $# -gt 0 ]; do
@@ -38,7 +38,6 @@ while [ $# -gt 0 ]; do
 	mini) SKIP=net,pkg,heavy,install ;;
 	full | tests) ;;
 	reboot | installed) MODE=$1 ;;
-	--only) ONLY=$2; shift ;;
 	--tags) TAGS=$2; shift ;;
 	--skip) SKIP=$2; shift ;;
 	*) echo "run.sh: bad argument: $1" >&2; exit 2 ;;
@@ -82,17 +81,13 @@ has() {
 }
 
 # selected NAME TAGS: whether the selection takes the test (TAGS a comma
-# list, the file's own tags included).
+# list, the file's own tags included; the name is a tag of its own).
 selected() {
-	if [ -n "$ONLY" ]; then
-		has "$ONLY" "$1"
-		return
-	fi
-	for tag in $(echo "$2" | tr , ' '); do
+	for tag in $(echo "$2,$1" | tr , ' '); do
 		has "$SKIP" "$tag" && return 1
 	done
 	[ -z "$TAGS" ] && return 0
-	for tag in $(echo "$2" | tr , ' '); do
+	for tag in $(echo "$2,$1" | tr , ' '); do
 		has "$TAGS" "$tag" && return 0
 	done
 	return 1
@@ -172,9 +167,9 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	if [ "$MODE" = reboot ]; then
 		t booted_slot_b booted_slot b
 		# The app the first boot installed on the data partition
-		# (user/get-myos/test.sh's apps_data; the host selects this
-		# test out when that one did not run) runs as it did: an app
-		# is its directory, nothing to redo after a reboot.
+		# (user/get-myos/test.sh's apps_data; the host skips this
+		# test when that one did not run) runs as it did: an app is
+		# its directory, nothing to redo after a reboot.
 		t app_kept sh -c '[ "$(run-myos clear -T linux)" = "$(printf "\033[H\033[J")" ]'
 	else
 		t booted_installed booted_slot a
@@ -183,7 +178,7 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	exit 0
 fi
 
-echo "tests: only=${ONLY:--} tags=${TAGS:--} skip=${SKIP:--}"
+echo "tests: tags=${TAGS:--} skip=${SKIP:--}"
 
 # The packages: every one of this build from the host's mirror
 # (docs/packages.md; packages.txt names the ports the image lacks, the
