@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cross-build nginx (poll events, PCRE2, zlib) for the three arches,
-# without its configure (ngx_auto_config.h is hand-written).
+# Cross-build nginx (poll events, PCRE2, zlib, SSL over mbedtls) for the
+# three arches, without its configure (ngx_auto_config.h is hand-written).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -18,6 +18,7 @@ fi
 "$ROOT/toolchain/newlib/build.sh"
 "$ROOT/ports/zlib/build.sh"
 "$(myos_port_dir pcre2)/build.sh"
+"$ROOT/ports/mbedtls/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/nginx-myos-build"
@@ -31,7 +32,7 @@ done
 # filters' order is their order in the output chain.
 MODULES=(
   ngx_core_module ngx_errlog_module ngx_conf_module
-  ngx_regex_module
+  ngx_openssl_module ngx_openssl_cache_module ngx_regex_module
   ngx_events_module ngx_event_core_module ngx_poll_module
   ngx_http_module ngx_http_core_module ngx_http_log_module
   ngx_http_upstream_module ngx_http_static_module ngx_http_autoindex_module
@@ -39,7 +40,7 @@ MODULES=(
   ngx_http_auth_basic_module ngx_http_access_module
   ngx_http_limit_conn_module ngx_http_limit_req_module ngx_http_geo_module
   ngx_http_map_module ngx_http_split_clients_module ngx_http_referer_module
-  ngx_http_rewrite_module
+  ngx_http_rewrite_module ngx_http_ssl_module
   ngx_http_proxy_module ngx_http_fastcgi_module ngx_http_uwsgi_module
   ngx_http_scgi_module ngx_http_memcached_module ngx_http_empty_gif_module
   ngx_http_browser_module ngx_http_upstream_hash_module
@@ -55,8 +56,8 @@ MODULES=(
   ngx_http_not_modified_filter_module
 )
 
-# auto/sources: the core, the events (poll), the generic POSIX unix layer,
-# HTTP and its modules.
+# auto/sources: the core, the events (poll, SSL), the generic POSIX unix
+# layer, HTTP and its modules.
 SRCS=(
   core/nginx.c core/ngx_log.c core/ngx_palloc.c core/ngx_array.c
   core/ngx_list.c core/ngx_hash.c core/ngx_buf.c core/ngx_queue.c
@@ -72,6 +73,8 @@ SRCS=(
   event/ngx_event.c event/ngx_event_timer.c event/ngx_event_posted.c
   event/ngx_event_accept.c event/ngx_event_udp.c event/ngx_event_connect.c
   event/ngx_event_pipe.c event/modules/ngx_poll_module.c
+  event/ngx_event_openssl.c event/ngx_event_openssl_cache.c
+  event/ngx_event_openssl_stapling.c
   os/unix/ngx_time.c os/unix/ngx_errno.c os/unix/ngx_alloc.c
   os/unix/ngx_files.c os/unix/ngx_socket.c os/unix/ngx_recv.c
   os/unix/ngx_readv_chain.c os/unix/ngx_udp_recv.c os/unix/ngx_send.c
@@ -94,7 +97,8 @@ SRCS=(
   http/modules/ngx_http_limit_conn_module.c http/modules/ngx_http_limit_req_module.c
   http/modules/ngx_http_geo_module.c http/modules/ngx_http_map_module.c
   http/modules/ngx_http_split_clients_module.c http/modules/ngx_http_referer_module.c
-  http/modules/ngx_http_rewrite_module.c http/modules/ngx_http_proxy_module.c
+  http/modules/ngx_http_rewrite_module.c http/modules/ngx_http_ssl_module.c
+  http/modules/ngx_http_proxy_module.c
   http/modules/ngx_http_fastcgi_module.c http/modules/ngx_http_uwsgi_module.c
   http/modules/ngx_http_scgi_module.c http/modules/ngx_http_memcached_module.c
   http/modules/ngx_http_empty_gif_module.c http/modules/ngx_http_browser_module.c
@@ -148,6 +152,8 @@ build_arch() {
     -I"$WORK/src/http/modules"
     -I"$ROOT/target/zlib-${arch}/include"
     -I"$ROOT/target/pcre2-${arch}/include" -DPCRE2_STATIC
+    -I"$HERE/ssl" -I"$ROOT/target/mbedtls-${arch}/include" -I"$ROOT/ports/mbedtls"
+    -DMBEDTLS_CONFIG_FILE='"myos_mbedtls_config.h"'
     -I"$HERE" -include myos_compat.h
   )
   local f o objs=()
@@ -155,7 +161,8 @@ build_arch() {
   echo "==> nginx ($triple)"
   rm -rf "$obj"
   mkdir -p "$obj"
-  for f in "${SRCS[@]}" ../objs/ngx_modules.c "$HERE/myos_stubs.c"; do
+  for f in "${SRCS[@]}" ../objs/ngx_modules.c "$HERE/myos_stubs.c" \
+    "$HERE"/ssl/*.c; do
     [[ "$f" == /* ]] || f="$WORK/src/$f"
     o="$obj/$(basename "$f" .c).o"
     if ! "$cc" "${cflags[@]}" -c "$f" -o "$o" 2>"$o.err"; then
@@ -182,7 +189,9 @@ build_arch() {
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]}" "${extra[@]+"${extra[@]}"}" \
     -L"$lib" -L"$ROOT/target/zlib-${arch}/lib" -L"$ROOT/target/pcre2-${arch}/lib" \
-    --start-group -lpcre2-8 -lz -lc -lm -lgloss -lg --end-group
+    -L"$ROOT/target/mbedtls-${arch}/lib" \
+    --start-group -lpcre2-8 -lz -lmbedtls -lmbedx509 -lmbedcrypto \
+    -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || true
   ls -lh "$out"
 }

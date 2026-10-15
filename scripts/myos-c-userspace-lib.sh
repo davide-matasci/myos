@@ -1023,7 +1023,7 @@ myos_pcre2_is_current() {
 }
 
 # nginx: its source pin, build script, config and patches, and what it
-# links (newlib, zlib, PCRE2).
+# links (newlib, zlib, PCRE2, mbedtls).
 myos_nginx_version_hash() {
   local h
   h="$(
@@ -1031,6 +1031,10 @@ myos_nginx_version_hash() {
       myos_newlib_version_hash
       myos_zlib_version_hash
       myos_pcre2_version_hash
+      # mbedtls's source inputs, as lynx's: not its build stamp, which a job
+      # that only pulls the artifacts lacks.
+      find "$MYOS_ROOT/ports/mbedtls" -type f -print0 \
+        | sort -z | xargs -0 sha256sum
       find "$(myos_port_dir nginx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash

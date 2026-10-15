@@ -15,8 +15,43 @@ write is hand-written instead (the vim, lynx and curl approach):
 
 Modules: the default set (static, index, autoindex, proxy, fastcgi, uwsgi,
 scgi, memcached, rewrite, map, geo, limit_*, auth_basic with nginx's own
-password schemes, gzip, ssi, ...), events through `poll`, regular
-expressions with `packages/pcre2`, gzip with `ports/zlib`.
+password schemes, gzip, ssi, ...) and ssl, events through `poll`, regular
+expressions with `packages/pcre2`, gzip with `ports/zlib`, TLS with
+`ports/mbedtls`.
+
+## HTTPS: the OpenSSL API over mbedtls
+
+nginx's SSL code is written against OpenSSL; myos has one TLS library,
+mbedtls (curl's, lynx's). `ssl/` is the part of the OpenSSL 1.1.1 API
+nginx uses, implemented over it: `myos_openssl.h` (every `<openssl/*.h>`
+includes it), `myos_crypto.c` (errors, stacks, BIOs, digests, keys, the
+random generator, from the kernel's `getrandom`), `myos_x509.c`
+(certificates, names, CRLs, PEM) and `myos_ssl.c` (contexts, connections,
+sessions). What works:
+
+- TLS 1.2 servers and clients (`proxy_pass https://`), ECDHE and RSA key
+  exchange with AES-GCM and AES-CBC, RSA and EC certificates (one of each
+  per server, as OpenSSL), chains, keys in PEM (PKCS#8, RSA, EC);
+- SNI: the server of the name the client sends, its certificates;
+  `proxy_ssl_server_name`;
+- client certificates (`ssl_verify_client`, `ssl_client_certificate`,
+  `ssl_trusted_certificate`, `ssl_crl`, `ssl_verify_depth`), the upstream's
+  (`proxy_ssl_verify`, `proxy_ssl_trusted_certificate`, its name);
+- `ssl_session_cache shared:...` (resumption through nginx's cache),
+  `ssl_session_timeout`;
+- `ssl_ciphers` with OpenSSL's names of the suites above (a keyword such
+  as `HIGH` means mbedtls's own list, strong suites only), `ssl_ecdh_curve`
+  (prime256v1, secp384r1), `ssl_prefer_server_ciphers`;
+- the variables (`$ssl_protocol`, `$ssl_cipher`, `$ssl_server_name`,
+  `$ssl_client_verify`, `$ssl_client_s_dn`, the fingerprint, serial and
+  dates, the certificate in PEM, ...); `$ssl_ciphers` is the suite
+  chosen (what the client offered is not kept).
+
+What does not, the way an OpenSSL build without it says so to nginx:
+TLS 1.3 (mbedtls's needs its PSA crypto, which the myos build leaves
+out), HTTP/2 and ALPN (issue #453), OCSP stapling, `ssl_session_tickets` keys, early
+data, `ssl_dhparam` (ECDHE only), `ssl_conf_command`, encrypted keys
+(`ssl_password_file`), engines, variables in `ssl_certificate`.
 
 ## On the system
 
@@ -46,4 +81,9 @@ root: myos has no superuser to give up, and `setuid` changes nothing.
 `test.sh` (the full test list, after the install): the default
 configuration checks; a server of the test's own on 127.0.0.1 answers a
 page, a 404, a directory listing, a regex location, a rewrite and a
-gzip-compressed response, logs them, and stops on `nginx -s quit`.
+gzip-compressed response, logs them, and stops on `nginx -s quit`; then
+HTTPS: a page over TLS 1.2, the server of the name sent (SNI, an RSA
+certificate), a verified client certificate, plain HTTP to the HTTPS port
+answered 400, and nginx proxying to itself over HTTPS with the upstream's
+certificate and name verified. The certificates and keys are the test's
+own (`test/mkcerts.py`, self-signed, packed with the tests).

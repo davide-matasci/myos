@@ -57,7 +57,8 @@
 #define NGX_HAVE_GETADDRINFO  1
 
 /* The modules (auto/modules, auto/options: the default set without epoll
- * and select, with PCRE2 and zlib). */
+ * and select, with PCRE2, zlib and the SSL module, whose OpenSSL is
+ * ssl/myos_openssl.h over mbedtls). */
 #define NGX_HTTP_CACHE  1
 #define NGX_HTTP_GZIP  1
 #define NGX_HTTP_SSI  1
@@ -66,8 +67,11 @@
 #define NGX_HTTP_UPSTREAM_ZONE  1
 #define NGX_HTTP_UPSTREAM_STICKY  1
 #define NGX_HTTP_UPSTREAM_SID  1
+#define NGX_HTTP_SSL  1
 #define NGX_PCRE2  1
 #define NGX_PCRE  1
+#define NGX_OPENSSL  1
+#define NGX_SSL  1
 #define NGX_ZLIB  1
 
 /* Paths: the configuration, its types and pages in the app (read only),
