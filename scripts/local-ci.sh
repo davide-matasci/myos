@@ -9,10 +9,20 @@
 #    boot with no serial output. Single-threaded TCG by default
 #    (MYOS_TCG_SINGLE).
 #
-# Usage: scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   (default bios mini)
+# Usage: scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full|test args...]   (default bios mini)
+#
+# `mini` and `full` are the two lists of old; anything else is passed to
+# the launcher's `test` command (docs/testing.md): `--tags smoke`,
+# `--skip heavy`, `--only ssh`.
 set -euo pipefail
 ARCH="${1:-bios}"
 LIST="${2:-mini}"
+shift $(( $# > 0 ? 1 : 0 ))
+shift $(( $# > 0 ? 1 : 0 ))
+case $LIST in
+mini | full) TEST=(test-$LIST) ;;
+*) TEST=(test "$LIST" "$@"); LIST=selected ;;
+esac
 
 if [ -w /proc/self/oom_score_adj ]; then
     echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
@@ -32,7 +42,7 @@ export MYOS_TCG_SINGLE="${MYOS_TCG_SINGLE:-1}"
 
 LOG="${TMPDIR:-/tmp}/localci-$ARCH-$LIST-$(date +%s).log"
 STATUS=0
-nice -n 5 cargo run --quiet -- "$ARCH" "test-$LIST" >"$LOG" 2>&1 || STATUS=$?
+nice -n 5 cargo run --quiet -- "$ARCH" "${TEST[@]}" >"$LOG" 2>&1 || STATUS=$?
 tail -5 "$LOG"
 echo "log: $LOG"
 exit $STATUS

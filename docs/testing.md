@@ -5,23 +5,41 @@ in QEMU, logs in and runs a test list **in the guest**; the host only
 watches the serial console for the result.
 
 ```sh
-cargo run -- test-mini               # x86_64 BIOS, the quick list (what a pull request runs)
-cargo run -- aarch64 test-mini       # also uefi, riscv64
-cargo run -- test-full               # the full list (needs the network)
-scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same, with the OOM/TCG settings for a loaded host
+cargo run -- test                    # x86_64 BIOS, every test (needs the network)
+cargo run -- aarch64 test            # also uefi, riscv64
+cargo run -- test --skip net,pkg,heavy,install,alpine-disk   # the quick list: no network, a few minutes (`test-mini`)
+cargo run -- test --tags smoke       # the smoke set alone
+cargo run -- test --only ssh,https   # these two
+scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full|test args...]   # the same, with the OOM/TCG settings for a loaded host
 ```
 
-A boot without `test-mini`/`test-full` is a normal boot to the login
-prompt (what the ISO is for).
+A boot without `test` is a normal boot to the login prompt (what the ISO
+is for).
 
-## The two lists
+## Selecting tests
 
-| | `test-mini` | `test-full` |
-|---|---|---|
-| CI | every pull request, on bios, uefi, aarch64 and riscv64 | the daily scheduled run and `workflow_dispatch` with `full_boot` |
-| budget | 4 minutes (5 with the Linux layer) | 50 minutes |
-| network | QEMU's user network only (DNS and the listen test go through it) | the host's: HTTPS, the Alpine mirror, this build's packages |
-| tests | the shell, exec, the basic programs, GPT partitions and ext2 on the scratch disk, FAT read-write, the heavy smoke (`heap mini`), the Linux module, the C smokes, DNS, listen/accept, the tty | the same with `heap` (git's porcelain and uutils, apps), plus: every package of the build installed from the host's mirror as an app, HTTPS with the kernel's client and curl, two concurrent SSH sessions into dropbear and a login on a pty, the Linux layer's Alpine packages (jq, Python, an X client on the native X server, and rustc from a disk the host prepares), the curated os-test list, the packages' own tests, `get-myos --upgrade` of the boot disk (Limine made stale first) and `--install` on the scratch disk, then a **second boot** of the upgraded disk, which must come up from slot `b`, and a **third** of the disk `--install --local` made (by BIOS on the bios job) (`docs/install.md`) |
+Every test carries **tags**: what it needs and what it covers. `test`
+takes the tests named by `--only`, else those with any of the `--tags`
+(all of them without), minus those with any of the `--skip` tags.
+`test-mini` and `test-full` are the two lists of old: `test --skip
+net,pkg,heavy,install,alpine-disk` and `test`.
+
+| tag | the tests that |
+|---|---|
+| `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
+| `pkg` | need the packages of this build installed as apps (`packages`, the first test, installs them from the mirror; every package's own test has it) |
+| `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
+| `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
+| `install` | change the boot disk: `get-myos --upgrade` (Limine made stale first) and `--install` on the scratch disk; when they passed, the launcher boots the upgraded disk again, which must come up from slot `b`, and then the disk `--install --local` made, from its slot a (`docs/install.md`) |
+| `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
+| a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
+| a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port: its `test.sh` (every test of the file, set by the runner) |
+| `alpine`, `python`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
+
+A quick run (`heavy` and `net` skipped) has a budget of 4 minutes (5 with
+the Linux layer) and a stall limit of 3; any other 50 and 10
+(`--budget MINUTES` sets the budget). The runner prints what it skipped
+(`TESTS SKIPPED <n>`) after `TESTS DONE`.
 
 ## In the guest
 
@@ -29,21 +47,23 @@ The runner is `/lib/myos-tests/run.sh` (from `user/tests`); after login
 the launcher types
 
 ```sh
-sh /lib/myos-tests/run.sh mini|full
+sh /lib/myos-tests/run.sh [--only NAME,...] [--tags TAG,...] [--skip TAG,...]
 ```
 
-which anyone can type at the prompt too. One test is a command, usually a
-shell function; its exit status decides. Its output goes to
-`/tmp/myos-tests/<name>.out` and is printed only when it fails, so the
-console shows one line per test:
+which anyone can type at the prompt too (`mini` and `full` are the two
+lists of old). One test is a command, usually a shell function; its exit
+status decides. Its output goes to `/tmp/myos-tests/<name>.out` and is
+printed only when it fails, so the console shows one line per test:
 
 ```
+tests: only=- tags=- skip=net,pkg,heavy,install
 TEST shell_echo PASS
 TEST heap FAIL (exit 1)
     smoke start
     ...
 HOST tests tcp-ping 2323
 TESTS DONE 17/18
+TESTS SKIPPED 45
 ```
 
 - `TEST <name> PASS|FAIL`: one per test.
@@ -60,7 +80,8 @@ TESTS DONE 17/18
   `/tmp/ssh-ok-a` / `-b` for the guest test to find, then a login on a pty
   (`ssh -tt`) that writes its terminal to `/tmp/ssh-tty`. A port that needs a
   peer on the host ships its own `host.sh`; the launcher knows no test.
-- `TESTS DONE <passed>/<total>` ends the run.
+- `TESTS DONE <passed>/<total>` ends the run; `TESTS SKIPPED <n>` after it
+  says how many the selection left out.
 
 Every test belongs to the port of what it tests and ships with it
 (`test.sh`, see below): the shell's are oksh's, `heap`'s are `user/heap`'s,
@@ -100,11 +121,13 @@ make_version() {
 t make make_version
 ```
 
-`$MODE` is `mini` or `full` (a script that needs the network starts with
-`[ "$MODE" = full ] || return 0`), `$OUT` is the output directory,
-`contains NEEDLE FILE` greps, fd 3 is the console (`echo "HOST ..." >&3`;
-a long test can stream its progress there, os-test does). Keep the
-output of a passing test to itself: failures show the last 40 lines.
+`t -t TAG,TAG name function` tags the test (above: what it needs, `net`,
+`pkg`, `heavy`, `install`, and the module or area it covers); the port's
+own name is on every test of its file already, `pkg` on a package's.
+`$OUT` is the output directory, `contains NEEDLE FILE` greps, fd 3 is the
+console (`echo "HOST ..." >&3`; a long test can stream its progress
+there, os-test does). Keep the output of a passing test to itself:
+failures show the last 40 lines.
 
 A test that needs a peer outside the guest (a client connecting in) gets
 one from the port's own `host.sh` (`PORT_HOST=host.sh`): the guest side
@@ -121,9 +144,11 @@ on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
 (`src/main.rs` sets up the machine, the disks, the network with the port
-forwards, and in the full mode the package mirror and, with the Linux
-layer, the Alpine Rust disk: `linux-compat/alpine-disk.sh` builds it once
-into `target/alpine-rust-<arch>.img`, attached as `/dev/nvme2n1/data` with its
+forwards, unless `net` is skipped the package mirror and, with the
+Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
+`linux-compat/alpine-disks.sh` builds it once into
+`target/alpine-<arch>.img`, the roots of rustc, Python and an X client
+from `get-alpine -n` on the host, attached as `/dev/nvme2n1/data` with its
 writes kept in a QEMU snapshot), waits for `login: ` on the serial port
 (`ttyS0`'s getty, `docs/tty.md`; a kernel status line that lands after a
 prompt is skipped), types `root`, an empty password and the command (each byte once its echo
@@ -133,7 +158,7 @@ is back, so an AP's lagging echo never garbles the line), then watches:
 - the kernel's crash reports (`exception:`, `user panic`, a user fault)
   end the run at once;
 - a **stall watchdog**: the console must print something within 3 minutes
-  (mini) or 10 minutes (full), and the whole run has its budget. A stall
+  (a quick run) or 10 minutes, and the whole run has its budget. A stall
   ends with every CPU's registers from the QEMU monitor (`info registers
   -a`): where the guest spins or halts, by `addr2line` on the kernel;
 - the kernel's own **boot markers** (`[ OK ] heap`, `[ OK ] dma pages`, `[ OK ] scheduler`,
@@ -169,18 +194,57 @@ whole scratch disk; kept as `target/installed-<name>.img`) as the boot disk, by 
 bios job and UEFI on the others, and `run.sh installed` checks it came up
 from its slot `a`.
 
+## In CI
+
+`ci-runtime.yml` boots nothing fixed: its `plan` job runs
+`scripts/ci-select.py`, which reads every test's tags (the `t -t` lines,
+the ports' names from the descriptors) and the paths the change touches,
+and writes the boot job's matrix. A path selects tags:
+
+| changed | selects |
+|---|---|
+| a port's or a package's directory | its tests (its name), those of the ports built on it or needing it (`PORT_DEPS`, `PORT_RDEPS`) and what it implements (netd: `netfs`; mkfs.ext2: `ext2`; get-myos: `install`, `pkg`) |
+| `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`; the USB ones: `usb`; virtio_net: `virtio_net`, `netfs`); `modules/abi`, `acpi` and `pci_enum`: everything |
+| `linux-compat/` | `linux` |
+| `kernel/src/arch/<arch>` | everything on that arch's machines, `smoke` on the others |
+| `kernel/`, `toolchain/`, `src/`, `build.rs`, `scripts/`, `.github/`, `etc/`, `user/init`, `user/tests`, anything else | everything |
+| documentation (`*.md`, `docs/`, `licenses/`) | nothing: no boot |
+
+`smoke` is always in. A push to master, the daily run, a dispatch with
+`full_boot` and a pull request labelled `ci:full` run everything. The image
+carries the Linux layer (`linux_compat`) when a `linux` test runs.
+
+The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
+GICv3, riscv64) in parallel boots: the long tests' groups (`ostest`,
+`alpine`: the curated os-test list, the apk installs) each in a boot of
+their own, whole (their tests build on each other), and one boot with
+everything else, so a full run is three boots of ten minutes per machine
+instead of one of thirty. Each boot
+gets a budget from what it runs (riscv64 half as much again); a
+selection without `net` tests skips the mirror, one without `alpine-disk`
+tests the Alpine disk, which a boot that needs it restores from the
+Actions cache (keyed by `linux-compat/alpine-disks.sh --hash`: the scripts
+that make it; bump `FIXTURE` there for a fresh one, Alpine's
+latest-stable moves) or makes on a miss. The plan is in the run's summary;
+`scripts/ci-select.py --changed PATH...` prints it locally for any set of
+paths, `--all` the full one.
+
 ## Adding a test
 
-- A port's or a program's behaviour: a function and a `t name function`
-  line in the `test.sh` next to its `port.env` (`PORT_TEST`; a `host.sh`
-  with `PORT_HOST` when the test needs a peer on the host). Programs the
-  tests need (smokes) go in `user/c` or as a `user` crate, with their test.
+- A port's or a program's behaviour: a function and a `t -t tags name
+  function` line in the `test.sh` next to its `port.env` (`PORT_TEST`; a
+  `host.sh` with `PORT_HOST` when the test needs a peer on the host).
+  Programs the tests need (smokes) go in `user/c` or as a `user` crate,
+  with their test.
 - The kernel's own behaviour (a limit, a module without a user-side
-  program): `user/tests/kernel.sh`.
+  program): `user/tests/kernel.sh`, tagged with the module or area.
 - A POSIX conformance case: the curated os-test lists
   (`packages/os-test/overlay/misc/*.tests`), which must pass in full.
 
-Test on every arch the change could affect (arch-specific code: all three);
-a mini run per arch is usually enough locally, CI does the rest. The full
-mode needs the network: in a sandbox behind a TLS-intercepting proxy, append
-its CA to `target/cacert.pem` for local runs only and restore it afterwards.
+Tag what the test needs (`net`, `pkg`, `heavy`, `install`) and what it
+covers (the module's or area's name): the needs decide which runs it can
+be in, the coverage which changes must run it. Test on every arch the
+change could affect (arch-specific code: all three); a quick run per arch
+is usually enough locally, CI does the rest. The `net` tests need the
+network: in a sandbox behind a TLS-intercepting proxy, append its CA to
+`target/cacert.pem` for local runs only and restore it afterwards.

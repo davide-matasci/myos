@@ -12,7 +12,7 @@ release_file() {
 	cat /lib/myos-release
 	grep -q '^release=[0-9]* commit=[0-9a-f]* abi=[0-9][0-9]*$' /lib/myos-release
 }
-t release release_file
+t -t smoke release release_file
 
 get_myos_list() {
 	get-myos -m $MIRROR -l > /tmp/get-myos-list || return 1
@@ -184,11 +184,9 @@ apps_data() {
 	[ "$(cat /tmp/apps-data.out)" = "$(printf '\033[H\033[J')" ]
 }
 
-if [ "$MODE" = full ]; then
-	t get_myos_list get_myos_list
-	t apps_data apps_data
-	t get_myos_upgrade get_myos_upgrade
-	t boot_upgrade boot_upgrade
-	t_last boot_install
-fi
-t_last boot_install_local
+t -t net,pkg get_myos_list get_myos_list
+t -t net,pkg apps_data apps_data
+t -t net,pkg get_myos_upgrade get_myos_upgrade
+t -t net,pkg,install boot_upgrade boot_upgrade
+t_last -t net,pkg,install boot_install
+t_last -t install boot_install_local

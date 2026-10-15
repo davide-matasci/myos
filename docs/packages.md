@@ -126,8 +126,8 @@ index with.
 
 ## In CI
 
-- The quick test list (`test-mini`) stays network-free. The **full** one
-  (`cargo run -- test-full`, `docs/testing.md`) packs this build's packages
+- A test run that skips `net` stays network-free. One that does not
+  (`cargo run -- test`, `docs/testing.md`) packs this build's packages
   for its arch, serves `target/packages/` on the host's 127.0.0.1:8765 (the
   guest reaches it as `http://10.0.2.2:8765` on QEMU's user network;
   `index.txt` and `packages.txt` there are the arch's) and installs

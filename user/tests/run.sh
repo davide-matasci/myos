@@ -1,34 +1,56 @@
 #!/bin/sh
-# The boot tests (docs/testing.md). `myos test-mini` and `myos test-full`
-# boot an image, log in and type
+# The boot tests (docs/testing.md). `myos test` boots an image, logs in and
+# types
 #
-#   sh /lib/myos-tests/run.sh mini|full
+#   sh /lib/myos-tests/run.sh [--only NAME,...] [--tags TAG,...] [--skip TAG,...]
 #
-# which anyone can do by hand at the prompt too. One line per test on the
-# console, which the host watches on the serial port:
+# which anyone can do by hand at the prompt too. Every test carries tags
+# (what it needs: `net`, `pkg`, `heavy`, `install`; what it covers: a
+# module's or a port's name); the selection runs the tests named by --only,
+# else those with any of the --tags (all of them without --tags), minus
+# those with any of the --skip tags. `mini` and `full` stand for the two
+# old lists: `--skip net,pkg,heavy,install` and everything. One line per
+# test on the console, which the host watches on the serial port:
 #
 #   TEST <name> PASS
 #   TEST <name> FAIL (exit N)     then the test's output, indented
 #   HOST <request...>             a request to the host (connect to a port)
-#   TESTS DONE <passed>/<total>   at the end
+#   TESTS DONE <passed>/<total>   at the end, then TESTS SKIPPED <n>
 #
 # A test is a command (mostly a shell function); its exit status decides,
 # its output goes to /tmp/myos-tests/<name>.out and is shown when it fails.
 # Every test belongs to the port of what it tests (ports/*.sh, from their
 # PORT_TEST; the packer names them so the core image ports come first, the
 # other image ports next, the packages last), except the kernel's own
-# (kernel.sh), which run first. The full mode first installs every package
-# of the mirror the host serves. `reboot` is the full test's second boot,
-# of the disk the first one upgraded (get-myos --upgrade): it checks only
-# that the system came up from the slot the upgrade wrote; `installed` the
-# third, of the disk get-myos --install made: up from its slot a.
+# (kernel.sh), which run first. The `packages` test installs every package
+# of the mirror the host serves, and the packages' tests come with them.
+# `reboot` is the second boot of a run that upgraded the boot disk
+# (get-myos --upgrade): it checks only that the system came up from the
+# slot the upgrade wrote; `installed` the third, of the disk get-myos
+# --install made: up from its slot a.
 
-MODE=${1:-mini}
+MODE=tests
+ONLY=
+TAGS=
+SKIP=
+while [ $# -gt 0 ]; do
+	case $1 in
+	mini) SKIP=net,pkg,heavy,install ;;
+	full | tests) ;;
+	reboot | installed) MODE=$1 ;;
+	--only) ONLY=$2; shift ;;
+	--tags) TAGS=$2; shift ;;
+	--skip) SKIP=$2; shift ;;
+	*) echo "run.sh: bad argument: $1" >&2; exit 2 ;;
+	esac
+	shift
+done
 TESTS=/lib/myos-tests
 OUT=/tmp/myos-tests
 MIRROR=${MYOS_MIRROR:-http://10.0.2.2:8765}
 passed=0
 total=0
+skipped=0
 mkdir -p $OUT
 
 # The boot script (/etc/rc, docs/install.md) runs in the background, past
@@ -51,28 +73,78 @@ capture() {
 	"$@" > "$f" 2>&1
 }
 
-# t NAME COMMAND...: run one test.
+# has LIST ITEM: the comma list has the item.
+has() {
+	case ",$1," in
+	*",$2,"*) return 0 ;;
+	esac
+	return 1
+}
+
+# selected NAME TAGS: whether the selection takes the test (TAGS a comma
+# list, the file's own tags included).
+selected() {
+	if [ -n "$ONLY" ]; then
+		has "$ONLY" "$1"
+		return
+	fi
+	for tag in $(echo "$2" | tr , ' '); do
+		has "$SKIP" "$tag" && return 1
+	done
+	[ -z "$TAGS" ] && return 0
+	for tag in $(echo "$2" | tr , ' '); do
+		has "$TAGS" "$tag" && return 0
+	done
+	return 1
+}
+
+# t [-t TAGS] NAME COMMAND...: run one test, if the selection takes it.
+# FILE_TAGS are the tags of the file being sourced (its port's name, `pkg`
+# for a package's), on every test of it. In the first pass over the files
+# (LISTING set) nothing runs: the selected tests' names and tags are
+# listed, for what the run needs before the tests (the packages).
 t() {
-	name=$1
+	t_tags=$FILE_TAGS
+	if [ "$1" = -t ]; then
+		t_tags="$2,$t_tags"
+		shift 2
+	fi
+	t_name=$1
 	shift
+	if [ -z "$FORCE" ] && ! selected "$t_name" "$t_tags"; then
+		[ -n "$LISTING" ] || skipped=$((skipped + 1))
+		return 0
+	fi
+	if [ -n "$LISTING" ]; then
+		echo "$t_name $t_tags" >> $OUT/selected
+		return 0
+	fi
 	total=$((total + 1))
-	capture $OUT/$name.out "$@"
-	rc=$?
-	if [ $rc -eq 0 ]; then
+	# The test runs in this shell (a function sets what later ones read):
+	# the runner's own variables are named so that none clobbers them.
+	capture $OUT/$t_name.out "$@"
+	t_rc=$?
+	if [ $t_rc -eq 0 ]; then
 		passed=$((passed + 1))
-		echo "TEST $name PASS"
+		echo "TEST $t_name PASS"
 	else
-		echo "TEST $name FAIL (exit $rc)"
-		tail -n 40 $OUT/$name.out | sed 's/^/    /'
+		echo "TEST $t_name FAIL (exit $t_rc)"
+		tail -n 40 $OUT/$t_name.out | sed 's/^/    /'
 	fi
 }
 
-# t_last NAME: run the test NAME (a function) after every other one: the
-# tests that leave something on the scratch disk the host boots afterwards,
-# which a later test would reuse (mkfs.ext2's formats the whole disk).
+# t_last [-t TAGS] NAME: run the test NAME (a function) after every other
+# one: the tests that leave something on the scratch disk the host boots
+# afterwards, which a later test would reuse (mkfs.ext2's formats the whole
+# disk).
 LAST=
 t_last() {
-	LAST="$LAST $1"
+	t_tags=$FILE_TAGS
+	if [ "$1" = -t ]; then
+		t_tags="$2,$t_tags"
+		shift 2
+	fi
+	LAST="$LAST $1:$t_tags"
 }
 
 # contains NEEDLE FILE: the file has the string somewhere.
@@ -94,12 +166,15 @@ booted_slot() {
 	g=$(grep "^${data#/dev/} " /proc/partitions | cut -d' ' -f5)
 	[ -n "$g" ] && grep -q "^PARTUUID=$g /data ext2\$" /boot/fstab
 }
+
+FILE_TAGS=
 if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	if [ "$MODE" = reboot ]; then
 		t booted_slot_b booted_slot b
 		# The app the first boot installed on the data partition
-		# (user/get-myos/test.sh's apps_data) runs as it did: an app is
-		# its directory, nothing to redo after a reboot.
+		# (user/get-myos/test.sh's apps_data; the host selects this
+		# test out when that one did not run) runs as it did: an app
+		# is its directory, nothing to redo after a reboot.
 		t app_kept sh -c '[ "$(run-myos clear -T linux)" = "$(printf "\033[H\033[J")" ]'
 	else
 		t booted_installed booted_slot a
@@ -108,11 +183,13 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	exit 0
 fi
 
-# The full boot gets every package of this build from the host's mirror
-# first (docs/packages.md; packages.txt names the ports the image lacks,
-# the index has the image's ports too), as apps under /tmp/apps (all of
-# them do not fit the boot disk's data partition): the packages' tests,
-# which come with them, run them with run-myos.
+echo "tests: only=${ONLY:--} tags=${TAGS:--} skip=${SKIP:--}"
+
+# The packages: every one of this build from the host's mirror
+# (docs/packages.md; packages.txt names the ports the image lacks, the
+# index has the image's ports too), as apps under /tmp/apps (all of them
+# do not fit the boot disk's data partition): the packages' tests run
+# them with run-myos.
 install_packages() {
 	names=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
 	echo "packages: $names"
@@ -136,22 +213,48 @@ install_packages() {
 	fi
 	get-myos -m $MIRROR $names
 }
-if [ "$MODE" = full ]; then
-	export MYOS_APPS=/tmp/apps
-	t packages install_packages
-fi
+# source_tests: the kernel's tests, then every port's (the packages' are
+# in the image too), in the order of their names. A ports file is
+# `<group>-<name>.sh`: its tests are tagged with the port's name, a
+# package's (group 2) with `pkg` too; the deferred ones (t_last) last.
+ls $TESTS/ports/*.sh | sort > /tmp/myos-tests-list
+source_tests() {
+	LAST=
+	FILE_TAGS=
+	. $TESTS/kernel.sh
+	for f in $(cat /tmp/myos-tests-list); do
+		name=${f##*/}
+		name=${name%.sh}
+		FILE_TAGS=${name#*-}
+		case $name in
+		2-*) FILE_TAGS=$FILE_TAGS,pkg ;;
+		esac
+		. "$f"
+	done
+	FILE_TAGS=
+	for f in $LAST; do
+		t -t "${f#*:}" "${f%%:*}" "${f%%:*}"
+	done
+}
 
-# The image's tests, then the installed apps' (each app has its port's at
-# lib/myos-tests/ports/), all in the order of their names.
-. $TESTS/kernel.sh
-for f in $TESTS/ports/*.sh ${MYOS_APPS:-/nonexistent}/*/lib/myos-tests/ports/*.sh; do
-	[ -f "$f" ] && echo "${f##*/} $f"
-done | sort | cut -d' ' -f2 > /tmp/myos-tests-list
-for f in $(cat /tmp/myos-tests-list); do
-	. "$f"
-done
-for f in $LAST; do
-	t $f $f
-done
+# The first pass lists the selected tests; a `pkg` one among them needs the
+# packages installed as apps: the `packages` test runs before the others,
+# whatever the selection says (its failure fails them on their own). Then
+# the second pass runs them.
+rm -f $OUT/selected
+LISTING=1
+source_tests
+LISTING=
+if [ -s $OUT/selected ]; then
+	echo "selected: $(wc -l < $OUT/selected) tests"
+fi
+if cut -d' ' -f2 $OUT/selected 2>/dev/null | grep -q -E "(^|,)pkg(,|$)"; then
+	export MYOS_APPS=/tmp/apps
+	FORCE=1
+	t -t net,pkg packages install_packages
+	FORCE=
+fi
+source_tests
 
 echo "TESTS DONE $passed/$total"
+echo "TESTS SKIPPED $skipped"

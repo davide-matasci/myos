@@ -69,17 +69,18 @@ cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS
 
 ## Testing
 
-The real test is booting: `test-mini` / `test-full` boot headless, log in
-and run a test list **in the guest** (the ports' `test.sh`, the kernel's
-`user/tests/kernel.sh`),
+The real test is booting: `test` boots headless, logs in and runs the
+selected tests **in the guest** (the ports' `test.sh`, the kernel's
+`user/tests/kernel.sh`; every test carries tags, `docs/testing.md`),
 while the host watches the console for `TEST <name> PASS|FAIL` lines
 (`src/boot_test.rs`, `docs/testing.md`). QEMU runs under TCG, so a boot
 takes minutes.
 
 ```sh
-cargo run -- test-mini                     # quick list (what PR CI runs)
+cargo run -- test-mini                     # the quick tests: --skip net,pkg,heavy,install,alpine-disk
 cargo run -- aarch64 test-mini             # also riscv64, uefi
-cargo run -- test-full                     # full list: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
+cargo run -- test                          # every test: + packages, HTTPS, SSH, Alpine, curated os-test (must be 100%)
+cargo run -- test --tags netfs --skip heavy   # a selection by tag; --only NAME,... by name
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode -p ext2fs -p fatvol   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
@@ -89,9 +90,11 @@ cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patch
 - Test on every arch you could have affected; arch-specific code needs all
   three. Don't over-test: a mini run per affected arch is usually enough
   locally, CI does the rest.
-- New behavior gets a test: a function and a `t` line in the `test.sh` of
-  the port or program it belongs to (`PORT_TEST` in its `port.env`; a
-  package's test runs in the full mode after the install; `host.sh` with
+- New behavior gets a test: a function and a `t -t tags` line in the
+  `test.sh` of the port or program it belongs to (`PORT_TEST` in its
+  `port.env`; tag what it needs, `net`/`pkg`/`heavy`/`install`, and what it
+  covers, a module's or area's name; a package's test runs after the
+  install; `host.sh` with
   `PORT_HOST` when the test needs a peer on the host), the kernel's own in
   `user/tests/kernel.sh`, a smoke program under `user/c`, or an os-test in
   the curated lists
@@ -170,14 +173,22 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   its plan job, `scripts/ci-ports-plan.sh`, starts a toolchain or port job
   only for what the registry lacks) and `ci-runtime.yml` (build job → boot
   jobs).
-- Pull requests run **test-mini** on bios, uefi, aarch64 and riscv64. The
-  Linux layer's musl pieces are built and cached like a port
-  (`linux-compat`) in every run.
-- **Full boot** (`test-full` in all four boot jobs, every image with the
-  Linux layer built in by `MYOS_CI_FEATURES=linux_compat`, every package
-  installed from the build's own mirror) runs daily on master and on
-  demand: dispatch `ci.yml` with `full_boot: true` on the branch. Run it
-  for kernel, libc, port or CI changes that the mini list does not cover.
+- Pull requests boot **what the change needs**: the `plan` job
+  (`scripts/ci-select.py`, `docs/testing.md` "In CI") selects the tests by
+  tag from the changed paths (a port's directory its tests and its
+  dependents', a module's its tag, the kernel or the toolchain
+  everything, documentation nothing) and runs them on bios, uefi, aarch64,
+  aarch64-gicv3 and riscv64, the long groups (os-test, the Alpine apk
+  installs) each in a boot of its own; the Alpine roots the Linux layer
+  tests mount (rustc, Python, an X client) come from a disk made once and
+  cached. The Linux layer's musl pieces are built and
+  cached like a port (`linux-compat`) in every run.
+- **Everything** runs on a push to master, daily, on a dispatch of
+  `ci.yml` with `full_boot: true` and on a pull request labelled
+  `ci:full`; a `linux` test in the selection puts the layer in the image
+  (`MYOS_CI_FEATURES=linux_compat`), and every package is installed from
+  the build's own mirror before a `pkg` test. Label a pull request
+  `ci:full` when the planner's rules would miss what it touches.
 - On master (a push or the daily run) the **iso** job builds the x86_64
   hybrid ISO with the Linux layer in it and the **publish** job uploads it
   and the packages to the rolling GitHub release `rolling`, get-myos's

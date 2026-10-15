@@ -20,4 +20,4 @@ xft_run() {
 	[ $rc = 0 ] || cat /tmp/xft.out /tmp/xft-server.log
 	return $rc
 }
-t xft xft_run
+t -t x11 xft xft_run

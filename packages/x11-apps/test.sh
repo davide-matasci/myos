@@ -57,4 +57,4 @@ xev_keys() {
 	[ $ok = 1 ] || cat /tmp/xev.out /tmp/xev-server.log
 	[ $ok = 1 ]
 }
-t xev xev_keys
+t -t x11 xev xev_keys

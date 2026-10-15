@@ -69,16 +69,16 @@ ext2_mmap() {
 ext2_mtime() {
 	echo x > /tmp/disk/m && linux /bin/linux/linux-smoke mtime /tmp/disk/m && rm /tmp/disk/m
 }
-t blk_cache blk_cache
-t ext2_disk ext2_disk
-t ext2_link ext2_link
-t ext2_big ext2_big
-t ext2_times ext2_times
-t ext2_held ext2_held
-t ext2_files ext2_files
-t ext2_mmap ext2_mmap
+t -t ext2,blk blk_cache blk_cache
+t -t ext2,blk,smoke ext2_disk ext2_disk
+t -t ext2,blk ext2_link ext2_link
+t -t ext2,blk ext2_big ext2_big
+t -t ext2,blk ext2_times ext2_times
+t -t ext2,blk ext2_held ext2_held
+t -t ext2,blk ext2_files ext2_files
+t -t ext2,blk,mm ext2_mmap ext2_mmap
 if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
-	t ext2_mtime ext2_mtime
+	t -t ext2,blk ext2_mtime ext2_mtime
 fi
 # umount writes back what the module caches: the directory is empty while
 # the disk is not mounted, the file is back once it is again.
@@ -87,4 +87,4 @@ ext2_remount() {
 	[ -z "$(ls -A /tmp/disk)" ] || { echo "files left after umount"; return 1; }
 	mount /dev/nvme1n1/data /tmp/disk ext2 && [ "$(cat /tmp/disk/k)" = kept ] && rm /tmp/disk/k
 }
-t ext2_remount ext2_remount
+t -t ext2,blk ext2_remount ext2_remount

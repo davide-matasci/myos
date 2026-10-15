@@ -2,7 +2,7 @@
 sbase_echo() {
 	[ "$(/bin/sbase/echo hi)" = hi ]
 }
-t sbase_echo sbase_echo
+t -t smoke sbase_echo sbase_echo
 
 # One multicall ELF: the tool is the last component of argv[0], through a
 # symlink under another directory too; a name that is no tool exits 127.

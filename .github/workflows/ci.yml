@@ -6,12 +6,12 @@ on:
   pull_request:
     branches: [master, main]
   schedule:
-    # Daily full boot; otherwise boot-mini.
+    # Daily: every boot test (a pull request runs what its change needs).
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       full_boot:
-        description: Run full boot jobs
+        description: Run every boot test
         type: boolean
         default: false
 

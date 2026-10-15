@@ -9,6 +9,10 @@ use crate::{close, open, open_flags, read, write_fd, Timeout, O_RDWR, O_WRONLY};
 /// each read took tens of microseconds under TCG).
 const STATUS_TIMEOUT_MS: i64 = 5_000;
 const DATA_TIMEOUT_MS: i64 = 5_000;
+/// A query is one datagram, lost at times, and the CI runner's resolver has
+/// taken over 5 s for a name's first lookup: an unanswered query is sent
+/// again, this many times in all (musl's resolver retransmits too).
+const DNS_ATTEMPTS: usize = 4;
 const BUF: usize = 1024;
 
 fn put_dec(buf: &mut [u8], mut n: u16) -> usize {
@@ -335,27 +339,29 @@ fn resolve_via(dns_server: &[u8], host: &[u8]) -> Result<[u8; 4], ResolveError> 
     let Some(data) = open_flags(&pbuf[..dn], O_RDWR) else {
         return Err(ResolveError::Open);
     };
-    if write_fd(data, &query[..qpos]) == usize::MAX {
-        close(data);
-        return Err(ResolveError::Write);
-    }
-
     let mut rbuf = [0u8; BUF];
-    let mut t = Timeout::ms(DATA_TIMEOUT_MS);
-    while !t.expired() {
-        let nr = read(data, &mut rbuf);
-        if nr == usize::MAX {
-            break;
-        }
-        if nr == 0 {
-            t.wait();
-            continue;
-        }
-        if let Some(ip) = parse_a_record(&rbuf[..nr]) {
+    for _ in 0..DNS_ATTEMPTS {
+        if write_fd(data, &query[..qpos]) == usize::MAX {
             close(data);
-            return Ok(ip);
+            return Err(ResolveError::Write);
         }
-        // Keep polling — may get NXDOMAIN / CNAME-only first.
+        let mut t = Timeout::ms(DATA_TIMEOUT_MS);
+        while !t.expired() {
+            let nr = read(data, &mut rbuf);
+            if nr == usize::MAX {
+                close(data);
+                return Err(ResolveError::NoARecord);
+            }
+            if nr == 0 {
+                t.wait();
+                continue;
+            }
+            if let Some(ip) = parse_a_record(&rbuf[..nr]) {
+                close(data);
+                return Ok(ip);
+            }
+            // Keep polling — may get NXDOMAIN / CNAME-only first.
+        }
     }
     close(data);
     Err(ResolveError::NoARecord)

@@ -38,4 +38,4 @@ get_alpine_fetch() {
 		case ${f##*/} in dev | proc | net) ;; *) rm -rf "$f" ;; esac
 	done
 }
-t get_alpine get_alpine_fetch
+t -t net,heavy,linux,alpine get_alpine get_alpine_fetch

@@ -18,60 +18,151 @@ use std::process::{Child, ChildStdin, Command};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Which test list the guest runs: `test-mini` is what every pull request
-/// boots (no network beyond QEMU's own, a few minutes), `test-full` adds the
-/// packages, HTTPS, SSH, the Linux layer's Alpine packages and the curated
-/// os-test list.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Which tests the guest runs (docs/testing.md): every test carries tags,
+/// what it needs (`net`: the host's network and the package mirror, `pkg`:
+/// the packages installed as apps, `heavy`: minutes long, `install`: the
+/// boot disk upgraded or installed, checked by the boots that follow,
+/// `alpine-disk`: the Alpine roots on the disk the host prepares) and
+/// what it covers (a module's or a port's name). The runner takes the
+/// tests named by `only`, else those with any of `tags` (all of them with
+/// none), minus those with any of `skip`.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Selection {
+    pub only: Vec<String>,
+    pub tags: Vec<String>,
+    pub skip: Vec<String>,
+    /// `--budget MINUTES`: the whole run's, instead of the one the tags
+    /// imply.
+    pub budget: Option<Duration>,
+}
+
+/// What the quick list of old skips: `test-mini` is `test --skip` this.
+const MINI_SKIPS: &str = "net,pkg,heavy,install,alpine-disk";
+
+impl Selection {
+    /// The `test` command's options from the launcher's arguments:
+    /// `--only NAME,...`, `--tags TAG,...`, `--skip TAG,...`, `--budget
+    /// MINUTES`; `test-mini` and `test-full` stand for the two lists of
+    /// old. `None` without a test command.
+    pub fn parse(args: &[String]) -> Option<Selection> {
+        let mut sel = Selection::default();
+        let mut found = false;
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            let list = |s: Option<&String>| -> Vec<String> {
+                s.map(|s| s.split(',').filter(|t| !t.is_empty()).map(str::to_string).collect()).unwrap_or_default()
+            };
+            match arg.as_str() {
+                "test" | "test-full" => found = true,
+                "test-mini" => {
+                    found = true;
+                    sel.skip = list(Some(&MINI_SKIPS.to_string()));
+                }
+                "--only" => sel.only = list(it.next()),
+                "--tags" => sel.tags = list(it.next()),
+                "--skip" => sel.skip = list(it.next()),
+                "--budget" => {
+                    let minutes: u64 = it.next().and_then(|m| m.parse().ok()).unwrap_or_else(|| {
+                        eprintln!("error: --budget takes the minutes");
+                        std::process::exit(2);
+                    });
+                    sel.budget = Some(Duration::from_secs(minutes * 60));
+                }
+                _ => {}
+            }
+        }
+        found.then_some(sel)
+    }
+
+    fn skips(&self, tag: &str) -> bool {
+        self.skip.iter().any(|t| t == tag)
+    }
+
+    /// Whether a test needing the host's network may run: the package
+    /// mirror is served then.
+    pub fn needs_network(&self) -> bool {
+        !self.skips("net")
+    }
+
+    /// Whether a test needing the Alpine disk may run: it is prepared
+    /// (fetched once, minutes) and attached then.
+    pub fn needs_alpine_disk(&self) -> bool {
+        !self.skips("alpine-disk")
+    }
+
+    /// The runner's arguments.
+    fn args(&self) -> String {
+        let mut s = String::new();
+        for (opt, list) in [("--only", &self.only), ("--tags", &self.tags), ("--skip", &self.skip)] {
+            if !list.is_empty() {
+                s.push_str(&format!(" {opt} {}", list.join(",")));
+            }
+        }
+        s
+    }
+
+    /// Whether the run is a quick one: nothing heavy, nothing from the
+    /// network (the budgets of the mini list of old).
+    fn quick(&self) -> bool {
+        self.skips("heavy") && self.skips("net")
+    }
+}
+
+/// A boot of the test harness: the tests, or one of the boots that follow
+/// a run that changed the boot disk.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Mode {
-    Mini,
-    Full,
-    /// The full test's second boot, of the disk the first one upgraded:
-    /// it comes up from the other slot (`run.sh reboot`, docs/install.md).
-    Reboot,
-    /// Its third, of the disk `get-myos --install` made on the scratch
+    Tests(Selection),
+    /// The second boot, of the disk the first one upgraded: it comes up
+    /// from the other slot (`run.sh reboot`, docs/install.md), with the app
+    /// the first boot's `apps_data` installed on the data partition when
+    /// that test ran.
+    Reboot { app: bool },
+    /// The third, of the disk `get-myos --install` made on the scratch
     /// disk: it comes up from slot a (`run.sh installed`).
     Installed,
 }
 
 impl Mode {
-    pub fn parse(arg: &str) -> Option<Mode> {
-        match arg {
-            "test-mini" => Some(Mode::Mini),
-            "test-full" => Some(Mode::Full),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
+    /// The runner's arguments, after `sh /lib/myos-tests/run.sh`.
+    fn args(&self) -> String {
         match self {
-            Mode::Mini => "mini",
-            Mode::Full => "full",
-            Mode::Reboot => "reboot",
-            Mode::Installed => "installed",
+            Mode::Tests(sel) => sel.args(),
+            Mode::Reboot { app: true } => " reboot".into(),
+            Mode::Reboot { app: false } => " reboot --only booted_slot_b".into(),
+            Mode::Installed => " installed".into(),
         }
     }
 
     /// The whole run's budget. The full list runs the curated os-test set
-    /// (300 tests at a few seconds each under TCG) after installing the
-    /// packages; the mini list must fail well inside the 5-minute CI job.
-    pub fn budget(self, linux_compat: bool) -> Duration {
+    /// (1000 tests at a few hundred milliseconds each under TCG) after
+    /// installing the packages; a quick list must fail well inside the
+    /// 5-minute CI job.
+    pub fn budget(&self, linux_compat: bool) -> Duration {
         match self {
-            Mode::Mini => Duration::from_secs(if linux_compat { 300 } else { 240 }),
-            Mode::Full => Duration::from_secs(3000),
-            Mode::Reboot | Mode::Installed => Duration::from_secs(300),
+            Mode::Tests(sel) if sel.budget.is_some() => sel.budget.unwrap(),
+            Mode::Tests(sel) if sel.quick() => Duration::from_secs(if linux_compat { 300 } else { 240 }),
+            Mode::Tests(_) => Duration::from_secs(3000),
+            Mode::Reboot { .. } | Mode::Installed => Duration::from_secs(300),
         }
     }
 
-    /// How long the console may stay silent. The long full-mode steps
-    /// (installing the packages, an Alpine package's unpack) print little.
-    fn stall(self) -> Duration {
+    /// How long the console may stay silent. The long steps (installing
+    /// the packages, an Alpine package's unpack) print little.
+    fn stall(&self) -> Duration {
         match self {
-            Mode::Mini => Duration::from_secs(180),
-            Mode::Full => Duration::from_secs(600),
-            Mode::Reboot | Mode::Installed => Duration::from_secs(180),
+            Mode::Tests(sel) if !sel.quick() => Duration::from_secs(600),
+            _ => Duration::from_secs(180),
         }
     }
+}
+
+/// What a boot of the harness found: whether every test passed (and the
+/// boot's own checks held), and the names of the tests that passed, for
+/// the boots that may follow.
+pub struct Outcome {
+    pub ok: bool,
+    pub passed: Vec<String>,
 }
 
 /// What the kernel and init print before the login prompt: the boot's own
@@ -386,9 +477,9 @@ fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
 
 /// Boot test on a QEMU `child` started with `-serial stdio` and piped
 /// stdio. Does not return: exits the process with the result.
-/// Whether every test passed (a crash, a stall or the budget running out
+/// The outcome: every test passed (a crash, a stall or the budget running out
 /// ends the launcher at once instead).
-pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> bool {
+pub fn run(mut child: Child, mode: &Mode, linux_compat: bool) -> Outcome {
     let mut stdin = child.stdin.take().expect("qemu stdin");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let mut stdout = child.stdout.take().expect("qemu stdout");
@@ -465,7 +556,7 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> bool {
         fail(&serial, &mut child, "no password prompt after `root`");
     }
     send(&mut stdin, b"\n");
-    let command = format!("sh /lib/myos-tests/run.sh {}", mode.name());
+    let command = format!("sh /lib/myos-tests/run.sh{}", mode.args());
     let mut attempts = 0;
     loop {
         attempts += 1;
@@ -536,8 +627,8 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> bool {
     let (passed, total) = done.unwrap_or((0, 0));
     eprintln!();
     eprintln!(
-        "boot test ({}): {passed}/{total} passed in {:?}{}",
-        mode.name(),
+        "boot test (run.sh{}): {passed}/{total} passed in {:?}{}",
+        mode.args(),
         started.elapsed(),
         if failed.is_empty() { String::new() } else { format!(", failed: {}", failed.join(" ")) }
     );
@@ -550,17 +641,14 @@ pub fn run(mut child: Child, mode: Mode, linux_compat: bool) -> bool {
     if !powered_off {
         eprintln!("error: `poweroff` did not power the machine off");
     }
-    if !failed.is_empty()
-        || !missing.is_empty()
-        || passed != total
-        || total == 0
-        || results.len() as u32 != total
-        || !disk_ok
-        || !powered_off
-    {
-        return false;
-    }
-    true
+    let ok = failed.is_empty()
+        && missing.is_empty()
+        && passed == total
+        && total != 0
+        && results.len() as u32 == total
+        && disk_ok
+        && powered_off;
+    Outcome { ok, passed: results.into_iter().filter(|r| r.passed).map(|r| r.name).collect() }
 }
 
 #[cfg(test)]
@@ -580,6 +668,25 @@ mod tests {
         assert_eq!(parse_test_line("$ TEST x PASS"), None);
         assert_eq!(parse_done_line("TESTS DONE 17/18"), Some((17, 18)));
         assert_eq!(parse_done_line("TESTS DONE"), None);
+    }
+
+    #[test]
+    fn selection_args() {
+        let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(Selection::parse(&args("uefi")), None);
+        let sel = Selection::parse(&args("uefi test-mini")).unwrap();
+        assert_eq!(sel.skip, ["net", "pkg", "heavy", "install", "alpine-disk"]);
+        assert!(sel.quick() && !sel.needs_network() && !sel.needs_alpine_disk());
+        assert_eq!(Mode::Tests(sel).args(), " --skip net,pkg,heavy,install,alpine-disk");
+        let sel = Selection::parse(&args("test-full")).unwrap();
+        assert_eq!(sel, Selection::default());
+        assert!(!sel.quick() && sel.needs_network() && sel.needs_alpine_disk());
+        let sel = Selection::parse(&args("test --tags smoke,netfs --skip heavy --only a,b --budget 7")).unwrap();
+        assert_eq!(sel.only, ["a", "b"]);
+        assert_eq!(sel.budget, Some(Duration::from_secs(420)));
+        assert_eq!(Mode::Tests(sel).args(), " --only a,b --tags smoke,netfs --skip heavy");
+        assert_eq!(Mode::Reboot { app: true }.args(), " reboot");
+        assert_eq!(Mode::Reboot { app: false }.args(), " reboot --only booted_slot_b");
     }
 
     #[test]

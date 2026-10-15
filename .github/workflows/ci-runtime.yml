@@ -1,5 +1,6 @@
 name: CI runtime
-# build packs complete ci-build.tar.zst; boot/boot-mini ONLY extract + assert + QEMU.
+# plan decides the boots from the change (scripts/ci-select.py); build packs
+# a complete ci-build.tar.zst; the boots ONLY extract + assert + QEMU.
 on:
   workflow_call:
     inputs:
@@ -20,12 +21,44 @@ defaults:
     shell: bash
 
 jobs:
+  # Which boot tests the change needs (docs/testing.md, "In CI"): every
+  # test carries tags, and the changed paths select them. A push to
+  # master, the daily run, a dispatch with full_boot and the `ci:full`
+  # label run everything; documentation alone boots nothing. The long
+  # tests get boots of their own, so a full run is a dozen boots of ten
+  # minutes in parallel, not one of thirty.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      boots: ${{ steps.plan.outputs.boots }}
+      features: ${{ steps.plan.outputs.features }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The diff against the pull request's base.
+          fetch-depth: 0
+      - name: Select the boot tests
+        id: plan
+        run: |
+          args=(--event "${{ github.event_name }}")
+          if [[ "${{ inputs.full_boot }}" == true ]]; then args+=(--all); fi
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}" == true ]]; then args+=(--full-label); fi
+          if [[ -n "${{ github.event.pull_request.base.sha }}" ]]; then
+            args+=(--base "${{ github.event.pull_request.base.sha }}" --head HEAD)
+          elif [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.full_boot }}" != true ]]; then
+            # A dispatch on a branch without full_boot: what the branch changes.
+            args+=(--base origin/master --head HEAD)
+          fi
+          python3 scripts/ci-select.py "${args[@]}"
+
   build:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 45
+    needs: plan
     steps:
       - uses: actions/checkout@v6
 
@@ -57,9 +90,9 @@ jobs:
       - name: Pull prebuilt ports and build kernels
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Full boot: every image carries the optional Linux layer, and the
-          # boot jobs run its smokes and Alpine's packages. Boot-mini does not.
-          MYOS_CI_FEATURES: ${{ inputs.full_boot && 'linux_compat' || '' }}
+          # The image carries the optional Linux layer when a boot runs its
+          # tests (the plan says); the default build is what boots otherwise.
+          MYOS_CI_FEATURES: ${{ needs.plan.outputs.features }}
           MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           chmod +x scripts/*.sh
@@ -76,7 +109,7 @@ jobs:
 
       - name: Pack CI build artifacts
         env:
-          MYOS_CI_FEATURES: ${{ inputs.full_boot && 'linux_compat' || '' }}
+          MYOS_CI_FEATURES: ${{ needs.plan.outputs.features }}
         run: |
           chmod +x scripts/*.sh
           ./scripts/ci-pack-build-artifacts.sh
@@ -120,33 +153,17 @@ jobs:
     container:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
-    timeout-minutes: 90
-    needs: build
+    timeout-minutes: 45
+    needs: [plan, build]
     if: |
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
-      inputs.full_boot
+      needs.plan.outputs.boots != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - id: bios
-            args: test-full
-            required: true
-          - id: uefi
-            args: uefi test-full
-            required: true
-          - id: aarch64
-            args: aarch64 test-full
-            required: true
-          - id: aarch64-gicv3
-            args: aarch64 test-full
-            gic: "3"
-            required: true
-          - id: riscv64
-            args: riscv64 test-full
-            required: true
+        include: ${{ fromJson(needs.plan.outputs.boots) }}
     steps:
       - uses: actions/checkout@v6
 
@@ -167,68 +184,22 @@ jobs:
           # Fail hard if incomplete; never rebuild here.
           ./scripts/ci-assert-boot-artifacts.sh
 
-      - name: Boot and test in QEMU
-        continue-on-error: ${{ !matrix.required }}
-        env:
-          MYOS_SKIP_KERNEL_REBUILD: "1"
-          # The aarch64 boots' GIC version (2 when unset): the launcher
-          # dumps the matching device tree into the ESP before each boot.
-          MYOS_AARCH64_GIC: ${{ matrix.gic }}
-        run: ./target/debug/myos ${{ matrix.args }}
-
-  boot-mini:
-    name: boot-mini (${{ matrix.id }})
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/davide-matasci/myos-ci:latest
-      options: -e HOME=/root
-    timeout-minutes: 5
-    needs: build
-    # The quick test list (docs/testing.md); skipped when full_boot is selected.
-    if: |
-      always() &&
-      !cancelled() &&
-      needs.build.result == 'success' &&
-      !inputs.full_boot
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - id: bios
-            args: test-mini
-            required: true
-          - id: uefi
-            args: uefi test-mini
-            required: true
-          - id: aarch64
-            args: aarch64 test-mini
-            required: true
-          - id: aarch64-gicv3
-            args: aarch64 test-mini
-            gic: "3"
-            required: true
-          - id: riscv64
-            args: riscv64 test-mini
-            required: true
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download CI build artifacts
-        uses: actions/download-artifact@v7
+      # The Alpine disk the `alpine-disk` tests mount (rustc, Python, an X
+      # client: linux-compat/alpine-disks.sh), made once per key (the
+      # scripts that make it) and cached; a miss makes it here, and the
+      # cache takes it after the boot.
+      - name: Alpine disk cache key
+        if: matrix.alpine == 'true'
+        id: alpine
+        run: echo "key=alpine-disk-${{ matrix.arch }}-$(./linux-compat/alpine-disks.sh --hash)" >> "$GITHUB_OUTPUT"
+      - name: Alpine disk
+        if: matrix.alpine == 'true'
+        uses: actions/cache@v4
         with:
-          name: ci-build
-
-      - name: Extract and assert CI artifacts
-        run: |
-          chmod +x scripts/*.sh
-          if [[ ! -f ci-build.tar.zst ]]; then
-            echo "::error::ci-build.tar.zst missing after download; build job must upload it"
-            exit 1
-          fi
-          echo "==> extracting ci-build.tar.zst"
-          tar --zstd -xf ci-build.tar.zst
-          # Fail hard if incomplete; never rebuild here.
-          ./scripts/ci-assert-boot-artifacts.sh
+          path: |
+            target/alpine-${{ matrix.arch }}.img
+            target/.myos-alpine-disks-${{ matrix.arch }}-version
+          key: ${{ steps.alpine.outputs.key }}
 
       - name: Boot and test in QEMU
         continue-on-error: ${{ !matrix.required }}
@@ -295,15 +266,14 @@ jobs:
     name: publish packages
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [build, boot, boot-mini, iso]
+    needs: [build, boot, iso]
     if: >-
       always() &&
       !cancelled() &&
       (github.event_name == 'push' || github.event_name == 'schedule') &&
       github.ref == 'refs/heads/master' &&
       needs.build.result == 'success' &&
-      (needs.boot.result == 'success' || needs.boot.result == 'skipped') &&
-      (needs.boot-mini.result == 'success' || needs.boot-mini.result == 'skipped') &&
+      needs.boot.result == 'success' &&
       needs.iso.result == 'success'
     permissions:
       contents: write
