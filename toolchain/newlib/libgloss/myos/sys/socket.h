@@ -40,6 +40,8 @@ typedef unsigned short sa_family_t;
 #define SO_RCVBUF    8
 #define SO_KEEPALIVE 9
 #define SO_LINGER    13
+#define SO_RCVLOWAT  18
+#define SO_SNDLOWAT  19
 #define SO_RCVTIMEO  20
 #define SO_SNDTIMEO  21
 #define SO_BINDTODEVICE 25
