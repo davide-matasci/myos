@@ -184,8 +184,9 @@ t -t console kbd_burst kbd_burst
 # usb-mouse and clicks through the QEMU monitor (host.sh mouse) once the
 # smoke holds the file, and the smoke checks the motion and the click
 # (mouse_smoke.c). /proc/usb names the driver and what it made of it.
-mouse_events() {
-	grep -q ':usb_hid mouse$' /proc/usb || { cat /proc/usb; return 1; }
+# mouse_smoke_run REQUEST: the smoke, with `HOST c-smokes REQUEST` sent
+# once it is ready.
+mouse_smoke_run() {
 	: > /tmp/mouse.out
 	/bin/etc/mouse_smoke >> /tmp/mouse.out 2>&1 &
 	pid=$!
@@ -194,7 +195,7 @@ mouse_events() {
 		sleep 1
 		i=$((i + 1))
 	done
-	grep -q ready /tmp/mouse.out && echo "HOST c-smokes mouse" >&3
+	grep -q ready /tmp/mouse.out && echo "HOST c-smokes $1" >&3
 	i=0
 	while [ $i -lt 60 ] && ! grep -q -e "OK ] mouse" -e "FAIL ]" /tmp/mouse.out 2>/dev/null; do
 		sleep 1
@@ -205,7 +206,28 @@ mouse_events() {
 	cat /tmp/mouse.out
 	contains "[ OK ] mouse" /tmp/mouse.out
 }
+mouse_events() {
+	grep -q ':usb_hid mouse$' /proc/usb || { cat /proc/usb; return 1; }
+	mouse_smoke_run mouse
+}
 t -t console,usb,mouse mouse mouse_events
+# The PS/2 mouse on x86_64 (the keyboard's controller, its aux port on
+# IRQ 12) feeds the same file: the host moves and clicks QEMU's PS/2 mouse
+# instead (host.sh mouse ps2), and IRQ 12's count says the events came
+# that way, not from the usb-mouse. Elsewhere there is no PS/2.
+ps2_irqs() {
+	grep ' ps2 mouse$' /proc/interrupts | while read -r n count rest; do echo "$count"; done
+}
+ps2_mouse_events() {
+	grep -q ' ps2 keyboard$' /proc/interrupts || return 0
+	before=$(ps2_irqs)
+	[ -n "$before" ] || { cat /proc/interrupts; return 1; }
+	mouse_smoke_run "mouse ps2" || return 1
+	after=$(ps2_irqs)
+	echo "IRQ 12: $before, then $after"
+	[ "$after" -gt "$before" ]
+}
+t -t console,mouse ps2_mouse ps2_mouse_events
 # The keyboard types at the tty whose text screen is shown (docs/tty.md):
 # tty9's here, which has no getty. ^C there while nothing reads it: the
 # console's input thread runs the line discipline anyway and the tty's

@@ -15,9 +15,11 @@
 #                   key would not keep the order: requests run in parallel.
 #   keyburst N KEY  type KEY N times, 10 ms apart: a burst of interrupts
 #                   for the keyboard's readers to drain together.
-#   mouse           move the guest's usb-mouse 10 right and 5 up, then
+#   mouse [ps2]     move the guest's usb-mouse 10 right and 5 up, then
 #                   click its left button (mouse_smoke.c), through the
-#                   monitor.
+#                   monitor; with `ps2`, QEMU's PS/2 mouse instead (the
+#                   monitor's `mouse_set` makes it the one that moves, and
+#                   gives the usb-mouse back after).
 set -u
 
 # The smoke's bulk: BULK_LINES lines "%06d\n" (tcp_listen_smoke.c).
@@ -94,25 +96,40 @@ PY
 }
 
 mouse() {
-  python3 - "${MYOS_QEMU_MONITOR:?no QEMU monitor}" <<'PY'
-import socket, sys, time
+  python3 - "${MYOS_QEMU_MONITOR:?no QEMU monitor}" "${1:-usb}" <<'PY'
+import re, socket, sys, time
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 s.settimeout(5)
 s.recv(4096)  # the banner and prompt
-for cmd in ("mouse_move 10 -5", "mouse_button 1", "mouse_button 0"):
+
+def run(cmd):
     s.sendall(f"{cmd}\n".encode())
     time.sleep(0.5)
+    try:
+        return s.recv(65536).decode(errors="replace")
+    except Exception:
+        return ""
+
+# "  Mouse #2: QEMU PS/2 Mouse", the active one starred.
+mice = dict((name, n) for n, name in re.findall(r"Mouse #(\d+): (QEMU [^\r\n]+)", run("info mice")))
+ps2 = sys.argv[2] == "ps2"
+if ps2:
+    run(f"mouse_set {mice.get('QEMU PS/2 Mouse', '')}")
+for cmd in ("mouse_move 10 -5", "mouse_button 1", "mouse_button 0"):
+    run(cmd)
+if ps2 and "QEMU HID Mouse" in mice:
+    run(f"mouse_set {mice['QEMU HID Mouse']}")
 time.sleep(1)
 s.close()
 PY
-  echo "boot test: mouse" >&2
+  echo "boot test: mouse ${1:-usb}" >&2
 }
 
 case "${1:-}" in
   tcp-ping) tcp_ping "${2:?port}" ;;
   sendkey) shift; sendkey "${1:?keys}" "${@:2}" ;;
   keyburst) keyburst "${2:?count}" "${3:?key}" ;;
-  mouse) mouse ;;
+  mouse) mouse "${2:-usb}" ;;
   *) echo "host.sh: unknown request: $*" >&2; exit 2 ;;
 esac

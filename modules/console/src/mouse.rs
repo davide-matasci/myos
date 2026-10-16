@@ -1,7 +1,8 @@
 //! `/dev/console/mouse`: the pointer, for programs that draw on the screen
 //! themselves (a graphical session on `/dev/fb`). Pointing device drivers in
-//! other modules (`usb_hid`) feed it through the [`POINTER_SERVICE`] table;
-//! every device lands in the same file.
+//! other modules (`usb_hid`) feed it through the [`POINTER_SERVICE`] table,
+//! the PS/2 mouse ([`crate::ps2`]) through the same table here; every
+//! device lands in the same file.
 //!
 //! One event per line: `m <dx> <dy>` relative motion (right and down
 //! positive), `a <x> <y>` an absolute position (both axes 0 to
@@ -16,11 +17,11 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use myos_abi::{
-    Lock, MYOS_POLLIN, MYOS_READ_WAIT, ModuleVfsOps, POINTER_ABS_MAX, POINTER_SERVICE, POINTER_VERSION, PointerOps,
+    Lock, MYOS_POLL_RECHECK, MYOS_POLLIN, MYOS_READ_WAIT, ModuleVfsOps, POINTER_ABS_MAX, POINTER_SERVICE, POINTER_VERSION, PointerOps,
     VfsStatInfo,
 };
 
-use crate::api;
+use crate::{api, keyboard};
 
 const S_IFREG: u32 = 0o100000;
 
@@ -103,6 +104,12 @@ unsafe extern "C" fn button(code: u16, pressed: bool) {
 
 static OPS: PointerOps = PointerOps { version: POINTER_VERSION, motion, absolute, wheel, button };
 
+/// The pointer's table, for this module's own mouse (PS/2).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn pointer() -> &'static PointerOps {
+    &OPS
+}
+
 /// `v` in decimal at `out[n..]`; the new length.
 fn put_int(out: &mut [u8], mut n: usize, v: i32) -> usize {
     if v < 0 {
@@ -172,6 +179,9 @@ unsafe extern "C" fn mouse_read(path: *const u8, len: usize, _pos: usize, buf: *
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, cap) };
+    if keyboard::pointer_polled() {
+        keyboard::pump();
+    }
     let mut q = QUEUE.lock();
     if q.len == 0 {
         return MYOS_READ_WAIT;
@@ -212,12 +222,18 @@ unsafe extern "C" fn mouse_release(path: *const u8, len: usize) -> i32 {
     0
 }
 
-/// Readable while events are queued; every event wakes the pollers.
+/// Readable while events are queued; every event wakes the pollers. A
+/// polled mouse (PS/2 without IRQ 12) is pumped here and re-checked.
 unsafe extern "C" fn mouse_poll(_: *const u8, _: usize, changes: *mut u64) -> u32 {
+    let polled = keyboard::pointer_polled();
+    if polled {
+        keyboard::pump();
+    }
     let q = QUEUE.lock();
     // SAFETY: the kernel passes a live out-parameter.
     unsafe { *changes = q.changes };
-    if q.len > 0 { MYOS_POLLIN } else { 0 }
+    let recheck = if polled { MYOS_POLL_RECHECK } else { 0 };
+    recheck | if q.len > 0 { MYOS_POLLIN } else { 0 }
 }
 
 /// Mount `/dev/console/mouse` and publish the [`POINTER_SERVICE`]. 0 ok,

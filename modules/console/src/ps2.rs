@@ -13,12 +13,19 @@
 //! Scancodes become **keycodes** in `ps2-scancode`; ASCII comes from the
 //! loadable kernel keymap (empty until one is loaded through the console's
 //! control file, `docs/keymap.md`).
+//!
+//! The controller's second (aux) port is the PS/2 mouse: three-byte
+//! packets, four with an IntelliMouse wheel, into the console's pointer
+//! (`/dev/console/mouse`, [`crate::mouse`]). Its bytes share the one output
+//! buffer with the keyboard's, so an unread mouse byte holds keyboard bytes
+//! back: the port is enabled only where its IRQ 12 is routed too, or when
+//! the whole controller is polled anyway.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ps2_scancode::{Decoder, RawDecoder, ScancodeSet};
 use crate::kbd::{self, ByteFifo};
-use myos_abi::Lock as Mutex;
+use myos_abi::{BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Lock as Mutex};
 use crate::{status_fail, status_ok};
 
 const DATA: u16 = 0x60;
@@ -38,6 +45,10 @@ const CFG_TRANSLATE: u8 = 1 << 6;
 static READY: AtomicBool = AtomicBool::new(false);
 /// IRQ 1 is on ([`interrupt`]).
 static IRQ: AtomicBool = AtomicBool::new(false);
+/// The aux port's mouse is reporting; [`MOUSE`] assembles its packets.
+static MOUSE_ON: AtomicBool = AtomicBool::new(false);
+/// IRQ 12 is on.
+static MOUSE_IRQ: AtomicBool = AtomicBool::new(false);
 static DECODER: Mutex<Option<Decoder>> = Mutex::new(None);
 /// The same bytes as every press and release (`/dev/console/kbd`).
 static RAW_DECODER: Mutex<Option<RawDecoder>> = Mutex::new(None);
@@ -50,6 +61,17 @@ static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
 /// the last byte again, and decoded a second press (or decoded them out of
 /// order).
 static CONTROLLER: Mutex<()> = Mutex::new(());
+
+/// The mouse's packet so far and the buttons the last one held.
+struct Packet {
+    bytes: [u8; 4],
+    len: usize,
+    /// 4 with a wheel, 3 without.
+    size: usize,
+    buttons: u8,
+}
+
+static MOUSE: Mutex<Packet> = Mutex::new(Packet { bytes: [0; 4], len: 0, size: 3, buttons: 0 });
 
 pub fn init() {
     // The handler first: the controller raises IRQ 1 as soon as the probe
@@ -66,7 +88,117 @@ pub fn init() {
         } else {
             status_fail("keyboard decode");
         }
+        mouse_init(irq);
     }
+}
+
+/// Bring up the aux port's mouse, after the keyboard: its defaults, the
+/// knock for the IntelliMouse wheel, then reporting on. Without IRQ 12 an
+/// interrupt-driven keyboard would wait behind the mouse's bytes, so the
+/// port stays off then.
+fn mouse_init(kbd_irq: bool) {
+    let irq = crate::api().irq_enable(12, "ps2 mouse", interrupt, core::ptr::null_mut()) == 0;
+    if kbd_irq && !irq {
+        return;
+    }
+    let _controller = CONTROLLER.lock();
+    if !write_cmd(0xA8) || !write_cmd(0x20) {
+        return;
+    }
+    let Some(cfg) = read_data() else {
+        return;
+    };
+    let cfg = (cfg & !CFG_MOUSE_CLK_DISABLE) | if irq { CFG_MOUSE_IRQ } else { 0 };
+    // Set defaults (it answers with an ACK), then the sample rates 200,
+    // 100 and 80: a wheel mouse then says it is one (id 3).
+    if !write_cmd(0x60) || !write_data(cfg) || !aux_cmd(0xF6) {
+        mouse_off();
+        return;
+    }
+    let wheel = aux_cmd(0xF3) && aux_cmd(200) && aux_cmd(0xF3) && aux_cmd(100) && aux_cmd(0xF3) && aux_cmd(80)
+        && aux_cmd(0xF2) && read_aux() == Some(3);
+    if !aux_cmd(0xF4) {
+        mouse_off();
+        return;
+    }
+    MOUSE.lock().size = if wheel { 4 } else { 3 };
+    MOUSE_IRQ.store(irq, Ordering::SeqCst);
+    MOUSE_ON.store(true, Ordering::SeqCst);
+    status_ok(if wheel { "mouse (ps2, wheel)" } else { "mouse (ps2)" });
+}
+
+/// The aux port's clock and interrupt off again (no mouse answered).
+fn mouse_off() {
+    flush_output();
+    if write_cmd(0x20) {
+        if let Some(cfg) = read_data() {
+            let _ = write_cmd(0x60) && write_data((cfg & !CFG_MOUSE_IRQ) | CFG_MOUSE_CLK_DISABLE);
+        }
+    }
+    let _ = write_cmd(0xA7);
+}
+
+/// `val` to the mouse (through the controller's 0xD4); true on its ACK.
+fn aux_cmd(val: u8) -> bool {
+    write_cmd(0xD4) && write_data(val) && read_aux() == Some(0xFA)
+}
+
+/// The next byte from the mouse; a keyboard byte in between is dropped (a
+/// key pressed during the boot's mouse setup).
+fn read_aux() -> Option<u8> {
+    for _ in 0..100_000 {
+        let status = inb(STATUS);
+        if status & ST_OUT_FULL != 0 {
+            let b = inb(DATA);
+            if status & ST_AUX != 0 {
+                return Some(b);
+            }
+        }
+        core::hint::spin_loop();
+    }
+    None
+}
+
+/// The mouse is polled (no IRQ 12): its readers pump the controller.
+pub fn pointer_polled() -> bool {
+    MOUSE_ON.load(Ordering::SeqCst) && !MOUSE_IRQ.load(Ordering::SeqCst)
+}
+
+/// A byte from the mouse: a whole packet goes to the pointer. Bit 3 of a
+/// packet's first byte is always set: a byte without it cannot start one,
+/// which brings a packet that lost a byte back in step.
+fn mouse_byte(b: u8) {
+    let mut p = MOUSE.lock();
+    if p.len == 0 && b & 0x08 == 0 {
+        return;
+    }
+    let len = p.len;
+    p.bytes[len] = b;
+    p.len += 1;
+    if p.len < p.size {
+        return;
+    }
+    p.len = 0;
+    let [flags, x, y, z] = p.bytes;
+    // 9-bit motion, the sign in the first byte; PS/2's Y is up. A packet
+    // that overflowed is dropped, as Linux does.
+    if flags & 0xC0 == 0 {
+        let dx = i32::from(x) - (i32::from(flags & 0x10) << 4);
+        let dy = i32::from(y) - (i32::from(flags & 0x20) << 3);
+        crate::mouse::pointer().motion(dx, -dy);
+    }
+    if p.size == 4 {
+        // The wheel's 4 bits, signed; positive is towards the user.
+        let dz = i32::from(((z & 0x0F) << 4) as i8 >> 4);
+        crate::mouse::pointer().wheel(-dz);
+    }
+    let held = flags & 0x07;
+    for (bit, code) in [(0, BTN_LEFT), (1, BTN_RIGHT), (2, BTN_MIDDLE)] {
+        if (held ^ p.buttons) & (1 << bit) != 0 {
+            crate::mouse::pointer().button(code, held & (1 << bit) != 0);
+        }
+    }
+    p.buttons = held;
 }
 
 pub fn present() -> bool {
@@ -125,7 +257,10 @@ fn feed_one() -> bool {
         return false;
     }
     if status & ST_AUX != 0 {
-        let _ = inb(DATA);
+        let b = inb(DATA);
+        if MOUSE_ON.load(Ordering::SeqCst) {
+            mouse_byte(b);
+        }
         return true;
     }
     let sc = inb(DATA);

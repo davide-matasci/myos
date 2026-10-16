@@ -390,6 +390,11 @@ pub fn irq() -> bool {
     IRQ.load(Ordering::SeqCst)
 }
 
+/// There is no mouse here to poll (virtio-input is the keyboard alone).
+pub fn pointer_polled() -> bool {
+    false
+}
+
 pub fn poll_byte() -> Option<u8> {
     pump();
     FIFO.lock().pop()

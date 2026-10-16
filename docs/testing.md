@@ -141,7 +141,8 @@ scripts find in `$MYOS_QEMU_MONITOR`: `user/c/host.sh sendkey KEYS...` types
 on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 (several `HOST` requests run in parallel, so one per key would not keep it),
 and `user/c/host.sh mouse` moves and clicks the test boots' `usb-mouse`
-(`/dev/console/mouse`).
+(`/dev/console/mouse`), `mouse ps2` QEMU's PS/2 mouse (through
+`mouse_set`, and back).
 
 ## On the host
 
