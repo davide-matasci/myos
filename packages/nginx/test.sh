@@ -150,6 +150,20 @@ CONF
 	return $ok
 }
 
+# The default configuration as `run-myos nginx` serves it: port 80 on any
+# address, the default page, from the system itself (localhost and
+# 127.0.0.1, over the loopback) and from a listener on every address.
+nginx_default() {
+	run-myos nginx || { cat /tmp/nginx/error.log; return 1; }
+	ok=0
+	for h in localhost 127.0.0.1; do
+		curl -fsS --max-time 30 http://$h/ | grep -q "Welcome to nginx" || { echo "default page from $h"; curl -sv --max-time 30 http://$h/ 2>&1 | tail -12; ok=1; }
+	done
+	nginx_stop /lib/nginx/nginx.conf || ok=1
+	[ $ok = 0 ] || { echo "--- error.log"; cat /tmp/nginx/error.log; }
+	return $ok
+}
 t -t netfs nginx_conf nginx_conf
+t -t netfs nginx_default nginx_default
 t -t netfs nginx_serve nginx_serve
 t -t netfs nginx_https nginx_https
