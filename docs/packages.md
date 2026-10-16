@@ -38,11 +38,11 @@ run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
   input hash) and, in a header line, the build's **release**
   (`release=YYYYMMDDHHMM`, the commit date in UTC, so a later build has
   the greater number), commit and syscall **ABI** (`src/release.rs`). The
-  image carries the same for the running system in `/lib/myos-release`.
-  It is the release of the commit the images were built at: build.rs
-  records it in `target/myos-release`, and CI's kernels bundle carries
-  it, so a run that reuses the bundle stamps its packages with the
-  images' release, not its own commit's.
+  image carries the same for the running system in `/lib/myos-release`;
+  the x86_64 image build writes it to `target/myos-release`, and
+  everything packed from `target/` afterwards (the other arches'
+  initramfs, the packages) is stamped from that file, so a CI run that
+  reuses cached images stamps its packages like them.
   `get-myos -u` refreshes the index and brings every installed package
   whose version changed to the new one (its files rewritten under
   `ROOT/<name>/`). `get-myos -l` lists the
@@ -124,9 +124,9 @@ A mirror is any HTTP server with these files in one directory. The flat
 names are what GitHub release assets allow.
 
 The image has the same header's fields in `/lib/myos-release`
-(`release=... commit=... abi=...`, written by the initramfs packer from the
-checkout and `kernel/src/user/syscall.rs`): what `get-myos` compares the
-index with.
+(`release=... commit=... abi=...`, from the checkout and
+`kernel/src/user/syscall.rs` when the x86_64 image is built, kept in
+`target/myos-release`): what `get-myos` compares the index with.
 
 ## In CI
 
@@ -169,5 +169,5 @@ binaries there: the tag names the commit they were built from, whose
 libraries for the X packages, with libX11's error database and their
 test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), and ncurses and pcre2 (build dependencies: of vim, lynx and clear, of nginx; nothing in the
 image). Everything a boot needs
-stays in `ports/` (and zlib, which get-myos links). The full test list
+stays in `ports/` (and zlib and LibreSSL, which get-myos and curl link). The full test list
 installs them all; the ISO (`cargo run -- iso`) carries the image only.

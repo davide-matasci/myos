@@ -84,7 +84,7 @@ cargo run -- test --tags netfs --skip heavy   # a selection by tag; a test's nam
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode -p ext2fs -p fatvol   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
-user/net/smoltcp/prepare.sh && cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp
+cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp (user/net/smoltcp/prepare.sh lays it out)
 ```
 
 - Test on every arch you could have affected; arch-specific code needs all
@@ -131,15 +131,6 @@ What breaks in an agent sandbox (Claude Code on the web and the like):
   the upstreams `scripts/git-retry.sh` clones ("could not read Username").
   The packages and upstreams are public: run the pull, the port loop and
   the cargo commands under `env -u GITHUB_TOKEN -u GH_TOKEN`.
-- **GitHub `/archive/` tarballs of other repositories may get a 403**
-  (release assets and git clones work). Only mbedtls is fetched that way;
-  when `ports/mbedtls/fetch.sh` fails, lay the same tree out from its tag:
-  ```sh
-  . ports/mbedtls/versions.env
-  git clone -q --depth 1 --branch "v$MBEDTLS_VERSION" https://github.com/Mbed-TLS/mbedtls target/mbedtls-src
-  rm -rf target/mbedtls-src/{.git,programs,tests,docs}
-  echo "$MBEDTLS_VERSION" > target/.mbedtls-src-version
-  ```
 - **The launcher's OVMF download fails behind a TLS-intercepting proxy**
   (`InvalidCertificate(UnknownIssuer)`: the `ovmf-prebuilt` crate has its own
   CA roots). curl it into the crate's cache; the tag and sha256 are

@@ -30,7 +30,7 @@ Thin wrappers: `scripts/fetch-git.sh`, `scripts/build-git.sh` (and
 Built with (see `config.mak`):
 
 - `NO_GETTEXT` `NO_ICONV` `NO_PERL` `NO_PYTHON` `NO_TCLTK` `NO_PTHREADS`
-- `NO_OPENSSL` / `NO_CURL` (no HTTPS remotes yet — curl/mbedtls later)
+- `NO_OPENSSL` / `NO_CURL` (no HTTPS remotes yet — curl/LibreSSL later)
 - `NO_EXPAT` `NO_RUST` `NO_GITWEB` `NO_REGEX` (bundled compat regex)
 - `NO_UNIX_SOCKETS` `NO_IPV6` `NO_NSEC` `NO_PREAD` `NO_GETPAGESIZE`
 

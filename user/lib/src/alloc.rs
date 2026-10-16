@@ -71,6 +71,15 @@ impl State {
             return ptr::null_mut();
         };
         if new_end > self.brk_end {
+            // The break may have moved since: a C library linked in grows
+            // the same break through newlib's sbrk (user/tls). Go on from
+            // where it is; neither side ever moves it back over the other's.
+            let cur = crate::brk(0);
+            if cur > self.brk_end {
+                self.brk_ptr = cur;
+                self.brk_end = cur;
+                return self.bump(size, align);
+            }
             let new_brk = (new_end + PAGE - 1) & !(PAGE - 1);
             let got = crate::brk(new_brk);
             if got < new_brk {
@@ -81,18 +90,6 @@ impl State {
         self.brk_ptr = new_end;
         aligned as *mut u8
     }
-}
-
-/// Page-aligned bump allocation coordinated with [`Heap`].
-///
-/// Used by `user/tls` on aarch64/riscv64 for the mbedtls arena so the 2 MiB
-/// buffer lives in the brk heap (after the user stack) instead of ELF BSS.
-/// A BSS arena was contiguous with the stack: an MPI over-read could walk
-/// image→stack→heap and fault at `heap_limit` after corrupting on-stack TLS
-/// state (riscv64 CI page faults after #100 restored BSS for x86).
-pub fn alloc_aligned(size: usize, align: usize) -> *mut u8 {
-    let align = align.max(1).next_power_of_two();
-    lock().state().bump(size.max(1), align)
 }
 
 /// The free list `layout` allocates from, if any.

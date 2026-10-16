@@ -2,11 +2,10 @@
  *
  * Host configure probes Linux/glibc and cannot cross-link *-unknown-myos.
  * Follow packages/vim + ports/curl: only HAVE_* that match newlib/libgloss +
- * packages/ncurses + ports/mbedtls (via tidy_tls OpenSSL-compat shim).
+ * packages/ncurses + ports/libressl.
  *
- * SSL: USE_SSL + USE_GNUTLS_INCL selects lynx's tidy_tls polyfill path.
- * packages/lynx/tidy_tls.{h,c} implement that API over mbedtls (same stack as
- * curl / user/tls) — not a second TLS library, not OpenSSL.
+ * SSL: USE_SSL + USE_OPENSSL_INCL, lynx's own OpenSSL path (HTTLS.c), over
+ * LibreSSL (the TLS library of curl, nginx and user/tls as well).
  */
 #ifndef LYNX_CFG_H
 #define LYNX_CFG_H 1
@@ -87,11 +86,10 @@
 
 #define USE_FCNTL 1
 
-/* TLS via tidy_tls → mbedtls (packages/lynx/tidy_tls.c) */
+/* TLS over LibreSSL (ports/libressl), through lynx's OpenSSL code. */
 #define USE_SSL 1
-#define USE_GNUTLS_INCL 1
-#define MYOS_MBEDTLS_TIDY_TLS 1
-/* Prefer CA path already shipped for curl */
+#define USE_OPENSSL_INCL 1
+/* The Mozilla CA bundle curl ships. */
 #define SSL_CERT_FILE_DEFAULT "/lib/cacert.pem"
 
 /* Paths in the initramfs image */

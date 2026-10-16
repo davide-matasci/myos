@@ -62,22 +62,20 @@ while read -r stamp; do
   PORT_STAMPS+=("$stamp")
 done < <(./scripts/ports.sh --stamps)
 
-# Source-controlled curl/mbedtls inputs (NOT target/.myos-{curl,mbedtls}-version).
-# Those stamps are rewritten by ports/*/build.sh during this same job (and mbedtls
-# WANT also shifts when target/cacert.pem appears mid-fetch), which made
-# kernel_inputs_hash drift after build. Hash pins + config/patches instead.
-CURL_MBEDTLS_INPUTS=(
-  ports/mbedtls/versions.env
-  ports/mbedtls/myos_mbedtls_config.h
-  ports/mbedtls/build.sh
-  ports/mbedtls/fetch.sh
+# Source-controlled curl/LibreSSL inputs (NOT target/.myos-{curl,libressl}-version).
+# Those stamps are rewritten by ports/*/build.sh during this same job, which
+# made kernel_inputs_hash drift after build. Hash pins + config/patches instead.
+CURL_TLS_INPUTS=(
+  ports/libressl/versions.env
+  ports/libressl/port.env
+  ports/libressl/build.sh
+  ports/libressl/fetch.sh
+  ports/libressl/sources.py
   ports/curl/versions.env
   ports/curl/config-myos.h
   ports/curl/build.sh
   ports/curl/fetch.sh
   ports/curl/build-softfloat-riscv64.sh
-  ports/curl/myos_curl_platform.c
-  ports/curl/mbedtls.c.myos.patch
   ports/curl/tool_cfgable.h.myos.patch
 )
 
@@ -148,8 +146,8 @@ kernel_inputs_hash() {
             printf 'stamp-missing:%s\n' "$stamp"
           fi
         done
-        # curl/mbedtls: digest checkout-stable sources only (see CURL_MBEDTLS_INPUTS).
-        for f in "${CURL_MBEDTLS_INPUTS[@]+"${CURL_MBEDTLS_INPUTS[@]}"}"; do
+        # curl/LibreSSL: digest checkout-stable sources only (see CURL_TLS_INPUTS).
+        for f in "${CURL_TLS_INPUTS[@]+"${CURL_TLS_INPUTS[@]}"}"; do
           if [[ -f "$f" ]]; then
             sha256sum "$f"
           else
@@ -217,7 +215,7 @@ kernel_inputs_diag() {
         printf 'MISSING %s\n' "$stamp"
       fi
     done
-    for f in "${CURL_MBEDTLS_INPUTS[@]+"${CURL_MBEDTLS_INPUTS[@]}"}"; do
+    for f in "${CURL_TLS_INPUTS[@]+"${CURL_TLS_INPUTS[@]}"}"; do
       if [[ -f "$f" ]]; then
         sha256sum "$f" | awk -v p="$f" '{print $1" "p}'
       else
@@ -309,6 +307,7 @@ HELLO_OK_ELFS=(
 artifacts_ready() {
   local f
   for f in target/debug/myos target/bios.img target/uefi.img target/boot-kernel-x86_64 \
+    target/myos-release \
     target/aarch64-unknown-none-softfloat/debug/kernel \
     target/riscv64imac-unknown-none-elf/debug/kernel \
     "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
@@ -339,7 +338,7 @@ do_clean_and_build() {
   "$ROOT/linux-compat/build.sh"
   cargo build "${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"}"
   # One cargo run for both: it builds the two targets side by side. The
-  # port scripts their nested builds call (ports/mbedtls/build.sh, every
+  # port scripts their nested builds call (ports/libressl/build.sh, every
   # arch at once) already ran for the x86_64 build above: up to date here.
   cargo build -p kernel --target aarch64-unknown-none-softfloat --target riscv64imac-unknown-none-elf
 }
@@ -359,10 +358,10 @@ case "${1:-}" in
     echo target/bios.img
     echo target/uefi.img
     echo target/boot-kernel-x86_64
-    echo target/fat.img
-    # The release the images were packed with (src/release.rs): a run that
-    # pulls this bundle stamps its packages and boot files with it.
+    # The images' release stamp (src/release.rs): the packages and the
+    # initramfs a boot job packs carry the same one as the images.
     echo target/myos-release
+    echo target/fat.img
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel
     for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do

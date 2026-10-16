@@ -1,4 +1,4 @@
-/* Hand-crafted curl_config.h for myos (userspace BSD sockets + mbedtls). */
+/* Hand-crafted curl_config.h for myos (userspace BSD sockets + LibreSSL). */
 #ifndef HEADER_CURL_CONFIG_MYOS_H
 #define HEADER_CURL_CONFIG_MYOS_H
 
@@ -104,8 +104,9 @@
 #define SEND_TYPE_ARG4 int
 #define SEND_TYPE_RETV ssize_t
 
-#define USE_MBEDTLS 1
-/* CA: rely on mbedtls bundle baked into libmbedtls; also set CURLOPT_CAINFO if needed. */
+/* TLS: LibreSSL (ports/libressl) through curl's OpenSSL backend; the
+ * Mozilla CA bundle the port ships. */
+#define USE_OPENSSL 1
 #define CURL_CA_BUNDLE "/lib/cacert.pem"
 
 #define CURL_DISABLE_LDAP 1

@@ -135,7 +135,7 @@ Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go
 `ports/curl` builds trimmed static curl 8.11.1:
 
 - Feature flags: `HTTP_ONLY`, many `CURL_DISABLE_*` (HTTP/2/3, unused protocols, auth, etc.)
-- TLS: `USE_MBEDTLS` against `ports/mbedtls` + Mozilla CA bundle (peer verify on)
+- TLS: `USE_OPENSSL` against `ports/libressl` (LibreSSL, TLS 1.2 and 1.3) + Mozilla CA bundle (peer verify on)
 - Sockets: libgloss shim (no kernel socket syscall)
 - DNS: `getaddrinfo` in libgloss
 - Clock: existing `gettimeofday` / RTC path (same as `/http`)
@@ -151,7 +151,7 @@ Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go
 ```sh
 ./toolchain/newlib/build.sh      # includes socket/inet/netdb/pollselect in libgloss
 ./scripts/build-c-hello.sh       # builds socket_smoke
-./ports/mbedtls/build.sh
+./ports/libressl/build.sh
 ./ports/curl/build.sh
 ```
 

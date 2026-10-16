@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Prepare a myos build tree from fetched upstream Lynx.
 #
-# Config: hand-written ports/lynx/lynx_cfg.h (not host ./configure).
-# SSL: ports/lynx/tidy_tls.{h,c} (mbedtls) replaces upstream GnuTLS tidy_tls.
+# Config: hand-written packages/lynx/lynx_cfg.h (not host ./configure).
+# SSL: lynx's own OpenSSL path, over LibreSSL (USE_OPENSSL_INCL).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -29,10 +29,6 @@ cp "$MYOS/LYHelp.h" "$WORK/LYHelp.h"
 cp "$MYOS/myos_compat.h" "$WORK/myos_compat.h"
 cp "$MYOS/myos_stubs.c" "$WORK/src/myos_stubs.c"
 
-# mbedtls tidy_tls replaces upstream GnuTLS polyfill on the include path.
-cp "$MYOS/tidy_tls.h" "$WORK/WWW/Library/Implementation/tidy_tls.h"
-cp "$MYOS/tidy_tls.c" "$WORK/src/tidy_tls.c"
-
 # Host-build makeuctb + charset tables (needed by UCdomap.c).
 CHR="$WORK/src/chrtrans"
 if [[ ! -f "$CHR/iso01_uni.h" ]]; then
@@ -56,7 +52,6 @@ for p in "$MYOS"/*.myos.patch; do
   patch -d "$WORK" -p1 --forward --batch <"$p"
 done
 
-python3 "$MYOS/patch_http_ssl.py" "$WORK/WWW/Library/Implementation/HTTLS.c"
 python3 "$MYOS/patch_lycurses_opaque.py" "$WORK/src/LYCurses.h"
 
 echo "lynx myos tree -> $WORK"

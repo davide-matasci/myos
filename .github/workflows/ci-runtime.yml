@@ -105,8 +105,8 @@ jobs:
           command -v fsck.fat > /dev/null && command -v mtype > /dev/null \
             || { apt-get update -q && apt-get install -y -q --no-install-recommends dosfstools mtools; }
           cargo test -p ps2-scancode -p ext2fs -p fatvol
-          # The kernel build lays out netd's smoltcp, but a run that pulls a
-          # current kernels bundle builds nothing: lay it out here (a no-op
+          # The patched smoltcp is laid out when netd is built; a current
+          # kernels bundle skips that build, so lay it out here (a no-op
           # when it is there).
           ./user/net/smoltcp/prepare.sh
           cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib

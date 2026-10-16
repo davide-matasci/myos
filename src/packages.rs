@@ -55,7 +55,7 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
     std::fs::create_dir_all(&out).expect("create target/packages");
     let all = ports::load_all(manifest_dir);
     check_rdeps(&all);
-    let mut index = format!("# myos {}", Release::current(manifest_dir).text());
+    let mut index = format!("# myos {}", Release::of_build(manifest_dir).text());
     // The ports the image lacks: what `get-myos` is for, and what the full
     // boot test installs.
     let mut packages = String::new();
@@ -129,7 +129,7 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
     };
     let esp = crate::esp_limine_files(arch);
     let initramfs = crate::initramfs::build_initramfs_default(manifest_dir, arch, &esp);
-    let mut list = format!("# myos {}", Release::current(manifest_dir).text());
+    let mut list = format!("# myos {}", Release::of_build(manifest_dir).text());
     let mut put = |file: String, data: &[u8]| -> String {
         let path = out.join(&file);
         std::fs::write(&path, data).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));

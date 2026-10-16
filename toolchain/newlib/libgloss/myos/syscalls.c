@@ -324,20 +324,18 @@ int _isatty(int fd) {
     return 0;
 }
 
+/* The break is read anew each time, not kept: a Rust program's allocator
+ * (user/lib) moves the same break when a C library is linked in (user/tls),
+ * and each side only ever extends it from where it is. */
 void *_sbrk(ptrdiff_t incr) {
-    static void *cur;
-    if (cur == NULL) {
-        cur = (void *)(uintptr_t)myos_syscall1(MYOS_SYS_BRK, 0);
-    }
-    void *old = cur;
+    void *cur = (void *)(uintptr_t)myos_syscall1(MYOS_SYS_BRK, 0);
     void *next = (char *)cur + incr;
     void *got = (void *)(uintptr_t)myos_syscall1(MYOS_SYS_BRK, (long)(uintptr_t)next);
     if (got != next) {
         errno = ENOMEM;
         return (void *)-1;
     }
-    cur = next;
-    return old;
+    return cur;
 }
 
 int _getpid(void) {

@@ -58,7 +58,7 @@ under its own license.
 | xev, libXext, libXrandr (package `x11-apps`) | see `packages/x11-apps/versions.env` | MIT/X Consortium (xev); MIT-Open-Group / HPND-style (libXext, libXrandr) | https://www.x.org/releases/individual/ |
 | Xft font stack (package `x11-xft`): expat, FreeType, fontconfig, libXrender, libXft | see `packages/x11-xft/versions.env` | expat, libXrender, libXft: MIT; fontconfig: MIT-style (HPND); FreeType: the FreeType License (FTL, used instead of its GPL-2.0 alternative; credit below) | https://libexpat.github.io/ https://freetype.org/ https://www.freedesktop.org/wiki/Software/fontconfig/ https://www.x.org/releases/individual/lib/ |
 | DejaVu Sans Mono and DejaVu Sans (package `x11-fonts`, `/lib/fonts`) | `DEJAVU_VERSION` in `packages/x11-fonts/versions.env` | Bitstream Vera Fonts license and Arev Fonts license (DejaVu's changes public domain); the text ships as `/lib/fonts/LICENSE.DejaVu` | https://dejavu-fonts.github.io/ |
-| Mbed TLS (TLS for `curl`, `lynx`, `user/tls`, `nginx`) | 3.6.2 | Apache-2.0 OR GPL-2.0-or-later (myos uses it under Apache-2.0) | https://github.com/Mbed-TLS/mbedtls |
+| LibreSSL (libcrypto, libssl, libtls: TLS for `curl`, `lynx`, `nginx`, `user/tls`) | 4.3.3 | ISC (new code) and the OpenSSL and SSLeay licenses (inherited code); the texts in `licenses/LibreSSL.txt` | https://www.libressl.org/ (`ports/libressl`) |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
 | os-test suite (`/lib/os-test`, when included) | `OSTEST_REV` in `packages/os-test/versions.env` | ISC | https://gitlab.com/sortix/os-test |
@@ -91,8 +91,12 @@ Files in this repository that carry notices from upstream (kept as required):
 The following programs in the image are under copyleft licenses
 (GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
 GNU Make, TinyCC, TinyX (`Xfbdev`), the Mozilla CA bundle, and `option-ext` in
-the bottom package.** (Vim's and Mbed TLS's licenses also allow
-redistribution; Mbed TLS is used here under its Apache-2.0 option.)
+the bottom package.** (Vim's license also allows redistribution. LibreSSL's
+inherited OpenSSL and SSLeay licenses ask that binary distributions carry
+their notices: `licenses/LibreSSL.txt`, and this product includes software
+developed by the OpenSSL Project for use in the OpenSSL Toolkit
+(http://www.openssl.org/) and cryptographic software written by Eric Young
+(eay@cryptsoft.com).)
 
 The complete corresponding source for each of them is:
 

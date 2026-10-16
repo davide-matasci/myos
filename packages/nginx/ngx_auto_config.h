@@ -57,8 +57,8 @@
 #define NGX_HAVE_GETADDRINFO  1
 
 /* The modules (auto/modules, auto/options: the default set without epoll
- * and select, with PCRE2, zlib and the SSL module, whose OpenSSL is
- * ssl/myos_openssl.h over mbedtls). */
+ * and select, with PCRE2, zlib and the SSL module over LibreSSL,
+ * ports/libressl). */
 #define NGX_HTTP_CACHE  1
 #define NGX_HTTP_GZIP  1
 #define NGX_HTTP_SSI  1

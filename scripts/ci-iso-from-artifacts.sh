@@ -12,7 +12,7 @@ fi
 echo "==> extracting ci-build.tar.zst"
 tar --zstd -xf ci-build.tar.zst
 test -x target/debug/myos && echo "host myos present; reusing build outputs"
-# newlib wrappers needed for mbedtls during cargo build of myos host tool.
+# newlib wrappers needed for LibreSSL during cargo build of myos host tool.
 ./toolchain/newlib/tool-wrappers.sh
 export PATH="$PWD/target/newlib-bin:$PATH"
 cargo clean -p myos
