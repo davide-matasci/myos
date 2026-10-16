@@ -109,6 +109,10 @@ struct linger {
     int l_linger;
 };
 
+/* The largest listen backlog (what netd keeps per listener is smaller;
+ * listen() takes any value). */
+#define SOMAXCONN 128
+
 int socket(int domain, int type, int protocol);
 int socketpair(int domain, int type, int protocol, int sv[2]);
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);

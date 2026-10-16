@@ -232,3 +232,29 @@ ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
     close(fd);
     return (ssize_t)got;
 }
+
+/* getentropy(2), the stub newlib's getentropy() and arc4random call:
+ * `buflen` bytes (256 at most) of the kernel's randomness, all of them or
+ * an error. */
+int _getentropy(void *buf, size_t buflen) {
+    if (buflen > 256) {
+        errno = EIO;
+        return -1;
+    }
+    size_t got = 0;
+    while (got < buflen) {
+        ssize_t n = getrandom((char *)buf + got, buflen - got, 0);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (n == 0) {
+            errno = EIO;
+            return -1;
+        }
+        got += (size_t)n;
+    }
+    return 0;
+}
