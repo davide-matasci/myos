@@ -118,9 +118,9 @@ response. An accepted connection whose peer is gone before netd saw it
 established (its FIN or reset came with the handshake's last ACK: a port
 scanner, a health check) is hung up the same way, so the process that
 accepts it reads the end at once instead of waiting for a client until its
-own timeout with the index pinned; enough of those within dropbear's five
-minutes ran a VPS out of the 32 indices, and every new connection was
-reset before its banner. A conversation its process closed gives its
+own timeout with the index pinned; enough of those within dropbear's
+timeout ran a VPS out of indices, and every new connection was reset
+before its banner. A conversation its process closed gives its
 index back when the TCP close completes, or 60 seconds after the close
 when the peer never answers it (a scanner behind a firewall, a client
 that keeps a half-closed connection): netd aborts the socket then, as
@@ -132,6 +132,21 @@ its last holder closes it (a forked child's close does not reach netd),
 its socket with it, and the connections it had accepted that nobody took
 are reset; it used to live on with its socket, so a restarted server
 shared its port with its own ghost, which answered nothing.
+
+`/net/convs` is netd's own table, a line per index in use (`N tcp|udp|icmp
+[STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
+`peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
+process has its files, `released` once it closed them, `connected`,
+`hungup`, `closing Ns`), refreshed once a second. It shows what the
+status files cannot: a closing conversation netfs has already let go of,
+or one accepted and not yet taken. When connections are reset at the
+accept, this is where the indices went.
+
+netd has 128 conversations (TCP, UDP and ICMP together; netfs has as many
+slots), each a line of `/net/convs` while in use. A server on the
+internet needs the room: a scanner's connection every few seconds, each
+held for its server's request timeout (nginx 60 s, dropbear 60 s before
+authentication) and then for the peer's half of the close.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
 server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's

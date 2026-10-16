@@ -13,6 +13,12 @@
 #define DROPBEAR_CLI_PASSWORD_AUTH 0
 #define DROPBEAR_CLI_INTERACT_AUTH 0
 
+/* A connection that has not authenticated in this long is dropped (the
+ * default is 300 s). On a host on the internet, port scanners connect and
+ * stay silent; each such connection is a netd conversation and a dropbear
+ * child until then. */
+#define AUTH_TIMEOUT 60
+
 /* TEMP bisect: myos re-exec (fexecve/dup2) path unproven — disable for now. */
 #define DROPBEAR_REEXEC 0
 
