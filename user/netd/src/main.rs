@@ -679,8 +679,8 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
     if i >= MAX_CONV {
         return;
     }
-    // Listeners must stay up across client hangups / forked closes. Empty
-    // body was a bug (listen sockets were destroyed on ctl hangup).
+    // Listeners stay up across client hangups and forked closes: only their
+    // last holder's REQ_CLOSE takes them down (close_listener).
     if matches!(convs[i].kind, Kind::Tcp) && convs[i].listen_port != 0 {
         return;
     }
@@ -716,6 +716,33 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
         sockets.remove(h);
     }
     retire(convs, i);
+}
+
+/// The last holder of a listener closed it (netfs reports that close only,
+/// a forked child's does not reach netd): its socket goes, the index is
+/// free, and the connections it had accepted that nobody took are
+/// aborted, as a closed port's are. Listeners used to live on here, their
+/// socket still taking the port's connections for a netfs slot that had
+/// moved on: a restarted server shared its port with its own ghost, which
+/// answered nothing (nginx after `-s quit`: curl's "Empty reply"), and a
+/// ghost's status replies landed on whoever had its index since (a
+/// listener's "accepted" overwritten with "listening": its connection
+/// never accepted).
+fn close_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, chan: usize, i: usize) {
+    let parked = [convs[i].accepted, convs[i].accepted_pending];
+    if let Some(h) = convs[i].handle.take() {
+        let s = sockets.get_mut::<tcp::Socket>(h);
+        if !matches!(s.state(), tcp::State::Closed | tcp::State::Listen) {
+            s.abort();
+        }
+        sockets.remove(h);
+    }
+    convs[i] = Conv::EMPTY;
+    for n in parked.into_iter().flatten().map(usize::from) {
+        if n < MAX_CONV && convs[n].from_accept && !convs[n].held {
+            force_free_orphan(convs, sockets, chan, n);
+        }
+    }
 }
 
 /// The socket is gone: the index goes back to the pool, unless a process
@@ -1710,7 +1737,11 @@ fn handle_req(
             if let Some(c) = convs.get_mut(conv as usize) {
                 c.released = true;
             }
-            drop_conv(convs, sockets, conv as usize);
+            if convs.get(conv as usize).is_some_and(|c| matches!(c.kind, Kind::Tcp) && c.listen_port != 0) {
+                close_listener(convs, sockets, chan, conv as usize);
+            } else {
+                drop_conv(convs, sockets, conv as usize);
+            }
             reply(chan, REP_STATUS, conv, 0, b"hangup");
         }
         REQ_CREDIT => {

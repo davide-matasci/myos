@@ -127,7 +127,11 @@ that keeps a half-closed connection): netd aborts the socket then, as
 Linux gives up on an orphaned connection. Such closing conversations are
 netd's alone, netfs freed its slot when the close was acknowledged, so
 they do not show in `/net/tcp/N/status`; they too ran a VPS out of
-indices, with the table looking empty.
+indices, with the table looking empty. A listener's index is freed when
+its last holder closes it (a forked child's close does not reach netd),
+its socket with it, and the connections it had accepted that nobody took
+are reset; it used to live on with its socket, so a restarted server
+shared its port with its own ghost, which answered nothing.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
 server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's

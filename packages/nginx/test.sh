@@ -170,6 +170,14 @@ nginx_default() {
 		}
 	done
 	nginx_stop /lib/nginx/nginx.conf || ok=1
+	# Started again on the same port: every connection is the new server's
+	# (netd used to keep a closed listener's socket, which took its share of
+	# the port's connections and answered nothing).
+	run-myos nginx -g 'error_log /tmp/nginx/error.log info;' || { echo "restart"; return 1; }
+	for i in 1 2 3 4; do
+		curl -fsS --max-time 30 http://127.0.0.1/ | grep -q "Welcome to nginx" || { echo "after the restart: connection $i"; ok=1; break; }
+	done
+	nginx_stop /lib/nginx/nginx.conf || ok=1
 	[ $ok = 0 ] || { echo "--- error.log"; cat /tmp/nginx/error.log; }
 	return $ok
 }
