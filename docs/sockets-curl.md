@@ -115,38 +115,55 @@ connection, accepted or cloned, get it. Freeing it at the hangup let the
 next accepted connection land on an index an HTTP server's keepalive
 connection still held, which answered an SSH client's banner with an HTTP
 response. An accepted connection whose peer is gone before netd saw it
-established (its FIN or reset came with the handshake's last ACK: a port
-scanner, a health check) is hung up the same way, so the process that
-accepts it reads the end at once instead of waiting for a client until its
-own timeout with the index pinned; enough of those within dropbear's
-timeout ran a VPS out of indices, and every new connection was reset
-before its banner. A conversation its process closed gives its
-index back when the TCP close completes, or 60 seconds after the close
-when the peer never answers it (a scanner behind a firewall, a client
-that keeps a half-closed connection): netd aborts the socket then, as
-Linux gives up on an orphaned connection. Such closing conversations are
-netd's alone, netfs freed its slot when the close was acknowledged, so
-they do not show in `/net/tcp/N/status`; they too ran a VPS out of
-indices, with the table looking empty. A new client clone may get that
-slot while netd still closes the old connection there, which can still
-report on it (its peer's FIN makes it say `hangup`): netfs ignores what
-netd says about a cloned index until netd answers the clone, so the old
-connection's news is not taken for the new one's (that late `hangup`
-refused the new connection's connect, issue #473). The old socket itself
-is leaked in netd then (issue #483). A listener's index is freed when
-its last holder closes it (a forked child's close does not reach netd),
-its socket with it, and the connections it had accepted that nobody took
-are reset; it used to live on with its socket, so a restarted server
-shared its port with its own ghost, which answered nothing.
+established (its FIN came with the handshake's last ACK: a health check
+that said its piece and left) is hung up the same way, so the process that
+accepts it reads what came and the end at once instead of waiting for a
+client until its own timeout with the index pinned. A conversation its
+process closed gives its index back when the TCP close completes, or 60
+seconds after the close when the peer never answers it (a scanner behind
+a firewall, a client that keeps a half-closed connection): netd aborts
+the socket then, as Linux gives up on an orphaned connection. Such
+closing conversations are netd's alone, netfs freed its slot when the
+close was acknowledged, so they do not show in `/net/tcp/N/status`; they
+too ran a VPS out of indices, with the table looking empty. A new client
+clone may get that slot while netd still closes the old connection there,
+which can still report on it (its peer's FIN makes it say `hangup`):
+netfs ignores what netd says about a cloned index until netd answers the
+clone, so the old connection's news is not taken for the new one's (that
+late `hangup` refused the new connection's connect, issue #473). The old
+socket itself is leaked in netd then (issue #483). A listener's
+index is freed when its last holder closes it (a forked child's close
+does not reach netd), its socket with it, and the connections it had
+accepted that nobody took are reset; it used to live on with its socket,
+so a restarted server shared its port with its own ghost, which answered
+nothing.
+
+An incoming connection is a conversation only once its handshake is done,
+as accept on Linux only returns completed handshakes: netd answers the
+SYN and keeps the half-open connection to itself (up to 64 of them, every
+listener together; past that a SYN is answered with a reset, as Linux
+drops a SYN when its queue is full), hands it to the listener's user once
+the peer's ACK arrives, and aborts it after 15 seconds without one (Linux
+gives up after about a minute). A SYN whose ACK never comes is the
+internet's background noise, a scanner or a flood with forged sources on
+any public port, and a connection reset during the handshake is a
+scanner's connect-and-close; netd used to hand both out at the SYN, so
+each pinned an index and woke the server (dropbear forks a process per
+connection, and refuses connections past 30 unauthenticated ones) until
+the server's own timeout: a scanned VPS held forty at a time. No boot
+test leaves a handshake half-open (QEMU's user networking completes it
+itself; issue #480).
 
 `/net/convs` is netd's own table, a line per index in use (`N tcp|udp|icmp
 [STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
 `peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
 process has its files, `released` once it closed them, `connected`,
-`hungup`, `closing Ns`), refreshed once a second. It shows what the
-status files cannot: a closing conversation netfs has already let go of,
-or one accepted and not yet taken. When connections are reset at the
-accept, this is where the indices went.
+`hungup`, `closing Ns`), then a line per handshake in progress (`- tcp
+SynReceived peer a.b.c.d!p port P handshake Ns`: not a conversation yet,
+no index), refreshed once a second. It shows what the status files cannot:
+a closing conversation netfs has already let go of, one accepted and not
+yet taken, the SYNs a scanner left unanswered. When connections are reset
+at the accept, this is where the indices went.
 
 netd has 128 conversations (TCP, UDP and ICMP together; netfs has as many
 slots), each a line of `/net/convs` while in use. A server on the

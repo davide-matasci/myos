@@ -101,8 +101,9 @@ const STATUS_CAP: usize = 64;
 const NDB_CAP: usize = 256;
 /// `/net/ifaddrs`: a line per interface.
 const IFADDRS_CAP: usize = 256;
-/// `/net/convs`: netd's table, a line per index in use.
-const CONVS_CAP: usize = 4096;
+/// `/net/convs`: netd's table, a line per index in use and per handshake
+/// in progress (128 + 64 lines of up to 80 bytes).
+const CONVS_CAP: usize = 16384;
 
 #[derive(Clone, Copy)]
 struct Msg {
@@ -705,7 +706,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
     }
     let typ = buf[0];
     let conv = u16::from_le_bytes([buf[1], buf[2]]);
-    let _status = i32::from_le_bytes([buf[3], buf[4], buf[5], buf[6]]);
+    let status = i32::from_le_bytes([buf[3], buf[4], buf[5], buf[6]]);
     let plen = u16::from_le_bytes([buf[7], buf[8]]) as usize;
     if REP_HDR + plen > buf.len() {
         return;
@@ -724,9 +725,12 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         return;
     }
     if typ == REP_CONVS {
-        let n = payload.len().min(CONVS_CAP);
-        st.table[..n].copy_from_slice(&payload[..n]);
-        st.table_len = n as u16;
+        // netd's table in pieces of up to one reply, `status` the piece's
+        // offset; the one at 0 starts the table over.
+        let off = (status.max(0) as usize).min(CONVS_CAP);
+        let n = payload.len().min(CONVS_CAP - off);
+        st.table[off..off + n].copy_from_slice(&payload[..n]);
+        st.table_len = (off + n) as u16;
         return;
     }
     // Whatever netd says about a conversation may change its readiness.
