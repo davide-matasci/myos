@@ -558,6 +558,9 @@ t -t usb usb_hotplug_busy_reuse usb_hotplug_busy_reuse
 # status transfer must not stay in the entry's completion records and
 # block the endpoint: issue #280.)
 usb_hub_replug() {
+	# usb_disk's mount, which mount_rules undoes when it runs: a stick in
+	# use stays in /dev after it is pulled out.
+	! grep -q ' /tmp/usb ' /proc/mounts || umount /tmp/usb || return 1
 	echo "HOST tests hub-unplug" >&3
 	# The stick goes first (a detach takes the children first), the hub after.
 	wait_for 30 sh -c '! test -e /dev/sdb/data' || { cat /proc/usb; return 1; }
