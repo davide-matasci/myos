@@ -243,6 +243,25 @@ scsi_disk() {
 	[ "$(dd if=$d bs=512 skip=2048 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 }
 t -t blk scsi_disk scsi_disk
+# A full filesystem: the write that fills it gives what fit, the next says
+# ENOSPC, natively and under the Linux layer (apk on a full /data stopped
+# with "I/O error", the generic failure's errno), as does a pwrite into a
+# grown file's hole (fileio_smoke.c, linux-smoke.c). An ext2 on the scratch
+# disk's 64 MiB p3, before the partition test formats it (and leaves it the
+# FAT volume the fstab test mounts).
+enospc() {
+	d=/dev/nvme1n1/p3
+	mkdir -p /tmp/p3 && mkfs.ext2 $d > /dev/null && mount $d /tmp/p3 ext2 || return 1
+	r=0
+	/bin/etc/fileio_smoke enospc /tmp/p3 || r=1
+	if grep -q "^linux$" /proc/modules && [ -x /bin/linux/linux-smoke ]; then
+		linux /bin/linux/linux-smoke enospc /tmp/p3/lx || r=1
+	fi
+	rm -f /tmp/p3/fill /tmp/p3/lx
+	umount /tmp/p3 || r=1
+	return $r
+}
+t -t blk,fs,ext2,linux enospc enospc
 t -t blk,smoke partitions partitions
 t -t blk boot_disk boot_disk
 t -t smoke boot_rc boot_rc

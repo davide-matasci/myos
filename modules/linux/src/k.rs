@@ -480,6 +480,15 @@ pub mod fs {
         let n = api().vfs_write(path, pos, src);
         (n >= 0).then_some(n as usize)
     }
+    /// [`write`] with the errno a failure is: `ENOSPC` for a full
+    /// filesystem, `EIO` for the rest.
+    pub fn write_errno(path: &str, pos: usize, src: &[u8]) -> Result<usize, usize> {
+        match api().vfs_write(path, pos, src) {
+            n if n >= 0 => Ok(n as usize),
+            myos_abi::VFS_ENOSPC => Err(crate::abi::ENOSPC),
+            _ => Err(crate::abi::EIO),
+        }
+    }
     /// The task's own absolute view of `path` (cwd applied, chroot-relative).
     pub fn resolve_user_path_virtual(path: &str, out: &mut [u8]) -> Option<usize> {
         let n = api().path_resolve(path, myos_abi::MYOS_PATH_VIRTUAL, out);
@@ -497,6 +506,7 @@ pub mod signal {
     pub const SYSERR_ENOTDIR: usize = myos_abi::MYOS_SYSERR_ENOTDIR;
     pub const SYSERR_EAGAIN: usize = myos_abi::MYOS_SYSERR_EAGAIN;
     pub const SYSERR_EACCES: usize = myos_abi::MYOS_SYSERR_EACCES;
+    pub const SYSERR_ENOSPC: usize = myos_abi::MYOS_SYSERR_ENOSPC;
     /// The lowest of the native failure sentinels: a result at or above it
     /// failed.
     pub const SYSERR_LOWEST: usize = myos_abi::MYOS_SYSERR_LOWEST;

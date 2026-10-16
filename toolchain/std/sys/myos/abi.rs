@@ -89,8 +89,8 @@ pub fn close(fd: i32) -> isize {
 
 /// A read's or write's result: the count, or minus an errno for the
 /// kernel's failure values (`SYSERR` and the distinct EIO, ENXIO, EINTR,
-/// EEXIST and ESPIPE, `kernel/src/task/fd.rs`), so `cvt` reports what
-/// happened.
+/// EEXIST, ESPIPE, ... and ENOSPC, `kernel/src/task/fd.rs`), so `cvt`
+/// reports what happened.
 #[inline]
 fn io_result(ret: usize) -> isize {
     match usize::MAX - ret {
@@ -103,6 +103,7 @@ fn io_result(ret: usize) -> isize {
         6 => -40, // ELOOP: O_NOFOLLOW on a symlink
         7 => -20, // ENOTDIR: O_DIRECTORY on something else
         8 => -11, // EAGAIN: a lock someone else holds
+        10 => -28, // ENOSPC: the filesystem is full
         _ => ret as isize,
     }
 }

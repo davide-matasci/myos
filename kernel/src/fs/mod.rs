@@ -53,8 +53,9 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
     vfs::read_all(path, max)
 }
 
-/// Write to an open vnode.
-pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
+pub use vfs::WriteError;
+/// Write to an open vnode: the count, or why nothing was written.
+pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     vfs::write(node, pos, buf)
 }
 

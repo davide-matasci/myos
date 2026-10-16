@@ -735,6 +735,9 @@ pub const SYSERR_EIO: usize = usize::MAX - 1;
 /// terminal): `ESPIPE`.
 pub const SYSERR_ESPIPE: usize = usize::MAX - 5;
 
+/// A write the file's filesystem has no room for: `ENOSPC`.
+pub const SYSERR_ENOSPC: usize = usize::MAX - 10;
+
 /// Distinct syscall error for pty peer-gone (`EIO`): `usize::MAX` is the
 /// generic SYSERR (libgloss maps it to EBADF), so read/write return `MAX-1`
 /// on pty hangup and libgloss translates that to `errno = EIO` — the Linux
@@ -1030,8 +1033,13 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                         },
                         None => pos,
                     };
-                    let Some(n) = crate::fs::write(&node, write_pos, &tmp[..chunk]) else {
-                        return if total == 0 { usize::MAX } else { total };
+                    let n = match crate::fs::write(&node, write_pos, &tmp[..chunk]) {
+                        Ok(n) => n,
+                        // What earlier chunks took; a full filesystem is
+                        // told apart (Linux: a partial count, then ENOSPC).
+                        Err(_) if total != 0 => return total,
+                        Err(crate::fs::WriteError::NoSpace) => return SYSERR_ENOSPC,
+                        Err(crate::fs::WriteError::Failed) => return usize::MAX,
                     };
                     // A poller (select/poll sleeping on "any event") may be
                     // waiting for this device/channel traffic.

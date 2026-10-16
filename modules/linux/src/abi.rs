@@ -19,6 +19,7 @@ pub const ENOTDIR: usize = 20;
 pub const EINVAL: usize = 22;
 pub const EMFILE: usize = 24;
 pub const ENOTTY: usize = 25;
+pub const ENOSPC: usize = 28;
 pub const ESPIPE: usize = 29;
 pub const EROFS: usize = 30;
 pub const ERANGE: usize = 34;
@@ -70,6 +71,7 @@ pub fn result(ret: usize, generic: usize) -> usize {
         x if x == crate::k::signal::SYSERR_ENOTDIR => err(ENOTDIR),
         x if x == crate::k::signal::SYSERR_EAGAIN => err(EAGAIN),
         x if x == crate::k::signal::SYSERR_EACCES => err(EACCES),
+        x if x == crate::k::signal::SYSERR_ENOSPC => err(ENOSPC),
         x => x,
     }
 }

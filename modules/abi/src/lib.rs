@@ -61,7 +61,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 43: the console has text screens ([`CONSOLE_SCREENS`], `docs/tty.md`):
 /// [`ModuleConsoleOps::write_kind`] names the screen, `show` switches, and
 /// `keyboard_poll` reports Alt+digit ([`CONSOLE_KEY_SCREEN`]).
-pub const ABI_VERSION: u32 = 44;
+/// 45: a filesystem's `write` and `write_ino` hooks and
+/// [`KernelApi::vfs_write`] tell a full filesystem apart ([`VFS_ENOSPC`],
+/// the caller's `ENOSPC`).
+pub const ABI_VERSION: u32 = 45;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -151,7 +154,8 @@ pub struct ModuleVfsOps {
             buf_len: usize,
         ) -> i32,
     >,
-    /// Optional write at `pos`. Bytes written (>=0) or negative error.
+    /// Optional write at `pos`. Bytes written (>=0), or negative:
+    /// [`VFS_ENOSPC`] when the filesystem has no room for them.
     pub write: Option<
         unsafe extern "C" fn(
             path: *const u8,
@@ -455,7 +459,14 @@ pub const MYOS_SYSERR_ENOTDIR: usize = usize::MAX - 7;
 pub const MYOS_SYSERR_EAGAIN: usize = usize::MAX - 8;
 /// `setpgid` of a child that has exec'd.
 pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EACCES;
+/// A write the filesystem has no room for.
+pub const MYOS_SYSERR_ENOSPC: usize = usize::MAX - 10;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ENOSPC;
+
+/// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s
+/// result when the filesystem has no room for the bytes (the caller's
+/// `ENOSPC`); any other negative result is the generic failure.
+pub const VFS_ENOSPC: i32 = -2;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are
@@ -852,7 +863,7 @@ pub struct KernelApi {
     /// path, as `vfs_stat`'s) into kernel `buf`: bytes read, or negative.
     pub vfs_read: unsafe extern "C" fn(path: StrRef, pos: usize, buf: *mut u8, cap: usize) -> i32,
     /// Write kernel `buf` at `pos` of the file at VFS `path`: bytes
-    /// written, or negative.
+    /// written, or negative ([`VFS_ENOSPC`]: the filesystem is full).
     pub vfs_write: unsafe extern "C" fn(path: StrRef, pos: usize, buf: *const u8, len: usize) -> i32,
     // --- ABI 18: terminals as files (docs/tty.md) ---
     /// The `ctl` text of the terminal `fd` is open on, into `buf` (cut at
