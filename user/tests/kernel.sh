@@ -832,11 +832,26 @@ t -t console,tty console_cr console_cr
 # and `dl`: vim opening a line with Enter or `o`), as does reverse index at
 # the top (`sr`): the first two cells of the top three rows read back must
 # be as if the text were written already moved.
-console_rows() {
-	printf '\033[H\033[J%b\033[10;1H' "$1" > /dev/console/data
+# Each pattern goes to the console in one write (printf to the console
+# itself writes line by line), and the rows are read until two reads agree:
+# now and then one capture came back without the pattern's last line on
+# aarch64 (issue #470).
+console_capture() {
 	for y in $(seq 0 23); do
 		dd if=/dev/fb/data bs=64 count=1 skip=$((y * pitch / 64)) 2> /dev/null
 	done | cksum
+}
+
+console_rows() {
+	printf '\033[H\033[J%b\033[10;1H' "$1" | dd of=/dev/console/data bs=4096 2> /dev/null
+	last=$(console_capture)
+	for i in 1 2 3 4 5; do
+		now=$(console_capture)
+		[ "$now" = "$last" ] && break
+		last=$now
+		sleep 1
+	done
+	echo "$now"
 }
 
 console_lines() {
@@ -849,7 +864,7 @@ console_lines() {
 	up=$(console_rows 'A\r\nB')
 	printf '\033[H\033[J\n' > /dev/console/data
 	echo 'screen 1' > /dev/console/ctl
-	echo "moved: $moved; IL: $il; RI: $ri; DL: $dl"
+	echo "moved: $moved; IL: $il; RI: $ri; DL: $dl; up: $up"
 	[ "$il" = "$moved" ] && [ "$ri" = "$moved" ] && [ "$dl" = "$up" ]
 }
 t -t console,tty console_lines console_lines
