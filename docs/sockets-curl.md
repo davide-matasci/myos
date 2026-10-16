@@ -125,7 +125,13 @@ a firewall, a client that keeps a half-closed connection): netd aborts
 the socket then, as Linux gives up on an orphaned connection. Such
 closing conversations are netd's alone, netfs freed its slot when the
 close was acknowledged, so they do not show in `/net/tcp/N/status`; they
-too ran a VPS out of indices, with the table looking empty. A listener's
+too ran a VPS out of indices, with the table looking empty. A new client
+clone may get that slot while netd still closes the old connection there,
+which can still report on it (its peer's FIN makes it say `hangup`):
+netfs ignores what netd says about a cloned index until netd answers the
+clone, so the old connection's news is not taken for the new one's (that
+late `hangup` refused the new connection's connect, issue #473). The old
+socket itself is leaked in netd then (issue #483). A listener's
 index is freed when its last holder closes it (a forked child's close
 does not reach netd), its socket with it, and the connections it had
 accepted that nobody took are reset; it used to live on with its socket,

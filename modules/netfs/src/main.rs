@@ -186,6 +186,13 @@ struct Conv {
     /// occupant's (a peer gone during the handshake: the process that
     /// accepts it must read the hangup, not wait for data until its timeout).
     suppress_stale_hangup: bool,
+    /// A client clone netd has not answered yet (its CLONE_OK): whatever
+    /// netd says about the index before that answer is about the previous
+    /// occupant, whose connection netd may still be closing after it acked
+    /// the REQ_CLOSE that freed the slot here (its peer's FIN then makes it
+    /// report a hangup). Taken as the new conversation's, that hangup
+    /// refused its connect (issue #473).
+    cloning: bool,
     proto: u8,
     /// The unread bytes: `data_len` of them from `data_off` on (a read
     /// moves the start instead of the rest of the buffer; an append that
@@ -231,6 +238,7 @@ impl Conv {
         used: false,
         closing: false,
         suppress_stale_hangup: false,
+        cloning: false,
         proto: 0,
         data_off: 0,
         data_len: 0,
@@ -535,6 +543,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 used: true,
                 closing: false,
                 suppress_stale_hangup: false,
+                cloning: true,
                 proto,
                 data_off: 0,
                 data_len: 0,
@@ -564,6 +573,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 used: true,
                 closing: false,
                 suppress_stale_hangup: false,
+                cloning: true,
                 proto,
                 data_off: 0,
                 data_len: 0,
@@ -755,6 +765,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         // swallow that hangup (suppress_stale_hangup) and leak the slot.
         // Accept clones carry their proto and still reinstall.
         if payload.is_empty() && slot.used && slot.closing {
+            slot.cloning = false;
             return;
         }
         if !slot.used || slot.closing || !payload.is_empty() {
@@ -769,6 +780,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 // other status. An accepted conversation's first hangup is
                 // real (see the field).
                 suppress_stale_hangup: payload.is_empty(),
+                cloning: false,
                 proto,
                 data_off: 0,
                 data_len: 0,
@@ -782,14 +794,21 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                         soerr: b"",
             };
             set_status(slot, b"cloned");
-        } else if slot.status_len == 0 {
-            set_status(slot, b"cloned");
+        } else {
+            slot.cloning = false;
+            if slot.status_len == 0 {
+                set_status(slot, b"cloned");
+            }
         }
         return;
     }
     let Some(c) = conv_mut(&mut st.convs, conv) else {
         return;
     };
+    // Not this client clone's yet (see `cloning`).
+    if c.cloning {
+        return;
+    }
     match typ {
         REP_DATA => {
             c.suppress_stale_hangup = false;
@@ -1075,7 +1094,12 @@ unsafe extern "C" fn net_read(
             let Some(id) = alloc_conv(&mut st.convs, p) else {
                 return 0;
             };
-            let _ = enqueue_req(&mut st.req, REQ_CLONE, id, p, &[]);
+            // Never asked, netd would never answer: the slot would wait for
+            // its CLONE_OK forever (`cloning`).
+            if !enqueue_req(&mut st.req, REQ_CLONE, id, p, &[]) {
+                st.convs[id as usize] = Conv::EMPTY;
+                return 0;
+            }
             let mut tmp = [0u8; 8];
             let mut n = 0usize;
             let mut x = id;
