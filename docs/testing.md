@@ -154,8 +154,10 @@ Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
 from `get-alpine -n` on the host, attached as `/dev/nvme2n1/data` with its
 writes kept in a QEMU snapshot), waits for `login: ` on the serial port
 (`ttyS0`'s getty, `docs/tty.md`; a kernel status line that lands after a
-prompt is skipped), types `root`, an empty password and the command (each byte once its echo
-is back, so an AP's lagging echo never garbles the line), then watches:
+prompt is skipped), types `root`, an empty password, `COLUMNS=1000` and the command
+(each byte once its echo is back, so an AP's lagging echo never garbles the line; the
+`COLUMNS` line keeps the shell's line editor from scrolling a long command sideways, as it
+would on the `virt` boards' 100-column console), then watches:
 
 - the `TEST`, `HOST` (the named port's `host.sh`) and `TESTS DONE` lines;
 - the kernel's crash reports (`exception:`, `user panic`, a user fault)
