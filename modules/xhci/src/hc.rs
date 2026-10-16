@@ -297,9 +297,11 @@ pub struct Controller {
     pub cmd: SleepLock<Ring>,
     pub cmd_wait: CmdWait,
     /// The event ring: whoever holds `evt_busy` is its one consumer (the
-    /// interrupt handler, or a waiter polling); the other skips its turn.
+    /// interrupt handler, or a waiter polling); the other skips its turn
+    /// and sets `evt_again`, which the holder checks after letting go.
     evt: UnsafeCell<EventRing>,
     evt_busy: AtomicBool,
+    evt_again: AtomicBool,
     /// The interrupt is routed (`pci_irq_enable` succeeded).
     pub irq_on: AtomicBool,
     /// Events handled, for the boot log.
@@ -336,11 +338,48 @@ impl Controller {
 }
 
 /// `USBSTS` / `IMAN` acknowledgement and the event ring: what the interrupt
-/// handler does. Also run by waiters when the controller has no interrupt.
+/// handler does. Also run by a transfer's waiter ([`wait`]), interrupt or
+/// not, so the two meet: one drains the ring, the other leaves it.
+///
+/// The one that leaves it must still deassert the interrupt: on INTx (a
+/// level line, aarch64 and riscv64) the handler fires again at once while
+/// `IMAN.IP` is set, and the holder it left the ring to may be the task it
+/// interrupted on this CPU, which would never run again. So the handler
+/// acknowledges the interrupter and sets `evt_again`, and the holder looks
+/// at the ring once more after letting go: an event that came after its
+/// last look is not left for an interrupt that already happened.
 pub fn process_events(c: &Controller) {
-    if c.evt_busy.swap(true, Ordering::AcqRel) {
-        return;
+    loop {
+        if c.evt_busy.swap(true, Ordering::SeqCst) {
+            ack_interrupter(c);
+            c.evt_again.store(true, Ordering::SeqCst);
+            // The holder may have let go in between, before the flag.
+            if c.evt_busy.swap(true, Ordering::SeqCst) {
+                return;
+            }
+        }
+        drain_events(c);
+        c.evt_busy.store(false, Ordering::SeqCst);
+        if !c.evt_again.swap(false, Ordering::SeqCst) {
+            return;
+        }
     }
+}
+
+/// Clear the interrupter's pending bit (write 1), which deasserts INTx.
+fn ack_interrupter(c: &Controller) {
+    let mut regs = c.regs();
+    let mut ir = regs.interrupter_register_set.interrupter_mut(0);
+    if ir.iman.read_volatile().interrupt_pending() {
+        ir.iman.update_volatile(|m| {
+            m.clear_interrupt_pending();
+        });
+    }
+}
+
+/// Acknowledge the controller and handle every event in the ring; the
+/// caller holds `evt_busy`.
+fn drain_events(c: &Controller) {
     let mut regs = c.regs();
     let sts = regs.operational.usbsts.read_volatile();
     if sts.event_interrupt() {
@@ -386,7 +425,6 @@ pub fn process_events(c: &Controller) {
             r.clear_event_handler_busy();
         });
     }
-    c.evt_busy.store(false, Ordering::Release);
 }
 
 fn handle_event(c: &Controller, raw: [u32; 4]) {
@@ -789,6 +827,7 @@ pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
         cmd_wait: CmdWait { done: AtomicBool::new(false), code: AtomicU8::new(0), slot: AtomicU8::new(0) },
         evt: UnsafeCell::new(EventRing { trbs: evt as *mut [u32; 4], phys: evt_phys, deq: 0, cycle: true }),
         evt_busy: AtomicBool::new(false),
+        evt_again: AtomicBool::new(false),
         irq_on: AtomicBool::new(false),
         events: AtomicU32::new(0),
         port_change: AtomicU64::new(0),
