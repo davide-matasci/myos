@@ -9,6 +9,10 @@
 #                   its close; connect again to say "good" if every byte
 #                   arrived ("bad <bytes>" if not). Retried until the
 #                   listener is up; the guest test bounds its own wait.
+#                   Then 40 connections that close without a word, the
+#                   close 0 to 20 ms after the connect (the FIN with or
+#                   right after the handshake's last ACK), and one that
+#                   says "done": the smoke's accepts must all end.
 #   sendkey KEYS... type each of KEYS (QEMU's names, `shift-a`), in order,
 #                   on the guest's keyboard through the QEMU monitor (the
 #                   launcher's socket, $MYOS_QEMU_MONITOR). One request per
@@ -50,7 +54,8 @@ tcp_ping() {
           exec 3>&-
         fi
         rm -f "$got"
-        [[ "$verdict" == good ]]
+        [[ "$verdict" == good ]] || return 1
+        tcp_mute "$port"
         return
       fi
     fi
@@ -59,6 +64,30 @@ tcp_ping() {
   rm -f "$got"
   echo "boot test: tcp-ping $port: no pong within the bound" >&2
   return 1
+}
+
+# The mute connections (see the header), 0.3 s apart so the smoke's accept
+# keeps up with netd's two parked handoffs, then "done".
+tcp_mute() {
+  python3 - "$1" <<'PY'
+import socket, sys, time
+port = int(sys.argv[1])
+for i in range(40):
+    s = socket.socket()
+    try:
+        s.connect(("127.0.0.1", port))
+        time.sleep(i * 0.0005)
+        s.close()
+    except OSError:
+        pass
+    time.sleep(0.3)
+s = socket.socket()
+s.connect(("127.0.0.1", port))
+s.sendall(b"done")
+time.sleep(1)
+s.close()
+PY
+  echo "boot test: tcp-mute $1: 40 mute connections, then done" >&2
 }
 
 sendkey() {

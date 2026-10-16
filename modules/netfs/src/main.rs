@@ -170,9 +170,14 @@ struct Conv {
     /// the next outbound connect see status "hangup" → curl:7 / ECONNREFUSED,
     /// especially on slower UEFI TCG after a long https drain).
     closing: bool,
-    /// After CLONE_OK (re)install, ignore one in-flight hangup/error that still
-    /// belongs to the previous occupant of this index. Cleared on first data or
-    /// non-hangup status so real peer close still lands.
+    /// A client clone only: after its CLONE_OK, ignore one in-flight
+    /// hangup/error that still belongs to the previous occupant of this
+    /// index. Cleared on first data or non-hangup status so real peer close
+    /// still lands. Never for a conversation netd accepted: netd hands an
+    /// index out only once its previous holder's REQ_CLOSE was answered, and
+    /// its replies arrive in order, so a hangup after that CLONE_OK is this
+    /// occupant's (a peer gone during the handshake: the process that
+    /// accepts it must read the hangup, not wait for data until its timeout).
     suppress_stale_hangup: bool,
     proto: u8,
     /// The unread bytes: `data_len` of them from `data_off` on (a read
@@ -696,6 +701,10 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
     // tombstone meant a late hangup ack wiped the *new* live accept
     // (closing still true) → dropbear Child then banner write EIO.
     // Do NOT wipe a live (!closing) client clone — that races HTTPS/curl.
+    // A conversation netd accepted (its CLONE_OK names the protocol) always
+    // reinstalls: netd frees an index a process took only on that process's
+    // REQ_CLOSE, so a used slot it names again is one nobody opened, left
+    // with the hangup of a connection that died before anyone accepted it.
     if typ == REP_CLONE_OK {
         if conv as usize >= MAX_CONV {
             return;
@@ -718,17 +727,18 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         if payload.is_empty() && slot.used && slot.closing {
             return;
         }
-        if !slot.used || slot.closing {
+        if !slot.used || slot.closing || !payload.is_empty() {
             // An accept clone (netd's, with its proto) is the listener's
             // user's once that listener's status names it.
             let owner = if payload.is_empty() { slot.owner } else { NO_OWNER };
             *slot = Conv {
                 used: true,
                 closing: false,
-                // Always: pump-accept may orphan+hangup before userspace
-                // open(), or a prior occupant may still have hangup in flight.
-                // One suppressed hangup/error; cleared on data / other status.
-                suppress_stale_hangup: true,
+                // A client clone's: a prior occupant may still have a hangup
+                // in flight. One suppressed hangup/error; cleared on data /
+                // other status. An accepted conversation's first hangup is
+                // real (see the field).
+                suppress_stale_hangup: payload.is_empty(),
                 proto,
                 data_off: 0,
                 data_len: 0,

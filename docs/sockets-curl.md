@@ -114,7 +114,13 @@ reads end, writes fail) until the close, and only then may a new
 connection, accepted or cloned, get it. Freeing it at the hangup let the
 next accepted connection land on an index an HTTP server's keepalive
 connection still held, which answered an SSH client's banner with an HTTP
-response.
+response. An accepted connection whose peer is gone before netd saw it
+established (its FIN or reset came with the handshake's last ACK: a port
+scanner, a health check) is hung up the same way, so the process that
+accepts it reads the end at once instead of waiting for a client until its
+own timeout with the index pinned; enough of those within dropbear's five
+minutes ran a VPS out of the 32 indices, and every new connection was
+reset before its banner.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
 server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's

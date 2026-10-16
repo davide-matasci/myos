@@ -1607,6 +1607,30 @@ fn pump_sockets(
                     convs[i].hungup = true;
                     reply(chan, REP_STATUS, conv, 0, b"hangup");
                 }
+                // An accepted connection gone before it was seen Established:
+                // the peer's FIN or reset came with the handshake's last ACK
+                // (a port scanner, a health check), so `connected` never got
+                // set and the hangup rule below never fired. The process that
+                // took it then waited for a client that was gone until its own
+                // timeout (dropbear: five minutes), the index pinned meanwhile
+                // as a held conversation; on a VPS they ran netd out of indices
+                // within minutes of a boot and every new connection was reset
+                // before its banner. Past the handshake with nothing left to
+                // read, it is hung up like any other.
+                if !convs[i].connected
+                    && !convs[i].hungup
+                    && convs[i].from_accept
+                    && !s.can_recv()
+                    && !matches!(s.state(), tcp::State::SynReceived | tcp::State::Established)
+                {
+                    // A reset to its SYN-ACK sent the socket back to
+                    // listening: it must not take the port's next SYN.
+                    if s.state() == tcp::State::Listen {
+                        s.abort();
+                    }
+                    convs[i].hungup = true;
+                    reply(chan, REP_STATUS, conv, 0, b"hangup");
+                }
                 // All netfs has room for, a message of up to `REP_CAP` at a
                 // time: one MSS per pass left a 64 KiB window's worth waiting
                 // through as many wake-ups.

@@ -7,7 +7,13 @@
  * sends "ping"; the smoke answers "pong", then sends BULK_LINES numbered
  * lines (far more than netd buffers: the writes wait for room) and closes.
  * The host checks every byte and connects again to report "good" (or "bad
- * <bytes>").
+ * <bytes>"). Then it connects MUTE_PROBES times without a word and closes,
+ * its FIN a varying moment after the handshake: each accept must end in a
+ * hangup within a few seconds (netd used to keep a connection it had not
+ * seen established, the FIN with the handshake's last ACK, open for its
+ * holder forever: an nginx on a VPS waited on dozens of those until netd
+ * had no conversation left and reset every new connection). A last one
+ * says "done".
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -20,6 +26,7 @@
 
 #define LISTEN_PORT 2323
 #define BULK_LINES 40000 /* "%06d\n": 280000 bytes */
+#define MUTE_PROBES 40
 
 /* A blocking accept on `l`, then the first bytes the peer sends. */
 static int accept_read(int l, char *buf, size_t cap, ssize_t *n) {
@@ -56,6 +63,42 @@ static int send_bulk(int c) {
         }
     }
     return 0;
+}
+
+/* The mute connections, up to the one that says "done": each must end
+ * (readable, then the read says hangup or data) within 3 s of its accept. */
+static int mute_probes(int l) {
+    for (int k = 0; k <= MUTE_PROBES; k++) {
+        struct sockaddr_in peer;
+        socklen_t plen = sizeof peer;
+        int c = accept(l, (struct sockaddr *)&peer, &plen);
+        if (c < 0) {
+            printf("[ FAIL ] mute accept (%d)\n", errno);
+            return -1;
+        }
+        fd_set r;
+        FD_ZERO(&r);
+        FD_SET(c, &r);
+        struct timeval tv = {3, 0};
+        int rv = select(c + 1, &r, NULL, NULL, &tv);
+        if (rv <= 0) {
+            printf("[ FAIL ] mute %d: not hung up 3 s after accept (select %d errno %d)\n", k, rv, errno);
+            return -1;
+        }
+        char buf[8];
+        ssize_t n = read(c, buf, sizeof buf - 1);
+        close(c);
+        if (n >= 4 && memcmp(buf, "done", 4) == 0) {
+            return k;
+        }
+        if (n > 0) {
+            buf[n] = '\0';
+            printf("[ FAIL ] mute %d: said \"%s\"\n", k, buf);
+            return -1;
+        }
+    }
+    printf("[ FAIL ] mute: no \"done\" after %d connections\n", MUTE_PROBES + 1);
+    return -1;
 }
 
 int main(void) {
@@ -106,7 +149,11 @@ int main(void) {
         return 1;
     }
     close(c);
+    int mutes = mute_probes(l);
+    if (mutes < 0) {
+        return 1;
+    }
     close(l);
-    printf("[ OK ] listen\n");
+    printf("[ OK ] listen (%d mute connections)\n", mutes);
     return 0;
 }
