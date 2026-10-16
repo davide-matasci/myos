@@ -1,4 +1,0 @@
-clang: error: no such file or directory: '/home/user/myos/target/libressl-x86_64/obj/crypto/crypto_compat_syslog_r.o'
-clang: error: no such file or directory: '_'
- '_'
- '_'
