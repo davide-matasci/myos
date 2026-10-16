@@ -25,6 +25,13 @@ fi
 mkdir -p $keep/dropbear && mount $keep/dropbear /etc/dropbear bind \
 	|| echo "[ WARN ] rc: cannot bind $keep/dropbear on /etc/dropbear"
 
+# The apps the data partition's list asks for (docs/packages.md): get-myos
+# --sync, in the background (it waits for the network and downloads), its
+# output in /tmp/get-myos-sync.log.
+if [ $keep = /data ] && [ -f /data/apps/apps.list ]; then
+	get-myos -r /data/apps --sync > /tmp/get-myos-sync.log 2>&1 &
+fi
+
 # The administrator's part, /data/etc/rc.local: the image's default copied
 # there when missing (deleted, it comes back at the next boot). Without a
 # data partition the default runs as it is.

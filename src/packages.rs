@@ -15,11 +15,14 @@
 //! ```text
 //! run /bin/custom/vim        the app's command: bin/custom/<name>, else its first
 //!                            program in bin/custom; no line when it has none
-//! needs x11-xft x11-fonts    PORT_RDEPS, the apps whose files it uses
+//! needs x11-xft@39e48858a655 x11-fonts@1399fe7cc6d8
+//!                            PORT_RDEPS, the apps whose files it uses, each
+//!                            at the version of this build
 //! ```
 //!
 //! `deps` are the package's runtime dependencies (`PORT_RDEPS`), comma
-//! separated, `-` for none; the header is the build's release
+//! separated and each at its version (`x11-libs@9c34152496e6`), `-` for
+//! none; the header is the build's release
 //! (`src/release.rs`), which `get-myos` compares with the system's
 //! `/lib/myos-release`.
 //!
@@ -59,6 +62,9 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
     // The ports the image lacks: what `get-myos` is for, and what the full
     // boot test installs.
     let mut packages = String::new();
+    // Each package's index line and version, by name: a package names its
+    // dependencies' versions, so they are packed first.
+    let mut built: HashMap<String, (String, String)> = HashMap::new();
     for port in &all {
         if port.files.is_empty() {
             continue;
@@ -67,47 +73,75 @@ pub fn build(manifest_dir: &Path, arch: &str) -> PathBuf {
             packages.push_str(&port.name);
             packages.push('\n');
         }
-        ensure_built(manifest_dir, port, arch);
-        let mut entries: Vec<Entry> = Vec::new();
-        install_port(&mut entries, port, manifest_dir, arch);
-        if entries.is_empty() {
-            continue;
+        pack(manifest_dir, &out, arch, &all, port, &mut built);
+        if let Some((line, _)) = built.get(&port.name) {
+            index.push_str(line);
         }
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        entries.push(Entry {
-            name: "app".into(),
-            data: app_manifest(port, &entries).into_bytes(),
-            ino: entries.len() as u64 + 1,
-            nlink: 1,
-            mode: 0o100644,
-        });
-        let tar_path = out.join(format!("{arch}-{}.tar", port.name));
-        std::fs::write(&tar_path, ustar(&entries)).expect("write package tar");
-        // -n: no name or timestamp in the gzip header, so the same files
-        // give the same bytes (the release is re-uploaded only when they
-        // change).
-        let status = Command::new("gzip")
-            .args(["-n", "-f", "-6"])
-            .arg(&tar_path)
-            .status()
-            .expect("run gzip");
-        assert!(status.success(), "gzip {} failed", tar_path.display());
-        let file = format!("{arch}-{}.tar.gz", port.name);
-        let gz = out.join(&file);
-        let size = std::fs::metadata(&gz).expect("package size").len();
-        // The version is the port's input hash (its stamp); a user program
-        // has no stamp, its tarball's own hash stands in.
-        let sha = sha256_file(&gz);
-        let version = std::fs::read_to_string(manifest_dir.join("target").join(&port.stamp))
-            .map(|s| s.trim().chars().take(12).collect::<String>())
-            .unwrap_or_else(|_| sha.chars().take(12).collect());
-        let deps = if port.rdeps.is_empty() { "-".to_string() } else { port.rdeps.join(",") };
-        index.push_str(&format!("{} {version} {size} {sha} {file} {deps}\n", port.name));
     }
     std::fs::write(out.join(format!("{arch}-index.txt")), index).expect("write package index");
     write_boot(manifest_dir, &out, arch);
     std::fs::write(out.join(format!("{arch}-packages.txt")), packages).expect("write package list");
     out
+}
+
+/// Pack `port` (its dependencies first) into `<arch>-<name>.tar.gz` under
+/// `out`, and record its index line and version in `built`; a port with no
+/// files for `arch` gets neither.
+fn pack(
+    manifest_dir: &Path,
+    out: &Path,
+    arch: &str,
+    all: &[ports::Port],
+    port: &ports::Port,
+    built: &mut HashMap<String, (String, String)>,
+) {
+    if built.contains_key(&port.name) {
+        return;
+    }
+    let mut deps = Vec::new();
+    for dep in &port.rdeps {
+        let d = all.iter().find(|p| &p.name == dep).expect("check_rdeps: a known port");
+        pack(manifest_dir, out, arch, all, d, built);
+        let (_, version) = built.get(dep).unwrap_or_else(|| panic!("{}: dependency {dep} has no package", port.name));
+        deps.push(format!("{dep}@{version}"));
+    }
+    ensure_built(manifest_dir, port, arch);
+    let mut entries: Vec<Entry> = Vec::new();
+    install_port(&mut entries, port, manifest_dir, arch);
+    if entries.is_empty() {
+        return;
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.push(Entry {
+        name: "app".into(),
+        data: app_manifest(&entries, &port.name, &deps).into_bytes(),
+        ino: entries.len() as u64 + 1,
+        nlink: 1,
+        mode: 0o100644,
+    });
+    let tar_path = out.join(format!("{arch}-{}.tar", port.name));
+    std::fs::write(&tar_path, ustar(&entries)).expect("write package tar");
+    // -n: no name or timestamp in the gzip header, so the same files
+    // give the same bytes (the release is re-uploaded only when they
+    // change).
+    let status = Command::new("gzip")
+        .args(["-n", "-f", "-6"])
+        .arg(&tar_path)
+        .status()
+        .expect("run gzip");
+    assert!(status.success(), "gzip {} failed", tar_path.display());
+    let file = format!("{arch}-{}.tar.gz", port.name);
+    let gz = out.join(&file);
+    let size = std::fs::metadata(&gz).expect("package size").len();
+    // The version is the port's input hash (its stamp); a user program
+    // has no stamp, its tarball's own hash stands in.
+    let sha = sha256_file(&gz);
+    let version = std::fs::read_to_string(manifest_dir.join("target").join(&port.stamp))
+        .map(|s| s.trim().chars().take(12).collect::<String>())
+        .unwrap_or_else(|_| sha.chars().take(12).collect());
+    let deps = if deps.is_empty() { "-".to_string() } else { deps.join(",") };
+    let line = format!("{} {version} {size} {sha} {file} {deps}\n", port.name);
+    built.insert(port.name.clone(), (line, version));
 }
 
 /// The release's boot files for `arch`, what `get-myos --upgrade` writes
@@ -148,11 +182,12 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
     std::fs::write(out.join(format!("{arch}-boot.txt")), list).expect("write the boot file list");
 }
 
-/// The app manifest of `port`, whose files are `entries` (sorted): `run`,
-/// its command (`bin/custom/<name>`, else its first program there), and
-/// `needs`, its runtime dependencies (`run-myos`, user/get-myos/run-myos).
-fn app_manifest(port: &ports::Port, entries: &[Entry]) -> String {
-    let own = format!("bin/custom/{}", port.name);
+/// The app manifest of port `name`, whose files are `entries` (sorted):
+/// `run`, its command (`bin/custom/<name>`, else its first program there),
+/// and `needs`, its runtime dependencies at their versions (`deps`:
+/// `name@version`; `run-myos`, user/get-myos/run-myos).
+fn app_manifest(entries: &[Entry], name: &str, deps: &[String]) -> String {
+    let own = format!("bin/custom/{name}");
     let run = entries
         .iter()
         .find(|e| e.name == own)
@@ -161,7 +196,7 @@ fn app_manifest(port: &ports::Port, entries: &[Entry]) -> String {
     if let Some(e) = run {
         text.push_str(&format!("run /{}\n", e.name));
     }
-    text.push_str(&format!("needs {}\n", port.rdeps.join(" ")));
+    text.push_str(&format!("needs {}\n", deps.join(" ")));
     text
 }
 

@@ -191,7 +191,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes installed as `/bin/etc/*` |
 | `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
 | `user/std` | The Rust `std` demo programs (`/bin/std/{hello,cat,echo,bigalloc}`) |
-| `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror as apps, each in a directory of its own, and `run-myos` runs one in a namespace with its files at their image paths, `docs/packages.md`; `--upgrade` and `--install` write the boot disk's slots and Limine, `docs/install.md` |
+| `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror as apps, each version in a directory of its own, and `run-myos` runs one in a namespace with its files at their image paths; `-d` removes one, `--sync` makes the apps what `ROOT/apps.list` says, and every change is a generation that `--rollback` returns to, `docs/packages.md`; `--upgrade` and `--install` write the boot disk's slots and Limine, `docs/install.md` |
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount); says why a mount failed |
 | `user/umount` | `umount DIR` detaches the disk mounted there (`SYS_UMOUNT`) |
 | `user/power` | `poweroff`, `reboot`, `halt` (one program, the action its name says; `SYS_POWER`, `docs/power.md`) |

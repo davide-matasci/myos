@@ -7,7 +7,9 @@
 # manifest, `app`:
 #
 #   run /bin/custom/vim        what `run-myos APP` starts (none: a library)
-#   needs x11-xft x11-fonts    the apps it uses, theirs included
+#   needs x11-xft@39e48858a655 x11-fonts@1399fe7cc6d8
+#                              the apps it uses at the versions it was built
+#                              with (a bare name: the current version)
 #
 # The command runs in a namespace of its own (`sec ns`, docs/security.md):
 # the whole system as the caller sees it, and the files of APP and of what
@@ -22,7 +24,8 @@
 # (tinyx,dwm:startx, a session; git,coreutils:/bin/custom/heap), the
 # command without CMD the first one's. APP@VERSION runs another installed
 # version than the current one (VERSION: the start of its hash, `get-myos
-# -l`), what it needs at their current ones. ROOT is -r, else what
+# -l`), what it needs at the versions its manifest names. When two apps
+# need two versions of one, the first one named wins. ROOT is -r, else what
 # `get-myos --root` says.
 
 usage() {
