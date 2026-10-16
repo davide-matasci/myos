@@ -1,8 +1,8 @@
 //! `/dev/console/mouse`: the pointer, for programs that draw on the screen
 //! themselves (a graphical session on `/dev/fb`). Pointing device drivers in
 //! other modules (`usb_hid`) feed it through the [`POINTER_SERVICE`] table,
-//! the PS/2 mouse ([`crate::ps2`]) through the same table here; every
-//! device lands in the same file.
+//! this module's own (the PS/2 mouse, virtio-input's mice and tablets)
+//! through the same table here; every device lands in the same file.
 //!
 //! One event per line: `m <dx> <dy>` relative motion (right and down
 //! positive), `a <x> <y>` an absolute position (both axes 0 to
@@ -104,8 +104,7 @@ unsafe extern "C" fn button(code: u16, pressed: bool) {
 
 static OPS: PointerOps = PointerOps { version: POINTER_VERSION, motion, absolute, wheel, button };
 
-/// The pointer's table, for this module's own mouse (PS/2).
-#[cfg(target_arch = "x86_64")]
+/// The pointer's table, for this module's own mice (PS/2, virtio-input).
 pub(crate) fn pointer() -> &'static PointerOps {
     &OPS
 }

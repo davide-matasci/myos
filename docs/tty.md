@@ -185,8 +185,9 @@ the same programs as the raw keyboard (Xfbdev's `kdrive/myos` reads it,
 `packages/tinyx`). The console module serves the file and publishes the
 `pointer` service ([`PointerOps`](../modules/abi/src/lib.rs)); a pointing
 device's driver in another module feeds it, today `usb_hid` (USB HID mice
-and tablets, `docs/usb.md`), and so does the console's own PS/2 mouse on
-x86_64; all of them land in the one file. One event per line:
+and tablets, `docs/usb.md`), and so do the console's own: the PS/2 mouse
+on x86_64 and virtio-input mice and tablets on the `virt` boards; all of
+them land in the one file. One event per line:
 
 ```
 m 10 -5       moved 10 right and 5 up
@@ -217,6 +218,15 @@ used only where its IRQ 12 is routed as the keyboard's IRQ 1 is (both in
 controller is polled because neither is. A polled mouse is read by
 `/dev/console/mouse`'s readers and the console's input thread, every 10 ms
 ([`modules/console/src/ps2.rs`](../modules/console/src/ps2.rs)).
+
+On the `virt` boards a virtio-input device whose config space lists
+relative axes (`EV_REL`) is a mouse, one with absolute axes (`EV_ABS`) a
+tablet, whose `ABS_X`/`ABS_Y` ranges scale its position; the first other
+one is the keyboard. Up to two pointers, with `[ OK ] mouse (virtio)` or
+`tablet (virtio)` on the console and `virtio-pointer` in
+`/proc/interrupts`; a frame's axes go to the file at its `SYN_REPORT`,
+buttons (`BTN_LEFT` to `BTN_EXTRA`) at once
+([`modules/console/src/virtio_input.rs`](../modules/console/src/virtio_input.rs)).
 
 The file is there whether or not a pointer is plugged in (a USB mouse may
 come later). Opening it takes the pointer: one program holds it at a time,

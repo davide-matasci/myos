@@ -44,7 +44,7 @@ interrupt source overrides, and points the pin at a fresh device vector
 on the BSP (the 8259s stay masked). The console's input uses it: the UART's
 receive interrupt (COM1's IRQ 4, the SPCR's or device tree's on the
 others), the PS/2 keyboard's IRQ 1, the PS/2 mouse's IRQ 12 and the
-virtio-input device's. A PC
+virtio-input devices' (the keyboard's and the pointers'). A PC
 without an MADT I/O APIC routes nothing: the UART is then drained by CPU
 0's tick and the keyboard polled, as before.
 

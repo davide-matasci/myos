@@ -165,8 +165,8 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
 | `modules/abi` | Shared `#[repr(C)]` KernelApi (v14: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`/`dt_mmio_find`) |
 | `modules/virtio` | What the virtio modules share: the `virtio-drivers` crate's `Hal` over the module ABI, PCI and virtio-mmio probing by device type, interrupt routing |
-| `modules/virtq` | Split virtqueue helpers for the console's virtio-input keyboard |
-| `modules/console` | Framebuffer text screen and `/dev/fb`, PS/2 + virtio-input keyboards, the pointer (`/dev/console/mouse`) and the PS/2 mouse, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
+| `modules/virtq` | Split virtqueue helpers for the console's virtio-input keyboard and pointers |
+| `modules/console` | Framebuffer text screen and `/dev/fb`, PS/2 + virtio-input keyboards, the pointer (`/dev/console/mouse`) with the PS/2 and virtio-input mice, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
 | `modules/virtio_blk` | virtio-blk `/dev/vd*` on `virtio-drivers`: virtio-pci (modern) or virtio-mmio |
 | `modules/virtio_scsi` | virtio-scsi: the host's disks as `/dev/sd*` (a VPS's disks), on `virtio-drivers`' virtqueue |
 | `modules/nvme` | NVMe `/dev/nvmeXn1` (PCI class 01/08, polled queues) |
