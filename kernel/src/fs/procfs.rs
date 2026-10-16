@@ -472,27 +472,28 @@ fn list_self(name: &str, buf: &mut [u8]) -> usize {
     off
 }
 
-pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
+/// The whole text of a file made anew for each read (`MountOps::text`): an
+/// open file description reads it from one such text, taken at offset 0,
+/// so that a reader taking it in pieces sees one version of it (issue
+/// #472: `/proc/cpuinfo`'s lines change length between two reads).
+pub fn text(name: &str) -> Option<alloc::vec::Vec<u8>> {
     if let Some(text) = generated(name) {
-        return copy_at(text.as_bytes(), pos, out);
+        return Some(text.into_bytes());
     }
-    if name == "mounts" {
-        return copy_at(&vfs::mounts_text(), pos, out);
+    match name {
+        "mounts" => Some(vfs::mounts_text()),
+        "cpuinfo" => Some(cpuinfo_text()),
+        "meminfo" => Some(crate::mm::meminfo_text()),
+        "interrupts" => Some(crate::irq::interrupts_text()),
+        "modules" => Some(crate::modules::modules_text()),
+        "platform" => Some(crate::platform::text()),
+        _ => None,
     }
-    if name == "cpuinfo" {
-        return copy_at(&cpuinfo_text(), pos, out);
-    }
-    if name == "meminfo" {
-        return copy_at(&crate::mm::meminfo_text(), pos, out);
-    }
-    if name == "interrupts" {
-        return copy_at(&crate::irq::interrupts_text(), pos, out);
-    }
-    if name == "modules" {
-        return copy_at(&crate::modules::modules_text(), pos, out);
-    }
-    if name == "platform" {
-        return copy_at(&crate::platform::text(), pos, out);
+}
+
+pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
+    if let Some(text) = text(name) {
+        return copy_at(&text, pos, out);
     }
     if name == HOSTNAME_PATH {
         return copy_at(&hostname_text(), pos, out);

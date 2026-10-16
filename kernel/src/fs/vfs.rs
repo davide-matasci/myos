@@ -134,6 +134,11 @@ pub struct MountOps {
     /// (the console waits for a key): read without the tree held, which
     /// would hold off every rename, unlink and new file meanwhile.
     pub waits: Option<fn(&str) -> bool>,
+    /// Optional: the whole of a file whose text is made anew for each read
+    /// (procfs: `/proc/cpuinfo` changes between two reads), `None` for
+    /// any other. An open file description reads such a file from one
+    /// text, taken by a read at offset 0 ([`text`]).
+    pub text: Option<fn(&str) -> Option<Vec<u8>>>,
     /// Mount accepts write opens / creates.
     pub writable: bool,
 }
@@ -599,6 +604,22 @@ pub fn read(node: &Vnode, pos: usize, out: &mut [u8]) -> usize {
     let n = n.min(out.len());
     pagecache::overlay(node, pos, &mut out[..n]);
     n
+}
+
+/// The whole text of `node` when its mount makes it anew for each read
+/// ([`MountOps::text`]), else `None`.
+pub fn text(node: &Vnode) -> Option<Vec<u8>> {
+    let (idx, rel) = {
+        let _tree = tree_read();
+        match node::locate(node)? {
+            (idx, node::Loc::Path(rel)) => (idx, rel),
+            _ => return None,
+        }
+    };
+    match backend_of(idx)? {
+        MountBackend::Kernel(ops) => (ops.text?)(rel.as_str()),
+        MountBackend::Module(_) => None,
+    }
 }
 
 /// Whether a read of `node` returns as much as asked for, as far as the
