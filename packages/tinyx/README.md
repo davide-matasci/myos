@@ -2,16 +2,17 @@
 
 The X server: [TinyX](https://github.com/tinycorelinux/tinyx), Tiny Core's
 continuation of X.Org's kdrive servers (X.Org 1.2.0 with fixes), its `Xfbdev`
-built for myos. Core protocol, no mouse, no XKB, no GL; the screen is
-`/dev/fb` (`docs/fb.md`), the keyboard `/dev/console/kbd` (`docs/tty.md`).
+built for myos. Core protocol, no XKB, no GL; the screen is `/dev/fb`
+(`docs/fb.md`), the keyboard `/dev/console/kbd` and the pointer
+`/dev/console/mouse` (`docs/tty.md`).
 
 ```sh
 get-myos tinyx
 run-myos tinyx,APP:startx CLIENT    # APP the app with the client; dwm when none is named
 ```
 
-The server takes the screen and the keyboard from the console while it runs
-and gives them back when it exits (Ctrl+Alt+Backspace ends it; serial input
+The server takes the screen, the keyboard and the pointer from the console
+while it runs and gives them back when it exits (Ctrl+Alt+Backspace ends it; serial input
 still reaches the shell meanwhile). That is why a session starts in one
 command: what is typed after `Xfbdev :0 &` goes to the server, not to the
 shell. `startx [program [arg...]] [-- server-arg...]` (`startx.c`) starts
@@ -38,7 +39,7 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 
 | Patch | What |
 |-------|------|
-| `kdrive-myos.myos.patch` | `--with-kdrive-os=myos`: `kdrive/myos` (the OS layer: nothing to switch, no mouse; the keyboard from `/dev/console/kbd`, the keymap from the console's keymap file, US when there is none) and `kdrive/fbdev/myosfb.c` (the framebuffer ioctls `fbdev.c` makes, answered from `/dev/fb/ctl`; writing `graphics` there takes the screen, the server's exit closes it and the console takes it back) |
+| `kdrive-myos.myos.patch` | `--with-kdrive-os=myos`: `kdrive/myos` (the OS layer: nothing to switch; the keyboard from `/dev/console/kbd`, the keymap from the console's keymap file, US when there is none; the pointer from `/dev/console/mouse` with five buttons, the wheel as 4 and 5, a tablet's position scaled to the screen; `-mouse FILE` names another) and `kdrive/fbdev/myosfb.c` (the framebuffer ioctls `fbdev.c` makes, answered from `/dev/fb/ctl`; writing `graphics` there takes the screen, the server's exit closes it and the console takes it back) |
 | `no-xtest.myos.patch` | XTEST is not built (MIT-SHM is, on libgloss's System V shared memory) |
 | `sync-headers.myos.patch` | SYNC's constants from xorgproto's `syncconst.h` (libXext's client `sync.h` carried them in 2007) |
 | `arches.myos.patch` | `servermd.h` entries for AArch64 and RISC-V 64 |
@@ -55,11 +56,10 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 `tinyx_smoke` checks that the screen is `/dev/fb`'s size, maps a red window over it and
 reads the framebuffer back, and receives the Shift+A the host types through
 the QEMU monitor as keycode 38, "A"; when it exits startx stops the server,
-and `/dev/fb/ctl` says `text` again.
+and `/dev/fb/ctl` says `text` again. The pointer is tested through xev
+(`packages/x11-apps`).
 
 ## Not yet
 
-- A mouse (`kdrive/myos` has none; the core pointer never moves): issue
-  #302.
 - Rotation and modes: one framebuffer, at the mode the bootloader set.
 - Fonts beyond the built-in two (`/lib/X11/fonts`): issue #303.
