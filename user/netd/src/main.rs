@@ -2084,7 +2084,19 @@ fn main() -> ! {
             convs_text_at = now;
             let text = convs_text(&convs, &sockets, &handshakes, now);
             if text != convs_text_last {
-                reply(chan, REP_CONVS, 0, 0, text.as_bytes());
+                // In pieces of what one reply carries, `status` the piece's
+                // offset: netfs starts the table over at 0 (a full table's
+                // text is 14 KiB).
+                let b = text.as_bytes();
+                let mut off = 0;
+                loop {
+                    let n = (b.len() - off).min(REP_CAP - REP_HDR);
+                    reply(chan, REP_CONVS, 0, off as i32, &b[off..off + n]);
+                    off += n;
+                    if off >= b.len() {
+                        break;
+                    }
+                }
                 convs_text_last = text;
             }
         }
