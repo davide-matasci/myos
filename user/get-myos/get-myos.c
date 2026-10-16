@@ -1,5 +1,6 @@
 /*
  * get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
+ * get-myos [-r ROOT] --rollback PACKAGE...
  * get-myos [-r ROOT] --root
  * get-myos [-m MIRROR] --upgrade [-f]
  * get-myos [-m MIRROR] --install DISK [--local]
@@ -7,15 +8,23 @@
  * Install myos packages: the programs CI builds but the image does not
  * carry (packages/<name>, docs/packages.md), as apps. A package is a gzip
  * tar of the files the port would have in the image (bin/custom/vim,
- * lib/vim/vimrc) and its manifest (`app`), unpacked into its own directory
- * of the apps root, ROOT/<name>/, and nowhere else: nothing of the system
- * changes, uninstalling is removing that directory. `run-myos NAME` runs
- * it, its files seen at their image paths in that process's namespace
- * only (run-myos, docs/packages.md). ROOT is -r, else $MYOS_APPS, else
+ * lib/vim/vimrc) and its manifest (`app`), unpacked into a directory of
+ * the apps root of its own and of its version, ROOT/<name>-<version>/, and
+ * nowhere else: nothing of the system changes. ROOT/<name> is a symlink to
+ * the current version; uninstalling is removing it and its versions.
+ * `run-myos NAME` runs it, its files seen at their image paths in that
+ * process's namespace only (run-myos, docs/packages.md). ROOT is -r, else
+ * $MYOS_APPS, else
  * /data/apps when the boot disk's data partition is mounted (it survives
  * a reboot), else /tmp/apps; --root prints it. A package's runtime
  * dependencies (the `deps` field of its index line, from the port's
  * PORT_RDEPS) are installed first.
+ *
+ * An upgrade unpacks the new version beside the old one and points
+ * ROOT/<name> at it only once its checksum matched (a new symlink renamed
+ * over the old one): a failed download leaves the old version current.
+ * The version it replaced is kept, older ones removed; --rollback points
+ * back at it.
  *
  * The mirror holds one index per architecture (<arch>-index.txt: a header
  * naming the build's release and syscall ABI, then name, version, size,
@@ -27,11 +36,12 @@
  * system's (/lib/myos-release, written by the image build) is refused: its
  * programs could call syscalls this kernel lacks.
  *
- * A package streams from curl through gunzip and the tar reader into ROOT
- * (nothing is stored: a tmpfs file holds 16 MiB at most, less than some
- * packages); its SHA-256 is checked over the stream, and only a package
- * whose checksum matches is recorded (ROOT/.get-myos/pkgs/<name> holds its
- * version). MYOS_MIRROR or -m overrides the default, the
+ * A package streams from curl through gunzip and the tar reader into
+ * ROOT/.<name>-<version>.new (nothing is stored: a tmpfs file holds 16 MiB
+ * at most, less than some packages); its SHA-256 is checked over the
+ * stream, and only a package whose checksum matches is renamed to its
+ * version's directory and recorded (ROOT/.get-myos/pkgs/<name> holds the
+ * current version). MYOS_MIRROR or -m overrides the default, the
  * project's rolling GitHub release; the full boot test uses the host-served
  * mirror of the build's own packages (http://10.0.2.2:8765).
  *
@@ -50,6 +60,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/myos_extra.h> /* lstat */
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -222,7 +233,8 @@ static int find_package(const char *want, package *pkg) {
 
 /* ---- unpacking into the app's directory ---------------------------------- */
 
-/* The package being unpacked: its entries go to ROOT/<app>/. */
+/* The package being unpacked: its entries go to ROOT/<app>/ (the
+ * version's directory being written, ROOT/.<name>-<version>.new). */
 static const char *app;
 
 typedef struct {
@@ -326,10 +338,10 @@ static void stream_out(void *ctx, int member, const uint8_t *p, size_t n) {
     tar_feed(&((stream *)ctx)->t, p, n);
 }
 
-/* Download and unpack `url` into ROOT/<name>/ in one pass; 0 when curl,
+/* Download and unpack `url` into ROOT/<dir>/ in one pass; 0 when curl,
  * the gzip and the tar all ended well, with the stream's SHA-256 in
  * hex[65]. */
-static int fetch_unpack(const char *url, const char *name, char *hex) {
+static int fetch_unpack(const char *url, const char *dir, char *hex) {
     int pid = 0;
     int fd = download_open(url, &pid);
     if (fd < 0) {
@@ -343,7 +355,7 @@ static int fetch_unpack(const char *url, const char *name, char *hex) {
     s.t.end = unpack_end;
     s.t.ctx = &s.u;
     s.u.fd = -1;
-    app = name;
+    app = dir;
     int members = gunzip_fd(fd, stream_in, stream_out, &s);
     unpack_end(&s.t);
     free(s.t.meta);
@@ -400,24 +412,184 @@ static void mark_installed(const char *name, const char *version) {
     }
 }
 
+/* ---- versions: ROOT/<name>-<version>/, ROOT/<name> the current one ------- */
+
+/* Index versions are input hashes: lowercase hex, which is also what keeps
+ * a version from naming anything but its own directory. */
+static int is_version(const char *v) {
+    if (v[0] == '\0') {
+        return 0;
+    }
+    for (; *v != '\0'; v++) {
+        if (!((*v >= '0' && *v <= '9') || (*v >= 'a' && *v <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The version in `entry`, a name in ROOT, when it is one of name's version
+ * directories ("<name>-<version>"), else NULL. */
+static const char *version_of(const char *entry, const char *name) {
+    size_t n = strlen(name);
+    if (strncmp(entry, name, n) != 0 || entry[n] != '-' || !is_version(entry + n + 1)) {
+        return NULL;
+    }
+    return entry + n + 1;
+}
+
+/* ROOT/<name>-<version><suffix>, with a leading dot when `hidden`. */
+static int version_path(char *out, const char *name, const char *version, const char *suffix, int hidden) {
+    char rel[PATH_MAX_GV];
+    if (strlen(name) + strlen(version) + strlen(suffix) + 3 > sizeof rel) {
+        return -1;
+    }
+    strcpy(rel, hidden ? "." : "");
+    strcat(rel, name);
+    strcat(rel, "-");
+    strcat(rel, version);
+    strcat(rel, suffix);
+    return under_root(out, rel);
+}
+
+/* The version ROOT/<name> points at into version[cap]; -1 when it is not a
+ * symlink to one of name's version directories (not installed, or a plain
+ * directory as get-myos made them before versions). */
+static int current_version(const char *name, char *version, size_t cap) {
+    char path[PATH_MAX_GV], target[PATH_MAX_GV];
+    if (under_root(path, name) != 0) {
+        return -1;
+    }
+    ssize_t n = readlink(path, target, sizeof target - 1);
+    if (n <= 0) {
+        return -1;
+    }
+    target[n] = '\0';
+    const char *v = version_of(target, name);
+    if (v == NULL) {
+        return -1;
+    }
+    copy_field(version, cap, v, strlen(v));
+    return 0;
+}
+
+/* rm -r: `path` and what is below it, symlinks removed, not followed. */
+static int remove_tree(const char *path) {
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return 0;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return unlink(path);
+    }
+    DIR *d = opendir(path);
+    if (d != NULL) {
+        struct dirent *e;
+        char sub[PATH_MAX_GV];
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) {
+                continue;
+            }
+            if (strlen(path) + 1 + strlen(e->d_name) < sizeof sub) {
+                strcpy(sub, path);
+                strcat(sub, "/");
+                strcat(sub, e->d_name);
+                remove_tree(sub);
+            }
+        }
+        closedir(d);
+    }
+    return rmdir(path);
+}
+
+/* Point ROOT/<name> at <name>-<version>: a new symlink renamed over the
+ * old one, so that ROOT/<name> is always one version or the other. A plain
+ * directory there (an app installed before versions) is removed first. */
+static int point_at(const char *name, const char *version) {
+    char path[PATH_MAX_GV], tmp[PATH_MAX_GV], target[PATH_MAX_GV];
+    struct stat st;
+    if (under_root(path, name) != 0 || version_path(tmp, name, version, ".link", 1) != 0 ||
+        strlen(name) + 1 + strlen(version) >= sizeof target) {
+        return -1;
+    }
+    strcpy(target, name);
+    strcat(target, "-");
+    strcat(target, version);
+    unlink(tmp);
+    if (symlink(target, tmp) != 0) {
+        return die("cannot create symlink ", tmp);
+    }
+    if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        remove_tree(path);
+    }
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return die("cannot point at the new version: ", path);
+    }
+    return 0;
+}
+
+/* Calls `each` with every version directory of `name` in ROOT. */
+static void each_version(const char *name, void (*each)(const char *version, void *ctx), void *ctx) {
+    DIR *d = opendir(pkg_root);
+    if (d == NULL) {
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *v = version_of(e->d_name, name);
+        char path[PATH_MAX_GV];
+        struct stat st;
+        if (v != NULL && under_root(path, e->d_name) == 0 && lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            each(v, ctx);
+        }
+    }
+    closedir(d);
+}
+
+/* The versions prune() keeps, and the package's name. */
+typedef struct {
+    const char *name, *keep, *prev;
+} kept;
+
+static void prune_one(const char *version, void *ctx) {
+    kept *k = ctx;
+    char path[PATH_MAX_GV];
+    if (strcmp(version, k->keep) != 0 && strcmp(version, k->prev) != 0 &&
+        version_path(path, k->name, version, "", 0) == 0) {
+        remove_tree(path);
+    }
+}
+
+/* Remove name's version directories but `keep` (the current one) and
+ * `prev` (the one it replaced, for --rollback). */
+static void prune(const char *name, const char *keep, const char *prev) {
+    kept k = {name, keep, prev};
+    each_version(name, prune_one, &k);
+}
+
 /* A chain of dependencies longer than this is a loop (the packer refuses
  * one, so an index never has it). */
 #define MAX_DEPTH 16
 
 /* Bring `want` to the index's version: its dependencies first (depth
  * first, each once), then itself when it is not installed or installed at
- * another version (an upgrade: the new files replace the old in its
- * directory).
+ * another version: the version is unpacked beside the current one (unless
+ * it is still there, the one a rollback left) and ROOT/<name> flipped to it.
  * `asked` marks a package named on the command line, which says so when
  * there is nothing to do; a dependency already there is silent. */
 static int install(const char *want, int depth, int asked) {
     package pkg;
-    char have[64];
+    char have[64], prev[64], dir[PATH_MAX_GV], tmp[PATH_MAX_GV];
+    struct stat st;
     if (depth > MAX_DEPTH) {
         return die("dependency chain too long at ", want);
     }
     if (find_package(want, &pkg) != 0) {
         return die("not in the index: ", want);
+    }
+    if (!is_version(pkg.version)) {
+        return die("bad version in the index: ", pkg.name);
     }
     int present = installed(pkg.name, have, sizeof have) == 0;
     if (present && strcmp(have, pkg.version) == 0) {
@@ -439,24 +611,90 @@ static int install(const char *want, int depth, int asked) {
             d = comma != NULL ? comma + 1 : NULL;
         }
     }
-    char url[512], hex[65];
-    mirror_url(url, sizeof url, pkg.file);
-    say(pkg.name, " ", present ? "upgrade" : pkg.version);
-    /* A transient failure should not fail the whole install; a retry
-     * rewrites the files of the attempt before it. */
-    int attempt = 1;
-    while (fetch_unpack(url, pkg.name, hex) != 0) {
-        if (attempt++ == 3) {
-            return die("download failed: ", url);
-        }
-        say("retrying ", url, NULL);
-        sleep(2);
+    if (version_path(dir, pkg.name, pkg.version, "", 0) != 0 ||
+        version_path(tmp, pkg.name, pkg.version, ".new", 1) != 0) {
+        return die("root path too long", NULL);
     }
-    if (strcmp(hex, pkg.csum) != 0) {
-        /* The files are in its directory but not recorded. */
-        return die("checksum mismatch: ", pkg.file);
+    if (current_version(pkg.name, prev, sizeof prev) != 0) {
+        prev[0] = '\0';
+    }
+    if (lstat(dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+        /* Only a complete version is ever renamed to its directory. */
+        say(pkg.name, ": back to ", pkg.version);
+    } else {
+        char url[512], hex[65];
+        mirror_url(url, sizeof url, pkg.file);
+        say(pkg.name, " ", pkg.version);
+        /* A transient failure should not fail the whole install; a retry
+         * starts over in an empty directory. */
+        int attempt = 1;
+        remove_tree(tmp);
+        while (fetch_unpack(url, tmp + strlen(pkg_root) + 1, hex) != 0) {
+            remove_tree(tmp);
+            if (attempt++ == 3) {
+                return die("download failed: ", url);
+            }
+            say("retrying ", url, NULL);
+            sleep(2);
+        }
+        if (strcmp(hex, pkg.csum) != 0) {
+            /* The current version, if any, stays as it was. */
+            remove_tree(tmp);
+            return die("checksum mismatch: ", pkg.file);
+        }
+        if (rename(tmp, dir) != 0) {
+            remove_tree(tmp);
+            return die("cannot rename to ", dir);
+        }
+    }
+    if (point_at(pkg.name, pkg.version) != 0) {
+        return 1;
     }
     mark_installed(pkg.name, pkg.version);
+    /* Older versions go once the pointer moved; without a move (the
+     * record alone was off) nothing is known of the previous one. */
+    if (strcmp(prev, pkg.version) != 0) {
+        prune(pkg.name, pkg.version, prev);
+    }
+    return 0;
+}
+
+/* The other version of `name` than the current one: what --rollback
+ * points at. */
+typedef struct {
+    const char *current;
+    char other[64];
+    int count;
+} others;
+
+static void other_one(const char *version, void *ctx) {
+    others *o = ctx;
+    if (strcmp(version, o->current) != 0) {
+        copy_field(o->other, sizeof o->other, version, strlen(version));
+        o->count++;
+    }
+}
+
+/* --rollback: point `name` at its other installed version (the one an
+ * upgrade replaced; a second rollback goes forward again). */
+static int rollback(const char *name) {
+    char current[64];
+    if (current_version(name, current, sizeof current) != 0) {
+        return die("no versions of ", name);
+    }
+    others o = {current, "", 0};
+    each_version(name, other_one, &o);
+    if (o.count == 0) {
+        return die("no other version of ", name);
+    }
+    if (o.count > 1) {
+        return die("several other versions of ", name);
+    }
+    if (point_at(name, o.other) != 0) {
+        return 1;
+    }
+    mark_installed(name, o.other);
+    say(name, ": back to ", o.other);
     return 0;
 }
 
@@ -481,9 +719,25 @@ static int upgrade_all(void) {
     return rc;
 }
 
+/* The installed versions of a package for -l: the current one first,
+ * marked with `*`, then the others, comma separated. */
+typedef struct {
+    const char *current;
+    char out[200];
+} listed;
+
+static void list_one(const char *version, void *ctx) {
+    listed *l = ctx;
+    if (strcmp(version, l->current) != 0 && strlen(l->out) + 1 + strlen(version) < sizeof l->out) {
+        strcat(l->out, ",");
+        strcat(l->out, version);
+    }
+}
+
 /* -l: the mirror's packages (packages.txt, else every index entry), one
  * line each: name, version, dependencies, "installed", "upgrade" (installed
- * at another version) or "-"; the releases first. */
+ * at another version) or "-", and the installed versions; the releases
+ * first. */
 static int list_packages(void) {
     char rel[32], abi[16], srel[32], sabi[16], path[PATH_MAX_GV], line[1024];
     index_release(rel, sizeof rel, abi, sizeof abi);
@@ -522,6 +776,15 @@ static int list_packages(void) {
         fputs(pkg.deps, stdout);
         fputs(" ", stdout);
         fputs(state, stdout);
+        char current[64];
+        if (current_version(pkg.name, current, sizeof current) == 0) {
+            listed l = {current, ""};
+            copy_field(l.out, sizeof l.out, current, strlen(current));
+            strcat(l.out, "*");
+            each_version(pkg.name, list_one, &l);
+            fputs(" ", stdout);
+            fputs(l.out, stdout);
+        }
         fputs("\n", stdout);
     }
     fclose(f);
@@ -560,7 +823,7 @@ static const char *default_root(void) {
 }
 
 int main(int argc, char **argv) {
-    int update = 0, list = 0, upgrade = 0, force = 0, local = 0, root = 0, i = 1;
+    int update = 0, list = 0, upgrade = 0, force = 0, local = 0, root = 0, back = 0, i = 1;
     const char *install_disk = NULL;
     const char *m = getenv("MYOS_MIRROR");
     pkg_prog = "get-myos";
@@ -585,6 +848,8 @@ int main(int argc, char **argv) {
             local = 1;
         } else if (strcmp(argv[i], "--root") == 0) {
             root = 1;
+        } else if (strcmp(argv[i], "--rollback") == 0) {
+            back = 1;
         } else {
             break;
         }
@@ -594,16 +859,21 @@ int main(int argc, char **argv) {
         fputs("\n", stdout);
         return 0;
     }
-    if ((i >= argc && !update && !list && !upgrade && install_disk == NULL) || (local && install_disk == NULL)) {
+    if ((i >= argc && !update && !list && !upgrade && install_disk == NULL) || (local && install_disk == NULL) ||
+        (back && i >= argc)) {
         fputs("usage: get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...\n"
+              "       get-myos [-r ROOT] --rollback PACKAGE...\n"
               "       get-myos [-r ROOT] --root\n"
               "       get-myos [-m MIRROR] --upgrade [-f] | --install DISK [--local]\n"
               "  Install myos (" MYOS_ARCH ") packages and what they need as apps, each in\n"
-              "  ROOT/NAME (default $MYOS_APPS, else /data/apps with /data mounted, else\n"
-              "  /tmp/apps; --root prints it); `run-myos NAME` runs one\n"
+              "  ROOT/NAME-VERSION, ROOT/NAME the current one (ROOT: $MYOS_APPS, else\n"
+              "  /data/apps with /data mounted, else /tmp/apps; --root prints it);\n"
+              "  `run-myos NAME` runs one\n"
               "  -m  the mirror (default $MYOS_MIRROR, else " DEFAULT_MIRROR ")\n"
               "  -u  refresh the index and upgrade the installed packages it changed\n"
-              "  -l  list the mirror's packages: version, dependencies, installed or not\n"
+              "  -l  list the mirror's packages: version, dependencies, installed or not,\n"
+              "      the installed versions (the current one marked *)\n"
+              "  --rollback  point each PACKAGE back at the version an upgrade replaced\n"
               "  --upgrade  write the mirror's kernel and initramfs into the boot slot that is\n"
               "             not running and boot it by default (-f: even when not newer)\n"
               "  --install  lay the boot disk out on DISK (erasing it) and fill its slot a\n"
@@ -619,6 +889,14 @@ int main(int argc, char **argv) {
         mirror[--ml] = '\0';
     }
     mkdirs(pkg_root, 1);
+    if (back) {
+        for (; i < argc; i++) {
+            if (rollback(argv[i]) != 0) {
+                return 1;
+            }
+        }
+        return 0;
+    }
     if (upgrade || install_disk != NULL) {
         return boot(install_disk, force, local);
     }

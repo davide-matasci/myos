@@ -2,8 +2,9 @@
 
 A **package** is a port that CI builds and publishes but the image does not
 carry. On a running system, `get-myos` fetches it from a mirror and installs
-it as an **app**: a directory of its own, `ROOT/<name>/`, that nothing
-outside it sees until `run-myos` runs it. Which ports are packages is
+it as an **app**: a directory of its own per version,
+`ROOT/<name>-<version>/`, with `ROOT/<name>` pointing at the current one,
+that nothing outside it sees until `run-myos` runs it. Which ports are packages is
 decided by their directory: `packages/<name>` instead of `ports/<name>`
 (see `docs/ports.md`); nothing else changes, the descriptor (`port.env`) is
 the same.
@@ -12,8 +13,9 @@ the same.
 
 ```sh
 get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
+get-myos [-r ROOT] --rollback PACKAGE...
 get-myos [-r ROOT] --root
-run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
+run-myos [-r ROOT] APP[@VERSION][,APP...][:CMD] [ARGS...]
 ```
 
 - **The root** is `-r`, else `$MYOS_APPS`, else `/data/apps` when the boot
@@ -23,11 +25,14 @@ run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
 - Downloads `<arch>-index.txt` (and `<arch>-packages.txt`) from the mirror
   once (into `ROOT/.get-myos/`; `-u` refreshes them), then streams
   each package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
-  straight into `ROOT/<name>/`, checking the SHA-256 of the stream against
-  the index at the end (a mismatch leaves the package not recorded). The
-  tarball is never stored: a tmpfs file holds at most 16 MiB and the
-  riscv64 `os-test` package is bigger than that. `get-myos` records what it
-  installed under `ROOT/.get-myos/pkgs/`.
+  straight into `ROOT/.<name>-<version>.new/`, checking the SHA-256 of the
+  stream against the index at the end. The tarball is never stored: a
+  tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
+  bigger than that. Only when the checksum matches is the directory
+  renamed to `ROOT/<name>-<version>/` and `ROOT/<name>` pointed at it
+  (below); a failed download or a mismatch removes it and leaves the
+  current version as it was. `get-myos` records the current version of
+  each package under `ROOT/.get-myos/pkgs/`.
 - **Dependencies**: a package's index line names the packages it needs on
   the running system (`PORT_RDEPS` in its descriptor, `docs/ports.md`:
   `st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`), and
@@ -40,11 +45,12 @@ run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
   the greater number), commit and syscall **ABI** (`src/release.rs`). The
   image carries the same for the running system in `/lib/myos-release`.
   `get-myos -u` refreshes the index and brings every installed package
-  whose version changed to the new one (its files rewritten under
-  `ROOT/<name>/`). `get-myos -l` lists the
+  whose version changed to the new one (below). `get-myos -l` lists the
   mirror's packages: version, dependencies, `installed`, `upgrade`
-  (installed at another version) or `-`, after the mirror's and the
-  system's release and ABI.
+  (installed at another version) or `-`, and the installed versions, the
+  current one first and marked `*` (`lua 59d0a0afbd96 - installed
+  59d0a0afbd96*,000000000000`), after the mirror's and the system's
+  release and ABI.
 - **Compatibility**: packages are rebuilt with every release (an ABI
   change is made outright, not worked around, `AGENTS.md`); `get-myos`
   refuses an index whose ABI is above the system's (its
@@ -54,6 +60,32 @@ run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
 - The mirror is `-m`, else `$MYOS_MIRROR`, else the project's rolling
   GitHub release (`.../releases/download/rolling`). Downloads go through
   `curl` (in every image, with the CA bundle).
+
+### Versions
+
+Each version of an app has a directory of its own, `ROOT/<name>-<version>/`
+(the version is the index's, the build's input hash), and `ROOT/<name>` is a
+relative symlink to the current one (`ROOT/vim -> vim-f6df4b2886d8`). An
+apps root therefore needs a filesystem with symlinks: the tmpfs or ext2
+(`/data`), not FAT.
+
+- **Upgrades are atomic**: the new version is unpacked beside the current
+  one, and `ROOT/<name>` is flipped only after its checksum matched, by a
+  new symlink renamed over the old one; `ROOT/<name>` names one complete
+  version or the other at every moment. A program already running keeps
+  the version it started with (`run-myos` binds the version's directory,
+  not the pointer).
+- **Old versions**: the version an upgrade replaced is kept, older ones are
+  removed then. An app installed before versions (a plain directory
+  `ROOT/<name>/`) is replaced by its first upgrade.
+- **Rollback**: `get-myos --rollback NAME` points `NAME` back at the other
+  version it has (a second rollback goes forward again) and records it.
+  Its dependencies stay at their current versions. The next `get-myos -u`
+  brings it to the index's version again, without a download when that
+  version is still unpacked.
+- **Side by side**: `run-myos NAME@VERSION` runs another installed version
+  than the current one (`VERSION`: the start of its hash, as long as it
+  names one), with what it needs at their current versions.
 
 ### Apps
 
@@ -91,6 +123,8 @@ the view, a directory lists the names bound below it too (`ls
 - `run-myos tinyx,dwm:startx` gives several apps one view (an X session:
   tinyx's `startx` runs `Xfbdev` and dwm); `run-myos APP,...` without a
   command runs the first one's.
+- `run-myos lua@000000:/bin/sh` runs a version other than the current one
+  (Versions, above).
 
 The rights are the caller's: the namespace only adds what the apps hold,
 under the `sys.pkg` label (`etc/policy`: `/tmp/apps/**` and
@@ -139,8 +173,10 @@ index with.
   packages' own `test.sh`, which `run.sh` finds in the apps) run it with
   `run-myos`. get-myos's own test (`user/get-myos/test.sh`) then checks
   the listing, an app installed in the default root (`/data/apps`) that
-  runs and is still there after the reboot (`app_kept`), and an upgrade
-  (a package recorded at a stale version is fetched again by `-u`). The
+  runs and is still there after the reboot (`app_kept`), and the
+  versions of an app (`get_myos_versions`: lua at a made-up older version
+  upgraded beside it by `-u`, either one run, a rollback, `-u` flipping
+  forward without a download, a third version pruning the oldest). The
   boot job needs `gzip` and `sha256sum`.
 - The build job writes the packages of the three arches (`cargo run --
   packages`) and uploads them as the `myos-packages` artifact (7 days).

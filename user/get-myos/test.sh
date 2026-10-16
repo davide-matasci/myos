@@ -1,7 +1,7 @@
 # get-myos: the image's release file, and in the full mode (the host serves
 # this build's packages) the index's header against it, the listing with
-# the installed marks, and an upgrade: a package recorded at a stale
-# version is fetched again by -u and recorded at the index's. The
+# the installed marks, and the versions of an app: an upgrade beside the
+# old version, either one run, a rollback and pruning. The
 # dependency install itself is the `packages` test of run.sh, on the fresh
 # system. Then the boot disk (docs/install.md): --upgrade writes the
 # mirror's kernel and initramfs into slot b of the running boot disk and
@@ -23,17 +23,49 @@ get_myos_list() {
 	# Every package of the mirror was installed by the packages test, st
 	# with its dependencies.
 	! grep -q ' -$' /tmp/get-myos-list || return 1
-	grep -q '^st [0-9a-f]* x11-xft,x11-fonts installed$' /tmp/get-myos-list
+	grep -q '^st [0-9a-f]* x11-xft,x11-fonts installed [0-9a-f]*\*$' /tmp/get-myos-list
 }
-get_myos_upgrade() {
-	echo stale > $MYOS_APPS/.get-myos/pkgs/lua
-	get-myos -m $MIRROR -u || return 1
-	have=$(cat $MYOS_APPS/.get-myos/pkgs/lua)
+
+# lua's state: where ROOT/lua points, its record, the -l line's tail.
+lua_is() {
+	lua_link=$(readlink $MYOS_APPS/lua) lua_rec=$(cat $MYOS_APPS/.get-myos/pkgs/lua)
+	lua_list=$(get-myos -m $MIRROR -l | sed -n 's/^lua [0-9a-f]* - //p')
+	echo "lua -> $lua_link, recorded $lua_rec, listed $lua_list"
+	[ "$lua_link" = lua-$1 ] && [ "$lua_rec" = $1 ] && [ "$lua_list" = "$2" ]
+}
+# What lua's view (run-myos $1) has in /lib/lua-marker: the old version's.
+lua_marker() {
+	run-myos $1:/bin/sh -c 'cat /lib/lua-marker 2> /dev/null || echo none'
+}
+# Versions (docs/packages.md): lua made to look installed at an older
+# version (its directory renamed, a marker added, the pointer and the
+# record at it); -u unpacks the index's beside it and flips the pointer,
+# keeping the old one; run-myos runs either; --rollback points back; -u
+# then flips forward without a download; a third version makes -u remove
+# the oldest. (lua's own behaviour is its test's: `lua -v` fails on
+# riscv64.)
+get_myos_versions() {
+	r=$MYOS_APPS old=000000000000 third=111111111111
 	want=$(get-myos -m $MIRROR -l | sed -n 's/^lua \([0-9a-f]*\) .*/\1/p')
-	echo "lua: recorded $have, index $want"
-	# The record follows the index and the app is there again (its
-	# behaviour is lua's own business: `lua -v` fails on riscv64).
-	[ -n "$want" ] && [ "$have" = "$want" ] && [ -x $MYOS_APPS/lua/bin/custom/lua ]
+	lua_is $want "installed $want*" || return 1
+	mv $r/lua-$want $r/lua-$old && mkdir -p $r/lua-$old/lib && echo old > $r/lua-$old/lib/lua-marker || return 1
+	rm $r/lua && ln -s lua-$old $r/lua && echo $old > $r/.get-myos/pkgs/lua || return 1
+	lua_is $old "upgrade $old*" || return 1
+	get-myos -m $MIRROR -u > /tmp/versions.out 2>&1 || { cat /tmp/versions.out; return 1; }
+	grep -q "^get-myos: lua $want\$" /tmp/versions.out || { cat /tmp/versions.out; return 1; }
+	lua_is $want "installed $want*,$old" && [ -x $r/lua/bin/custom/lua ] || return 1
+	[ "$(lua_marker lua)" = none ] && [ "$(lua_marker lua@000)" = old ] || return 1
+	get-myos --rollback lua || return 1
+	lua_is $old "upgrade $old*,$want" && [ "$(lua_marker lua)" = old ] || return 1
+	[ "$(lua_marker lua@${want%??????})" = none ] || return 1
+	get-myos -m $MIRROR -u > /tmp/versions.out 2>&1 || { cat /tmp/versions.out; return 1; }
+	grep -q "^get-myos: lua: back to $want\$" /tmp/versions.out || { cat /tmp/versions.out; return 1; }
+	lua_is $want "installed $want*,$old" || return 1
+	mkdir $r/lua-$third && cp $r/lua/app $r/lua-$third/ || return 1
+	rm $r/lua && ln -s lua-$third $r/lua && echo $third > $r/.get-myos/pkgs/lua || return 1
+	get-myos -m $MIRROR -u > /tmp/versions.out 2>&1 || { cat /tmp/versions.out; return 1; }
+	lua_is $want "installed $want*,$third" && [ ! -e $r/lua-$old ] || return 1
+	rm -r $r/lua-$third
 }
 # The running boot disk's ESP, which `mount -a` mounted at /boot: its
 # partition in $boot_part.
@@ -186,7 +218,7 @@ apps_data() {
 
 t -t net,pkg get_myos_list get_myos_list
 t -t net,pkg apps_data apps_data
-t -t net,pkg get_myos_upgrade get_myos_upgrade
+t -t net,pkg get_myos_versions get_myos_versions
 t -t net,pkg,install boot_upgrade boot_upgrade
 t_last -t net,pkg,install boot_install
 t_last -t install boot_install_local
