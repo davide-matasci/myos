@@ -53,7 +53,12 @@ waiter polls the event ring every 2 ms, the thread every second.
 The controller itself is reached as `&Controller` from every context:
 its command ring and bulk bounce buffer are each behind a `SleepLock`,
 the event ring belongs to whoever holds its busy flag (the handler, or a
-polling waiter), and the rest is atomics or written by one context alone.
+waiter polling it), and the rest is atomics or written by one context
+alone. The one that finds the ring busy still acknowledges the
+interrupter (`IMAN.IP`) and asks the holder to look again once it lets
+go: on aarch64 and riscv64 the interrupt is a level INTx line, which
+would fire again at once and, on the CPU whose waiter it interrupted,
+never let that waiter finish (`hc::process_events`).
 The locks nest in one order: a class driver's own slot lock (a disk's),
 then the host's device entry, then the command ring or the bounce
 buffer. The host never holds a device lock across a driver hook, so the
