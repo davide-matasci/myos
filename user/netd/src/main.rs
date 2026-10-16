@@ -96,6 +96,19 @@ const TICK_MS: u64 = 1;
 /// at the accept. Linux gives an orphaned connection about as long
 /// (tcp_fin_timeout).
 const CLOSE_GRACE: Duration = Duration::from_secs(60);
+/// How long an incoming connection may take to complete its handshake.
+/// netd answers a SYN with its SYN-ACK and keeps the half-open connection
+/// to itself until the peer's ACK makes it a conversation; an ACK that
+/// never comes (a scanner probing the port, a SYN flood with forged
+/// sources: a public host sees them all day) ends it here, the
+/// retransmitted SYN-ACKs unanswered. Linux gives up after about a minute
+/// (tcp_synack_retries); a client that is there answers within a round
+/// trip.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Half-open connections kept at a time, every listener together (each
+/// holds a socket's buffers, 96 KiB); past this a SYN is answered with a
+/// reset, as Linux drops a SYN when its queue is full.
+const SYN_BACKLOG: usize = 64;
 /// Idle sleeps between polls when the NIC has no RX interrupt (poll-mode
 /// fallback): a bounded sleep sets the worst-case RX latency; kernel events
 /// (channel requests from netfs, pipe/console traffic) end the sleep early.
@@ -255,6 +268,21 @@ impl Conv {
         port_bound: false,
         reuse: false,
     };
+}
+
+/// An incoming connection whose handshake is not done: its socket left
+/// the listener's Listen state on a SYN. It becomes a conversation (an
+/// index, netfs told, the listener's status naming it) once Established,
+/// as accept on Linux only returns a completed handshake. Handed out at
+/// SynReceived, as before, each handshake that never completed pinned an
+/// index and a server process (dropbear forks per connection) for the
+/// server's own request timeout: a scanned VPS held forty at a time.
+#[derive(Clone, Copy)]
+struct Handshake {
+    handle: SocketHandle,
+    /// The listener's conversation index.
+    listener: u16,
+    since: Instant,
 }
 
 fn parse_u8(s: &[u8]) -> Option<(u8, usize)> {
@@ -542,7 +570,14 @@ fn ifaddrs_text(lease: Option<Ipv4Cidr>) -> String {
 /// `hungup`, `closing Ns` (closing for N seconds). netfs's view
 /// (`/net/tcp/N/status`) ends at the close's acknowledgement, netd's at the
 /// socket's end: this is where the indices went when the table is full.
-fn convs_text(convs: &[Conv; MAX_CONV], sockets: &SocketSet<'_>, now: Instant) -> String {
+/// Then a line per handshake not done, `- tcp STATE peer a.b.c.d!p port P
+/// handshake Ns`: not a conversation yet, nobody's.
+fn convs_text(
+    convs: &[Conv; MAX_CONV],
+    sockets: &SocketSet<'_>,
+    handshakes: &[Handshake],
+    now: Instant,
+) -> String {
     let mut s = String::new();
     for (i, c) in convs.iter().enumerate() {
         let kind = match c.kind {
@@ -591,6 +626,15 @@ fn convs_text(convs: &[Conv; MAX_CONV], sockets: &SocketSet<'_>, now: Instant) -
             }
         }
         s.push('\n');
+    }
+    for hs in handshakes {
+        let sock = sockets.get::<tcp::Socket>(hs.handle);
+        let _ = write!(s, "- tcp {:?}", sock.state());
+        if let Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) = sock.remote_endpoint() {
+            let _ = write!(s, " peer {a}!{port}");
+        }
+        let l = hs.listener as usize;
+        let _ = writeln!(s, " port {} handshake {}s", convs[l].listen_port, (now - hs.since).secs());
     }
     s
 }
@@ -766,8 +810,8 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
         let live = matches!(convs[i].kind, Kind::Tcp)
             && !matches!(sockets.get_mut::<tcp::Socket>(h).state(), tcp::State::Closed);
         if live {
-            // A REQ_SEND may have been stashed while the handshake was still
-            // completing (accept returns on SynReceived). Flush what we can
+            // A REQ_SEND may have been stashed while a connect was still
+            // completing (the handshake not done). Flush what we can
             // now; if the socket still cannot send, defer the close until the
             // pump drains pending, then finish the close.
             flush_pending(&mut convs[i], sockets.get_mut::<tcp::Socket>(h));
@@ -796,7 +840,20 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
 /// ghost's status replies landed on whoever had its index since (a
 /// listener's "accepted" overwritten with "listening": its connection
 /// never accepted).
-fn close_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, chan: usize, i: usize) {
+fn close_listener(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    handshakes: &mut Vec<Handshake>,
+    chan: usize,
+    i: usize,
+) {
+    handshakes.retain(|hs| {
+        if hs.listener as usize != i {
+            return true;
+        }
+        drop_handshake(sockets, hs.handle);
+        false
+    });
     let parked = [convs[i].accepted, convs[i].accepted_pending];
     if let Some(h) = convs[i].handle.take() {
         let s = sockets.get_mut::<tcp::Socket>(h);
@@ -811,6 +868,18 @@ fn close_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, cha
             force_free_orphan(convs, sockets, chan, n);
         }
     }
+}
+
+/// Reset a connection that is nobody's (its handshake not done, or done
+/// with no room for it) and forget its socket.
+fn drop_handshake(sockets: &mut SocketSet<'_>, h: SocketHandle) {
+    let s = sockets.get_mut::<tcp::Socket>(h);
+    // A reset to its SYN-ACK sent the socket back to Listen (smoltcp):
+    // nothing to abort, but it must not take the port's next SYN.
+    if !matches!(s.state(), tcp::State::Closed | tcp::State::Listen) {
+        s.abort();
+    }
+    sockets.remove(h);
 }
 
 /// The socket is gone: the index goes back to the pool, unless a process
@@ -1353,11 +1422,124 @@ fn force_free_orphan(
     convs[i] = Conv::EMPTY;
 }
 
-fn pump_accepts(
+/// Move a connection whose handshake is done, socket `h` of listener `l`,
+/// to a free conv and tell the listener's user. False when there is no
+/// room for it: the listener's queue is full (two connections not taken
+/// yet) or every index is a live session; the caller resets the
+/// connection and the port stays answerable (keeping it on the listener
+/// instead left no Listen socket and dropped every later SYN, CI #1164).
+fn hand_off(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
     chan: usize,
+    l: usize,
+    h: SocketHandle,
+) -> bool {
+    // Peer endpoint captured from the connected socket.
+    let (remote4, remote_port) = match sockets.get_mut::<tcp::Socket>(h).remote_endpoint() {
+        Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) => (a, port),
+        _ => (Ipv4Address::new(0, 0, 0, 0), 0),
+    };
+    // Park up to two handoffs (dropbear decoding sessions); a third
+    // connection is reset rather than kept waiting.
+    if convs[l].accepted.is_some() && convs[l].accepted_pending.is_some() {
+        return false;
+    }
+    let slot = (0..MAX_CONV).find(|&n| matches!(convs[n].kind, Kind::Empty));
+    let n = match slot {
+        Some(n) => n,
+        None => {
+            // No free index: reclaim the oldest accepted connection nobody
+            // took that is not a live session; if every index is one, this
+            // connection is the one reset.
+            let victim = (0..MAX_CONV).find(|&n| {
+                convs[n].from_accept
+                    && !convs[n].held
+                    && !convs[n].connected
+                    && !convs[n].hungup
+                    && !convs[n].closing
+                    && !convs[n].closing_after_flush
+            });
+            match victim {
+                Some(v) => {
+                    force_free_orphan(convs, sockets, chan, v);
+                    // Drop any queue pointer that named the freed slot; the
+                    // handoff below re-queues the fresh conv instead.
+                    if convs[l].accepted == Some(v as u16) {
+                        convs[l].accepted = convs[l].accepted_pending.take();
+                    }
+                    if convs[l].accepted_pending == Some(v as u16) {
+                        convs[l].accepted_pending = None;
+                    }
+                    v
+                }
+                None => return false,
+            }
+        }
+    };
+    convs[n] = Conv {
+        kind: Kind::Tcp,
+        handle: Some(h),
+        remote4,
+        remote_port,
+        have_remote: true,
+        // pump_sockets owns the connected flag: it sets it on its next pass
+        // and tells netfs ("connected") with it.
+        connected: false,
+        from_accept: true,
+        ..Conv::EMPTY
+    };
+    // Tell netfs about the new conv exactly once: pump-accepted convs
+    // bypass clone, so without this netfs never marks the slot used and
+    // the client's open of /net/tcp/<n>/data fails.
+    reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
+    if convs[l].accepted.is_none() {
+        // Publish even when no accept is parked: libgloss arms only once
+        // per consumed handoff, and a lost/late arm must not hide this
+        // connection behind a stale "listening".
+        publish_head(convs, chan, l, Some(n as u16));
+    } else {
+        // Head still parked; queue second without bumping head seq/status.
+        convs[l].accepted_pending = Some(n as u16);
+    }
+    true
+}
+
+/// Incoming connections. A listening socket that left the Listen state
+/// took a SYN and is that connection now: it joins the handshakes beside
+/// a fresh listener on the port. A handshake that completed is handed to
+/// a conv (`hand_off`); one reset by its peer, timed out, or whose
+/// listener closed is forgotten.
+fn pump_accepts(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    handshakes: &mut Vec<Handshake>,
+    chan: usize,
+    now: Instant,
 ) {
+    let mut k = 0;
+    while k < handshakes.len() {
+        let Handshake { handle: h, listener, since } = handshakes[k];
+        let l = listener as usize;
+        let listening = matches!(convs[l].kind, Kind::Tcp) && convs[l].listen_port != 0;
+        let s = sockets.get_mut::<tcp::Socket>(h);
+        let done = match s.state() {
+            // Done, or done and closed by the peer within the same poll (a
+            // health check that said its piece and left): accept returns
+            // it, as on Linux, and its user reads what came and the end.
+            tcp::State::Established | tcp::State::CloseWait => true,
+            tcp::State::SynReceived if listening && now - since < HANDSHAKE_TIMEOUT => {
+                k += 1;
+                continue;
+            }
+            // Reset by the peer (back in Listen), closed, or timed out.
+            _ => false,
+        };
+        handshakes.remove(k);
+        if !(done && listening && hand_off(convs, sockets, chan, l, h)) {
+            drop_handshake(sockets, h);
+        }
+    }
     for i in 0..MAX_CONV {
         if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
             continue;
@@ -1379,137 +1561,39 @@ fn pump_accepts(
         let Some(h) = convs[i].handle else {
             continue;
         };
-        let st = sockets.get_mut::<tcp::Socket>(h).state();
-        // Only SynReceived/Established are real accept handoffs. Peer-aborted
-        // sockets left on the listen handle (CloseWait/FinWait/…) used to look
-        // like "arrived" and were handed to dropbear as Child + write EIO.
-        match st {
+        let s = sockets.get_mut::<tcp::Socket>(h);
+        let done = match s.state() {
             tcp::State::Listen => continue,
             tcp::State::Closed => {
                 let ep = listen_endpoint(&convs[i]);
-                let s = sockets.get_mut::<tcp::Socket>(h);
                 let _ = s.listen(ep);
                 continue;
             }
-            tcp::State::SynReceived | tcp::State::Established => {}
+            tcp::State::SynReceived => false,
+            // The whole handshake within one poll (loopback, a fast peer),
+            // closed by the peer already or not.
+            tcp::State::Established | tcp::State::CloseWait => true,
+            // Peer-aborted sockets left on the listen handle (FinWait, ...)
+            // used to look like "arrived" and were handed to dropbear as
+            // Child + write EIO.
             _ => {
                 rearm_listener(convs, sockets, i);
                 continue;
             }
-        }
-        // Peer endpoint captured from the connected socket.
-        let (remote4, remote_port) = {
-            let s = sockets.get_mut::<tcp::Socket>(h);
-            match s.remote_endpoint() {
-                Some(e) => match e.addr {
-                    IpAddress::Ipv4(a) => (a, e.port),
-                    _ => (Ipv4Address::new(0, 0, 0, 0), 0),
-                },
-                None => (Ipv4Address::new(0, 0, 0, 0), 0),
-            }
         };
-        // Park up to two handoffs. Prefer this over holding a SYN on the
-        // listen handle (no Listen socket + former pump_sockets wedge).
-        // A third concurrent connection is dropped + re-armed below rather
-        // than parked on-listen (pump_sockets skips such sockets).
-        if convs[i].accepted.is_some() && convs[i].accepted_pending.is_some() {
-            // Accept queue full (both handoff slots parked, dropbear decoding
-            // sessions): drop this extra connection and re-arm Listen. Holding
-            // it on the listener socket instead would leave no Listen socket
-            // and silently drop every later SYN (the CI #1164 port-:22 stall).
-            rearm_listener(convs, sockets, i);
-            convs[i].ident = 0;
-            continue;
-        }
-        // Move the connected socket to a free conv.
-        let slot = (0..MAX_CONV)
-            .find(|&n| matches!(convs[n].kind, Kind::Empty) && n != i);
-        let n = match slot {
-            Some(n) => n,
-            None => {
-                // No free slot. Do NOT park the fresh connection on the
-                // listener: holding a connected socket there leaves no Listen
-                // socket and silently drops every later SYN until the stale
-                // half-open ages out on its own (minutes). That wedged the
-                // riscv64 SSH smoke's port :22 for the whole stage (CI #1164).
-                // Reclaim the oldest handshake-incomplete accept orphan to free
-                // a slot; if every slot is a live session, abort this incoming
-                // connection and re-arm Listen so the port stays answerable.
-                let victim = (0..MAX_CONV).find(|&n| {
-                    n != i
-                        && convs[n].from_accept
-                        && !convs[n].held
-                        && !convs[n].connected
-                        && !convs[n].hungup
-                        && !convs[n].closing
-                        && !convs[n].closing_after_flush
-                });
-                match victim {
-                    Some(v) => {
-                        force_free_orphan(convs, sockets, chan, v);
-                        // Drop any queue pointer that named the freed slot; the
-                        // handoff below re-queues the fresh conv instead.
-                        if convs[i].accepted == Some(v as u16) {
-                            convs[i].accepted = convs[i].accepted_pending.take();
-                        }
-                        if convs[i].accepted_pending == Some(v as u16) {
-                            convs[i].accepted_pending = None;
-                        }
-                        v
-                    }
-                    None => {
-                        rearm_listener(convs, sockets, i);
-                        convs[i].ident = 0;
-                        continue;
-                    }
-                }
-            }
-        };
-        let ep = listen_endpoint(&convs[i]);
-        convs[n] = Conv {
-            kind: Kind::Tcp,
-            handle: Some(h),
-            remote4,
-            remote_port,
-            have_remote: true,
-            // Do NOT mark connected here: at handoff the socket may still be
-            // SynReceived (may_recv()==false). pump_sockets owns the
-            // connected flag and sets it only once Established; marking it now
-            // made the hangup check fire immediately (may_recv()==false) and
-            // tore the conv down before the server could send its banner.
-            connected: false,
-            from_accept: true,
-            ..Conv::EMPTY
-        };
-        // Tell netfs about the new conv: it only allocates convs on clone, so
-        // without this the guest cannot open /net/tcp/<n>/data (conv_ok
-        // fails) and accept() dies with EIO.
-        // Tell netfs about the new conv exactly once: pump-accepted convs
-        // bypass clone, so without this netfs never marks the slot used and
-        // the client's open of /net/tcp/<n>/data fails.
-        reply(chan, REP_CLONE_OK, n as u16, 0, b"tcp");
-        // Re-arm a fresh listener on the same port for the next connection.
-        let rx = tcp::SocketBuffer::new(vec![0; TCP_RX]);
-        let tx = tcp::SocketBuffer::new(vec![0; TCP_TX]);
-        let nh = sockets.add(tcp::Socket::new(rx, tx));
-        {
-            let ls = sockets.get_mut::<tcp::Socket>(nh);
-            match ls.listen(ep) {
-                Ok(()) => {}
-                Err(_) => {}
-            }
-        }
-        convs[i].handle = Some(nh);
+        // The connection keeps the socket; the listener gets a new one.
+        convs[i].handle = None;
+        rearm_listener(convs, sockets, i);
         convs[i].connected = false;
         convs[i].hungup = false;
-        if convs[i].accepted.is_none() {
-            // Publish even when no accept is parked: libgloss arms only once
-            // per consumed handoff, and a lost/late arm must not hide this
-            // connection behind a stale "listening".
-            publish_head(convs, chan, i, Some(n as u16));
-        } else {
-            // Head still parked; queue second without bumping head seq/status.
-            convs[i].accepted_pending = Some(n as u16);
+        if !done {
+            if handshakes.len() < SYN_BACKLOG {
+                handshakes.push(Handshake { handle: h, listener: i as u16, since: now });
+            } else {
+                drop_handshake(sockets, h);
+            }
+        } else if !hand_off(convs, sockets, chan, i, h) {
+            drop_handshake(sockets, h);
         }
     }
 }
@@ -1776,6 +1860,7 @@ fn pump_sockets(
 fn handle_req(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
+    handshakes: &mut Vec<Handshake>,
     iface: &mut Interface,
     lo: &mut Interface,
     device: &Net0Device,
@@ -1806,7 +1891,7 @@ fn handle_req(
                 c.released = true;
             }
             if convs.get(conv as usize).is_some_and(|c| matches!(c.kind, Kind::Tcp) && c.listen_port != 0) {
-                close_listener(convs, sockets, chan, conv as usize);
+                close_listener(convs, sockets, handshakes, chan, conv as usize);
             } else {
                 drop_conv(convs, sockets, conv as usize);
             }
@@ -1837,6 +1922,7 @@ fn main() -> ! {
     let mut sockets = SocketSet::new(Vec::new());
     let dhcp = sockets.add(dhcpv4::Socket::new());
     let mut convs = [Conv::EMPTY; MAX_CONV];
+    let mut handshakes: Vec<Handshake> = Vec::new();
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
     let mut dhcp_ok =
@@ -1872,6 +1958,7 @@ fn main() -> ! {
             handle_req(
                 &mut convs,
                 &mut sockets,
+                &mut handshakes,
                 &mut iface,
                 &mut lo,
                 &device,
@@ -1926,11 +2013,11 @@ fn main() -> ! {
             }
         }
         // Handoff + deliver BEFORE orphan/hungup destroy. #161's accept queue
-        // hands off SynReceived/Established with connected=false; if the peer
+        // hands off Established with connected=false; if the peer
         // already pushed payload+FIN, iface.poll leaves CloseWait with RX data.
         // Orphan reclaim used to run *before* pump_sockets and treat CloseWait
         // as dead → abort discarded the bytes → userspace hangup / "no data".
-        pump_accepts(&mut convs, &mut sockets, chan);
+        pump_accepts(&mut convs, &mut sockets, &mut handshakes, chan, now);
         pump_sockets(&mut convs, &mut sockets, &device, chan);
         // Push segments enqueued by pump (pending flush / ACKs) same tick.
         {
@@ -1949,10 +2036,10 @@ fn main() -> ! {
                 drop_conv(&mut convs, &mut sockets, i);
             }
         }
-        // Failed-handshake orphans: only after pump had a chance to set
-        // `connected` and drain RX. SynReceived/SynSent that die still age out.
-        // Only accept-originated slots: client clones start Closed until
-        // connect() and must not be force-freed (broke aarch64 socket_smoke).
+        // Accepted connections nobody took that died: only after pump had a
+        // chance to set `connected` and drain RX. Only accept-originated
+        // slots: client clones start Closed until connect() and must not be
+        // force-freed (broke aarch64 socket_smoke).
         for i in 0..MAX_CONV {
             if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port != 0 {
                 continue;
@@ -1984,11 +2071,6 @@ fn main() -> ! {
                             convs[i].ident = convs[i].ident.saturating_add(1);
                             convs[i].ident >= 2
                         }
-                        tcp::State::SynReceived | tcp::State::SynSent => {
-                            // `ident` is ICMP-only; reuse as handshake age ticks.
-                            convs[i].ident = convs[i].ident.saturating_add(1);
-                            convs[i].ident >= 100 // ~10s at TICK_MS=100
-                        }
                         _ => false,
                     }
                 }
@@ -2000,7 +2082,7 @@ fn main() -> ! {
 
         if now - convs_text_at >= Duration::from_secs(1) {
             convs_text_at = now;
-            let text = convs_text(&convs, &sockets, now);
+            let text = convs_text(&convs, &sockets, &handshakes, now);
             if text != convs_text_last {
                 reply(chan, REP_CONVS, 0, 0, text.as_bytes());
                 convs_text_last = text;
