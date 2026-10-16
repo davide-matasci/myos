@@ -241,13 +241,20 @@ fn tail(text: &str, n: usize) -> String {
 
 /// The console after init handed over to getty, without the kernel's
 /// status lines: the serial port is `ttyS0`'s, but the kernel's messages
-/// still go there too (`docs/tty.md`), and one can land after a prompt
-/// (`login: [ OK ] linux`, a module the boot script loads).
+/// still go there too (`docs/tty.md`), and one can land anywhere, after a
+/// prompt (`login: [ OK ] linux`, a module the boot script loads) or in
+/// the middle of an echo (`roo[ OK ] linux\nt`, `P[ OK ] linux\nassword:`).
+/// A status line still arriving, its tag or its text without the newline
+/// yet, is left out too: it would read as typed text and garble the login
+/// (riscv64-light on master, 2026-10-16).
 fn after_boot(text: &str) -> String {
     let text = text.rsplit_once("[ OK ] fork exec").map(|(_, t)| t).unwrap_or(text);
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while !rest.is_empty() {
+        if status_arriving(rest) {
+            break;
+        }
         match status_line_at(rest) {
             Some(len) => rest = &rest[len..],
             None => {
@@ -260,10 +267,19 @@ fn after_boot(text: &str) -> String {
     out
 }
 
+const STATUS_TAGS: [&str; 4] = ["[ OK ] ", "[ FAIL ] ", "[ WARN ] ", "[ INFO ] "];
+
+/// `text`, the end of the console, is a kernel status line that has not
+/// finished arriving: part of a tag, or a tag and its label without the
+/// newline yet.
+fn status_arriving(text: &str) -> bool {
+    STATUS_TAGS.iter().any(|t| (t.starts_with(text) && text.len() < t.len()) || (text.starts_with(t) && !text.contains('\n')))
+}
+
 /// The length of the kernel status line (`[ OK ] label\n`, with its
 /// newline) `text` starts with, if it does.
 fn status_line_at(text: &str) -> Option<usize> {
-    let tag = ["[ OK ] ", "[ FAIL ] ", "[ WARN ] ", "[ INFO ] "].into_iter().find(|t| text.starts_with(t))?;
+    let tag = STATUS_TAGS.into_iter().find(|t| text.starts_with(t))?;
     let end = text[tag.len()..].find('\n')?;
     Some(tag.len() + end + 1)
 }
@@ -529,7 +545,10 @@ pub fn run(mut child: Child, mode: &Mode, linux_compat: bool) -> Outcome {
 
     // Log in on ttyS0: `root`, an empty password, then the one command.
     // Each line is typed in sync with its echo; a garbled line is abandoned
-    // and typed again at the next prompt.
+    // and typed again at the next prompt. A garbled echo of the name may
+    // still have reached getty whole (the echo is what the kernel's status
+    // lines disturb): the password prompt after the abandoning newline says
+    // so, and the login goes on.
     let login_ready = |t: &str| {
         t.contains("[ OK ] fork exec") && after_boot(t).contains("login: ") && typed_after(t, "login: ").is_empty()
     };
@@ -550,6 +569,10 @@ pub fn run(mut child: Child, mode: &Mode, linux_compat: bool) -> Outcome {
             break;
         }
         send(&mut stdin, b"\n");
+        let soon = Instant::now() + ECHO_WAIT;
+        if wait_for(&serial, soon.min(login_deadline), |t| after_boot(t).contains("Password:")) {
+            break;
+        }
     }
     if !wait_for(&serial, login_deadline, |t| after_boot(t).contains("Password:")) {
         fail(&serial, &mut child, "no password prompt after `root`");
@@ -706,5 +729,13 @@ mod tests {
         let t = "[ OK ] fork exec\nmyos login: [ OK ] linux\n";
         assert_eq!(typed_after(t, "login: "), "");
         assert!(at_prompt("[ OK ] fork exec\n$ [ OK ] linux\n"));
+        // Nor one in the middle of an echo or a prompt, whole or still
+        // arriving (riscv64-light on master: `roo[ OK ] linux` then `t`).
+        assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[ OK ] linux\nt", "login: "), "root");
+        assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[ OK ] ", "login: "), "roo");
+        assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[ O", "login: "), "roo");
+        assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[", "login: "), "roo");
+        assert!(after_boot("[ OK ] fork exec\nlogin: root\nP[ OK ] linux\nassword: ").contains("Password: "));
+        assert!(at_prompt("[ OK ] fork exec\n$ [ WARN ] rc: some"));
     }
 }
