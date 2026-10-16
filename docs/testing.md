@@ -72,8 +72,8 @@ TESTS SKIPPED 45
   port's host-side script (`PORT_HOST=host.sh` in its `port.env`, from the
   checkout) with the arguments, in the background; the guest test then
   waits for what the script does. `c-smokes tcp-ping PORT` (`user/c/host.sh`)
-  connects to the guest's listener through QEMU's port forward and plays
-  ping/pong; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
+  connects to the guest's listener through QEMU's port forward, plays
+  ping/pong and then opens and closes forty connections without a word; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
   second USB stick into the guest through the QEMU monitor and pulls it out
   (`docs/usb.md`); `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
   sessions at once with the test key to the dropbear the boot script

@@ -262,7 +262,9 @@ t -t console caps_lock caps_lock
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong", then 280 KB of numbered lines (more than
 # netd queues: the smoke's writes wait for room); it connects again to say
-# whether every byte arrived, and the smoke reports.
+# whether every byte arrived, then 40 times without a word (the FIN at
+# varying moments after the handshake), each of which the smoke must see
+# end, and the smoke reports.
 net_listen() {
 	: > /tmp/listen.out
 	/bin/etc/tcp_listen_smoke >> /tmp/listen.out 2>&1 &
