@@ -57,6 +57,7 @@ MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
+MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
 MYOS_LINUX_COMPAT_VERSION="$MYOS_ROOT/target/.myos-linux-compat-version"
@@ -1160,6 +1161,30 @@ myos_lua_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/lua-${arch}-unknown-none" ]] || return 1
   done
+}
+
+myos_openssl_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      myos_libressl_version_hash
+      find "$(myos_port_dir openssl)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_openssl_is_current() {
+  local arch
+  [[ -f "$MYOS_OPENSSL_VERSION" ]] \
+    && [[ "$(cat "$MYOS_OPENSSL_VERSION")" == "$(myos_openssl_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/openssl-${arch}-unknown-none" ]] || return 1
+  done
+  [[ -f "$MYOS_ROOT/target/openssl-src/openssl.cnf" ]] || return 1
 }
 
 myos_make_version_hash() {
