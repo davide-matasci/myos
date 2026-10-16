@@ -158,9 +158,12 @@ itself; issue #480).
 [STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
 `peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
 process has its files, `released` once it closed them, `connected`,
-`hungup`, `closing Ns`), then a line per handshake in progress (`- tcp
-SynReceived peer a.b.c.d!p port P handshake Ns`: not a conversation yet,
-no index), refreshed once a second. It shows what the status files cannot:
+`hungup`, `closing Ns`; for a connection, where its bytes wait: `tx N`
+sent ones netd has not yet put in the socket, `rxroom N` what netfs can
+take, `local a.b.c.d!p` its local address, `sendq N` in the socket and not
+yet acknowledged, `recvq N` received and not yet handed to netfs), then a
+line per handshake in progress (`- tcp SynReceived peer a.b.c.d!p port P
+handshake Ns`: not a conversation yet, no index), refreshed once a second. It shows what the status files cannot:
 a closing conversation netfs has already let go of, one accepted and not
 yet taken, the SYNs a scanner left unanswered. When connections are reset
 at the accept, this is where the indices went.
