@@ -10,6 +10,7 @@
 #   scripts/ports.sh --outputs NAME               cached outputs (target/...)
 #   scripts/ports.sh --image-files NAME [ARCH]    files the image (or the package) needs (target/...)
 #   scripts/ports.sh --all-files [image|all]      the same for every port of the role
+#   scripts/ports.sh --kernel-files               the files of the ports kernel/build.rs builds
 #   scripts/ports.sh --all-outputs [image|all]    the outputs of every port of the role
 #   scripts/ports.sh --stamps                     version stamps of the image ports
 #   scripts/ports.sh --tests [image|all]          the boot test scripts of the ports (PORT_TEST), repo-relative
@@ -238,6 +239,17 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       # Every file the image ports ship, or (`all`) the package ports' too:
       # what a boot job packs its initramfs and its packages from.
       for n in $(myos_port_names "${2:-image}"); do
+        myos_port_image_files "$n"
+      done | sort -u
+      ;;
+    --kernel-files)
+      # The files of the ports without a build script, the Rust user
+      # programs kernel/build.rs builds (kind `user`): no registry port
+      # carries them, so the CI build's kernels bundle does
+      # (scripts/ci-build-kernels.sh --print-members).
+      for n in $(myos_port_names all); do
+        myos_port_load "$n"
+        [[ -z "$PORT_BUILD" ]] || continue
         myos_port_image_files "$n"
       done | sort -u
       ;;

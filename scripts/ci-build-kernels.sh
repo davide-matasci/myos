@@ -243,7 +243,11 @@ kernel_inputs_diag() {
 # after a kernels cache hit (PR builds were fine because they did a full cargo
 # build). Keep them in artifacts_ready + --print-members. The ports' files
 # (smokes, curl, dropbear, ...) are checked from the descriptors instead
-# (scripts/ports.sh --all-files all in artifacts_ready).
+# (scripts/ports.sh --all-files all in artifacts_ready); the Rust user
+# programs kernel/build.rs builds (init, netd, dns, ...: ports without a
+# build script, scripts/ports.sh --kernel-files) are members too, since no
+# registry port carries them. A bundle without them failed artifacts_ready
+# on every pull, and every CI run rebuilt the kernels.
 HELLO_OK_ELFS=(
   target/console-x86_64-unknown-none
   target/console-aarch64-unknown-none-softfloat
@@ -361,6 +365,7 @@ case "${1:-}" in
     for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
       echo "$f"
     done
+    ./scripts/ports.sh --kernel-files
     linux_compat_members
     exit 0
     ;;
