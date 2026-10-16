@@ -1,7 +1,8 @@
 # get-myos: the image's release file, and in the full mode (the host serves
 # this build's packages) the index's header against it, the listing with
-# the installed marks, and the versions of an app: an upgrade beside the
-# old version, either one run, a rollback and pruning. The
+# the installed marks, the versions of an app (an upgrade beside the old
+# version, either one run, a rollback, pruning by --gc) and the set of apps
+# (exact dependency versions, apps.list, -d, generations, --sync). The
 # dependency install itself is the `packages` test of run.sh, on the fresh
 # system. Then the boot disk (docs/install.md): --upgrade writes the
 # mirror's kernel and initramfs into slot b of the running boot disk and
@@ -23,7 +24,7 @@ get_myos_list() {
 	# Every package of the mirror was installed by the packages test, st
 	# with its dependencies.
 	! grep -q ' -$' /tmp/get-myos-list || return 1
-	grep -q '^st [0-9a-f]* x11-xft,x11-fonts installed [0-9a-f]*\*$' /tmp/get-myos-list
+	grep -q '^st [0-9a-f]* x11-xft@[0-9a-f]*,x11-fonts@[0-9a-f]* installed [0-9a-f]*\*$' /tmp/get-myos-list
 }
 
 # lua's state: where ROOT/lua points, its record, the -l line's tail.
@@ -41,11 +42,11 @@ lua_marker() {
 # version (its directory renamed, a marker added, the pointer and the
 # record at it); -u unpacks the index's beside it and flips the pointer,
 # keeping the old one; run-myos runs either; --rollback points back; -u
-# then flips forward without a download; a third version makes -u remove
-# the oldest. (lua's own behaviour is its test's: `lua -v` fails on
-# riscv64.)
+# then flips forward without a download; and versions stay until --gc,
+# which keeps those of the current generation only. (lua's own behaviour
+# is its test's: `lua -v` fails on riscv64.)
 get_myos_versions() {
-	r=$MYOS_APPS old=000000000000 third=111111111111
+	r=$MYOS_APPS old=000000000000
 	want=$(get-myos -m $MIRROR -l | sed -n 's/^lua \([0-9a-f]*\) .*/\1/p')
 	lua_is $want "installed $want*" || return 1
 	mv $r/lua-$want $r/lua-$old && mkdir -p $r/lua-$old/lib && echo old > $r/lua-$old/lib/lua-marker || return 1
@@ -61,12 +62,50 @@ get_myos_versions() {
 	get-myos -m $MIRROR -u > /tmp/versions.out 2>&1 || { cat /tmp/versions.out; return 1; }
 	grep -q "^get-myos: lua: back to $want\$" /tmp/versions.out || { cat /tmp/versions.out; return 1; }
 	lua_is $want "installed $want*,$old" || return 1
-	mkdir $r/lua-$third && cp $r/lua/app $r/lua-$third/ || return 1
-	rm $r/lua && ln -s lua-$third $r/lua && echo $third > $r/.get-myos/pkgs/lua || return 1
-	get-myos -m $MIRROR -u > /tmp/versions.out 2>&1 || { cat /tmp/versions.out; return 1; }
-	lua_is $want "installed $want*,$third" && [ ! -e $r/lua-$old ] || return 1
-	rm -r $r/lua-$third
+	get-myos --gc > /tmp/versions.out 2>&1 || { cat /tmp/versions.out; return 1; }
+	lua_is $want "installed $want*" && [ ! -e $r/lua-$old ]
 }
+# The set of apps, in a root of its own (the packages' tests use
+# $MYOS_APPS after this one): x11-apps brings x11-libs at the version its
+# index line and manifest name; the generations follow every change;
+# -d refuses a needed app; --rollback and --switch bring a removed app
+# back, apps.list with it; --sync to a list without x11-apps takes it and
+# x11-libs out; --gc keeps the current generation only; a call without -m
+# uses the mirror the index came from.
+apps_set() {
+	R=/tmp/apps-set
+	G="get-myos -r $R"
+	rm -rf $R
+	$G -m $MIRROR lua clear > /tmp/set.out 2>&1 || { cat /tmp/set.out; return 1; }
+	[ "$(cat $R/apps.list)" = "$(printf 'lua\nclear')" ] || { cat $R/apps.list; return 1; }
+	[ "$(cat $R/.get-myos/mirror)" = $MIRROR ] || return 1
+	$G x11-apps > /tmp/set.out 2>&1 || { cat /tmp/set.out; return 1; }
+	libs=$(readlink $R/x11-libs)
+	grep "^x11-apps " $R/.get-myos/index | grep -q " x11-libs@${libs#x11-libs-}\$" || return 1
+	grep -q "^needs x11-libs@${libs#x11-libs-}\$" $R/x11-apps/app || { cat $R/x11-apps/app; return 1; }
+	! grep -q x11-libs $R/apps.list || return 1
+	$G --generations > /tmp/set.out
+	cat /tmp/set.out
+	[ "$(wc -l < /tmp/set.out)" -eq 2 ] && grep -q "^2 \* clear@.* lua@.* x11-apps@.* (x11-libs@" /tmp/set.out || return 1
+	$G -d x11-libs > /tmp/set.out 2>&1 && return 1
+	grep -q "needed by x11-apps" /tmp/set.out || { cat /tmp/set.out; return 1; }
+	lua=$(readlink $R/lua)
+	$G -d lua > /dev/null 2>&1 && [ ! -e $R/lua ] && [ -d $R/$lua ] || return 1
+	! grep -q lua $R/apps.list && [ "$(cat $R/.get-myos/generations/current)" = 3 ] || return 1
+	$G --rollback > /dev/null 2>&1 && [ "$(readlink $R/lua)" = $lua ] && grep -q '^lua$' $R/apps.list || return 1
+	[ "$(cat $R/.get-myos/generations/current)" = 2 ] || return 1
+	$G --switch 3 > /dev/null 2>&1 && [ ! -e $R/lua ] || return 1
+	echo clear > /tmp/set.list
+	$G --sync /tmp/set.list > /tmp/set.out 2>&1 || { cat /tmp/set.out; return 1; }
+	grep -q "^get-myos: fetching $MIRROR/" /tmp/set.out || { cat /tmp/set.out; return 1; }
+	[ ! -e $R/x11-apps ] && [ ! -e $R/x11-libs ] && [ "$(cat $R/apps.list)" = clear ] || return 1
+	[ "$(cat $R/.get-myos/generations/current)" = 4 ] || return 1
+	$G --gc > /dev/null 2>&1 && [ "$(ls $R/.get-myos/generations)" = "$(printf '4\ncurrent')" ] || return 1
+	[ "$(ls $R | grep -c -- '-[0-9a-f]*$')" -eq 1 ] && [ -d $R/$(readlink $R/clear) ] || { ls $R; return 1; }
+	$G --switch 2 > /tmp/set.out 2>&1 && return 1
+	rm -rf $R
+}
+
 # The running boot disk's ESP, which `mount -a` mounted at /boot: its
 # partition in $boot_part.
 boot_esp() {
@@ -219,6 +258,7 @@ apps_data() {
 t -t net,pkg get_myos_list get_myos_list
 t -t net,pkg apps_data apps_data
 t -t net,pkg get_myos_versions get_myos_versions
+t -t net,pkg apps_set apps_set
 t -t net,pkg,install boot_upgrade boot_upgrade
 t_last -t net,pkg,install boot_install
 t_last -t install boot_install_local

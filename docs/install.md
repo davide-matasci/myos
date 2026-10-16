@@ -231,7 +231,11 @@ entering a user without a password; the script uses it at once
    data partition is mounted, so they survive reboots and upgrades, else
    `/tmp/dropbear`, until the next boot. Both are labelled `secret(root)`:
    only root reads them;
-2. copies the image's `/etc/rc.local` to `/data/etc/rc.local` when that is
+2. when the data partition has an app list, `/data/apps/apps.list`, starts
+   `get-myos -r /data/apps --sync` in the background, so the apps are what
+   the list says (`docs/packages.md`), with the mirror they were installed
+   from; its output goes to `/tmp/get-myos-sync.log`;
+3. copies the image's `/etc/rc.local` to `/data/etc/rc.local` when that is
    missing, and runs it with `sh` (without a data partition, the image's
    own runs).
 

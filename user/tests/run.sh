@@ -162,6 +162,17 @@ booted_slot() {
 	[ -n "$g" ] && grep -q "^PARTUUID=$g /data ext2\$" /boot/fstab
 }
 
+# The --sync /etc/rc started in the background: done within two minutes.
+apps_synced() {
+	log=/tmp/get-myos-sync.log
+	for i in $(seq 60); do
+		grep -q '^get-myos: done$' $log 2> /dev/null && break
+		sleep 2
+	done
+	cat $log
+	grep -q '^get-myos: done$' $log && [ "$(cat /data/apps/.get-myos/generations/current)" = 1 ]
+}
+
 FILE_TAGS=
 if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	if [ "$MODE" = reboot ]; then
@@ -171,6 +182,10 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 		# test when that one did not run) runs as it did: an app is
 		# its directory, nothing to redo after a reboot.
 		t app_kept sh -c '[ "$(run-myos clear -T linux)" = "$(printf "\033[H\033[J")" ]'
+		# /etc/rc ran `get-myos --sync` for the list apps_data left
+		# (/data/apps/apps.list), with the mirror that install used:
+		# nothing to change, so it ends at the same generation.
+		t -t app_kept apps_synced apps_synced
 	else
 		t booted_installed booted_slot a
 	fi
@@ -202,8 +217,10 @@ install_packages() {
 		deps=$(echo "$deps" | tr "," " ")
 		echo "$first needs: $deps"
 		get-myos -m $MIRROR $first || return 1
+		# Each at the version the index names (dep@version).
 		for d in $deps; do
-			[ -s $MYOS_APPS/.get-myos/pkgs/$d ] || { echo "missing dependency $d"; return 1; }
+			[ "$(cat $MYOS_APPS/.get-myos/pkgs/${d%@*} 2> /dev/null)" = "${d#*@}" ] \
+				|| { echo "missing dependency $d"; return 1; }
 		done
 	fi
 	get-myos -m $MIRROR $names
