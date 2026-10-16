@@ -38,7 +38,11 @@ run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
   input hash) and, in a header line, the build's **release**
   (`release=YYYYMMDDHHMM`, the commit date in UTC, so a later build has
   the greater number), commit and syscall **ABI** (`src/release.rs`). The
-  image carries the same for the running system in `/lib/myos-release`.
+  image carries the same for the running system in `/lib/myos-release`;
+  the x86_64 image build writes it to `target/myos-release`, and
+  everything packed from `target/` afterwards (the other arches'
+  initramfs, the packages) is stamped from that file, so a CI run that
+  reuses cached images stamps its packages like them.
   `get-myos -u` refreshes the index and brings every installed package
   whose version changed to the new one (its files rewritten under
   `ROOT/<name>/`). `get-myos -l` lists the
@@ -120,9 +124,9 @@ A mirror is any HTTP server with these files in one directory. The flat
 names are what GitHub release assets allow.
 
 The image has the same header's fields in `/lib/myos-release`
-(`release=... commit=... abi=...`, written by the initramfs packer from the
-checkout and `kernel/src/user/syscall.rs`): what `get-myos` compares the
-index with.
+(`release=... commit=... abi=...`, from the checkout and
+`kernel/src/user/syscall.rs` when the x86_64 image is built, kept in
+`target/myos-release`): what `get-myos` compares the index with.
 
 ## In CI
 

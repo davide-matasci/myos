@@ -307,6 +307,7 @@ HELLO_OK_ELFS=(
 artifacts_ready() {
   local f
   for f in target/debug/myos target/bios.img target/uefi.img target/boot-kernel-x86_64 \
+    target/myos-release \
     target/aarch64-unknown-none-softfloat/debug/kernel \
     target/riscv64imac-unknown-none-elf/debug/kernel \
     "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
@@ -357,6 +358,9 @@ case "${1:-}" in
     echo target/bios.img
     echo target/uefi.img
     echo target/boot-kernel-x86_64
+    # The images' release stamp (src/release.rs): the packages and the
+    # initramfs a boot job packs carry the same one as the images.
+    echo target/myos-release
     echo target/fat.img
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel

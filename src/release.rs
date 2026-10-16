@@ -51,6 +51,31 @@ impl Release {
         Release { id, commit, abi: syscall_abi(manifest_dir) }
     }
 
+    /// The release of the images in `target/`: `target/myos-release`,
+    /// which the x86_64 image build writes (`build.rs`), so that whoever
+    /// packs later (the aarch64 and riscv64 initramfs the launcher makes,
+    /// the ESP's slot version, the packages' index and boot list) stamps
+    /// the same release as the images; CI's kernels bundle carries it, so
+    /// a run that reuses the bundle's images does not stamp its packages
+    /// with a newer release than theirs (`get-myos --upgrade` would then
+    /// never find them up to date). Without the file, the checkout's.
+    pub fn of_build(manifest_dir: &Path) -> Release {
+        std::fs::read_to_string(manifest_dir.join("target/myos-release"))
+            .ok()
+            .and_then(|text| Release::parse(&text))
+            .unwrap_or_else(|| Release::current(manifest_dir))
+    }
+
+    /// The release of a `lib/myos-release` text, if it is one.
+    fn parse(text: &str) -> Option<Release> {
+        let field = |name: &str| {
+            text.split_whitespace()
+                .find_map(|w| w.strip_prefix(name).and_then(|w| w.strip_prefix('=')))
+                .map(str::to_string)
+        };
+        Some(Release { id: field("release")?, commit: field("commit")?, abi: field("abi")?.parse().ok()? })
+    }
+
     /// The text of `lib/myos-release` and of the index header's fields.
     pub fn text(&self) -> String {
         format!("release={} commit={} abi={}\n", self.id, self.commit, self.abi)
