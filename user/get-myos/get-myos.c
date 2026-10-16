@@ -473,14 +473,11 @@ static int current_version(const char *name, char *version, size_t cap) {
     return 0;
 }
 
-/* rm -r: `path` and what is below it, symlinks removed, not followed. */
+/* rm -r: `path` and what is below it, symlinks removed, not followed (no
+ * stat first: unlink removes anything but a directory, which it refuses). */
 static int remove_tree(const char *path) {
-    struct stat st;
-    if (lstat(path, &st) != 0) {
+    if (unlink(path) == 0) {
         return 0;
-    }
-    if (!S_ISDIR(st.st_mode)) {
-        return unlink(path);
     }
     DIR *d = opendir(path);
     if (d != NULL) {
@@ -507,7 +504,6 @@ static int remove_tree(const char *path) {
  * directory there (an app installed before versions) is removed first. */
 static int point_at(const char *name, const char *version) {
     char path[PATH_MAX_GV], tmp[PATH_MAX_GV], target[PATH_MAX_GV];
-    struct stat st;
     if (under_root(path, name) != 0 || version_path(tmp, name, version, ".link", 1) != 0 ||
         strlen(name) + 1 + strlen(version) >= sizeof target) {
         return -1;
@@ -519,10 +515,8 @@ static int point_at(const char *name, const char *version) {
     if (symlink(target, tmp) != 0) {
         return die("cannot create symlink ", tmp);
     }
-    if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-        remove_tree(path);
-    }
-    if (rename(tmp, path) != 0) {
+    /* A rename does not replace a directory: retry once it is gone. */
+    if (rename(tmp, path) != 0 && (remove_tree(path) != 0 || rename(tmp, path) != 0)) {
         unlink(tmp);
         return die("cannot point at the new version: ", path);
     }
