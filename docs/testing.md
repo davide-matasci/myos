@@ -79,8 +79,13 @@ TESTS SKIPPED 45
   sessions at once with the test key to the dropbear the boot script
   started (`docs/ssh.md`), each of which touches
   `/tmp/ssh-ok-a` / `-b` for the guest test to find, then a login on a pty
-  (`ssh -tt`) that writes its terminal to `/tmp/ssh-tty`. A port that needs a
-  peer on the host ships its own `host.sh`; the launcher knows no test.
+  (`ssh -tt`) that writes its terminal to `/tmp/ssh-tty`; `acme serve`
+  (`packages/acme/host.sh`) runs the acme package's test ACME server
+  (`acme-server.py`, Python and the host's openssl) on port 14000, which
+  validates the http-01 challenge against nginx in the guest through the
+  forward of port 5002, until the guest test asks it to stop. A port that
+  needs a peer on the host ships its own `host.sh`; the launcher knows no
+  test.
 - `TESTS DONE <passed>/<total>` ends the run; `TESTS SKIPPED <n>` after it
   says how many the selection left out.
 

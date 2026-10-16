@@ -1,0 +1,73 @@
+--- printf.c
++++ printf.c
+@@ -15,6 +15,36 @@
+ 	eprintf("usage: %s format [arg ...]\n", argv0);
+ }
+ 
++#define is_odigit(c)  ('0' <= c && c <= '7')
++
++/* myos: output the byte the escape at s (its backslash) stands for and
++ * return how many characters it took. The whole format used to be
++ * unescaped before the scan for conversions, so the byte of a \x25 was a
++ * '%' the scan then read as a specifier ("Invalid format specifier"):
++ * acme.sh turns hex into bytes with printf "\xHH\xHH...". Decoded where
++ * it stands, the byte is output and nothing more. The escapes are
++ * unescape()'s. */
++static size_t
++putescape(const char *s)
++{
++	char buf[5];
++	size_t n;
++
++	if (!s[1])
++		eprintf("null escape sequence\n");
++	if (s[1] == 'x' && isxdigit(s[2]))
++		for (n = 2; n < 4 && isxdigit(s[n]); n++);
++	else if (is_odigit(s[1]))
++		for (n = 1; n < 4 && is_odigit(s[n]); n++);
++	else
++		n = 2;
++	memcpy(buf, s, n);
++	buf[n] = '\0';
++	if (unescape(buf))
++		putchar(buf[0]);
++	return n;
++}
++
+ int
+ main(int argc, char *argv[])
+ {
+@@ -26,6 +56,13 @@
+ 	char *format, *tmp, *arg, *fmt;
+ 
+ 	argv0 = argv[0];
++	/* myos: "--" ends the options (there are none), as POSIX asks of
++	 * every utility: scripts write it before a format that starts with
++	 * a dash (acme.sh: printf -- "-----BEGIN ..."). */
++	if (argc > 1 && !strcmp(argv[1], "--")) {
++		argc--;
++		argv++;
++	}
+ 	if (argc < 2)
+ 		usage();
+ 
+@@ -34,7 +71,7 @@
+ 		*tmp = 0;
+ 		cooldown = 1;
+ 	}
+-	formatlen = unescape(format);
++	formatlen = strlen(format);
+ 	if (formatlen == 0)
+ 		return 0;
+ 	lastargi = 0;
+@@ -45,6 +82,10 @@
+ 			lastargi = argi;
+ 		}
+ 
++		if (format[i] == '\\') {
++			i += putescape(&format[i]) - 1;
++			continue;
++		}
+ 		if (format[i] != '%') {
+ 			putchar(format[i]);
+ 			continue;

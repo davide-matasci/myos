@@ -1,0 +1,11 @@
+#!/bin/sh
+# acme: acme.sh (/lib/acme/acme.sh, the acme package) with its state under
+# /data/acme unless --home names another directory or LE_WORKING_DIR is
+# set. acme.sh's own default, ~/.acme.sh, is nowhere to write: HOME is /
+# and the root is read-only; /data is the installed system's disk
+# (packages/acme/README.md).
+case " $* " in
+*" --home "*) ;;
+*) set -- --home "${LE_WORKING_DIR:-/data/acme}" "$@" ;;
+esac
+exec /lib/acme/acme.sh "$@"

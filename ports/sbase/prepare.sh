@@ -24,6 +24,12 @@ patch_copy() {
 }
 
 patch_copy touch
+# date: BSD's -r SECONDS, -j and -f FORMAT (acme.sh and other BSD-minded
+# scripts format and parse times with them).
+patch_copy date
+# printf: "--" before the format, as POSIX asks of every utility; an escape
+# decoded where it stands, so a \x25 is a byte and not a conversion.
+patch_copy printf
 
 if [[ ! -f "$WORK/getconf.h" ]]; then
   (cd "$WORK" && sh scripts/getconf.sh >getconf.h)

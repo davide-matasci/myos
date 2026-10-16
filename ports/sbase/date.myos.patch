@@ -1,0 +1,73 @@
+--- date.c
++++ date.c
+@@ -10,7 +10,8 @@
+ static void
+ usage(void)
+ {
+-	eprintf("usage: %s [-u] [-d time] [+format | mmddHHMM[[CC]yy]]\n", argv0);
++	eprintf("usage: %s [-u] [-d time | -r time] [-j] [-f format time] "
++	        "[+format | mmddHHMM[[CC]yy]]\n", argv0);
+ }
+ 
+ static int
+@@ -64,9 +65,10 @@
+ int
+ main(int argc, char *argv[])
+ {
+-	struct tm *now;
++	struct tm *now, tm;
+ 	time_t t;
+-	char buf[BUFSIZ], *fmt = "%a %b %e %H:%M:%S %Z %Y";
++	char buf[BUFSIZ], *fmt = "%a %b %e %H:%M:%S %Z %Y", *pfmt = NULL;
++	int jflag = 0;
+ 
+ 	t = time(NULL);
+ 	if (t == -1)
+@@ -74,8 +76,19 @@
+ 
+ 	ARGBEGIN {
+ 	case 'd':
++	case 'r':
++		/* myos: -r is BSD's name for showing a time in seconds. */
+ 		t = estrtonum(EARGF(usage()), 0, LLONG_MAX);
+ 		break;
++	case 'f':
++		/* myos: BSD's -f FORMAT: the first operand is the time to
++		 * show, in that strptime format. */
++		pfmt = EARGF(usage());
++		break;
++	case 'j':
++		/* myos: BSD's -j: show, never set. */
++		jflag = 1;
++		break;
+ 	case 'u':
+ 		if (setenv("TZ", "UTC0", 1) < 0)
+ 			eprintf("setenv:");
+@@ -84,12 +97,27 @@
+ 		usage();
+ 	} ARGEND
+ 
++	if (pfmt) {
++		if (!argc)
++			usage();
++		memset(&tm, 0, sizeof(tm));
++		tm.tm_isdst = -1;
++		if (!strptime(argv[0], pfmt, &tm))
++			eprintf("strptime %s: Invalid date format\n", argv[0]);
++		/* Local time is UTC on myos (and -u asks for it). */
++		if ((t = mktime(&tm)) == -1)
++			eprintf("mktime:");
++		argc--;
++		argv++;
++	}
+ 	if (!(now = localtime(&t)))
+ 		eprintf("localtime:");
+ 	if (argc) {
+ 		if (argc != 1)
+ 			usage();
+ 		if (argv[0][0] != '+') {
++			if (jflag || pfmt)
++				usage();
+ 			setdate(argv[0], now);
+ 			return 0;
+ 		}

@@ -1,0 +1,8 @@
+--- a/acme.sh
++++ b/acme.sh
+@@ -1,4 +1,4 @@
+-#!/usr/bin/env sh
++#!/bin/sh
+ 
+ VER=3.1.6
+ 
