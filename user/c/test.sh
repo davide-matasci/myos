@@ -270,6 +270,13 @@ net_listen() {
 	/bin/etc/tcp_listen_smoke >> /tmp/listen.out 2>&1 &
 	pid=$!
 	echo "HOST c-smokes tcp-ping 2323" >&3
+	# netd's table (/net/convs) names the listener while it is up.
+	i=0
+	while [ $i -lt 30 ] && ! grep -q 'listen \*!2323' /net/convs 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	grep -q 'listen \*!2323' /net/convs || { echo "no listener on 2323 in /net/convs:"; cat /net/convs; }
 	i=0
 	while [ $i -lt 180 ] && ! grep -q -e "OK ] listen" -e "FAIL ]" /tmp/listen.out 2>/dev/null; do
 		sleep 1
@@ -278,6 +285,6 @@ net_listen() {
 	kill $pid 2>/dev/null
 	wait $pid 2>/dev/null
 	cat /tmp/listen.out
-	contains "[ OK ] listen" /tmp/listen.out
+	contains "[ OK ] listen" /tmp/listen.out && ! grep -q "no listener on 2323" /tmp/listen.out
 }
 t -t netfs listen net_listen

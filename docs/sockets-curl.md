@@ -133,6 +133,15 @@ its socket with it, and the connections it had accepted that nobody took
 are reset; it used to live on with its socket, so a restarted server
 shared its port with its own ghost, which answered nothing.
 
+`/net/convs` is netd's own table, a line per index in use (`N tcp|udp|icmp
+[STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
+`peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
+process has its files, `released` once it closed them, `connected`,
+`hungup`, `closing Ns`), refreshed once a second. It shows what the
+status files cannot: a closing conversation netfs has already let go of,
+or one accepted and not yet taken. When connections are reset at the
+accept, this is where the 32 indices went.
+
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
 server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's
 own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname` reports

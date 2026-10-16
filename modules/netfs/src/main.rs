@@ -73,6 +73,8 @@ const REP_IFADDRS: u8 = 8;
 /// A udp conv's new peer (address, port big-endian): its queued datagrams
 /// from anyone else go.
 const REP_PEER: u8 = 9;
+/// netd's conversation table as `/net/convs` text (docs/sockets-curl.md).
+const REP_CONVS: u8 = 10;
 
 /// The header of a udp conv's datagrams to and from netd: remote address,
 /// local address, remote port, local port (Plan 9's udp "headers").
@@ -97,6 +99,8 @@ const STATUS_CAP: usize = 64;
 const NDB_CAP: usize = 256;
 /// `/net/ifaddrs`: a line per interface.
 const IFADDRS_CAP: usize = 256;
+/// `/net/convs`: netd's table, a line per index in use.
+const CONVS_CAP: usize = 4096;
 
 #[derive(Clone, Copy)]
 struct Msg {
@@ -248,6 +252,8 @@ struct State {
     ndb: [u8; NDB_CAP],
     ifaddrs_len: u16,
     ifaddrs: [u8; IFADDRS_CAP],
+    table_len: u16,
+    table: [u8; CONVS_CAP],
 }
 
 /// The request ring, the tcp, udp and icmp conversations and the lease.
@@ -259,6 +265,8 @@ static STATE: Lock<State> = Lock::new(State {
     ndb: [0; NDB_CAP],
     ifaddrs_len: 0,
     ifaddrs: [0; IFADDRS_CAP],
+    table_len: 0,
+    table: [0; CONVS_CAP],
 });
 
 static API: ApiCell = ApiCell::new();
@@ -339,6 +347,8 @@ enum Node {
     Ndb,
     /// `/net/ifaddrs`: the interfaces.
     Ifaddrs,
+    /// `/net/convs`: netd's conversation table.
+    Convs,
     Proto(u8),
     Clone(u8),
     ConvDir(u8, u16),
@@ -362,7 +372,7 @@ enum Node {
 impl Node {
     fn proto(self) -> Option<u8> {
         match self {
-            Node::Root | Node::Ndb | Node::Ifaddrs => None,
+            Node::Root | Node::Ndb | Node::Ifaddrs | Node::Convs => None,
             Node::Proto(p) | Node::Clone(p) => Some(p),
             Node::ConvDir(p, _)
             | Node::Ctl(p, _)
@@ -386,6 +396,9 @@ fn parse_path(path: &str) -> Option<Node> {
     }
     if path == "ifaddrs" {
         return Some(Node::Ifaddrs);
+    }
+    if path == "convs" {
+        return Some(Node::Convs);
     }
     let mut it = path.split('/');
     let a = it.next()?;
@@ -693,6 +706,12 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
         st.ifaddrs_len = n as u16;
         return;
     }
+    if typ == REP_CONVS {
+        let n = payload.len().min(CONVS_CAP);
+        st.table[..n].copy_from_slice(&payload[..n]);
+        st.table_len = n as u16;
+        return;
+    }
     // Whatever netd says about a conversation may change its readiness.
     changed(st, conv);
     // CLONE_OK must (re)install over an unused *or closing* slot.
@@ -895,6 +914,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
         Node::Root => (S_IFDIR | 0o755, 0u32, 1u32),
         Node::Ndb => (S_IFREG | 0o444, st.ndb_len as u32, 2),
         Node::Ifaddrs => (S_IFREG | 0o444, st.ifaddrs_len as u32, 3),
+        Node::Convs => (S_IFREG | 0o444, st.table_len as u32, 4),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
         Node::ConvDir(p, id) => {
@@ -974,6 +994,7 @@ unsafe extern "C" fn net_listdir(
             let _ = put_bytes(dst, &mut n, b"unix");
             let _ = put_bytes(dst, &mut n, b"ndb");
             let _ = put_bytes(dst, &mut n, b"ifaddrs");
+            let _ = put_bytes(dst, &mut n, b"convs");
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
@@ -1035,6 +1056,7 @@ unsafe extern "C" fn net_read(
     match node {
         Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
         Node::Ifaddrs => copy_at(&st.ifaddrs[..st.ifaddrs_len as usize], pos, out),
+        Node::Convs => copy_at(&st.table[..st.table_len as usize], pos, out),
         Node::Clone(p) => {
             if pos > 0 {
                 return 0;

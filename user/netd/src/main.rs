@@ -56,6 +56,8 @@ const REP_IFADDRS: u8 = 8;
 /// A UDP conv's new peer (address, port big-endian): netfs drops the
 /// datagrams it queued from anyone else, as later ones are here.
 const REP_PEER: u8 = 9;
+/// netd's conversation table as `/net/convs` text, see [`convs_text`].
+const REP_CONVS: u8 = 10;
 
 /// The per-datagram header on a UDP conv's REQ_SEND and REP_DATA (Plan 9's
 /// udp "headers" layout): remote address, local address, remote port,
@@ -523,6 +525,67 @@ fn ifaddrs_text(lease: Option<Ipv4Cidr>) -> String {
             let _ = writeln!(s, "net0 {} {} up,broadcast", c.address(), c.netmask());
         }
         None => s.push_str("net0 - - up,broadcast\n"),
+    }
+    s
+}
+
+/// netd's conversation table as `/net/convs` text, a line per index in
+/// use: `N tcp|udp|icmp [STATE] flags`, STATE a TCP socket's (`-`: none, a
+/// tombstone), then `listen a.b.c.d!p` (a listener, `*` for any address),
+/// `peer a.b.c.d!p`, `accept` (netd accepted it), `held` (a process has
+/// its files), `released` (that process closed them), `connected`,
+/// `hungup`, `closing Ns` (closing for N seconds). netfs's view
+/// (`/net/tcp/N/status`) ends at the close's acknowledgement, netd's at the
+/// socket's end: this is where the indices went when the table is full.
+fn convs_text(convs: &[Conv; MAX_CONV], sockets: &SocketSet<'_>, now: Instant) -> String {
+    let mut s = String::new();
+    for (i, c) in convs.iter().enumerate() {
+        let kind = match c.kind {
+            Kind::Empty => continue,
+            Kind::Tcp => "tcp",
+            Kind::Udp => "udp",
+            Kind::Icmp => "icmp",
+        };
+        let _ = write!(s, "{i} {kind}");
+        if matches!(c.kind, Kind::Tcp) {
+            match c.handle {
+                Some(h) => {
+                    let _ = write!(s, " {:?}", sockets.get::<tcp::Socket>(h).state());
+                }
+                None => s.push_str(" -"),
+            }
+        }
+        if c.listen_port != 0 {
+            if c.local4.is_unspecified() {
+                let _ = write!(s, " listen *!{}", c.listen_port);
+            } else {
+                let _ = write!(s, " listen {}!{}", c.local4, c.listen_port);
+            }
+        }
+        if c.have_remote {
+            let _ = write!(s, " peer {}!{}", c.remote4, c.remote_port);
+        }
+        for (flag, on) in [
+            ("accept", c.from_accept),
+            ("held", c.held),
+            ("released", c.released),
+            ("connected", c.connected),
+            ("hungup", c.hungup),
+        ] {
+            if on {
+                s.push(' ');
+                s.push_str(flag);
+            }
+        }
+        if c.closing || c.closing_after_flush {
+            match c.closing_since {
+                Some(t) => {
+                    let _ = write!(s, " closing {}s", (now - t).secs());
+                }
+                None => s.push_str(" closing"),
+            }
+        }
+        s.push('\n');
     }
     s
 }
@@ -1758,6 +1821,9 @@ fn main() -> ! {
     let (mut device, chan) = wait_devices();
 
     let mut clock = VirtualInstant::new();
+    // /net/convs: netd's table, pushed to netfs once a second when it changed.
+    let mut convs_text_last = String::new();
+    let mut convs_text_at = Instant::from_millis(0);
     let mut iface = build_interface(&mut device, clock.now());
     iface.set_local_elsewhere(true);
     let mut lodev = LoopDevice::new();
@@ -1924,6 +1990,15 @@ fn main() -> ! {
             };
             if dead {
                 force_free_orphan(&mut convs, &mut sockets, chan, i);
+            }
+        }
+
+        if now - convs_text_at >= Duration::from_secs(1) {
+            convs_text_at = now;
+            let text = convs_text(&convs, &sockets, now);
+            if text != convs_text_last {
+                reply(chan, REP_CONVS, 0, 0, text.as_bytes());
+                convs_text_last = text;
             }
         }
 
