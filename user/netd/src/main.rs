@@ -183,6 +183,15 @@ struct Conv {
     /// these: client clones start in TCP Closed and would be freed before
     /// connect() (aarch64 socket_smoke connect fail on tip 0b4444e).
     from_accept: bool,
+    /// A process holds the conversation's files (a client clone, or an
+    /// accepted connection the library took): the index is that process's
+    /// until its REQ_CLOSE, whatever the socket does meanwhile. Freeing it
+    /// at the peer's hangup let pump_accepts hand the same index to the
+    /// next connection while the old holder still read and wrote it: an
+    /// HTTP server's keepalive connection answered an SSH client's banner.
+    held: bool,
+    /// REQ_CLOSE arrived: the holder let go.
+    released: bool,
     /// UDP: the local address (unspecified: any) and port (0: not bound
     /// yet; the first connect or send picks one). A TCP listener: the
     /// address it listens on (unspecified: any), its port `listen_port`.
@@ -217,6 +226,8 @@ impl Conv {
         closing: false,
         closing_after_flush: false,
         from_accept: false,
+        held: false,
+        released: false,
         local4: Ipv4Address::UNSPECIFIED,
         local_port: 0,
         addr_bound: false,
@@ -587,6 +598,8 @@ fn handle_clone(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, proto
         }
         _ => {}
     }
+    // The process that read `clone` holds the conversation.
+    convs[i].held = true;
 }
 
 
@@ -687,6 +700,20 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
             return;
         }
         sockets.remove(h);
+    }
+    retire(convs, i);
+}
+
+/// The socket is gone: the index goes back to the pool, unless a process
+/// still holds the conversation's files; then it stays as a tombstone
+/// (hung up, no socket) until that REQ_CLOSE.
+fn retire(convs: &mut [Conv; MAX_CONV], i: usize) {
+    if convs[i].held && !convs[i].released {
+        convs[i].handle = None;
+        convs[i].hungup = true;
+        convs[i].closing = true;
+        convs[i].pending = Vec::new();
+        return;
     }
     convs[i] = Conv::EMPTY;
 }
@@ -794,6 +821,11 @@ fn handle_ctl(
                 None => reply(chan, REP_STATUS, conv, 0, b"listening"),
             }
             return;
+        }
+        if let Some(n) = convs[i].accepted {
+            if let Some(c) = convs.get_mut(n as usize) {
+                c.held = !matches!(c.kind, Kind::Empty);
+            }
         }
         let next = convs[i].accepted_pending.take();
         publish_head(convs, chan, i, next);
@@ -1297,6 +1329,7 @@ fn pump_accepts(
                 let victim = (0..MAX_CONV).find(|&n| {
                     n != i
                         && convs[n].from_accept
+                        && !convs[n].held
                         && !convs[n].connected
                         && !convs[n].hungup
                         && !convs[n].closing
@@ -1636,6 +1669,9 @@ fn handle_req(
         REQ_CTL => handle_ctl(convs, sockets, iface, lo, chan, conv, payload, local_ports),
         REQ_SEND => handle_send(convs, sockets, iface, device, chan, conv, payload, local_ports),
         REQ_CLOSE => {
+            if let Some(c) = convs.get_mut(conv as usize) {
+                c.released = true;
+            }
             drop_conv(convs, sockets, conv as usize);
             reply(chan, REP_STATUS, conv, 0, b"hangup");
         }
@@ -1732,7 +1768,7 @@ fn main() -> ! {
                 if let Some(h) = convs[i].handle.take() {
                     sockets.remove(h);
                 }
-                convs[i] = Conv::EMPTY;
+                retire(&mut convs, i);
             }
         }
         // Handoff + deliver BEFORE orphan/hungup destroy. #161's accept queue
@@ -1767,7 +1803,7 @@ fn main() -> ! {
             if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port != 0 {
                 continue;
             }
-            if !convs[i].from_accept {
+            if !convs[i].from_accept || convs[i].held {
                 continue;
             }
             if convs[i].connected

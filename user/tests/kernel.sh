@@ -974,7 +974,18 @@ sec_mount() {
 # her own TCP and unix conversations, bob cannot see them at all (the bytes
 # of another user's connection are not his to read). The console keyboard
 # is the administrator's (`dev`), not every terminal user's.
+# Tagged netfs too, so a netd change selects it without the other sec
+# tests: it loads the policy of the sec tests itself then, and puts the
+# default back after.
 sec_net() {
+	own=
+	[ -f /tmp/sec/policy ] || { sec_setup || return 1; own=1; }
+	sec_net_checks
+	rc=$?
+	[ -z "$own" ] || sec_restore
+	return $rc
+}
+sec_net_checks() {
 	n=$(sec_as alice /bin/sbase/cat /net/tcp/clone) || return 1
 	sec_as alice /bin/sbase/cat /net/tcp/$n/status > /dev/null || return 1
 	! sec_as bob /bin/sbase/cat /net/tcp/$n/status 2> /dev/null || { echo "LEAK: bob read alice's tcp $n"; return 1; }
