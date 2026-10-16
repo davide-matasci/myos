@@ -3,7 +3,9 @@
 The screen, for programs that draw on it themselves: the first step towards
 a GUI. Like `/net`, it is a directory of files rather than a device with
 ioctls. The console module serves it (`modules/console/src/fbdev.rs`), since
-it already owns the screen and paints the text console on it.
+it already owns the screen and paints the text console on it. A program on
+the screen takes its input from `/dev/console/kbd` (the keyboard's presses
+and releases) and `/dev/console/mouse` (the pointer), both in `docs/tty.md`.
 
 ## Files
 
@@ -61,8 +63,6 @@ it already owns the screen and paints the text console on it.
   write-combining or uncached mapping.
 - The framebuffer must fit in the process's mmap window (64 GiB,
   `docs/linux-compat.md`).
-- No mouse yet, and keyboard input still reaches programs only as tty bytes
-  (`kernel/src/input.rs`); a raw input device is the next step for a GUI.
 - Programs written for Linux's `/dev/fb0` (fbdev ioctls) need a small shim
   over these files, as the socket library is one over `/net`.
 

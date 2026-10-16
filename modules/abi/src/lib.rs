@@ -1563,11 +1563,11 @@ pub const MYOS_MAX_MODULE_THREADS: usize = 8;
 // ---- ABI 21: the USB bus (docs/usb.md) ------------------------------------
 //
 // A host controller module (`xhci`) publishes a [`UsbHostOps`] table as the
-// service [`USB_SERVICE`]; class driver modules (`usb_hub`, `usb_storage`)
-// look it up and register a [`UsbDriverOps`]. The host enumerates devices
-// on its own thread (`thread_spawn`) and offers every interface to the
-// drivers there, so `probe` and `disconnect` run in task context and may
-// block in the host's transfers.
+// service [`USB_SERVICE`]; class driver modules (`usb_hub`, `usb_storage`,
+// `usb_hid`) look it up and register a [`UsbDriverOps`]. The host
+// enumerates devices on its own thread (`thread_spawn`) and offers every
+// interface to the drivers there, so `probe` and `disconnect` run in task
+// context and may block in the host's transfers.
 
 /// The name the host controller publishes its [`UsbHostOps`] under.
 pub const USB_SERVICE: &str = "usb";
@@ -1763,6 +1763,64 @@ pub struct UsbDriverOps {
     /// The device behind an interface this driver took is gone: forget it
     /// (its transfers fail with [`USB_EGONE`] from now on).
     pub disconnect: unsafe extern "C" fn(dev: u32, intf: u8),
+}
+
+// ---- The pointer (docs/tty.md) ---------------------------------------------
+//
+// The console module owns `/dev/console/mouse` and publishes a
+// [`PointerOps`] table as the service [`POINTER_SERVICE`]; a pointing
+// device's driver (`usb_hid`) looks it up and hands it what the device
+// reports. Every device feeds the same file. The calls may come from any
+// context but an interrupt handler.
+
+/// The name the console publishes its [`PointerOps`] under.
+pub const POINTER_SERVICE: &str = "pointer";
+/// [`PointerOps::version`].
+pub const POINTER_VERSION: u32 = 1;
+/// An absolute position runs from 0 to this on both axes, whatever the
+/// device's own range ([`PointerOps::absolute`]).
+pub const POINTER_ABS_MAX: i32 = 32767;
+/// Button codes ([`PointerOps::button`]): Linux's `BTN_*`.
+pub const BTN_LEFT: u16 = 0x110;
+pub const BTN_RIGHT: u16 = 0x111;
+pub const BTN_MIDDLE: u16 = 0x112;
+pub const BTN_SIDE: u16 = 0x113;
+pub const BTN_EXTRA: u16 = 0x114;
+
+/// The console's pointer queue, for pointing device drivers (the
+/// [`POINTER_SERVICE`] table).
+#[repr(C)]
+pub struct PointerOps {
+    pub version: u32,
+    /// Relative motion: right and down are positive.
+    pub motion: unsafe extern "C" fn(dx: i32, dy: i32),
+    /// An absolute position, both axes scaled to `0..=`[`POINTER_ABS_MAX`]
+    /// (a tablet; left/top is 0).
+    pub absolute: unsafe extern "C" fn(x: i32, y: i32),
+    /// The vertical wheel: positive turns away from the user (up).
+    pub wheel: unsafe extern "C" fn(dz: i32),
+    /// A button (`BTN_*`) was pressed or released.
+    pub button: unsafe extern "C" fn(code: u16, pressed: bool),
+}
+
+unsafe impl Sync for PointerOps {}
+
+impl PointerOps {
+    pub fn motion(&self, dx: i32, dy: i32) {
+        unsafe { (self.motion)(dx, dy) }
+    }
+
+    pub fn absolute(&self, x: i32, y: i32) {
+        unsafe { (self.absolute)(x, y) }
+    }
+
+    pub fn wheel(&self, dz: i32) {
+        unsafe { (self.wheel)(dz) }
+    }
+
+    pub fn button(&self, code: u16, pressed: bool) {
+        unsafe { (self.button)(code, pressed) }
+    }
 }
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).

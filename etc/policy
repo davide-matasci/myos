@@ -34,6 +34,7 @@ label /mnt/**                mnt
 label /dev/**                dev
 label /dev/console/**        dev.tty
 label /dev/console/kbd       dev
+label /dev/console/mouse     dev
 label /dev/pts/**            dev.tty
 label /dev/ttyS0/**          dev.tty
 label /dev/tty1/**           dev.tty
