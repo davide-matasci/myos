@@ -826,6 +826,11 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
     add_pointer(&mut cmd, ci);
+    // And a virtio mouse in the test boots, which `user/c/test.sh
+    // virtio_mouse` moves (`host.sh mouse virtio`).
+    if ci {
+        cmd.arg("-device").arg("virtio-mouse-device");
+    }
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg(boot_test::monitor_arg());
@@ -1295,6 +1300,11 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
     add_pointer(&mut cmd, ci);
+    // And a virtio mouse in the test boots, which `user/c/test.sh
+    // virtio_mouse` moves (`host.sh mouse virtio`).
+    if ci {
+        cmd.arg("-device").arg("virtio-mouse-device");
+    }
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg(boot_test::monitor_arg());

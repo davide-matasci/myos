@@ -141,7 +141,9 @@ scripts find in `$MYOS_QEMU_MONITOR`: `user/c/host.sh sendkey KEYS...` types
 on the guest's keyboard through it (`/dev/console/kbd`), the keys in order
 (several `HOST` requests run in parallel, so one per key would not keep it),
 and `user/c/host.sh mouse` moves and clicks the test boots' `usb-mouse`
-(`/dev/console/mouse`).
+(`/dev/console/mouse`), `mouse ps2` and `mouse virtio` QEMU's PS/2 mouse
+(x86) and virtio mouse (the `virt` boards' test boots carry one) through
+`mouse_set`, and back.
 
 ## On the host
 
@@ -154,8 +156,10 @@ Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
 from `get-alpine -n` on the host, attached as `/dev/nvme2n1/data` with its
 writes kept in a QEMU snapshot), waits for `login: ` on the serial port
 (`ttyS0`'s getty, `docs/tty.md`; a kernel status line that lands after a
-prompt is skipped), types `root`, an empty password and the command (each byte once its echo
-is back, so an AP's lagging echo never garbles the line), then watches:
+prompt is skipped), types `root`, an empty password, `COLUMNS=1000` and the command
+(each byte once its echo is back, so an AP's lagging echo never garbles the line; the
+`COLUMNS` line keeps the shell's line editor from scrolling a long command sideways, as it
+would on the `virt` boards' 100-column console), then watches:
 
 - the `TEST`, `HOST` (the named port's `host.sh`) and `TESTS DONE` lines;
 - the kernel's crash reports (`exception:`, `user panic`, a user fault)

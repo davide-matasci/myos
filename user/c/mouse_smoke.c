@@ -1,14 +1,15 @@
 /* mouse-smoke: boot-CI guest test for /dev/console/mouse (the console
- * module's mouse.rs fed by the usb_hid module, docs/tty.md, docs/usb.md).
+ * module's mouse.rs, fed by the usb_hid module and the console's PS/2
+ * mouse; docs/tty.md, docs/usb.md).
  *
  * The file is held by one program at a time: a second open fails, and the
  * first fd's close lets the next one in. With the file open, nothing is
- * readable until the host moves the launcher's usb-mouse through the QEMU
- * monitor (test.sh asks for it when this prints "ready": 10 right and 5
- * up, then a left click); then the events are motion ("m DX DY" lines,
- * which add up to 10 -5), "d 272" and "u 272" (BTN_LEFT), the first
- * through a read that waits, the rest through poll and read. Prints
- * [ OK ] mouse.
+ * readable until the host moves a mouse through the QEMU monitor (test.sh
+ * asks for it when this prints "ready": the launcher's usb-mouse, or QEMU's
+ * PS/2 mouse for ps2_mouse; 10 right and 5 up, then a left click); then the
+ * events are motion ("m DX DY" lines, which add up to 10 -5), "d 272" and
+ * "u 272" (BTN_LEFT), the first through a read that waits, the rest through
+ * poll and read. Prints [ OK ] mouse.
  */
 #include <errno.h>
 #include <fcntl.h>

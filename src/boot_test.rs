@@ -555,20 +555,27 @@ pub fn run(mut child: Child, mode: &Mode, linux_compat: bool) -> Outcome {
         fail(&serial, &mut child, "no password prompt after `root`");
     }
     send(&mut stdin, b"\n");
+    // The shell's line editor scrolls a line wider than the terminal
+    // sideways, and its echo is no longer the line: the serial console is
+    // as wide as the framebuffer's text screen (100 columns on the `virt`
+    // boards' 800x600 ramfb), less than a long selection's command. A
+    // COLUMNS assignment is the editor's width in ksh, so it comes first.
     let command = format!("sh /lib/myos-tests/run.sh{}", mode.args());
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        if attempts > 3 {
-            fail(&serial, &mut child, "command line kept garbling");
+    for line in ["COLUMNS=1000", command.as_str()] {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            if attempts > 3 {
+                fail(&serial, &mut child, "command line kept garbling");
+            }
+            if !wait_for(&serial, login_deadline, |t| at_prompt(t) && typed_after(t, "$ ").is_empty()) {
+                fail(&serial, &mut child, "no shell prompt after login");
+            }
+            if type_synced(&mut stdin, &serial, "$ ", line) {
+                break;
+            }
+            send(&mut stdin, b"\n");
         }
-        if !wait_for(&serial, login_deadline, |t| at_prompt(t) && typed_after(t, "$ ").is_empty()) {
-            fail(&serial, &mut child, "no shell prompt after login");
-        }
-        if type_synced(&mut stdin, &serial, "$ ", &command) {
-            break;
-        }
-        send(&mut stdin, b"\n");
     }
     let run_from = snapshot(&serial).len();
 

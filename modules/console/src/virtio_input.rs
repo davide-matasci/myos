@@ -1,5 +1,9 @@
-//! Virtio-mmio input (device id 18) keyboard events for QEMU `virt` / UTM:
-//! the `virtio,mmio` nodes of the device tree are probed for one.
+//! Virtio-mmio input (device id 18) for QEMU `virt` / UTM: the keyboard and
+//! the pointers (a mouse's relative motion, a tablet's absolute position)
+//! from the `virtio,mmio` nodes of the device tree. A device with relative
+//! or absolute axes (its `EV_BITS` in the config space) is a pointer, into
+//! `/dev/console/mouse` ([`crate::mouse`]); the first other one is the
+//! keyboard.
 //!
 //! UTM SE routes the iPad keyboard through `usb-kbd` by default; add
 //! `virtio-keyboard-device` in the VM's QEMU settings (and remove `usb-kbd`
@@ -38,6 +42,10 @@ const REG_AVAIL_LO: u32 = 0x090;
 const REG_AVAIL_HI: u32 = 0x094;
 const REG_USED_LO: u32 = 0x0A0;
 const REG_USED_HI: u32 = 0x0A4;
+/// The device's config space: `select`, `subsel`, `size`, then the data.
+const REG_CONFIG: u32 = 0x100;
+const CFG_EV_BITS: u8 = 0x11;
+const CFG_ABS_INFO: u8 = 0x12;
 
 const ACKNOWLEDGE: u32 = 1;
 const DRIVER: u32 = 2;
@@ -67,6 +75,18 @@ const DEV_INPUT: u32 = 18;
 
 const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
+const EV_REL: u16 = 2;
+const EV_ABS: u16 = 3;
+const REL_X: u16 = 0;
+const REL_Y: u16 = 1;
+const REL_WHEEL: u16 = 8;
+const ABS_X: u16 = 0;
+const ABS_Y: u16 = 1;
+/// `BTN_LEFT` up to `BTN_EXTRA`: a pointer's buttons, as the pointer's codes.
+const BTN_FIRST: u16 = 0x110;
+const BTN_LAST: u16 = 0x114;
+/// Pointers driven at once.
+const MAX_POINTERS: usize = 2;
 
 const EVENT_SIZE: u32 = 8;
 const NUM_BUFS: u16 = 8;
@@ -80,13 +100,35 @@ struct Dev {
     last_used: u16,
     event_phys: [u64; NUM_BUFS as usize],
     event_va: [*mut u8; NUM_BUFS as usize],
+    /// A pointer's state; `None` for the keyboard.
+    pointer: Option<Pointer>,
+    /// The device interrupts on events (its handler acks them).
+    irq: bool,
 }
 
 unsafe impl Send for Dev {}
 
+/// A pointer's frame so far (evdev reports an axis per event, then
+/// `SYN_REPORT`), and a tablet's ranges.
+#[derive(Clone, Copy, Default)]
+struct Pointer {
+    /// `(min, max)` of `ABS_X` and `ABS_Y`; `None` for a mouse.
+    abs: Option<[(i32, i32); 2]>,
+    dx: i32,
+    dy: i32,
+    dz: i32,
+    /// The position, as the device's own values, and whether it moved.
+    x: i32,
+    y: i32,
+    moved: bool,
+}
+
 static DEV: Mutex<Option<Dev>> = Mutex::new(None);
+static POINTERS: Mutex<[Option<Dev>; MAX_POINTERS]> = Mutex::new([const { None }; MAX_POINTERS]);
+/// A pointer is polled (no interrupt): its readers pump it.
+static POINTER_POLLED: AtomicBool = AtomicBool::new(false);
 static READY: AtomicBool = AtomicBool::new(false);
-/// The device interrupts on events ([`interrupt`]).
+/// The keyboard interrupts on events ([`interrupt`]); each `Dev` says its own.
 static IRQ: AtomicBool = AtomicBool::new(false);
 static SHIFT: AtomicBool = AtomicBool::new(false);
 static ALTGR: AtomicBool = AtomicBool::new(false);
@@ -121,7 +163,7 @@ fn canonical(code: u16) -> Option<u8> {
     }
 }
 
-fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8) {
+fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8, irq: bool) {
     dcache_civac(desc, 4096);
     dcache_civac(avail, 4096);
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
@@ -130,7 +172,7 @@ fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8) {
     // Polled: nobody else acks. With the interrupt, its handler does: an
     // ack here could take back an interrupt for an event this drain did
     // not see, and its wake with it.
-    if !IRQ.load(Ordering::SeqCst) {
+    if !irq {
         let isr = r32(base, REG_ISR);
         if isr != 0 {
             w32(base, REG_ISR_ACK, isr);
@@ -169,7 +211,7 @@ unsafe fn post_buf(dev: &mut Dev, id: u16) {
         core::sync::atomic::compiler_fence(Ordering::Release);
         core::ptr::write_volatile(avail_idx_ptr(dev.avail), idx.wrapping_add(1));
     }
-    notify_raw(dev.base, dev.desc, dev.avail);
+    notify_raw(dev.base, dev.desc, dev.avail, dev.irq);
 }
 
 unsafe fn drain_events(dev: &mut Dev) {
@@ -191,10 +233,51 @@ unsafe fn drain_events(dev: &mut Dev) {
         let type_ = unsafe { core::ptr::read_volatile(va as *const u16) };
         let code = unsafe { core::ptr::read_volatile(va.add(2) as *const u16) };
         let value = unsafe { core::ptr::read_volatile(va.add(4) as *const u32) };
-        handle_event(type_, code, value);
+        match dev.pointer.as_mut() {
+            Some(p) => pointer_event(p, type_, code, value as i32),
+            None => handle_event(type_, code, value),
+        }
 
         dev.last_used = dev.last_used.wrapping_add(1);
         unsafe { post_buf(dev, id) };
+    }
+}
+
+/// `v` from `min..=max` to the pointer's absolute range.
+fn scale(v: i32, (min, max): (i32, i32)) -> i32 {
+    if max <= min {
+        return 0;
+    }
+    let v = i64::from(v.clamp(min, max)) - i64::from(min);
+    (v * i64::from(myos_abi::POINTER_ABS_MAX) / (i64::from(max) - i64::from(min))) as i32
+}
+
+/// One event of a pointer: axes add up until `SYN_REPORT` hands the frame
+/// to the pointer, buttons go at once.
+fn pointer_event(p: &mut Pointer, type_: u16, code: u16, value: i32) {
+    let out = crate::mouse::pointer();
+    match (type_, code) {
+        (EV_REL, REL_X) => p.dx = p.dx.saturating_add(value),
+        (EV_REL, REL_Y) => p.dy = p.dy.saturating_add(value),
+        (EV_REL, REL_WHEEL) => p.dz = p.dz.saturating_add(value),
+        (EV_ABS, ABS_X) => {
+            p.x = value;
+            p.moved = true;
+        }
+        (EV_ABS, ABS_Y) => {
+            p.y = value;
+            p.moved = true;
+        }
+        (EV_KEY, BTN_FIRST..=BTN_LAST) => out.button(code, value != 0),
+        (EV_SYN, _) => {
+            out.motion(p.dx, p.dy);
+            out.wheel(p.dz);
+            if let (true, Some([rx, ry])) = (p.moved, p.abs) {
+                out.absolute(scale(p.x, rx), scale(p.y, ry));
+            }
+            (p.dx, p.dy, p.dz, p.moved) = (0, 0, 0, false);
+        }
+        _ => {}
     }
 }
 
@@ -261,6 +344,38 @@ fn handle_event(type_: u16, code: u16, value: u32) {
             }
         }
     }
+}
+
+/// Bytes the config space has for `select` / `subsel` (0: none).
+fn config_size(base: usize, select: u8, subsel: u8) -> u8 {
+    let cfg = base + REG_CONFIG as usize;
+    unsafe {
+        core::ptr::write_volatile(cfg as *mut u8, select);
+        core::ptr::write_volatile((cfg + 1) as *mut u8, subsel);
+        core::ptr::read_volatile((cfg + 2) as *const u8)
+    }
+}
+
+/// Word `i` of the config data last selected.
+fn config_u32(base: usize, i: usize) -> u32 {
+    let data = base + REG_CONFIG as usize + 8;
+    u32::from_le(unsafe { core::ptr::read_volatile((data + 4 * i) as *const u32) })
+}
+
+/// A pointer device's state, from its config space: one with absolute
+/// axes is a tablet (their ranges), one with relative ones a mouse; `None`
+/// for a keyboard.
+fn pointer_kind(base: usize) -> Option<Pointer> {
+    if config_size(base, CFG_EV_BITS, EV_ABS as u8) != 0 {
+        let mut range = [(0, 0); 2];
+        for (axis, r) in range.iter_mut().enumerate() {
+            if config_size(base, CFG_ABS_INFO, axis as u8) >= 8 {
+                *r = (config_u32(base, 0) as i32, config_u32(base, 1) as i32);
+            }
+        }
+        return Some(Pointer { abs: Some(range), ..Pointer::default() });
+    }
+    (config_size(base, CFG_EV_BITS, EV_REL as u8) != 0).then(Pointer::default)
 }
 
 fn setup(base: usize) -> Option<Dev> {
@@ -337,6 +452,8 @@ fn setup(base: usize) -> Option<Dev> {
         last_used: 0,
         event_phys,
         event_va,
+        pointer: None,
+        irq: false,
     };
 
     for id in 0..NUM_BUFS {
@@ -348,6 +465,7 @@ fn setup(base: usize) -> Option<Dev> {
 
 pub fn init() {
     let mut i = 0;
+    let mut pointers = 0;
     loop {
         let mut node = myos_abi::MmioDevice::default();
         if crate::api().dt_mmio_find("virtio,mmio", i, &mut node) != 0 {
@@ -361,24 +479,39 @@ pub fn init() {
         if r32(base, REG_DEVICE_ID) != DEV_INPUT {
             continue;
         }
-        if let Some(dev) = setup(base) {
-            let irq = node.irq != 0
-                && crate::api().irq_enable(node.irq, "virtio-input", interrupt, base as *mut core::ffi::c_void) == 0;
-            if irq {
-                IRQ.store(true, Ordering::SeqCst);
-            } else {
-                // Polled: the device need not interrupt.
-                unsafe { virtq::set_avail_no_interrupt(dev.avail) };
-            }
-            *DEV.lock() = Some(dev);
-            READY.store(true, Ordering::SeqCst);
-            SHIFT.store(false, Ordering::SeqCst);
-            ALTGR.store(false, Ordering::SeqCst);
-            ALT.store(false, Ordering::SeqCst);
-            CTRL.store(false, Ordering::SeqCst);
-            status_ok("keyboard");
-            return;
+        let pointer = pointer_kind(base);
+        if pointer.is_none() && READY.load(Ordering::SeqCst) || pointer.is_some() && pointers == MAX_POINTERS {
+            continue;
         }
+        let Some(mut dev) = setup(base) else {
+            continue;
+        };
+        let name = if pointer.is_some() { "virtio-pointer" } else { "virtio-input" };
+        let irq = node.irq != 0
+            && crate::api().irq_enable(node.irq, name, interrupt, base as *mut core::ffi::c_void) == 0;
+        if !irq {
+            // Polled: the device need not interrupt.
+            unsafe { virtq::set_avail_no_interrupt(dev.avail) };
+        }
+        dev.irq = irq;
+        if let Some(p) = pointer {
+            dev.pointer = Some(p);
+            POINTERS.lock()[pointers] = Some(dev);
+            pointers += 1;
+            if !irq {
+                POINTER_POLLED.store(true, Ordering::SeqCst);
+            }
+            status_ok(if p.abs.is_some() { "tablet (virtio)" } else { "mouse (virtio)" });
+            continue;
+        }
+        IRQ.store(irq, Ordering::SeqCst);
+        *DEV.lock() = Some(dev);
+        READY.store(true, Ordering::SeqCst);
+        SHIFT.store(false, Ordering::SeqCst);
+        ALTGR.store(false, Ordering::SeqCst);
+        ALT.store(false, Ordering::SeqCst);
+        CTRL.store(false, Ordering::SeqCst);
+        status_ok("keyboard");
     }
 }
 
@@ -390,19 +523,25 @@ pub fn irq() -> bool {
     IRQ.load(Ordering::SeqCst)
 }
 
+/// A pointer without an interrupt: its readers pump it.
+pub fn pointer_polled() -> bool {
+    POINTER_POLLED.load(Ordering::SeqCst)
+}
+
 pub fn poll_byte() -> Option<u8> {
     pump();
     FIFO.lock().pop()
 }
 
-/// Take the device's pending events (into the tty FIFO, or the raw queue
-/// while `/dev/console/kbd` is held).
+/// Take the devices' pending events: the keyboard's (into the tty FIFO, or
+/// the raw queue while `/dev/console/kbd` is held) and the pointers'.
 pub fn pump() {
-    if !READY.load(Ordering::SeqCst) {
-        return;
+    if READY.load(Ordering::SeqCst) {
+        if let Some(dev) = DEV.lock().as_mut() {
+            unsafe { drain_events(dev) };
+        }
     }
-    let mut guard = DEV.lock();
-    if let Some(dev) = guard.as_mut() {
+    for dev in POINTERS.lock().iter_mut().flatten() {
         unsafe { drain_events(dev) };
     }
 }
