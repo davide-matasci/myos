@@ -14,7 +14,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Security** — no superuser: every process runs for a user in a domain, every file has a label its path gives it, and `/etc/policy` says what each domain may do to each label (deny by default, SELinux-like); per-process namespaces narrow what a program can name, Plan 9 style (`sec ns`); passwords are checked by the kernel (`docs/security.md`)
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI USB with hubs and sticks, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
+- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI USB with hubs, sticks and mice, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
 - **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16/FAT32, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
@@ -117,7 +117,7 @@ Boot (Limine)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, virtio_net, netfs, fat, ext2
+            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, virtio_net, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
                  ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
@@ -173,6 +173,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/xhci` | xHCI USB host controller: the USB bus service (`UsbHostOps`), enumeration and hot-plug on its own kernel thread, `/proc/usb` (`docs/usb.md`) |
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |
+| `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
 | `modules/fat` | Writable FAT16/FAT32: `ModuleVfsOps` over the `fatvol` crate (`modules/fat/fatvol`: fstool's FAT driver, with growing by zeros, rename and file times of its own), host-tested against dosfstools and mtools |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
@@ -304,7 +305,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub and usb_storage), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
 
 Module exports:
 ```rust

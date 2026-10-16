@@ -180,6 +180,32 @@ kbd_burst() {
 	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ]
 }
 t -t console kbd_burst kbd_burst
+# /dev/console/mouse: held by one program at a time; the host moves the
+# usb-mouse and clicks through the QEMU monitor (host.sh mouse) once the
+# smoke holds the file, and the smoke checks the motion and the click
+# (mouse_smoke.c). /proc/usb names the driver and what it made of it.
+mouse_events() {
+	grep -q ':usb_hid mouse$' /proc/usb || { cat /proc/usb; return 1; }
+	: > /tmp/mouse.out
+	/bin/etc/mouse_smoke >> /tmp/mouse.out 2>&1 &
+	pid=$!
+	i=0
+	while [ $i -lt 30 ] && ! grep -q -e ready -e "FAIL ]" /tmp/mouse.out 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	grep -q ready /tmp/mouse.out && echo "HOST c-smokes mouse" >&3
+	i=0
+	while [ $i -lt 60 ] && ! grep -q -e "OK ] mouse" -e "FAIL ]" /tmp/mouse.out 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	cat /tmp/mouse.out
+	contains "[ OK ] mouse" /tmp/mouse.out
+}
+t -t console,usb,mouse mouse mouse_events
 # The keyboard types at the tty whose text screen is shown (docs/tty.md):
 # tty9's here, which has no getty. ^C there while nothing reads it: the
 # console's input thread runs the line discipline anyway and the tty's

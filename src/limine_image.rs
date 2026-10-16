@@ -40,6 +40,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "xhci",
     "usb_hub",
     "usb_storage",
+    "usb_hid",
     "virtio_net",
     "netfs",
     "fat",

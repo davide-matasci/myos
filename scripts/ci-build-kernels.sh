@@ -279,6 +279,9 @@ HELLO_OK_ELFS=(
   target/usb_storage-x86_64-unknown-none
   target/usb_storage-aarch64-unknown-none-softfloat
   target/usb_storage-riscv64imac-unknown-none-elf
+  target/usb_hid-x86_64-unknown-none
+  target/usb_hid-aarch64-unknown-none-softfloat
+  target/usb_hid-riscv64imac-unknown-none-elf
   target/virtio_net-x86_64-unknown-none
   target/virtio_net-aarch64-unknown-none-softfloat
   target/virtio_net-riscv64imac-unknown-none-elf

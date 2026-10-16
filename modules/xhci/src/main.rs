@@ -3,9 +3,10 @@
 //! Finds the controllers by PCI class (`0x0C/0x03`, programming interface
 //! `0x30`), brings them up (`hc`), and publishes the USB bus as the service
 //! [`USB_SERVICE`]: a [`UsbHostOps`] table the class driver modules
-//! (`usb_hub`, `usb_storage`) drive devices through. Enumeration, hot-plug
-//! and the drivers' hooks run on one kernel thread (`thread_main`); the
-//! interrupt handler only consumes the event ring (`hc::process_events`).
+//! (`usb_hub`, `usb_storage`, `usb_hid`) drive devices through.
+//! Enumeration, hot-plug and the drivers' hooks run on one kernel thread
+//! (`thread_main`); the interrupt handler only consumes the event ring
+//! (`hc::process_events`).
 //! The hubs below the root ports are a class driver's business (`usb_hub`)
 //! that hands children back through `hub_attach`.
 

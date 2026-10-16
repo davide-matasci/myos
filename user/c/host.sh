@@ -15,6 +15,9 @@
 #                   key would not keep the order: requests run in parallel.
 #   keyburst N KEY  type KEY N times, 10 ms apart: a burst of interrupts
 #                   for the keyboard's readers to drain together.
+#   mouse           move the guest's usb-mouse 10 right and 5 up, then
+#                   click its left button (mouse_smoke.c), through the
+#                   monitor.
 set -u
 
 # The smoke's bulk: BULK_LINES lines "%06d\n" (tcp_listen_smoke.c).
@@ -90,9 +93,26 @@ PY
   echo "boot test: keyburst $1 $2" >&2
 }
 
+mouse() {
+  python3 - "${MYOS_QEMU_MONITOR:?no QEMU monitor}" <<'PY'
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.settimeout(5)
+s.recv(4096)  # the banner and prompt
+for cmd in ("mouse_move 10 -5", "mouse_button 1", "mouse_button 0"):
+    s.sendall(f"{cmd}\n".encode())
+    time.sleep(0.5)
+time.sleep(1)
+s.close()
+PY
+  echo "boot test: mouse" >&2
+}
+
 case "${1:-}" in
   tcp-ping) tcp_ping "${2:?port}" ;;
   sendkey) shift; sendkey "${1:?keys}" "${@:2}" ;;
   keyburst) keyburst "${2:?count}" "${3:?key}" ;;
+  mouse) mouse ;;
   *) echo "host.sh: unknown request: $*" >&2; exit 2 ;;
 esac

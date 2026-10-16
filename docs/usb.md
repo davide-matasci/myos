@@ -1,20 +1,23 @@
 # USB
 
-Three modules give myos a USB bus: `xhci` drives the host controller and
+Four modules give myos a USB bus: `xhci` drives the host controller and
 publishes the bus, `usb_hub` makes the devices behind hubs reachable,
+`usb_hid` feeds mice and tablets to the console's pointer
+(`/dev/console/mouse`, `docs/tty.md`), and
 `usb_storage` turns memory sticks and disk enclosures into `/dev/sdX/`
 (`data`, the whole disk, `p<N>` per GPT partition, and `info`: the
 disk's size, its `/proc/usb` device and vendor:product, and the vendor
 and model its INQUIRY answer gives). A device plugged
 in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries a
-controller, a hub and two sticks (one plugged in by a test).
+controller, a hub, a mouse and two sticks (one plugged in by a test).
 
 | Module | What |
 |--------|------|
 | `modules/xhci` | The xHCI controller (PCI class `0C/03`, interface `30`): rings, interrupter, device slots, enumeration, root-port hot-plug, the `UsbHostOps` service, `/proc/usb` |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
+| `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service |
 
 ## How the modules reach each other
 
@@ -91,6 +94,20 @@ nested hub), its waiters failed with `USB_EGONE` (a callback transfer's
 callback runs with it), its drivers' `disconnect`, `Disable Slot`, its
 memory back to the module's pool.
 
+`usb_hid` claims an interface of class 3 whose HID report descriptor
+(`GET_DESCRIPTOR` of the interface, type `0x22`) has an X and a Y axis of
+the generic desktop page: a mouse's are relative, a tablet's absolute
+(QEMU's `usb-tablet`, scaled to the pointer's 0–32767). It reads the
+report with those axes (by its report id, when the device numbers its
+reports), the vertical wheel and buttons 1 to 5 (left, right, middle,
+side, extra); a boot mouse whose descriptor does not parse is switched to
+the boot protocol (`SET_PROTOCOL`) and its fixed three-byte report. It
+asks for reports only on change (`SET_IDLE` 0), keeps one transfer queued
+on the interrupt IN endpoint (`interrupt_start`) and queues the next from
+the completion, on the host's thread; motion goes to the console as it
+comes (a tablet's position when it moved), buttons as presses and
+releases of what changed. A keyboard interface is left alone.
+
 `usb_storage` claims an interface of class 8, subclass 6, protocol `0x50`
 with a bulk IN and a bulk OUT endpoint, runs `TEST UNIT READY` until the
 unit is (sticks need a moment) and `READ CAPACITY(10)`, refuses a sector
@@ -117,7 +134,8 @@ One line per device:
 controller 0 ports 8 irq on events 86 irqs 83
 0x001 parent 0x000 port 5 full 0409:55aa class 09 if0=09/00/00:usb_hub hub 8
 0x002 parent 0x001 port 1 full 46f4:0001 class 00 if0=08/06/50:usb_storage sdb
-0x003 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage sdc
+0x003 parent 0x000 port 7 high 0627:0001 class 00 if0=03/01/02:usb_hid mouse
+0x004 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage sdc
 ```
 
 a line per controller (its root ports, whether its interrupt is on, the
@@ -126,7 +144,8 @@ the high byte), the parent hub (0: a root port) and port, the speed,
 vendor:product, the device class and each interface's class/subclass/
 protocol with the driver that took it and what the driver made of it (a
 disk: its name in `/dev`, the label `usb_storage` hands the host through
-`interface_label` once the disk is registered), a hub its port count. The
+`interface_label` once the disk is registered; a pointer `mouse` or
+`tablet`), a hub its port count. The
 port path (parent and port, up to the root) says where a disk is plugged
 in.
 
@@ -140,13 +159,25 @@ plus a second stick's drive that `user/tests/host.sh usb-plug` attaches to
 `port=2` (a USB 3 port: a SuperSpeed device) through the QEMU monitor and
 `usb-unplug` removes. `kernel.sh` waits for `/dev/sdb/data`,
 checks `/proc/usb`, mounts and reads the volume (`usb_disk`), then plugs,
-reads and unplugs the second stick (`usb_hotplug`). The boot markers
-`[ OK ] xhci`, `usb_hub`, `usb_storage` cover the modules' init.
+reads and unplugs the second stick (`usb_hotplug`). A test boot also has
+a `usb-mouse` on `port=3` (number 7 of the controller's, a high-speed
+device), which `user/c/test.sh`'s `mouse` test moves and
+clicks through the monitor (`user/c/host.sh mouse`: `mouse_move`,
+`mouse_button`) while `mouse_smoke` reads `/dev/console/mouse`;
+`packages/x11-apps` checks the same through Xfbdev and xev. A boot in a
+window (`cargo run` without a test) has a `usb-tablet` there instead,
+which follows the host's pointer without grabbing it (the monitor's
+`mouse_move` is relative, so the tests use the mouse). The boot markers
+`[ OK ] xhci`, `usb_hub`, `usb_storage`, `usb_hid` cover the modules' init.
 
 ## Limits
 
-- Two controllers, 32 devices each, hubs five deep, 8 hubs and 8 disks
-  (the class modules' tables).
+- Two controllers, 32 devices each, hubs five deep, 8 hubs, 8 disks and 8
+  pointers (the class modules' tables).
+- A pointer's report descriptor is read up to 512 bytes and its reports
+  up to 64; no horizontal wheel, no buttons past the fifth. One pointer
+  per interface: the reports of a composite device's other collections (a
+  keyboard's) are skipped.
 - PCI controllers only: a SoC's `snps,dwc3` from the device tree would need
   an `irq_register` for non-PCI interrupts (not in the ABI yet).
 - No isochronous transfers, no streams, no MSI for the devices: on
@@ -154,7 +185,8 @@ reads and unplugs the second stick (`usb_hotplug`). The boot markers
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at
   a time; a control transfer's data stage is 1 KiB at most.
 - No USB keyboard yet: the console module's keyboards are PS/2 and
-  virtio-input; a HID driver would be another class module.
+  virtio-input; `usb_hid` takes only pointers (a keyboard interface's
+  boot report would be the next step).
 - Real-hardware notes: the BIOS handoff (`USBLEGSUP`) is done; the
   EHCI-to-xHCI port routing of older Intel chipsets and the Raspberry
   Pi 4's VL805 firmware load are not.
