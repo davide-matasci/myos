@@ -3,6 +3,17 @@
 # No configure: hand-written config.h/localoptions.h + direct compiles
 # (same pattern as ports/curl). Static bundled libtomcrypt/libtommath.
 set -euo pipefail
+
+# macOS ships bash 3.2, which has no mapfile: `mapfile -t NAME` is all we use.
+if ! type mapfile >/dev/null 2>&1; then
+  mapfile() {
+    local line
+    eval "$2=()"
+    while IFS= read -r line; do
+      eval "$2+=(\"\$line\")"
+    done
+  }
+fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
@@ -66,7 +77,7 @@ build_ltc() {
       [[ "$f" == *sober128tab.c ]] && extra=("-include" "tomcrypt_cfg.h")
       "$cc" -ffreestanding -fPIC -O2 -DLTC_SOURCE -I"$LTC/src/headers" -I"$LTM" -I"$WORK/src" \
         -include "$HERE/myos_compat.h" -isystem "$inc" \
-        "${extra[@]}" -c "$LTC/$f" -o "$o"
+        "${extra[@]+"${extra[@]}"}" -c "$LTC/$f" -o "$o"
     fi
     objs+=("$o")
   done < <(cd "$LTC" && find src -name '*.c' ! -path 'src/primitives/*' | sort)
