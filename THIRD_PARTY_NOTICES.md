@@ -60,6 +60,7 @@ under its own license.
 | DejaVu Sans Mono and DejaVu Sans (package `x11-fonts`, `/lib/fonts`) | `DEJAVU_VERSION` in `packages/x11-fonts/versions.env` | Bitstream Vera Fonts license and Arev Fonts license (DejaVu's changes public domain); the text ships as `/lib/fonts/LICENSE.DejaVu` | https://dejavu-fonts.github.io/ |
 | LibreSSL (libcrypto, libssl, libtls: TLS for `curl`, `lynx`, `nginx`, `user/tls`) | 4.3.3 | ISC (new code) and the OpenSSL and SSLeay licenses (inherited code); the texts in `licenses/LibreSSL.txt` | https://www.libressl.org/ (`ports/libressl`) |
 | openssl(1), LibreSSL's command-line tool (the `openssl` package, built from the same release) | 4.3.3 (`ports/libressl/versions.env`) | LibreSSL's, as above | https://www.libressl.org/ (`packages/openssl`) |
+| acme.sh, the ACME client (the `acme` package: the script with its dnsapi, deploy and notify hooks; the myos patch, `packages/acme/acme.sh.myos.patch`, under the same license) | 3.1.6 | **GPL-3.0** (`licenses/GPL-3.0.txt`) | https://github.com/acmesh-official/acme.sh |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
 | os-test suite (`/lib/os-test`, when included) | `OSTEST_REV` in `packages/os-test/versions.env` | ISC | https://gitlab.com/sortix/os-test |
@@ -91,8 +92,8 @@ Files in this repository that carry notices from upstream (kept as required):
 
 The following programs in the image are under copyleft licenses
 (GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
-GNU Make, TinyCC, TinyX (`Xfbdev`), the Mozilla CA bundle, and `option-ext` in
-the bottom package.** (Vim's license also allows redistribution. LibreSSL's
+GNU Make, TinyCC, TinyX (`Xfbdev`), acme.sh, the Mozilla CA bundle, and
+`option-ext` in the bottom package.** (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry
 their notices: `licenses/LibreSSL.txt`, and this product includes software
 developed by the OpenSSL Project for use in the OpenSSL Toolkit

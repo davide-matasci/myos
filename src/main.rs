@@ -442,23 +442,11 @@ fn start_package_mirror(arch: &str, mode: &Mode) {
     }
 }
 
-fn host_http_8765_listening() -> bool {
+/// True when something already listens on the host's `port`: a forward to
+/// it would abort QEMU at startup, so the launcher leaves it out.
+fn host_listening(port: u16) -> bool {
     use std::net::{SocketAddr, TcpStream};
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8765));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
-}
-
-/// True when something already listens on host :2323 (listen smoke fwd port).
-fn host_listen_2323() -> bool {
-    use std::net::{SocketAddr, TcpStream};
-    let addr = SocketAddr::from(([127, 0, 0, 1], 2323));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
-}
-
-/// True when something already listens on host :2222 (dropbear SSH fwd port).
-fn host_listen_2222() -> bool {
-    use std::net::{SocketAddr, TcpStream};
-    let addr = SocketAddr::from(([127, 0, 0, 1], 2222));
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
@@ -471,20 +459,26 @@ fn add_virtio_net(cmd: &mut Command) {
     // resolvers fall back to without a lease: name lookups then show they
     // use the server DHCP gives (`/net/ndb`, issue #320).
     let mut netdev = String::from("user,id=net0,dns=10.0.2.4");
-    if host_http_8765_listening() {
+    if host_listening(8765) {
         netdev.push_str(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:8765");
     }
     // Listen/accept test (boot_test): the guest announces TCP 2323 and the
     // host connects back through slirp hostfwd. Only add when the host
     // port is free so a locally-running listener does not abort QEMU at
     // startup (same guard as guestfwd above).
-    if !host_listen_2323() {
+    if !host_listening(2323) {
         netdev.push_str(",hostfwd=tcp::2323-:2323");
     }
     // SSH to the dropbear the boot script starts on :2222 (docs/ssh.md;
     // the full mode's test connects to it). Same free-port guard.
-    if !host_listen_2222() {
+    if !host_listening(2222) {
         netdev.push_str(",hostfwd=tcp::2222-:2222");
+    }
+    // The acme package's test: its ACME server on the host validates the
+    // http-01 challenge against nginx in the guest on :5002
+    // (packages/acme/host.sh). Same free-port guard.
+    if !host_listening(5002) {
+        netdev.push_str(",hostfwd=tcp::5002-:5002");
     }
     cmd.arg("-netdev").arg(netdev);
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");

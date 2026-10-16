@@ -58,6 +58,7 @@ MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
+MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
 MYOS_LINUX_COMPAT_VERSION="$MYOS_ROOT/target/.myos-linux-compat-version"
@@ -1185,6 +1186,23 @@ myos_openssl_is_current() {
     [[ -f "$MYOS_ROOT/target/openssl-${arch}-unknown-none" ]] || return 1
   done
   [[ -f "$MYOS_ROOT/target/openssl-src/openssl.cnf" ]] || return 1
+}
+
+# acme is a shell script: no toolchain in its hash.
+myos_acme_version_hash() {
+  local h
+  h="$(
+    find "$(myos_port_dir acme)" -type f -print0 2>/dev/null \
+      | sort -z | xargs -0 sha256sum | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_acme_is_current() {
+  [[ -f "$MYOS_ACME_VERSION" ]] \
+    && [[ "$(cat "$MYOS_ACME_VERSION")" == "$(myos_acme_version_hash)" ]] \
+    || return 1
+  [[ -f "$MYOS_ROOT/target/acme-app/lib/acme/acme.sh" && -f "$MYOS_ROOT/target/acme-app/bin/custom/acme" ]]
 }
 
 myos_make_version_hash() {
