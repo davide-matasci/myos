@@ -1,4 +1,4 @@
-# curl over the userspace sockets and mbedtls: an HTTPS GET of example.com
+# curl over the userspace sockets and LibreSSL: an HTTPS GET of example.com
 # (the network: `net`).
 
 curl_https() {

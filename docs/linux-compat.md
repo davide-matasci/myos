@@ -501,7 +501,7 @@ result is already there. The scratch disk needs a few GiB.
 
 Not built there yet, copied from the running system instead: the C and
 `std` programs the kernel embeds (the std demos, c-hello, oksh, getty,
-login) and `http`, whose TLS library is mbedtls over newlib
+login) and `http`, whose TLS library is LibreSSL over newlib
 (`MYOS_PREBUILT=http` has `kernel/build.rs` take it as it is). Build
 scripts are linked with clang: Alpine's gcc is not position-independent,
 which the Linux layer requires.
@@ -511,7 +511,7 @@ The kernel it builds boots: with it in the image instead of the host's,
 `core` and `alloc` about 25 minutes, each module or user program one to
 three, the kernel crate itself an hour. Known gaps:
 
-- `http` (mbedtls and newlib: autotools, `make`, `python3`) and the other
+- `http` (LibreSSL and newlib: autotools, `make`, `python3`) and the other
   C programs are not built in myos;
 - non-PIE Linux programs (Alpine's gcc) do not run (see Limits).
 

@@ -366,6 +366,7 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs). Its c
 ./ports/oksh/build.sh               # oksh 7.9 as /sh
 ./packages/vim/build.sh             # vim FEAT_TINY (a package: get-myos vim)
 ./ports/zlib/build.sh               # static libz.a for git and get-myos
+./ports/libressl/build.sh           # static LibreSSL for curl, lynx, nginx and http
 ./packages/git/build.sh             # git Phase-1 local (a package: get-myos git)
 ./ports/tcc/build.sh                # TinyCC as /t/tcc (-run support)
 ./ports/ripgrep/build.sh            # ripgrep + PCRE2 as /c/rg

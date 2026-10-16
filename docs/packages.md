@@ -165,5 +165,5 @@ binaries there: the tag names the commit they were built from, whose
 libraries for the X packages, with libX11's error database and their
 test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), and ncurses and pcre2 (build dependencies: of vim, lynx and clear, of nginx; nothing in the
 image). Everything a boot needs
-stays in `ports/` (and zlib, which get-myos links). The full test list
+stays in `ports/` (and zlib and LibreSSL, which get-myos and curl link). The full test list
 installs them all; the ISO (`cargo run -- iso`) carries the image only.

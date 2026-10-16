@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build static libz.a for myos arches (like mbedtls).
+# Cross-build static libz.a for myos arches (like LibreSSL).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

@@ -131,15 +131,6 @@ What breaks in an agent sandbox (Claude Code on the web and the like):
   the upstreams `scripts/git-retry.sh` clones ("could not read Username").
   The packages and upstreams are public: run the pull, the port loop and
   the cargo commands under `env -u GITHUB_TOKEN -u GH_TOKEN`.
-- **GitHub `/archive/` tarballs of other repositories may get a 403**
-  (release assets and git clones work). Only mbedtls is fetched that way;
-  when `ports/mbedtls/fetch.sh` fails, lay the same tree out from its tag:
-  ```sh
-  . ports/mbedtls/versions.env
-  git clone -q --depth 1 --branch "v$MBEDTLS_VERSION" https://github.com/Mbed-TLS/mbedtls target/mbedtls-src
-  rm -rf target/mbedtls-src/{.git,programs,tests,docs}
-  echo "$MBEDTLS_VERSION" > target/.mbedtls-src-version
-  ```
 - **The launcher's OVMF download fails behind a TLS-intercepting proxy**
   (`InvalidCertificate(UnknownIssuer)`: the `ovmf-prebuilt` crate has its own
   CA roots). curl it into the crate's cache; the tag and sha256 are

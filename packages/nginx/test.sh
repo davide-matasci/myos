@@ -2,9 +2,10 @@
 # server of the test's own on 127.0.0.1 (master and a worker) answers a
 # page, a 404, a directory listing, a regex location, a rewrite and gzip,
 # logs the requests, and stops on `nginx -s quit`; then HTTPS (the
-# certificates are test/mkcerts.py's): a page over TLS 1.2, the server of
+# certificates are test/mkcerts.py's): a page over TLS 1.3, the server of
 # the name the client sends (SNI, an RSA certificate), a verified client
-# certificate, a session resumed from the shared cache, plain HTTP to the
+# certificate, a session resumed from the shared cache (on a TLS 1.2
+# server: LibreSSL's TLS 1.3 server does not resume), plain HTTP to the
 # HTTPS port refused, and nginx proxying to itself over HTTPS with the
 # upstream's certificate and name verified.
 NGINX_T=/tmp/nginx-test
@@ -94,10 +95,17 @@ http {
 		ssl_certificate_key $c/localhost.key;
 		ssl_client_certificate $c/client.crt;
 		ssl_verify_client optional;
-		location /reused { return 200 "\$ssl_session_reused\n"; }
 		location / {
 			return 200 "\$ssl_protocol \$ssl_server_name \$ssl_client_verify \$ssl_client_s_dn\n";
 		}
+	}
+	server {
+		listen 127.0.0.1:8444 ssl;
+		server_name localhost;
+		ssl_protocols TLSv1.2;
+		ssl_certificate $c/localhost.crt;
+		ssl_certificate_key $c/localhost.key;
+		location / { return 200 "\$ssl_protocol \$ssl_session_reused\n"; }
 	}
 	server {
 		listen 127.0.0.1:8443 ssl;
@@ -123,20 +131,20 @@ CONF
 	run-myos nginx -c $NGINX_T/nginx.conf || { cat $NGINX_T/error.log; return 1; }
 	ok=0
 	out=$(curl -fsS --max-time 30 --cacert $c/localhost.crt https://localhost:8443/)
-	[ "$out" = "TLSv1.2 localhost NONE " ] || { echo "tls: $out"; ok=1; }
+	[ "$out" = "TLSv1.3 localhost NONE " ] || { echo "tls: $out"; ok=1; }
 	out=$(curl -fsS --max-time 30 --cacert $c/other.crt --resolve other.test:8443:127.0.0.1 https://other.test:8443/)
 	[ "$out" = "other other.test" ] || { echo "sni: $out"; ok=1; }
 	out=$(curl -fsS --max-time 30 --cacert $c/localhost.crt --cert $c/client.crt --key $c/client.key https://localhost:8443/)
-	[ "$out" = "TLSv1.2 localhost SUCCESS CN=client,O=myos test" ] || { echo "client certificate: $out"; ok=1; }
-	# Two connections of one curl: the second resumes the first's session
-	# (nginx's shared cache).
+	[ "$out" = "TLSv1.3 localhost SUCCESS CN=client,O=myos test" ] || { echo "client certificate: $out"; ok=1; }
+	# Two connections of one curl to the TLS 1.2 server: the second resumes
+	# the first's session (nginx's shared cache).
 	out=$(curl -fsS --max-time 30 --cacert $c/localhost.crt -H 'Connection: close' \
-		https://localhost:8443/reused https://localhost:8443/reused | tr '\n' ' ')
-	[ "$out" = ". r " ] || { echo "session reuse: $out"; ok=1; }
+		https://localhost:8444/ https://localhost:8444/ | tr '\n' ' ')
+	[ "$out" = "TLSv1.2 . TLSv1.2 r " ] || { echo "session reuse: $out"; ok=1; }
 	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 http://127.0.0.1:8443/)
 	[ "$code" = 400 ] || { echo "plain http to https: $code"; ok=1; }
 	out=$(curl -fsS --max-time 30 http://127.0.0.1:8081/)
-	[ "$out" = "TLSv1.2 localhost NONE " ] || { echo "proxy over https: $out"; ok=1; }
+	[ "$out" = "TLSv1.3 localhost NONE " ] || { echo "proxy over https: $out"; ok=1; }
 	nginx_stop $NGINX_T/nginx.conf || ok=1
 	[ $ok = 0 ] || cat $NGINX_T/error.log
 	return $ok

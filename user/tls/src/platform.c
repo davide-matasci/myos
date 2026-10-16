@@ -1,275 +1,187 @@
-/* myos TLS platform glue: entropy, time, and a thin client API over an fd. */
+/* myos TLS client over LibreSSL's libtls: a handshake on a connected /net
+ * TCP data fd, reads and writes, the peer verified against the Mozilla CA
+ * bundle curl's port ships as /lib/cacert.pem. The Rust side (lib.rs) holds
+ * the connection and does the fd I/O. */
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <tls.h>
 
-#include "mbedtls/platform.h"
-#include "mbedtls/ctr_drbg.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/error.h"
-#include "mbedtls/memory_buffer_alloc.h"
-#include "mbedtls/ssl.h"
-#include "mbedtls/x509_crt.h"
-
-/* From ca_bundle.o linked into libmbedx509.a */
-extern const char myos_ca_bundle_pem[];
-extern const unsigned myos_ca_bundle_pem_len;
-
-/* Rust syscall wrappers */
-extern int myos_tls_gettimeofday_sec(int64_t *sec);
+/* Rust syscall wrappers: 0 means nothing yet (the /net data file's empty
+ * read), -1 an error. */
 extern int myos_tls_fd_read(int fd, unsigned char *buf, size_t len);
 extern int myos_tls_fd_write(int fd, const unsigned char *buf, size_t len);
 
-/* Full Mozilla CA parse + TLS 1.2 buffers need ~2 MiB.
- *
- * x86_64 keeps the arena in ELF BSS: moving it onto brk previously failed
- * bios/uefi HTTPS with mbedtls ALLOC_FAILED (-32512) even at -m 1024.
- *
- * aarch64/riscv64 allocate via myos_tls_alloc_heap (brk, page-aligned) so the
- * arena is NOT ELF BSS. A 2 MiB BSS sat in the image immediately before the
- * user stack; an MPI over-read could walk image→stack→brk-heap and fault at
- * heap_limit after corrupting on-stack TLS state (riscv64 master CI after #100).
- */
-enum { MYOS_TLS_HEAP_SIZE = 2 * 1024 * 1024 };
-#if defined(__x86_64__)
-static unsigned char g_heap_bss[MYOS_TLS_HEAP_SIZE];
-static unsigned char *g_heap = g_heap_bss;
-#else
-static unsigned char *g_heap;
-extern void *myos_tls_alloc_heap(size_t len);
-#endif
-static int g_mem_ready;
-
-mbedtls_time_t myos_mbedtls_time(mbedtls_time_t *t) {
-    int64_t sec = 0;
-    if (myos_tls_gettimeofday_sec(&sec) != 0) {
-        sec = 0;
-    }
-    if (t) {
-        *t = (mbedtls_time_t)sec;
-    }
-    return (mbedtls_time_t)sec;
-}
-
-mbedtls_ms_time_t mbedtls_ms_time(void) {
-    int64_t sec = 0;
-    (void)myos_tls_gettimeofday_sec(&sec);
-    return (mbedtls_ms_time_t)sec * 1000;
-}
-
-
-int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen) {
-    (void)data;
-    int64_t sec = 0;
-    (void)myos_tls_gettimeofday_sec(&sec);
-    /* Mix wall clock + ASLR-ish addresses into a simple xorshift stream. */
-    uint64_t s = (uint64_t)sec;
-    s ^= (uint64_t)(uintptr_t)output << 7;
-    s ^= (uint64_t)(uintptr_t)&s << 13;
-    s ^= 0xA5A5F00DDEADBEEFULL;
-    for (size_t i = 0; i < len; i++) {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        s += 0x9E3779B97F4A7C15ULL;
-        output[i] = (unsigned char)(s >> 32);
-    }
-    if (olen) {
-        *olen = len;
-    }
-    return 0;
-}
-
-static void ensure_mem(void) {
-    if (!g_mem_ready) {
-#if !defined(__x86_64__)
-        g_heap = (unsigned char *)myos_tls_alloc_heap(MYOS_TLS_HEAP_SIZE);
-        if (!g_heap) {
-            /* Leave g_mem_ready clear; handshake will fail on calloc. */
-            return;
-        }
-#endif
-        /* init also installs mbedtls_calloc/free to the buffer allocator */
-        mbedtls_memory_buffer_alloc_init(g_heap, MYOS_TLS_HEAP_SIZE);
-        g_mem_ready = 1;
-    }
-}
+/* /net TCP reads return 0 when the rx queue is empty. Giving libtls a
+ * poll-again answer at once makes the handshake busy-loop in userspace
+ * and starves netd on a single core: poll with real read/write syscalls
+ * (as user/dns DATA_POLLS does) so the scheduler can run netd. Recv must
+ * wait for netd to TX the ClientHello and pump the ServerHello and the
+ * certificates into DATA: chains need headroom under load. */
+enum { BIO_POLLS = 800000 };
+/* libtls poll-again answers the handshake takes before giving up. */
+enum { HANDSHAKE_ROUNDS = 8 };
 
 typedef struct {
-    mbedtls_ssl_context ssl;
-    mbedtls_ssl_config conf;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_x509_crt cacert;
+    struct tls *ctx;
     int fd;
     int ready;
+    char err[160];
 } myos_tls_conn;
 
-/* /net TCP reads return 0 when the rx queue is empty (non-blocking style).
- * Returning WANT_READ/WRITE immediately makes mbedtls busy-loop in userspace
- * and starves netd on a single core. Poll with real read/write syscalls
- * (same approach as user/dns DATA_POLLS) so the scheduler can run netd.
- */
-/* Budget for empty /net TCP I/O. Writes usually complete in 1 syscall
- * (netfs enqueues REQ_SEND). Recv must wait for netd to TX ClientHello and
- * pump ServerHello/certs into DATA — cert chains need headroom under load.
- */
-enum { BIO_POLLS = 800000 };
-
-static int bio_send(void *ctx, const unsigned char *buf, size_t len) {
-    myos_tls_conn *c = (myos_tls_conn *)ctx;
-    for (int i = 0; i < BIO_POLLS; i++) {
-        int n = myos_tls_fd_write(c->fd, buf, len);
-        if (n < 0) {
-            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-        }
-        if (n > 0) {
-            return n;
-        }
-    }
-    /* Distinct from recv timeout so CI/logs show which side stuck. */
-    return -0x004E; /* MBEDTLS_ERR_NET_SEND_FAILED: bio_send poll exhausted */
-}
-
-static int bio_recv(void *ctx, unsigned char *buf, size_t len) {
-    myos_tls_conn *c = (myos_tls_conn *)ctx;
+static ssize_t cb_read(struct tls *ctx, void *buf, size_t len, void *arg) {
+    myos_tls_conn *c = arg;
+    (void)ctx;
     for (int i = 0; i < BIO_POLLS; i++) {
         int n = myos_tls_fd_read(c->fd, buf, len);
         if (n < 0) {
-            return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+            return -1;
         }
         if (n > 0) {
             return n;
         }
     }
-    return MBEDTLS_ERR_SSL_TIMEOUT;
+    return TLS_WANT_POLLIN;
 }
 
-int myos_tls_handshake(myos_tls_conn *c, int fd, const char *sni_host) {
-    int ret;
-    const char *pers = "myos-tls";
-
-    ensure_mem();
-    mbedtls_platform_set_time(myos_mbedtls_time);
-    {
-        mbedtls_time_t now = myos_mbedtls_time(NULL);
-        /* Certs for public sites are not valid in 1970; refuse early with a
-         * distinctive code so CI can tell RTC mapping/time apart from TLS. */
-        if (now < (mbedtls_time_t)1700000000) { /* ~2023-11-14 */
-            return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+static ssize_t cb_write(struct tls *ctx, const void *buf, size_t len, void *arg) {
+    myos_tls_conn *c = arg;
+    (void)ctx;
+    for (int i = 0; i < BIO_POLLS; i++) {
+        int n = myos_tls_fd_write(c->fd, buf, len);
+        if (n < 0) {
+            return -1;
+        }
+        if (n > 0) {
+            return n;
         }
     }
+    return TLS_WANT_POLLOUT;
+}
 
-    mbedtls_ssl_init(&c->ssl);
-    mbedtls_ssl_config_init(&c->conf);
-    mbedtls_entropy_init(&c->entropy);
-    mbedtls_ctr_drbg_init(&c->ctr_drbg);
-    mbedtls_x509_crt_init(&c->cacert);
+static void keep_error(myos_tls_conn *c, const char *what) {
+    const char *e = c->ctx ? tls_error(c->ctx) : NULL;
+    if (e == NULL || e[0] == '\0') {
+        e = what;
+    }
+    strncpy(c->err, e, sizeof(c->err) - 1);
+    c->err[sizeof(c->err) - 1] = '\0';
+}
+
+/* A verified TLS 1.2 or 1.3 connection on `fd`, to the server named
+ * `sni_host` (sent as SNI, checked against the certificate); NULL when
+ * the handshake fails, with the reason from myos_tls_error. */
+myos_tls_conn *myos_tls_handshake(int fd, const char *sni_host) {
+    static int inited;
+    myos_tls_conn *c = calloc(1, sizeof(*c));
+    if (c == NULL) {
+        return NULL;
+    }
     c->fd = fd;
-    c->ready = 0;
-
-    ret = mbedtls_ctr_drbg_seed(&c->ctr_drbg, mbedtls_entropy_func, &c->entropy,
-                                (const unsigned char *)pers, 8);
-    if (ret != 0) {
-        goto fail;
-    }
-
-    ret = mbedtls_x509_crt_parse(&c->cacert, (const unsigned char *)myos_ca_bundle_pem,
-                                 myos_ca_bundle_pem_len + 1);
-    if (ret < 0) {
-        goto fail;
-    }
-
-    ret = mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT,
-                                      MBEDTLS_SSL_TRANSPORT_STREAM,
-                                      MBEDTLS_SSL_PRESET_DEFAULT);
-    if (ret != 0) {
-        goto fail;
-    }
-    mbedtls_ssl_conf_min_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
-    mbedtls_ssl_conf_max_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
-    mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
-    mbedtls_ssl_conf_ca_chain(&c->conf, &c->cacert, NULL);
-    mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->ctr_drbg);
-
-    ret = mbedtls_ssl_setup(&c->ssl, &c->conf);
-    if (ret != 0) {
-        goto fail;
-    }
-    if (sni_host && sni_host[0]) {
-        ret = mbedtls_ssl_set_hostname(&c->ssl, sni_host);
-        if (ret != 0) {
-            goto fail;
+    if (!inited) {
+        if (tls_init() != 0) {
+            strcpy(c->err, "tls_init failed");
+            return c;
         }
+        inited = 1;
     }
-    mbedtls_ssl_set_bio(&c->ssl, c, bio_send, bio_recv, NULL);
-
-    while ((ret = mbedtls_ssl_handshake(&c->ssl)) != 0) {
-        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            goto fail;
+    struct tls_config *cfg = tls_config_new();
+    if (cfg == NULL) {
+        strcpy(c->err, "tls_config_new failed");
+        return c;
+    }
+    if (tls_config_set_ca_file(cfg, "/lib/cacert.pem") != 0) {
+        strncpy(c->err, tls_config_error(cfg), sizeof(c->err) - 1);
+        tls_config_free(cfg);
+        return c;
+    }
+    c->ctx = tls_client();
+    if (c->ctx == NULL) {
+        strcpy(c->err, "tls_client failed");
+        tls_config_free(cfg);
+        return c;
+    }
+    int rc = tls_configure(c->ctx, cfg);
+    tls_config_free(cfg);
+    if (rc != 0) {
+        keep_error(c, "tls_configure failed");
+        return c;
+    }
+    if (tls_connect_cbs(c->ctx, cb_read, cb_write, c, sni_host) != 0) {
+        keep_error(c, "tls_connect failed");
+        return c;
+    }
+    int rounds = 0;
+    while ((rc = tls_handshake(c->ctx)) != 0) {
+        if (rc != TLS_WANT_POLLIN && rc != TLS_WANT_POLLOUT) {
+            keep_error(c, "handshake failed");
+            return c;
         }
-    }
-    if (mbedtls_ssl_get_verify_result(&c->ssl) != 0) {
-        ret = MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
-        goto fail;
+        if (++rounds > HANDSHAKE_ROUNDS) {
+            strcpy(c->err, "handshake timed out");
+            return c;
+        }
     }
     c->ready = 1;
-    return 0;
-
-fail:
-    /* Match success-path myos_tls_close free (no close_notify: ready==0).
-     * Leaving mbedtls live across close(fd)+exit used to leak session state
-     * while the TCP PCB stayed open in netd. */
-    mbedtls_x509_crt_free(&c->cacert);
-    mbedtls_ssl_free(&c->ssl);
-    mbedtls_ssl_config_free(&c->conf);
-    mbedtls_ctr_drbg_free(&c->ctr_drbg);
-    mbedtls_entropy_free(&c->entropy);
-    c->ready = 0;
-    return ret;
+    return c;
 }
 
+int myos_tls_ready(const myos_tls_conn *c) {
+    return c != NULL && c->ready;
+}
+
+const char *myos_tls_error(const myos_tls_conn *c) {
+    return c ? c->err : "no connection";
+}
+
+/* `len` bytes written, all of them: how many, or -1. */
 int myos_tls_write(myos_tls_conn *c, const unsigned char *buf, size_t len) {
     if (!c || !c->ready) {
         return -1;
     }
-    int ret;
-    while ((ret = mbedtls_ssl_write(&c->ssl, buf, len)) <= 0) {
-        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            return ret;
+    size_t done = 0;
+    while (done < len) {
+        ssize_t n = tls_write(c->ctx, buf + done, len - done);
+        if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
+            continue;
         }
+        if (n < 0) {
+            keep_error(c, "write failed");
+            return -1;
+        }
+        done += (size_t)n;
     }
-    return ret;
+    return (int)done;
 }
 
+/* Up to `len` bytes: how many, 0 when nothing came yet or the peer closed,
+ * -1 on an error. */
 int myos_tls_read(myos_tls_conn *c, unsigned char *buf, size_t len) {
     if (!c || !c->ready) {
         return -1;
     }
-    int ret = mbedtls_ssl_read(&c->ssl, buf, len);
-    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+    ssize_t n = tls_read(c->ctx, buf, len);
+    if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
         return 0;
     }
-    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
-        return 0;
+    if (n < 0) {
+        keep_error(c, "read failed");
+        return -1;
     }
-    return ret;
+    return (int)n;
 }
 
+/* close_notify when the connection is up, then everything freed. */
 void myos_tls_close(myos_tls_conn *c) {
-    if (!c) {
+    if (c == NULL) {
         return;
     }
-    if (c->ready) {
-        mbedtls_ssl_close_notify(&c->ssl);
+    if (c->ctx != NULL) {
+        if (c->ready) {
+            (void)tls_close(c->ctx);
+        }
+        tls_free(c->ctx);
     }
-    mbedtls_x509_crt_free(&c->cacert);
-    mbedtls_ssl_free(&c->ssl);
-    mbedtls_ssl_config_free(&c->conf);
-    mbedtls_ctr_drbg_free(&c->ctr_drbg);
-    mbedtls_entropy_free(&c->entropy);
-    c->ready = 0;
-}
-
-size_t myos_tls_conn_size(void) {
-    return sizeof(myos_tls_conn);
+    free(c);
 }

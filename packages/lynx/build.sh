@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build Lynx with newlib + libgloss sockets + ncurses + mbedtls tidy_tls.
+# Cross-build Lynx with newlib + libgloss sockets + ncurses + LibreSSL.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -15,7 +15,7 @@ fi
 
 "$HERE/prepare.sh"
 "$(myos_port_dir ncurses)/build.sh"
-"$ROOT/ports/mbedtls/build.sh"
+"$ROOT/ports/libressl/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
 # Softfloat helpers for riscv (same as curl).
 if [[ -f "$ROOT/ports/curl/build-softfloat-riscv64.sh" ]]; then
@@ -52,7 +52,7 @@ LYNX_SRCS=(
   LYMap.c LYCookie.c LYHash.c
   TRSTable.c parsdate.c
   UCdomap.c UCAux.c UCAuto.c
-  tidy_tls.c myos_stubs.c
+  myos_stubs.c
 )
 
 link_prog() {
@@ -64,7 +64,7 @@ link_prog() {
   local prefix="$ROOT/target/newlib-${arch}"
   local lib="$prefix/${triple}/lib"
   local nclib="$ROOT/target/ncurses-${arch}/lib"
-  local mbed="$ROOT/target/mbedtls-${arch}/lib"
+  local tlslib="$ROOT/target/libressl-${arch}/lib"
   local ld="${triple}-ld"
   local extra=()
 
@@ -85,8 +85,8 @@ link_prog() {
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}" \
-    -L"$lib" -L"$nclib" -L"$mbed" \
-    --start-group -lncurses -lmbedtls -lmbedx509 -lmbedcrypto -lc -lm -lgloss -lg --end-group
+    -L"$lib" -L"$nclib" -L"$tlslib" \
+    --start-group -lncurses -lssl -lcrypto -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   ls -lh "$out"
 }
@@ -97,7 +97,7 @@ build_arch() {
   local prefix="$ROOT/target/newlib-${arch}"
   local inc="$prefix/${triple}/include"
   local ncinc="$ROOT/target/ncurses-${arch}/include"
-  local mbedinc="$ROOT/target/mbedtls-${arch}/include"
+  local tlsinc="$ROOT/target/libressl-${arch}/include"
   local cc="${triple}-cc"
   local objdir="$ROOT/target/lynx-obj-${arch}"
   local clang_res
@@ -116,9 +116,7 @@ build_arch() {
     -I"$HERE"
     -I"$ROOT/toolchain/newlib/libgloss/myos"
     -isystem "$ncinc"
-    -isystem "$mbedinc"
-    -DMBEDTLS_CONFIG_FILE='"myos_mbedtls_config.h"'
-    -I"$ROOT/ports/mbedtls"
+    -isystem "$tlsinc"
     -include myos_compat.h
   )
   local cflags=(
