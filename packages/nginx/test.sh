@@ -158,11 +158,16 @@ nginx_default() {
 	# opens in there (a start used to print "[alert] could not open error
 	# log file" once).
 	rm -rf /tmp/nginx
-	out=$(run-myos nginx 2>&1) || { echo "$out"; return 1; }
+	out=$(run-myos nginx -g 'error_log /tmp/nginx/error.log info;' 2>&1) || { echo "$out"; return 1; }
 	ok=0
 	[ -z "$out" ] || { echo "start said: $out"; ok=1; }
 	for h in localhost 127.0.0.1; do
-		curl -fsS --max-time 30 http://$h/ | grep -q "Welcome to nginx" || { echo "default page from $h"; curl -sv --max-time 30 http://$h/ 2>&1 | tail -12; ok=1; }
+		curl -fsS --max-time 30 http://$h/ | grep -q "Welcome to nginx" || {
+			echo "default page from $h"
+			for i in $(seq 0 31); do s=$(cat /net/tcp/$i/status 2>/dev/null); [ -n "$s" ] && echo "tcp/$i: $s"; done
+			curl -sv --max-time 30 http://$h/ 2>&1 | grep '^[<>*]' | head -12
+			ok=1
+		}
 	done
 	nginx_stop /lib/nginx/nginx.conf || ok=1
 	[ $ok = 0 ] || { echo "--- error.log"; cat /tmp/nginx/error.log; }
