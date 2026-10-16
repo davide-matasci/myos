@@ -39,6 +39,10 @@ run-myos [-r ROOT] APP[,APP...][:CMD] [ARGS...]
   (`release=YYYYMMDDHHMM`, the commit date in UTC, so a later build has
   the greater number), commit and syscall **ABI** (`src/release.rs`). The
   image carries the same for the running system in `/lib/myos-release`.
+  It is the release of the commit the images were built at: build.rs
+  records it in `target/myos-release`, and CI's kernels bundle carries
+  it, so a run that reuses the bundle stamps its packages with the
+  images' release, not its own commit's.
   `get-myos -u` refreshes the index and brings every installed package
   whose version changed to the new one (its files rewritten under
   `ROOT/<name>/`). `get-myos -l` lists the

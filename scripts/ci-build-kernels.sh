@@ -360,6 +360,9 @@ case "${1:-}" in
     echo target/uefi.img
     echo target/boot-kernel-x86_64
     echo target/fat.img
+    # The release the images were packed with (src/release.rs): a run that
+    # pulls this bundle stamps its packages and boot files with it.
+    echo target/myos-release
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel
     for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do

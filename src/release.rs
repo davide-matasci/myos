@@ -14,6 +14,14 @@
 //   (`AGENTS.md`), so a package built against `abi=N` runs on any kernel
 //   with `abi >= N`, and `get-myos` refuses an index whose `abi` is above
 //   the system's: its programs could call syscalls the kernel lacks.
+//
+// One build has one release: build.rs takes the checkout's when it packs the
+// images and writes it to `target/myos-release` ([`Release::stamp`]), and
+// everything after it (the packages, the boot files, a boot's re-packed
+// initramfs) reads it from there ([`Release::current`]). CI's kernels bundle
+// carries the file with the images, so a run that pulls the bundle a commit
+// with the same kernel inputs made keeps the images' release instead of
+// stamping its own HEAD on the mirror beside them.
 
 use std::path::Path;
 use std::process::Command;
@@ -25,8 +33,28 @@ pub struct Release {
 }
 
 impl Release {
-    /// The build's release, from the checkout and the kernel source.
+    /// The build's release: the one build.rs recorded in
+    /// `target/myos-release`, else the checkout's.
     pub fn current(manifest_dir: &Path) -> Release {
+        std::fs::read_to_string(manifest_dir.join(STAMP))
+            .ok()
+            .and_then(|text| Release::parse(&text))
+            .unwrap_or_else(|| Release::from_checkout(manifest_dir))
+    }
+
+    /// build.rs: the checkout's release, recorded in `target/myos-release`
+    /// for the images it packs and every later use.
+    #[allow(dead_code)]
+    pub fn stamp(manifest_dir: &Path) -> Release {
+        let release = Release::from_checkout(manifest_dir);
+        let path = manifest_dir.join(STAMP);
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        std::fs::write(&path, release.text()).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        release
+    }
+
+    /// The release of the checkout and the kernel source.
+    fn from_checkout(manifest_dir: &Path) -> Release {
         // safe.directory: in CI the checkout belongs to another user than the
         // container's, and actions/checkout's own exception is in a HOME the
         // later steps do not see.
@@ -55,7 +83,21 @@ impl Release {
     pub fn text(&self) -> String {
         format!("release={} commit={} abi={}\n", self.id, self.commit, self.abi)
     }
+
+    /// The fields of [`Release::text`].
+    fn parse(text: &str) -> Option<Release> {
+        let mut fields = text.split_whitespace().map(|f| f.split_once('='));
+        let (Some(("release", id)), Some(("commit", commit)), Some(("abi", abi))) =
+            (fields.next()?, fields.next()?, fields.next()?)
+        else {
+            return None;
+        };
+        Some(Release { id: id.to_string(), commit: commit.to_string(), abi: abi.parse().ok()? })
+    }
 }
+
+/// Where build.rs records the build's release.
+const STAMP: &str = "target/myos-release";
 
 /// One more than the highest native syscall number the kernel defines.
 fn syscall_abi(manifest_dir: &Path) -> usize {

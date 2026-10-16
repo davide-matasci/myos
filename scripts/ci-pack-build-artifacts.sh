@@ -58,6 +58,7 @@ required=(
   target/debug/myos
   target/bios.img
   target/uefi.img
+  target/myos-release
   target/aarch64-unknown-none-softfloat/debug/kernel
   target/riscv64imac-unknown-none-elf/debug/kernel
   "${image_files[@]}"

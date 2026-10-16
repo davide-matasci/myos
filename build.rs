@@ -108,6 +108,8 @@ fn main() {
     let bootx64 = std::fs::read(limine.bootx64()).expect("BOOTX64.EFI");
     let bios_sys = std::fs::read(limine.bios_sys()).expect("limine-bios.sys");
     let esp = limine_esp_files("BOOTX64.EFI", &bootx64, Some(&bios_sys), &limine_conf("", "", &["a"]), &[]);
+    // The build's release, before anything that stamps it is packed.
+    release::Release::stamp(&manifest);
     let initramfs_bytes = initramfs::build_initramfs(&manifest, "x86_64", &esp);
     let initramfs_path = manifest.join("target/initramfs-x86_64.cpio");
     std::fs::write(&initramfs_path, &initramfs_bytes)
