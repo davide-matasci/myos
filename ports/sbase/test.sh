@@ -79,3 +79,26 @@ sbase_date() {
 	[ $(/bin/sbase/date +%s) -ge $now ]
 }
 t sbase_date sbase_date
+
+# The BSD forms the myos patch adds (date.myos.patch): -r SECONDS shows
+# that time, -j -f FORMAT parses the operand with strptime and shows it
+# (acme.sh converts its dates with both).
+sbase_date_bsd() {
+	s=$(/bin/sbase/date -u -r 1700000000 -j +%Y-%m-%dT%H:%M:%SZ)
+	t=$(/bin/sbase/date -u -j -f "%Y-%m-%d %H:%M:%S" "2023-11-14 22:13:20" +%s)
+	echo "r: $s, f: $t"
+	[ "$s" = 2023-11-14T22:13:20Z ] && [ "$t" = 1700000000 ]
+}
+t sbase_date_bsd sbase_date_bsd
+
+# printf with "--" before a format that starts with a dash, and an escape
+# whose byte is a '%' output as that byte (the myos patch
+# printf.myos.patch; acme.sh writes its PEM files with the first and
+# turns hex into bytes with the second).
+sbase_printf() {
+	out=$(/bin/sbase/printf -- '-%s-\n' x)
+	esc=$(/bin/sbase/printf 'a\x25sb\045\n')
+	echo "printf: $out $esc"
+	[ "$out" = -x- ] && [ "$(/bin/sbase/printf -- '--\n')" = -- ] && [ "$esc" = 'a%sb%' ]
+}
+t sbase_printf sbase_printf
