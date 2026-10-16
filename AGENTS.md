@@ -84,7 +84,7 @@ cargo run -- test --tags netfs --skip heavy   # a selection by tag; a test's nam
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p ps2-scancode -p ext2fs -p fatvol   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
-cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp (after a build)
+user/net/smoltcp/prepare.sh && cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp
 ```
 
 - Test on every arch you could have affected; arch-specific code needs all
