@@ -27,6 +27,7 @@ smokes=(
   "fb-smoke user/c/fb_smoke.c"
   "poll-smoke user/c/poll_smoke.c"
   "kbd-smoke user/c/kbd_smoke.c"
+  "mouse-smoke user/c/mouse_smoke.c"
   "uio-smoke user/c/uio_smoke.c"
   "pthread-smoke user/c/pthread_smoke.c"
   "netconv-smoke user/c/netconv_smoke.c"
@@ -79,4 +80,4 @@ for arch in x86_64 aarch64 riscv64; do
 done
 
 myos_c_smokes_version_hash > "$MYOS_C_SMOKES_VERSION"
-echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke,unix-smoke,fb-smoke,poll-smoke,kbd-smoke,uio-smoke,pthread-smoke,netconv-smoke,loopback-smoke,child-smoke,libc-smoke,sec,at-smoke,fileio-smoke,mmap-smoke,shm-smoke,fault-smoke,ctor-smoke,sched-smoke}-<arch>-unknown-none"
+echo "c smokes -> target/{c-hello,c-socket_smoke,tcp-listen-smoke,pty-smoke,urandom-smoke,tty-smoke,unix-smoke,fb-smoke,poll-smoke,kbd-smoke,mouse-smoke,uio-smoke,pthread-smoke,netconv-smoke,loopback-smoke,child-smoke,libc-smoke,sec,at-smoke,fileio-smoke,mmap-smoke,shm-smoke,fault-smoke,ctor-smoke,sched-smoke}-<arch>-unknown-none"

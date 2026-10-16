@@ -372,6 +372,16 @@ fn add_usb(cmd: &mut Command) {
         .arg(format!("if=none,id=usbhot,format=raw,file={}", usb_hot_img_path().display()));
 }
 
+/// The pointer, on the USB bus of [`add_usb`] (`/dev/console/mouse`,
+/// docs/tty.md): a `usb-mouse` in the test boots, where the host moves it
+/// through the monitor (`mouse_move` is relative, `user/tests/host.sh
+/// mouse`); a `usb-tablet` in a window, which follows the host's pointer
+/// without grabbing it.
+fn add_pointer(cmd: &mut Command, test: bool) {
+    let dev = if test { "usb-mouse" } else { "usb-tablet" };
+    cmd.arg("-device").arg(format!("{dev},bus=xhci.0,port=3,id=usbpointer"));
+}
+
 fn add_virtio_blk_x86(cmd: &mut Command) {
     write_empty_blk_image();
     let fat = fat_img_path();
@@ -496,6 +506,7 @@ fn run_bios(bios_path: &str) {
         .arg("-boot")
         .arg("menu=off");
     add_virtio_blk_x86(&mut cmd);
+    add_pointer(&mut cmd, false);
     add_boot_disk(&mut cmd, Path::new(bios_path));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
@@ -527,6 +538,7 @@ fn run_uefi(uefi_path: &str) {
         .arg("-nic")
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
+    add_pointer(&mut cmd, false);
     add_boot_disk(&mut cmd, Path::new(uefi_path));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
@@ -630,6 +642,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
         .arg("menu=off")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_pointer(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     cmd.stdin(Stdio::piped())
@@ -696,6 +709,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
         .arg("none")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
+    add_pointer(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     cmd.stdin(Stdio::piped())
@@ -811,6 +825,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // The keyboard in every boot too: the boot tests type on it through
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
+    add_pointer(&mut cmd, ci);
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg(boot_test::monitor_arg());
@@ -1279,6 +1294,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     // The keyboard in every boot too: the boot tests type on it through
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
+    add_pointer(&mut cmd, ci);
     if ci {
         cmd.arg("-display").arg("none");
         cmd.arg("-monitor").arg(boot_test::monitor_arg());

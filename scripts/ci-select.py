@@ -53,7 +53,7 @@ HEAVY_GROUPS = ["ostest", "alpine"]
 BUDGETS = {"light": 20, "smoke": 8, "ostest": 15, "alpine": 12}
 # A module's directory selects these tags (its own name otherwise).
 MODULE_TAGS = {
-    "console": {"console", "tty"},
+    "console": {"console", "tty", "mouse"},
     "virtio_net": {"virtio_net", "netfs"},
     "virtio": {"blk", "virtio_net"},
     "virtq": {"blk", "virtio_net"},
@@ -63,6 +63,7 @@ MODULE_TAGS = {
     "xhci": {"usb"},
     "usb_hub": {"usb"},
     "usb_storage": {"usb"},
+    "usb_hid": {"usb", "mouse"},
     "hello": {"modules"},
 }
 # Modules whose change is the whole system's (the ABI, the platform).

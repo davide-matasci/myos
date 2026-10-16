@@ -32,9 +32,10 @@ libX11.
 window manager: `xev -root -event keyboard` (with no other window the
 keyboard's focus is the root), the host types `x` through the QEMU
 monitor, and xev prints a `KeyPress` and a `KeyRelease` with keysym
-`0x78, x`.
+`0x78, x`; then `xev -root -event mouse`, the host moves the boot's
+`usb-mouse` and clicks its left button (`user/c/host.sh mouse`), and xev
+prints a `MotionNotify` and the `ButtonPress` of button 1.
 
 ## Not yet
 
 - `xsetroot` and the other xorg apps: added here when wanted.
-- Pointer events: the server has no mouse (issue #302).

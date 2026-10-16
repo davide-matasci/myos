@@ -9,6 +9,7 @@ about a terminal, or any device, goes through one.
 /dev/console/data        the console: the kernel's messages, the boot's, the daemons'
 /dev/console/ctl
 /dev/console/kbd         the keyboard's presses and releases, for a program that takes it
+/dev/console/mouse       the pointer's motion and buttons, likewise
 /dev/tty1/data           a terminal on text screen 1 of the framebuffer (tty1…tty9)
 /dev/tty1/ctl
 /dev/ttyS0/data          the serial port's terminal
@@ -176,6 +177,41 @@ A read of the console (`/dev/console/data`, `/dev/tty`) waits for as long as
 it takes, a shell at its prompt until the next key, without holding the
 filesystem tree: a rename, unlink or new file elsewhere does not wait for
 that key (devfs's `waits`, `kernel/src/fs/vfs.rs`).
+
+## The pointer
+
+`/dev/console/mouse` is the pointer: what every mouse and tablet does, for
+the same programs as the raw keyboard (Xfbdev's `kdrive/myos` reads it,
+`packages/tinyx`). The console module serves the file and publishes the
+`pointer` service ([`PointerOps`](../modules/abi/src/lib.rs)); a pointing
+device's driver in another module feeds it, today `usb_hid` (USB HID mice
+and tablets, `docs/usb.md`), and all of them land in the one file. One
+event per line:
+
+```
+m 10 -5       moved 10 right and 5 up
+a 16384 8192  a tablet's position: the middle of the screen, a quarter down
+w 1           the wheel, one step up (away from the user)
+d 272         left button pressed
+u 272         released
+```
+
+`m <dx> <dy>` is relative motion, right and down positive; `a <x> <y>` an
+absolute position, both axes from 0 (left, top) to 32767 whatever the
+device's own range, which the reader scales to its screen; `w <dz>` the
+vertical wheel; `d <code>` and `u <code>` a button, as Linux's `BTN_*`
+code: left 272, right 273, middle 274, side 275, extra 276. Motion not read
+yet is merged, so a slow reader gets fewer, larger steps rather than lost
+ones: two `m` lines in a row become one, as do two `w`, and a newer `a`
+replaces the one before it. A button held when its mouse is pulled out is
+released (`u`).
+
+The file is there whether or not a pointer is plugged in (a USB mouse may
+come later). Opening it takes the pointer: one program holds it at a time,
+another open fails, and nothing is queued while nobody holds it. Reads
+return whole lines; a read waits for the next event, `poll` reports
+`POLLIN` while one is queued (every event wakes the waiters). The queue
+holds 128 events and drops new ones while full.
 
 ## Ptys
 

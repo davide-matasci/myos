@@ -2,7 +2,8 @@
 //! colouring, block cursor), `/dev/fb` for programs that draw on the screen
 //! themselves ([`fbdev`]), the local keyboards (PS/2 on x86_64,
 //! virtio-input on the `virt` boards; raw presses and releases at
-//! `/dev/console/kbd`, [`kbdev`]) and the loadable keymap.
+//! `/dev/console/kbd`, [`kbdev`]), the loadable keymap, and the pointer
+//! other modules' drivers feed (`/dev/console/mouse`, [`mouse`]).
 //!
 //! The screen is one of [`SCREENS`] text screens at a time (`docs/tty.md`):
 //! 0 the console's, 1–9 the ttys'. Each keeps its cells, so the kernel
@@ -20,6 +21,7 @@ mod font;
 mod kbd;
 mod kbdev;
 mod keymap;
+mod mouse;
 #[cfg(target_arch = "x86_64")]
 mod ps2;
 #[cfg(not(target_arch = "x86_64"))]
@@ -282,6 +284,9 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     keyboard::init();
     if keyboard::present() && kbdev::mount() != 0 {
         status_fail("console: /dev/console/kbd");
+    }
+    if mouse::init() != 0 {
+        status_fail("console: /dev/console/mouse");
     }
     let rc = api.console_register(&OPS);
     if screen && fbdev::mount(info) != 0 {

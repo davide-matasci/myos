@@ -1,5 +1,5 @@
 diff --git a/configure.ac b/configure.ac
-index a30d074..0f529fe 100644
+index a30d074..8e46c50 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -261,6 +261,7 @@ AC_ARG_ENABLE(dpms,           AS_HELP_STRING([--disable-dpms], [Build DPMS exten
@@ -14,7 +14,7 @@ index a30d074..0f529fe 100644
              KDRIVELINUX=yes
  	    ;;
      esac
-+    # myos (--with-kdrive-os=myos): /dev/fb and /dev/console/kbd
++    # myos (--with-kdrive-os=myos): /dev/fb, /dev/console/kbd and /dev/console/mouse
 +    if test "x$with_kdrive_os" = xmyos; then
 +	KDRIVE_OS_INC='-I$(top_srcdir)/kdrive/myos'
 +	KDRIVE_INCS="$KDRIVE_PURE_INCS $KDRIVE_OS_INC"
@@ -106,14 +106,18 @@ index ae89381..f21cf26 100644
  	if ((priv->fd = open(fbdevDevicePath, O_RDWR)) < 0) {
  		ErrorF("Error opening framebuffer %s: %s\n",
 diff --git a/kdrive/fbdev/fbinit.c b/kdrive/fbdev/fbinit.c
-index 7be0190..a4e82c8 100644
+index 7be0190..37bf8c7 100644
 --- a/kdrive/fbdev/fbinit.c
 +++ b/kdrive/fbdev/fbinit.c
-@@ -67,7 +67,11 @@ void InitOutput(ScreenInfo * pScreenInfo, int argc, char **argv)
+@@ -67,7 +67,15 @@ void InitOutput(ScreenInfo * pScreenInfo, int argc, char **argv)
  
  void InitInput(int argc, char **argv)
  {
 +#ifdef KDRIVEMYOS
++	/* The console's pointer with five buttons (the wheel is 4 and 5),
++	 * unless -mouse named one. */
++	if (!kdMouseInfo)
++		KdParseMouse("/dev/console/mouse,5");
 +	KdInitInput(&MyosMouseFuncs, &MyosKeyboardFuncs);
 +#else
  	KdInitInput(&LinuxMouseFuncs, &LinuxKeyboardFuncs);
@@ -121,7 +125,7 @@ index 7be0190..a4e82c8 100644
  }
  
  void ddxUseMsg(void)
-@@ -75,7 +79,7 @@ void ddxUseMsg(void)
+@@ -75,7 +83,7 @@ void ddxUseMsg(void)
  	KdUseMsg();
  	ErrorF("\nXfbdev Device Usage:\n");
  	ErrorF
@@ -289,10 +293,10 @@ index 0000000..e01f1ba
 +}
 diff --git a/kdrive/myos/Makefile.am b/kdrive/myos/Makefile.am
 new file mode 100644
-index 0000000..a848dd4
+index 0000000..260ec43
 --- /dev/null
 +++ b/kdrive/myos/Makefile.am
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,12 @@
 +AM_CPPFLAGS = 					\
 +	@KDRIVE_INCS@				\
 +	@KDRIVE_CFLAGS@
@@ -303,6 +307,7 @@ index 0000000..a848dd4
 +
 +libmyos_a_SOURCES = 	\
 +	keyboard.c	\
++	mouse.c		\
 +	myos.c
 diff --git a/kdrive/myos/keyboard.c b/kdrive/myos/keyboard.c
 new file mode 100644
@@ -556,18 +561,181 @@ index 0000000..edd99cb
 +	MyosKeyboardFini,
 +	3,
 +};
+diff --git a/kdrive/myos/mouse.c b/kdrive/myos/mouse.c
+new file mode 100644
+index 0000000..27dc43e
+--- /dev/null
++++ b/kdrive/myos/mouse.c
+@@ -0,0 +1,157 @@
++/*
++ * myos: the pointer, from /dev/console/mouse (docs/tty.md).
++ *
++ * The file reports what the mice and tablets do as lines: "m <dx> <dy>"
++ * relative motion, "a <x> <y>" an absolute position (both axes 0 to
++ * 32767, a tablet), "w <dz>" the wheel (positive: up) and "d <code>" /
++ * "u <code>" a button pressed / released, with Linux BTN_* codes (left
++ * 272, right 273, middle 274). Opening it takes the pointer until the
++ * server closes it.
++ *
++ * Left, middle and right are X buttons 1, 2 and 3; the wheel is a press
++ * and release of button 4 (up) or 5 (down) per step. An absolute
++ * position is scaled to the screen.
++ *
++ * Part of the myos patches to TinyX (packages/tinyx), under TinyX's license.
++ */
++#ifdef HAVE_CONFIG_H
++#include <kdrive-config.h>
++#endif
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include "kdrive.h"
++
++#define BTN_LEFT 272
++#define BTN_RIGHT 273
++#define BTN_MIDDLE 274
++#define ABS_MAX 32767
++
++static int MyosMouseType;
++/* The buttons held, as KD_BUTTON_* flags. */
++static unsigned long buttons;
++
++static unsigned long button_flag(long code)
++{
++	switch (code) {
++	case BTN_LEFT: return KD_BUTTON_1;
++	case BTN_MIDDLE: return KD_BUTTON_2;
++	case BTN_RIGHT: return KD_BUTTON_3;
++	default: return 0;
++	}
++}
++
++/* An absolute axis value as a pixel on an axis `size` pixels long. */
++static int scale(long v, int size)
++{
++	if (v < 0)
++		v = 0;
++	if (v > ABS_MAX)
++		v = ABS_MAX;
++	return (int)(v * (size - 1) / ABS_MAX);
++}
++
++/* Called when select() says the file is readable: one read, which returns
++ * whole lines and does not block then. */
++static void MyosMouseRead(int fd, void *closure)
++{
++	KdMouseInfo *mi = closure;
++	char buf[1024], *line, *save;
++	ssize_t n = read(fd, buf, sizeof buf - 1);
++
++	if (n <= 0)
++		return;
++	buf[n] = '\0';
++	for (line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
++		char *end;
++		long a, b = 0;
++
++		if (line[0] == '\0' || line[1] != ' ')
++			continue;
++		a = strtol(line + 2, &end, 10);
++		if (end == line + 2)
++			continue;
++		if (line[0] == 'm' || line[0] == 'a') {
++			char *p = end;
++
++			b = strtol(p, &end, 10);
++			if (end == p)
++				continue;
++		}
++		switch (line[0]) {
++		case 'm':
++			KdEnqueueMouseEvent(mi, KD_MOUSE_DELTA | buttons, (int)a, (int)b);
++			break;
++		case 'a':
++			KdEnqueueMouseEvent(mi, buttons, scale(a, screenInfo.screens[0]->width),
++					    scale(b, screenInfo.screens[0]->height));
++			break;
++		case 'w': {
++			unsigned long step = a > 0 ? KD_BUTTON_4 : KD_BUTTON_5;
++			long i;
++
++			for (i = 0; i < labs(a); i++) {
++				KdEnqueueMouseEvent(mi, KD_MOUSE_DELTA | buttons | step, 0, 0);
++				KdEnqueueMouseEvent(mi, KD_MOUSE_DELTA | buttons, 0, 0);
++			}
++			break;
++		}
++		case 'd':
++		case 'u':
++			if (!button_flag(a))
++				break;
++			if (line[0] == 'd')
++				buttons |= button_flag(a);
++			else
++				buttons &= ~button_flag(a);
++			KdEnqueueMouseEvent(mi, KD_MOUSE_DELTA | buttons, 0, 0);
++			break;
++		}
++	}
++}
++
++/* The first pointer not taken yet: /dev/console/mouse, unless -mouse
++ * named another file. */
++static Bool MyosMouseInit(void)
++{
++	KdMouseInfo *mi;
++	const char *name;
++	int fd;
++
++	if (!MyosMouseType)
++		MyosMouseType = KdAllocInputType();
++	for (mi = kdMouseInfo; mi; mi = mi->next)
++		if (!mi->inputType)
++			break;
++	if (!mi)
++		return TRUE;
++	name = mi->name ? mi->name : "/dev/console/mouse";
++	fd = open(name, O_RDONLY);
++	if (fd < 0) {
++		ErrorF("myos: %s: %s (no mouse)\n", name, strerror(errno));
++		return TRUE;
++	}
++	buttons = 0;
++	mi->inputType = MyosMouseType;
++	KdRegisterFd(MyosMouseType, fd, MyosMouseRead, mi);
++	return TRUE;
++}
++
++static void MyosMouseFini(void)
++{
++	KdMouseInfo *mi;
++
++	/* The last close gives the pointer back. */
++	KdUnregisterFds(MyosMouseType, TRUE);
++	for (mi = kdMouseInfo; mi; mi = mi->next)
++		if (mi->inputType == MyosMouseType)
++			mi->inputType = 0;
++}
++
++const KdMouseFuncs MyosMouseFuncs = {
++	MyosMouseInit,
++	MyosMouseFini,
++};
 diff --git a/kdrive/myos/myos.c b/kdrive/myos/myos.c
 new file mode 100644
-index 0000000..d20deec
+index 0000000..1fb06b5
 --- /dev/null
 +++ b/kdrive/myos/myos.c
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,49 @@
 +/*
 + * myos: kdrive's OS layer. Nothing to switch: myos has one console, and the
-+ * screen and the keyboard are taken by opening their files (/dev/fb/ctl,
-+ * kdrive/fbdev/myosfb.c; /dev/console/kbd, keyboard.c) and given back when
-+ * they close, the server's exit included. No mouse (the core pointer
-+ * exists and never moves).
++ * screen, the keyboard and the pointer are taken by opening their files
++ * (/dev/fb/ctl, kdrive/fbdev/myosfb.c; /dev/console/kbd, keyboard.c;
++ * /dev/console/mouse, mouse.c) and given back when they close, the
++ * server's exit included.
 + *
 + * Part of the myos patches to TinyX (packages/tinyx), under TinyX's license.
 + */
@@ -611,20 +779,6 @@ index 0000000..d20deec
 +{
 +	KdOsInit(&MyosFuncs);
 +}
-+
-+static Bool MyosMouseInit(void)
-+{
-+	return TRUE;
-+}
-+
-+static void MyosMouseFini(void)
-+{
-+}
-+
-+const KdMouseFuncs MyosMouseFuncs = {
-+	MyosMouseInit,
-+	MyosMouseFini,
-+};
 diff --git a/kdrive/src/kdrive.h b/kdrive/src/kdrive.h
 index a13ffa6..02ac3f7 100644
 --- a/kdrive/src/kdrive.h

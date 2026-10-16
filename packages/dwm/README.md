@@ -1,8 +1,8 @@
 # dwm for myos
 
 [dwm](https://dwm.suckless.org/), suckless's tiling window manager, on the
-X server of the `tinyx` package. It is driven from the keyboard, which suits
-an X server without a mouse.
+X server of the `tinyx` package. It is driven from the keyboard; the mouse
+focuses, moves (Alt+left button) and resizes (Alt+right button) windows.
 
 ```sh
 get-myos tinyx dwm            # st, dmenu, the Xft stack and the fonts come with it
