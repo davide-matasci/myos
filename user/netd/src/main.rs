@@ -14,7 +14,7 @@ use core::fmt::Write;
 use myos_net::smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use myos_net::smoltcp::phy::Device;
 use myos_net::smoltcp::socket::{dhcpv4, icmp, tcp, udp};
-use myos_net::smoltcp::time::Instant;
+use myos_net::smoltcp::time::{Duration, Instant};
 use myos_net::smoltcp::wire::{
     HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint,
     Ipv4Address, Ipv4Cidr,
@@ -79,6 +79,16 @@ const DHCP_POLLS: usize = 3000;
 /// Minimum clock advance per poll when `gettimeofday` is unavailable; the
 /// stack clock otherwise follows wall time (`VirtualInstant::bump`).
 const TICK_MS: u64 = 1;
+/// How long a conversation its process closed may take to finish closing
+/// before netd aborts it: a peer that never answers the FIN (a scanner
+/// behind a firewall, a host that is gone) left the socket retransmitting
+/// in FinWait1 or LastAck, or waiting in FinWait2 for a FIN that never
+/// comes, and the index with it, for good. netfs had freed its slot at the
+/// close's acknowledgement, so nothing showed them; on a scanned VPS they
+/// filled the table within the hour, and every new connection was aborted
+/// at the accept. Linux gives an orphaned connection about as long
+/// (tcp_fin_timeout).
+const CLOSE_GRACE: Duration = Duration::from_secs(60);
 /// Idle sleeps between polls when the NIC has no RX interrupt (poll-mode
 /// fallback): a bounded sleep sets the worst-case RX latency; kernel events
 /// (channel requests from netfs, pipe/console traffic) end the sleep early.
@@ -179,6 +189,9 @@ struct Conv {
     /// then finishes the close. Dropping the conv here would lose the
     /// deferred REQ_SEND bytes (forked-child banner write race).
     closing_after_flush: bool,
+    /// When `closing` or `closing_after_flush` was first seen set: the
+    /// close is aborted CLOSE_GRACE later if the peer has not let it end.
+    closing_since: Option<Instant>,
     /// Created by pump_accepts (incoming). Orphan reclaim must only touch
     /// these: client clones start in TCP Closed and would be freed before
     /// connect() (aarch64 socket_smoke connect fail on tip 0b4444e).
@@ -225,6 +238,7 @@ impl Conv {
         rx_room: NETFS_RX_CAP,
         closing: false,
         closing_after_flush: false,
+        closing_since: None,
         from_accept: false,
         held: false,
         released: false,
@@ -1793,6 +1807,20 @@ fn main() -> ! {
                     sockets.remove(h);
                 }
                 retire(&mut convs, i);
+                continue;
+            }
+            match convs[i].closing_since {
+                None => convs[i].closing_since = Some(now),
+                Some(since) if now - since >= CLOSE_GRACE => {
+                    // The peer never let the close end: give up on it, as
+                    // Linux does on an orphaned connection.
+                    if let Some(h) = convs[i].handle.take() {
+                        sockets.get_mut::<tcp::Socket>(h).abort();
+                        sockets.remove(h);
+                    }
+                    retire(&mut convs, i);
+                }
+                Some(_) => {}
             }
         }
         // Handoff + deliver BEFORE orphan/hungup destroy. #161's accept queue

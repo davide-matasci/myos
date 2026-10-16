@@ -1,12 +1,13 @@
 --- a/src/core/nginx.c
 +++ b/src/core/nginx.c
-@@ -290,6 +290,18 @@
-         return 1;
-     }
+@@ -232,6 +232,19 @@
+     ngx_pid = ngx_getpid();
+     ngx_parent = ngx_getppid();
  
 +#ifdef NGX_MYOS_RUN_PATH
 +    /* myos has no /var: the pid, the logs and the temporary files are in
-+     * a directory of /tmp, made here when it is not there yet */
++     * a directory of /tmp, made here when it is not there yet (before the
++     * error log opens: it is in there too) */
 +
 +    if (ngx_create_dir((u_char *) NGX_MYOS_RUN_PATH, 0755) == NGX_FILE_ERROR
 +        && ngx_errno != NGX_EEXIST)
@@ -16,6 +17,6 @@
 +    }
 +#endif
 +
-     cycle = ngx_init_cycle(&init_cycle);
-     if (cycle == NULL) {
-         if (ngx_test_config) {
+     log = ngx_log_init(ngx_prefix, ngx_error_log);
+     if (log == NULL) {
+         return 1;

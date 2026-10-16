@@ -120,7 +120,14 @@ scanner, a health check) is hung up the same way, so the process that
 accepts it reads the end at once instead of waiting for a client until its
 own timeout with the index pinned; enough of those within dropbear's five
 minutes ran a VPS out of the 32 indices, and every new connection was
-reset before its banner.
+reset before its banner. A conversation its process closed gives its
+index back when the TCP close completes, or 60 seconds after the close
+when the peer never answers it (a scanner behind a firewall, a client
+that keeps a half-closed connection): netd aborts the socket then, as
+Linux gives up on an orphaned connection. Such closing conversations are
+netd's alone, netfs freed its slot when the close was acknowledged, so
+they do not show in `/net/tcp/N/status`; they too ran a VPS out of
+indices, with the table looking empty.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
 server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's

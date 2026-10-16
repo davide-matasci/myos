@@ -154,8 +154,13 @@ CONF
 # address, the default page, from the system itself (localhost and
 # 127.0.0.1, over the loopback) and from a listener on every address.
 nginx_default() {
-	run-myos nginx || { cat /tmp/nginx/error.log; return 1; }
+	# A first start: nginx makes /tmp/nginx itself, before its error log
+	# opens in there (a start used to print "[alert] could not open error
+	# log file" once).
+	rm -rf /tmp/nginx
+	out=$(run-myos nginx 2>&1) || { echo "$out"; return 1; }
 	ok=0
+	[ -z "$out" ] || { echo "start said: $out"; ok=1; }
 	for h in localhost 127.0.0.1; do
 		curl -fsS --max-time 30 http://$h/ | grep -q "Welcome to nginx" || { echo "default page from $h"; curl -sv --max-time 30 http://$h/ 2>&1 | tail -12; ok=1; }
 	done
