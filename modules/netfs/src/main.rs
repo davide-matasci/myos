@@ -30,6 +30,8 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+
 mod unix;
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -88,7 +90,7 @@ const REP_HDR: usize = 9;
 /// (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
 const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
-const MAX_CONV: usize = 32;
+const MAX_CONV: usize = 128; /* netd's, see its MAX_CONV */
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
 const DATA_CAP: usize = 32768;
 /// TCP bytes a conv's writers may have queued in netd at once: a write
@@ -189,7 +191,9 @@ struct Conv {
     /// would run past the end moves what is left to the front first).
     data_off: u16,
     data_len: u16,
-    data: [u8; DATA_CAP],
+    /// `DATA_CAP` bytes once the first append grows it: 128 slots' worth
+    /// in the module's static would not fit the 4 MiB a module may be.
+    data: Vec<u8>,
     /// Drained bytes not yet returned to netd as REQ_CREDIT.
     credit: u16,
     status_len: u16,
@@ -229,7 +233,7 @@ impl Conv {
         proto: 0,
         data_off: 0,
         data_len: 0,
-        data: [0; DATA_CAP],
+        data: Vec::new(),
         credit: 0,
         status_len: 0,
         status: [0; STATUS_CAP],
@@ -533,7 +537,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 proto,
                 data_off: 0,
                 data_len: 0,
-                data: [0; DATA_CAP],
+                data: Vec::new(),
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
@@ -562,7 +566,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 proto,
                 data_off: 0,
                 data_len: 0,
-                data: [0; DATA_CAP],
+                data: Vec::new(),
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],
@@ -635,6 +639,9 @@ fn compact(c: &mut Conv) {
 }
 
 fn append_data(c: &mut Conv, src: &[u8]) {
+    if c.data.len() < DATA_CAP {
+        c.data.resize(DATA_CAP, 0);
+    }
     let have = c.data_len as usize;
     if c.proto == PROTO_UDP {
         // Datagrams keep their boundaries: each is stored behind its u16
@@ -761,7 +768,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 proto,
                 data_off: 0,
                 data_len: 0,
-                data: [0; DATA_CAP],
+                data: Vec::new(),
                 credit: 0,
                 status_len: 0,
                 status: [0; STATUS_CAP],

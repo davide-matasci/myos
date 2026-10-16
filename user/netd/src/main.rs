@@ -75,7 +75,12 @@ const REP_HDR: usize = 9;
 /// (`FILE_IO_TMP` in task/fd.rs).
 const MSG_CAP: usize = 2048;
 const REP_CAP: usize = 8192;
-const MAX_CONV: usize = 32;
+/// Conversations at once (netfs has the same number of slots). 32 was too
+/// few for a server on the internet: a scanner's connection every few
+/// seconds, each held by nginx or dropbear for its request timeout and
+/// then for the peer's half of the close, kept the table at the brim and
+/// every other new connection was reset at the accept.
+const MAX_CONV: usize = 128;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
 /// Minimum clock advance per poll when `gettimeofday` is unavailable; the
