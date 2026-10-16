@@ -48,6 +48,8 @@ extern int h_errno;
 #define AI_CANONNAME   0x0002
 #define AI_NUMERICHOST 0x0004
 #define AI_NUMERICSERV 0x0400
+/* Accepted and without effect: the resolver answers with IPv4 only. */
+#define AI_ADDRCONFIG  0x0020
 
 #define NI_NUMERICHOST 1
 #define NI_NUMERICSERV 2

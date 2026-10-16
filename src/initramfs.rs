@@ -475,7 +475,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
     add_mode(
         &mut entries,
         "lib/myos-release",
-        crate::release::Release::current(manifest_dir).text().into_bytes(),
+        crate::release::Release::of_build(manifest_dir).text().into_bytes(),
         0o100644,
     );
     add_boot_files(&mut entries, esp);

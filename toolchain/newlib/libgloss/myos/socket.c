@@ -309,7 +309,7 @@ static int wait_connected(struct myos_sock *s) {
 }
 
 /* True EOF vs empty: /net data returns 0 when the smoltcp RX queue is empty.
- * curl/mbedtls treat read/recv 0 as peer close (SSL EOF). */
+ * curl/LibreSSL treat read/recv 0 as peer close (SSL EOF). */
 static int status_is_hangup(struct myos_sock *s) {
     char path[64];
     char sbuf[64];
@@ -1496,7 +1496,7 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
         return -1;
     }
     /* Kept for a UDP bind (SO_REUSEADDR) and getsockopt; the others are
-     * accepted and ignored so curl/mbedtls keep going. */
+     * accepted and ignored so curl/LibreSSL keep going. */
     if (level == SOL_SOCKET && (optname == SO_REUSEADDR || optname == SO_BROADCAST)) {
         if (optval == NULL || optlen < sizeof(int)) {
             errno = EINVAL;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build trimmed curl (HTTPS GET + -o) with userspace sockets + mbedtls.
+# Cross-build trimmed curl (HTTPS GET + -o) with userspace sockets + LibreSSL.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -27,14 +27,12 @@ pack_curl_aliases() {
 }
 
 # The CA bundle (CURL_CA_BUNDLE=/lib/cacert.pem) is an output of this port
-# next to the ELFs; ports/mbedtls/fetch.sh fetches it with the mbedtls
-# sources, and a tree with the ELFs but not the bundle (a registry package
-# packed without it) only needs this fetch.
+# next to the ELFs; fetch.sh fetches it with the sources, and a tree with
+# the ELFs but not the bundle (a registry package packed without it) only
+# needs that fetch.
 ensure_ca_bundle() {
   local ca="$ROOT/target/cacert.pem"
   [[ -f "$ca" ]] && return 0
-  # shellcheck source=../mbedtls/versions.env
-  source "$HERE/../mbedtls/versions.env"
   echo "fetch CA bundle"
   curl -fsSL "$CACERT_URL" -o "$ca"
 }
@@ -48,7 +46,7 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
-"$ROOT/ports/mbedtls/build.sh"
+"$ROOT/ports/libressl/build.sh"
 "$HERE/build-softfloat-riscv64.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 myos_ensure_llvm_bin
@@ -66,18 +64,6 @@ if 'dynbuf.h' not in s and old in s:
     open(p, 'w').write(s.replace(old, old + '\n#include "dynbuf.h"', 1))
 PYEDIT
 fi
-# Fix curl checking the *value* macro as an ifdef (always true in mbedtls 3.6 headers).
-# curl checks the *value* macro as #ifdef (always true in mbedtls 3.6 headers).
-python3 - "$SRC/lib/vtls/mbedtls.c" <<'PYEDIT'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-old = '#ifdef MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED'
-new = '#if defined(MBEDTLS_SSL_PROTO_TLS1_3) && defined(MBEDTLS_SSL_SESSION_TICKETS)'
-if old in s:
-    open(p, 'w').write(s.replace(old, new, 1))
-PYEDIT
-
 # Expand CSOURCES from Makefile.inc
 LIB_SRCS=()
   while IFS= read -r line; do LIB_SRCS+=("$line"); done < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
@@ -98,7 +84,7 @@ PY
 
 skip_src() {
   case "$1" in
-    vtls/openssl.c|vtls/wolfssl.c|vtls/gtls.c|vtls/bearssl.c|vtls/rustls.c|vtls/schannel.c|vtls/schannel_verify.c|vtls/sectransp.c) return 0 ;;
+    vtls/mbedtls.c|vtls/mbedtls_threadlock.c|vtls/wolfssl.c|vtls/gtls.c|vtls/bearssl.c|vtls/rustls.c|vtls/schannel.c|vtls/schannel_verify.c|vtls/sectransp.c) return 0 ;;
     vquic/curl_*.c|vquic/vquic-tls.c|vssh/*) return 0 ;;
     vauth/ntlm*|vauth/spnego*|vauth/krb5*|vauth/gsasl.c|vauth/digest_sspi.c|vauth/cram.c|vauth/digest.c|vauth/oauth2.c|vauth/cleartext.c) return 0 ;;
     asyn-ares.c|asyn-thread.c|c-hyper.c|amigaos.c|system_win32.c|version_win32.c) return 0 ;;
@@ -113,7 +99,7 @@ build_arch() {
   local inc="$prefix/${triple}/include"
   local lib="$prefix/${triple}/lib"
   local cc="${triple}-cc"
-  local mbed="$ROOT/target/mbedtls-${arch}"
+  local tls="$ROOT/target/libressl-${arch}"
   local objdir="$ROOT/target/curl-build-${arch}"
   local out="$ROOT/target/curl-${arch}-unknown-none"
   local clang_res
@@ -133,9 +119,7 @@ build_arch() {
     -isystem "$inc"
     -I"$SRC/include"
     -I"$SRC/lib"
-    -I"$mbed/include"
-    -DMBEDTLS_CONFIG_FILE='"myos_mbedtls_config.h"'
-    -I"$ROOT/ports/mbedtls"
+    -I"$tls/include"
     -Wno-unused-parameter
     -Wno-sign-compare
     -Wno-unused-function
@@ -238,25 +222,20 @@ PY
     extra+=("$ROOT/target/libsoftfloat-riscv64.a")
   fi
 
-  # mbedtls entropy/time glue
-  o="$objdir/myos_curl_platform.o"
-  "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$HERE/myos_curl_platform.c" -o "$o"
-  objs+=("$o")
-
   echo "  LD curl"
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${tool_objs[@]+"${tool_objs[@]}"}" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}" \
-    -L"$lib" -L"$mbed/lib" \
-    --start-group -lmbedtls -lmbedx509 -lmbedcrypto -lc -lgloss -lg --end-group
+    -L"$lib" -L"$tls/lib" \
+    --start-group -lssl -lcrypto -lc -lgloss -lg --end-group
 
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   ls -lh "$out"
 }
 
-build_arch x86_64
-build_arch aarch64
-build_arch riscv64
+for arch in ${MYOS_CURL_ARCHES:-x86_64 aarch64 riscv64}; do
+  build_arch "$arch"
+done
 
 echo "$(myos_curl_version_hash)" >"$STAMP"
 pack_curl_aliases

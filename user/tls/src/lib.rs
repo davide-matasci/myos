@@ -1,37 +1,28 @@
-//! Reusable TLS client for myos userspace (mbedtls FFI).
+//! Reusable TLS client for myos userspace: LibreSSL's libtls (ports/libressl)
+//! over a connected `/net` TCP data fd, through `src/platform.c`.
 //!
 //! Architecture choice: a `user/tls` library (not Plan 9 `/net/tls` yet).
 //! Smaller than teaching netfs/netd a PROTO_TLS, and structured so `/net/tls`
-//! can wrap the same handshake later.
+//! can wrap the same handshake later. The peer is verified against the
+//! Mozilla CA bundle curl ships as `/lib/cacert.pem`.
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use core::ffi::c_char;
-use myos_user::{gettimeofday, read, write_fd};
+use core::ffi::{CStr, c_char, c_void};
+use myos_user::{read, write_fd};
 
 unsafe extern "C" {
-    fn myos_tls_conn_size() -> usize;
-    fn myos_tls_handshake(conn: *mut u8, fd: i32, sni: *const c_char) -> i32;
-    fn myos_tls_write(conn: *mut u8, buf: *const u8, len: usize) -> i32;
-    fn myos_tls_read(conn: *mut u8, buf: *mut u8, len: usize) -> i32;
-    fn myos_tls_close(conn: *mut u8);
+    fn myos_tls_handshake(fd: i32, sni: *const c_char) -> *mut c_void;
+    fn myos_tls_ready(conn: *const c_void) -> i32;
+    fn myos_tls_error(conn: *const c_void) -> *const c_char;
+    fn myos_tls_write(conn: *mut c_void, buf: *const u8, len: usize) -> i32;
+    fn myos_tls_read(conn: *mut c_void, buf: *mut u8, len: usize) -> i32;
+    fn myos_tls_close(conn: *mut c_void);
 }
 
-/// Syscall bridge for platform.c
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn myos_tls_gettimeofday_sec(sec: *mut i64) -> i32 {
-    match gettimeofday() {
-        Some((s, _)) => {
-            if !sec.is_null() {
-                unsafe { *sec = s };
-            }
-            0
-        }
-        None => -1,
-    }
-}
-
+/// Syscall bridge for platform.c: a read of the data fd, 0 when nothing came
+/// yet, -1 on an error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn myos_tls_fd_read(fd: i32, buf: *mut u8, len: usize) -> i32 {
     if buf.is_null() || len == 0 {
@@ -60,72 +51,87 @@ pub unsafe extern "C" fn myos_tls_fd_write(fd: i32, buf: *const u8, len: usize) 
     }
 }
 
-/// Page-aligned brk arena for mbedtls on aarch64/riscv64 (see platform.c).
-/// Must run after `myos_user::heap_init` so the bump allocator has observed the break.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn myos_tls_alloc_heap(len: usize) -> *mut u8 {
-    myos_user::alloc::alloc_aligned(len, 4096)
-}
-
-/// Fixed-capacity TLS session storage (must hold `myos_tls_conn`).
+/// A TLS connection: nothing until [`TlsConn::handshake`], the C side's
+/// connection (its `struct tls`, on the C heap) after.
 pub struct TlsConn {
-    raw: [u8; 96 * 1024],
+    raw: *mut c_void,
     live: bool,
 }
 
 impl TlsConn {
     pub const fn new() -> Self {
         Self {
-            raw: [0; 96 * 1024],
+            raw: core::ptr::null_mut(),
             live: false,
         }
     }
 
-    /// Perform TLS handshake on an already-connected TCP data fd.
-    /// `sni_host` must be a NUL-terminated hostname buffer.
-    pub fn handshake(&mut self, fd: usize, sni_host_nul: &[u8]) -> Result<(), i32> {
-        let need = unsafe { myos_tls_conn_size() };
-        if need > self.raw.len() {
-            return Err(-999);
-        }
-        self.raw[..need].fill(0);
+    /// Perform the TLS handshake on an already-connected TCP data fd.
+    /// `sni_host_nul` must be a NUL-terminated hostname buffer. On failure
+    /// [`TlsConn::error`] says why.
+    pub fn handshake(&mut self, fd: usize, sni_host_nul: &[u8]) -> Result<(), ()> {
+        self.close();
         let sni = sni_host_nul.as_ptr() as *const c_char;
-        let rc = unsafe { myos_tls_handshake(self.raw.as_mut_ptr(), fd as i32, sni) };
-        if rc != 0 {
-            return Err(rc);
+        self.raw = unsafe { myos_tls_handshake(fd as i32, sni) };
+        if self.raw.is_null() {
+            return Err(());
+        }
+        if unsafe { myos_tls_ready(self.raw) } == 0 {
+            return Err(());
         }
         self.live = true;
         Ok(())
     }
 
-    pub fn write_all(&mut self, mut buf: &[u8]) -> Result<(), i32> {
-        while !buf.is_empty() {
-            let n = unsafe { myos_tls_write(self.raw.as_mut_ptr(), buf.as_ptr(), buf.len()) };
-            if n < 0 {
-                return Err(n);
-            }
-            if n == 0 {
-                continue;
-            }
-            buf = &buf[n as usize..];
+    /// The last failure's reason (libtls's message), empty when none.
+    pub fn error(&self) -> &[u8] {
+        if self.raw.is_null() {
+            return b"out of memory";
+        }
+        let p = unsafe { myos_tls_error(self.raw) };
+        if p.is_null() {
+            return b"";
+        }
+        unsafe { CStr::from_ptr(p) }.to_bytes()
+    }
+
+    pub fn write_all(&mut self, buf: &[u8]) -> Result<(), ()> {
+        if !self.live {
+            return Err(());
+        }
+        let n = unsafe { myos_tls_write(self.raw, buf.as_ptr(), buf.len()) };
+        if n < 0 || n as usize != buf.len() {
+            return Err(());
         }
         Ok(())
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, i32> {
-        let n = unsafe { myos_tls_read(self.raw.as_mut_ptr(), buf.as_mut_ptr(), buf.len()) };
+    /// Bytes read, 0 when nothing came yet or the peer closed.
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
+        if !self.live {
+            return Err(());
+        }
+        let n = unsafe { myos_tls_read(self.raw, buf.as_mut_ptr(), buf.len()) };
         if n < 0 {
-            Err(n)
+            Err(())
         } else {
             Ok(n as usize)
         }
     }
 
+    /// close_notify when the connection is up, and everything freed.
     pub fn close(&mut self) {
-        if self.live {
-            unsafe { myos_tls_close(self.raw.as_mut_ptr()) };
-            self.live = false;
+        if !self.raw.is_null() {
+            unsafe { myos_tls_close(self.raw) };
+            self.raw = core::ptr::null_mut();
         }
+        self.live = false;
+    }
+}
+
+impl Default for TlsConn {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

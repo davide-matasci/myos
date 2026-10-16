@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build nginx (poll events, PCRE2, zlib, SSL over mbedtls) for the
+# Cross-build nginx (poll events, PCRE2, zlib, SSL over LibreSSL) for the
 # three arches, without its configure (ngx_auto_config.h is hand-written).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,7 +18,7 @@ fi
 "$ROOT/toolchain/newlib/build.sh"
 "$ROOT/ports/zlib/build.sh"
 "$(myos_port_dir pcre2)/build.sh"
-"$ROOT/ports/mbedtls/build.sh"
+"$ROOT/ports/libressl/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/nginx-myos-build"
@@ -152,8 +152,7 @@ build_arch() {
     -I"$WORK/src/http/modules"
     -I"$ROOT/target/zlib-${arch}/include"
     -I"$ROOT/target/pcre2-${arch}/include" -DPCRE2_STATIC
-    -I"$HERE/ssl" -I"$ROOT/target/mbedtls-${arch}/include" -I"$ROOT/ports/mbedtls"
-    -DMBEDTLS_CONFIG_FILE='"myos_mbedtls_config.h"'
+    -I"$ROOT/target/libressl-${arch}/include"
     -I"$HERE" -include myos_compat.h
   )
   local f o objs=()
@@ -161,8 +160,7 @@ build_arch() {
   echo "==> nginx ($triple)"
   rm -rf "$obj"
   mkdir -p "$obj"
-  for f in "${SRCS[@]}" ../objs/ngx_modules.c "$HERE/myos_stubs.c" \
-    "$HERE"/ssl/*.c; do
+  for f in "${SRCS[@]}" ../objs/ngx_modules.c "$HERE/myos_stubs.c"; do
     [[ "$f" == /* ]] || f="$WORK/src/$f"
     o="$obj/$(basename "$f" .c).o"
     if ! "$cc" "${cflags[@]}" -c "$f" -o "$o" 2>"$o.err"; then
@@ -189,9 +187,8 @@ build_arch() {
     --entry=_start -z max-page-size=4096 \
     "$lib/crt0.o" "${objs[@]}" "${extra[@]+"${extra[@]}"}" \
     -L"$lib" -L"$ROOT/target/zlib-${arch}/lib" -L"$ROOT/target/pcre2-${arch}/lib" \
-    -L"$ROOT/target/mbedtls-${arch}/lib" \
-    --start-group -lpcre2-8 -lz -lmbedtls -lmbedx509 -lmbedcrypto \
-    -lc -lm -lgloss -lg --end-group
+    -L"$ROOT/target/libressl-${arch}/lib" \
+    --start-group -lpcre2-8 -lz -lssl -lcrypto -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || true
   ls -lh "$out"
 }

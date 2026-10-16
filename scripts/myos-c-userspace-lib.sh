@@ -50,6 +50,7 @@ MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
 MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
+MYOS_LIBRESSL_VERSION="$MYOS_ROOT/target/.myos-libressl-version"
 MYOS_PCRE2_VERSION="$MYOS_ROOT/target/.myos-pcre2-version"
 MYOS_NGINX_VERSION="$MYOS_ROOT/target/.myos-nginx-version"
 MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
@@ -533,15 +534,9 @@ myos_curl_version_hash() {
         "$MYOS_ROOT/ports/curl/fetch.sh" \
         "$MYOS_ROOT/ports/curl/versions.env" \
         "$MYOS_ROOT/ports/curl/config-myos.h" || true
-      # Statically links mbedtls: rebuild when CA/FS config changes. Hash mbedtls
-      # SOURCES only (never target/.myos-mbedtls-version, a build output) so the
-      # registry tag is deterministic at pull time on a fresh workspace.
-      sha256sum "$MYOS_ROOT/ports/mbedtls/build.sh" \
-        "$MYOS_ROOT/ports/mbedtls/fetch.sh" \
-        "$MYOS_ROOT/ports/mbedtls/versions.env" \
-        "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" || true
-      find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
-        | sort -z | xargs -0 sha256sum 2>/dev/null || true
+      # Statically links LibreSSL: its inputs, not its build stamp (a job
+      # that only pulls the artifacts lacks it).
+      myos_libressl_version_hash
       myos_newlib_version_hash
     } | myos_hash
   )"
@@ -1000,6 +995,33 @@ myos_zlib_is_current() {
   done
 }
 
+# LibreSSL: its pin, scripts and source-list reader, and what it links
+# (newlib).
+myos_libressl_version_hash() {
+  local h
+  h="$(
+    {
+      myos_newlib_version_hash
+      find "$MYOS_ROOT/ports/libressl" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_libressl_is_current() {
+  local arch lib
+  [[ -f "$MYOS_LIBRESSL_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LIBRESSL_VERSION")" == "$(myos_libressl_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    for lib in crypto ssl tls; do
+      [[ -f "$MYOS_ROOT/target/libressl-${arch}/lib/lib${lib}.a" ]] || return 1
+    done
+    [[ -f "$MYOS_ROOT/target/libressl-${arch}/include/tls.h" ]] || return 1
+  done
+}
+
 myos_pcre2_version_hash() {
   local h
   h="$(
@@ -1023,7 +1045,7 @@ myos_pcre2_is_current() {
 }
 
 # nginx: its source pin, build script, config and patches, and what it
-# links (newlib, zlib, PCRE2, mbedtls).
+# links (newlib, zlib, PCRE2, LibreSSL).
 myos_nginx_version_hash() {
   local h
   h="$(
@@ -1031,10 +1053,7 @@ myos_nginx_version_hash() {
       myos_newlib_version_hash
       myos_zlib_version_hash
       myos_pcre2_version_hash
-      # mbedtls's source inputs, as lynx's: not its build stamp, which a job
-      # that only pulls the artifacts lacks.
-      find "$MYOS_ROOT/ports/mbedtls" -type f -print0 \
-        | sort -z | xargs -0 sha256sum
+      myos_libressl_version_hash
       find "$(myos_port_dir nginx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1097,16 +1116,9 @@ myos_lynx_version_hash() {
       sha256sum "$(myos_port_dir lynx)/build.sh"
       sha256sum "$(myos_port_dir lynx)/prepare.sh"
       sha256sum "$(myos_port_dir lynx)/fetch.sh"
-      # mbedtls is a lynx build dependency. Hash its checkout-stable SOURCE inputs,
-      # NOT the post-build target/.myos-mbedtls-version stamp: that stamp exists
-      # when lynx builds mbedtls itself but is absent in a downstream ``build`` job
-      # that only pulls the artifact, which made the push-pull tag drift and CI
-      # fail with ``registry miss lynx: no manifest`` (initramfs missing lynx ELF).
-      sha256sum "$MYOS_ROOT/ports/mbedtls/build.sh" "$MYOS_ROOT/ports/mbedtls/fetch.sh" \
-        "$MYOS_ROOT/ports/mbedtls/versions.env" "$MYOS_ROOT/ports/mbedtls/myos_mbedtls_config.h" \
-        2>/dev/null || true
-      find "$MYOS_ROOT/ports/mbedtls/include" -type f -print0 2>/dev/null \
-        | sort -z | xargs -0 sha256sum 2>/dev/null || true
+      # LibreSSL is a lynx build dependency: its inputs, not its build
+      # stamp, which a job that only pulls the artifacts lacks.
+      myos_libressl_version_hash
       find "$(myos_port_dir lynx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash

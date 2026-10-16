@@ -17,41 +17,22 @@ Modules: the default set (static, index, autoindex, proxy, fastcgi, uwsgi,
 scgi, memcached, rewrite, map, geo, limit_*, auth_basic with nginx's own
 password schemes, gzip, ssi, ...) and ssl, events through `poll`, regular
 expressions with `packages/pcre2`, gzip with `ports/zlib`, TLS with
-`ports/mbedtls`.
+`ports/libressl`.
 
-## HTTPS: the OpenSSL API over mbedtls
+## HTTPS over LibreSSL
 
-nginx's SSL code is written against OpenSSL; myos has one TLS library,
-mbedtls (curl's, lynx's). `ssl/` is the part of the OpenSSL 1.1.1 API
-nginx uses, implemented over it: `myos_openssl.h` (every `<openssl/*.h>`
-includes it), `myos_crypto.c` (errors, stacks, BIOs, digests, keys, the
-random generator, from the kernel's `getrandom`), `myos_x509.c`
-(certificates, names, CRLs, PEM) and `myos_ssl.c` (contexts, connections,
-sessions). What works:
+nginx's SSL code is written against the OpenSSL API; LibreSSL provides it
+(`ports/libressl`, the TLS library of curl, lynx and `user/tls` as well), so
+the modules build unchanged: TLS 1.2 and 1.3 servers and clients
+(`proxy_pass https://`), RSA and EC certificates and chains, SNI, client
+certificates and CRLs, OCSP stapling, the session cache and session
+tickets, `ssl_dhparam`, `ssl_ciphers` with OpenSSL's names, the `$ssl_*`
+variables. nginx's defaults apply (`ssl_protocols TLSv1.2 TLSv1.3`).
 
-- TLS 1.2 servers and clients (`proxy_pass https://`), ECDHE and RSA key
-  exchange with AES-GCM and AES-CBC, RSA and EC certificates (one of each
-  per server, as OpenSSL), chains, keys in PEM (PKCS#8, RSA, EC);
-- SNI: the server of the name the client sends, its certificates;
-  `proxy_ssl_server_name`;
-- client certificates (`ssl_verify_client`, `ssl_client_certificate`,
-  `ssl_trusted_certificate`, `ssl_crl`, `ssl_verify_depth`), the upstream's
-  (`proxy_ssl_verify`, `proxy_ssl_trusted_certificate`, its name);
-- `ssl_session_cache shared:...` (resumption through nginx's cache),
-  `ssl_session_timeout`;
-- `ssl_ciphers` with OpenSSL's names of the suites above (a keyword such
-  as `HIGH` means mbedtls's own list, strong suites only), `ssl_ecdh_curve`
-  (prime256v1, secp384r1), `ssl_prefer_server_ciphers`;
-- the variables (`$ssl_protocol`, `$ssl_cipher`, `$ssl_server_name`,
-  `$ssl_client_verify`, `$ssl_client_s_dn`, the fingerprint, serial and
-  dates, the certificate in PEM, ...); `$ssl_ciphers` is the suite
-  chosen (what the client offered is not kept).
-
-What does not, the way an OpenSSL build without it says so to nginx:
-TLS 1.3 (mbedtls's needs its PSA crypto, which the myos build leaves
-out), HTTP/2 and ALPN (issue #453), OCSP stapling, `ssl_session_tickets` keys, early
-data, `ssl_dhparam` (ECDHE only), `ssl_conf_command`, encrypted keys
-(`ssl_password_file`), engines, variables in `ssl_certificate`.
+Not there: HTTP/2 (its module is not built yet, issue #453), `ssl_conf_command`
+(LibreSSL has no `SSL_CONF`), engines, and TLS 1.3 session resumption
+(LibreSSL's TLS 1.3 server does not resume sessions; `$ssl_session_reused`
+is `.` on TLS 1.3, `r` on a TLS 1.2 server).
 
 ## On the system
 

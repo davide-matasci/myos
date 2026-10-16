@@ -13,7 +13,7 @@
 #
 # What it does not build yet is copied from this system: the C and std
 # userland the kernel embeds (the std demo programs, c-hello, oksh, getty
-# and login) and `http`, whose TLS library is mbedtls over newlib.
+# and login) and `http`, whose TLS library is LibreSSL over newlib.
 # docs/linux-compat.md, "Building myos in myos", lists what is missing.
 
 D=$1
@@ -61,7 +61,7 @@ else
 fi
 
 # 3. The userland the kernel embeds, from this system (building it needs
-# newlib and the patched std sysroot; `http` needs mbedtls over newlib, and
+# newlib and the patched std sysroot; `http` needs LibreSSL over newlib, and
 # MYOS_PREBUILT below has kernel/build.rs take it as it is).
 T=$R$SRC/target
 mkdir -p $T

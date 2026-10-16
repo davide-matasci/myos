@@ -273,7 +273,7 @@ pub fn write_slot_image(dest: &Path, kernel: &[u8], initramfs: &[u8], mut esp: V
         // `get-myos --upgrade` compares the mirror's with.
         DiskFile {
             path: "boot/a/version".into(),
-            data: crate::release::Release::current(Path::new(env!("CARGO_MANIFEST_DIR"))).text().into_bytes(),
+            data: crate::release::Release::of_build(Path::new(env!("CARGO_MANIFEST_DIR"))).text().into_bytes(),
         },
     ]);
     write_boot_disk(dest, &esp, &["boot/b"]);

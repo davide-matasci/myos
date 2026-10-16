@@ -373,36 +373,16 @@ fn main() -> ! {
         // NUL already present
 
         let mut tls = TlsConn::new();
-        if let Err(e) = tls.handshake(data, &sni[..t.host_len + 1]) {
+        if tls.handshake(data, &sni[..t.host_len + 1]).is_err() {
             // Success path: tls.close() then close(data). Fail used to close(data)
             // and exit() with the TCP PCB still live in netd — virtual-clock
             // retransmits then IRQ-off virtio TX-starved the shell for ~minutes.
+            write(b"tls err: ");
+            write(tls.error());
+            write(b"\n");
             tls.close();
             tcp_hangup(id);
             close(data);
-            write(b"tls err ");
-            let mut v = e;
-            if v < 0 {
-                write(b"-");
-                v = -v;
-            }
-            let mut digs = [0u8; 12];
-            let mut n = 0usize;
-            if v == 0 {
-                digs[0] = b'0';
-                n = 1;
-            }
-            while v > 0 && n < digs.len() {
-                digs[n] = b'0' + ((v % 10) as u8);
-                v /= 10;
-                n += 1;
-            }
-            while n > 0 {
-                n -= 1;
-                let b = [digs[n]];
-                write(&b);
-            }
-            write(b"\n");
             fail(b"tls handshake fail\n");
         }
         if tls.write_all(&req[..q]).is_err() {

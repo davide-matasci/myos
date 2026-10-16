@@ -10,9 +10,9 @@ fn main() {
         return;
     }
 
-    let build_sh = root.join("ports/mbedtls/build.sh");
+    let build_sh = root.join("ports/libressl/build.sh");
     println!("cargo:rerun-if-changed={}", build_sh.display());
-    println!("cargo:rerun-if-changed={}", root.join("ports/mbedtls").display());
+    println!("cargo:rerun-if-changed={}", root.join("ports/libressl").display());
 
     // Ensure newlib wrappers are on PATH for the port script.
     let newlib_bin = root.join("target/newlib-bin");
@@ -24,25 +24,25 @@ fn main() {
         .current_dir(&root)
         .env("PATH", &path)
         .output()
-        .expect("run ports/mbedtls/build.sh");
+        .expect("run ports/libressl/build.sh");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     print!("{stdout}");
     eprint!("{stderr}");
     if !output.status.success() {
         panic!(
-            "ports/mbedtls/build.sh failed (status {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            "ports/libressl/build.sh failed (status {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
             output.status.code()
         );
     }
 
-    let lib = root.join(format!("target/mbedtls-{arch}/lib"));
-    let inc = root.join(format!("target/mbedtls-{arch}/include"));
+    let lib = root.join(format!("target/libressl-{arch}/lib"));
+    let inc = root.join(format!("target/libressl-{arch}/include"));
     let newlib_inc = root.join(format!("target/newlib-{arch}/{arch}-unknown-myos/include"));
     let newlib_lib = root.join(format!(
         "target/newlib-{arch}/{arch}-unknown-myos/lib"
     ));
-    println!("cargo:rerun-if-changed={}", lib.join("libmbedtls.a").display());
+    println!("cargo:rerun-if-changed={}", lib.join("libtls.a").display());
 
     let glue = manifest.join("src/platform.c");
     println!("cargo:rerun-if-changed={}", glue.display());
@@ -76,15 +76,10 @@ fn main() {
         .arg("-fPIC")
         .arg("-Os")
         .arg("-nostdinc")
-        .arg("-I")
-        .arg(root.join("ports/mbedtls/include"))
         .arg("-isystem")
         .arg(&newlib_inc)
         .arg("-I")
         .arg(&inc)
-        .arg("-I")
-        .arg(root.join("ports/mbedtls"))
-        .arg("-DMBEDTLS_CONFIG_FILE=\"myos_mbedtls_config.h\"")
         .arg("-c")
         .arg(&glue)
         .arg("-o")
@@ -112,14 +107,17 @@ fn main() {
     if !ar_status.success() {
         panic!("ar libmyos_tls_plat.a failed");
     }
-    // Link order: dependents before providers (plat → mbedtls → newlib).
+    // Link order: dependents before providers (plat → libtls → libssl →
+    // libcrypto → newlib).
     println!("cargo:rustc-link-search=native={out_dir}");
     println!("cargo:rustc-link-lib=static=myos_tls_plat");
     println!("cargo:rustc-link-search=native={}", lib.display());
-    println!("cargo:rustc-link-lib=static=mbedtls");
-    println!("cargo:rustc-link-lib=static=mbedx509");
-    println!("cargo:rustc-link-lib=static=mbedcrypto");
-    // mbedtls needs libc string/time/alloc; reuse newlib+libgloss (no crt0).
+    println!("cargo:rustc-link-lib=static=tls");
+    println!("cargo:rustc-link-lib=static=ssl");
+    println!("cargo:rustc-link-lib=static=crypto");
+    // LibreSSL needs libc (malloc, stdio for the CA file, time); reuse
+    // newlib+libgloss (no crt0). Its malloc and the Rust heap share the
+    // break (user/lib alloc.rs, libgloss _sbrk).
     println!("cargo:rustc-link-search=native={}", newlib_lib.display());
     println!("cargo:rustc-link-lib=static=c");
     println!("cargo:rustc-link-lib=static=gloss");
