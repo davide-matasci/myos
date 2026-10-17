@@ -1,10 +1,10 @@
 # Wi-Fi
 
 Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
-(`user/wifi`). Today it scans, through the test boots' simulated radio;
-the radio of a real laptop (Intel's AX201, a port of OpenBSD's `iwx`
-over `/dev/pci`), association with a network, WPA2 and handing frames
-to netd come next.
+(`user/wifi`). Today it scans and joins an open network, through the test
+boots' simulated radio; handing frames to netd, WPA2 and the radio of a
+real laptop (Intel's AX201, a port of OpenBSD's `iwx` over `/dev/pci`)
+come next.
 
 ## `wifi`
 
@@ -13,6 +13,9 @@ to netd come next.
 | `wifi daemon [NIC]` | drives the radio: the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
 | `wifi scan` | a scan of the 2.4 GHz channels; prints the networks that answered |
 | `wifi list` | what the last scan found |
+| `wifi connect SSID` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none); open networks only for now |
+| `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
+| `wifi disconnect` | leave the network |
 
 A command is one line over one connection to `wifid`; the daemon answers
 and ends the connection. A network is a line `BSSID CHANNEL RSSI SECURITY
@@ -36,6 +39,13 @@ request and listens 120 ms for probe responses and beacons (every
 (`radio.rs`): tuned to a channel, it sends and hears 802.11 frames, and
 says its address.
 
+Joining (`mlme.rs`) is open-system authentication, then association: a
+request and its answer each, sent again (three times, 300 ms apart) when
+no answer comes. A refusal names the step and the status code the access
+point gave (`error: association refused, status 43`). `connect` first
+leaves the network it is on (a deauthentication), and an access point's
+deauthentication or disassociation ends the link.
+
 ## The simulated radio
 
 QEMU has no Wi-Fi device, so the test boots get a simulated one: a second
@@ -55,7 +65,11 @@ its FCS:
 
 The radio hears only the frames of the channel it is tuned to. The
 launcher's access points beacon on their channels every 100 TU and answer
-the probe requests on them (for their SSID or the wildcard). They beacon
+the probe requests on them (for their SSID or the wildcard), take
+open-system authentication and association (a WPA2 one refuses an
+association request without an RSN element: status 43), give each
+association the next association id, and let a station go at its
+deauthentication. They beacon
 only for 5 seconds after the radio last sent a frame: a boot that never
 scans is not woken thirty times a second for nothing.
 
@@ -65,5 +79,8 @@ scans is not woken thirty times a second for nothing.
 | `myos-wpa2` | `02:00:5e:00:01:06` | 6 | −55 | WPA2-PSK (CCMP) |
 | `myos-far` | `02:00:5e:00:01:0b` | 11 | −82 | WPA2-PSK (CCMP) |
 
-The test (`user/wifi/test.sh`, tag `wifi`) starts the daemon, scans and
-expects those three lines, from `scan` and `list` alike.
+The tests (`user/wifi/test.sh`, tag `wifi`) start the daemon. `wifi_scan`
+scans and expects those three lines, from `scan` and `list` alike.
+`wifi_connect` joins `myos-open` (`status` names it, aid 1), is refused
+`myos-wpa2` (not supported yet, the open network left meanwhile), joins
+again (aid 2) and disconnects.
