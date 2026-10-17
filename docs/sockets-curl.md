@@ -118,20 +118,21 @@ response. An accepted connection whose peer is gone before netd saw it
 established (its FIN came with the handshake's last ACK: a health check
 that said its piece and left) is hung up the same way, so the process that
 accepts it reads what came and the end at once instead of waiting for a
-client until its own timeout with the index pinned. A conversation its
-process closed gives its index back when the TCP close completes, or 60
-seconds after the close when the peer never answers it (a scanner behind
-a firewall, a client that keeps a half-closed connection): netd aborts
-the socket then, as Linux gives up on an orphaned connection. Such
-closing conversations are netd's alone, netfs freed its slot when the
-close was acknowledged, so they do not show in `/net/tcp/N/status`; they
-too ran a VPS out of indices, with the table looking empty. A new client
-clone may get that slot while netd still closes the old connection there,
-which can still report on it (its peer's FIN makes it say `hangup`):
-netfs ignores what netd says about a cloned index until netd answers the
-clone, so the old connection's news is not taken for the new one's (that
-late `hangup` refused the new connection's connect, issue #473). The old
-socket itself is leaked in netd then (issue #483). A listener's
+client until its own timeout with the index pinned. A connection its
+process closed goes on closing in netd, apart from the conversation table:
+its index is free in netd as in netfs, which freed its slot when the close
+was acknowledged. netd sends what was written before the close and the FIN,
+reads and drops what the peer still sends, and forgets the socket when the
+TCP close completes, or aborts it 60 seconds after the close when the peer
+never answers it (a scanner behind a firewall, a client that keeps a
+half-closed connection), as Linux gives up on an orphaned connection.
+Kept at its index as a closing conversation, it pinned the index (these
+ran a VPS out of indices, with the status files looking empty), said
+`hangup` about it after a new clone got it (netfs ignores what netd says
+about a cloned index until netd answers the clone, issue #473), and was
+lost when that clone overwrote it: its socket and buffers stayed in netd
+for good, which ran out of memory after a few dozen loopback connections
+(issue #483). A listener's
 index is freed when its last holder closes it (a forked child's close
 does not reach netd), its socket with it, and the connections it had
 accepted that nobody took are reset; it used to live on with its socket,
@@ -163,10 +164,13 @@ sent ones netd has not yet put in the socket, `rxroom N` what netfs can
 take, `local a.b.c.d!p` its local address, `sendq N` in the socket and not
 yet acknowledged, `recvq N` received and not yet handed to netfs), then a
 line per handshake in progress (`- tcp SynReceived peer a.b.c.d!p port P
-handshake Ns`: not a conversation yet, no index), refreshed once a second. It shows what the status files cannot:
-a closing conversation netfs has already let go of, one accepted and not
-yet taken, the SYNs a scanner left unanswered. When connections are reset
-at the accept, this is where the indices went.
+handshake Ns`: not a conversation yet, no index) and per connection
+closing after its process closed it (`- tcp STATE peer a.b.c.d!p closing
+Ns tx N sendq N`, no index either), refreshed once a second. It shows
+what the status files cannot: the connections still closing after their
+processes let go, one accepted and not yet taken, the SYNs a scanner left
+unanswered. When connections are reset at the accept, this is where the
+indices went.
 
 netd has 128 conversations (TCP, UDP and ICMP together; netfs has as many
 slots), each a line of `/net/convs` while in use. A server on the

@@ -285,6 +285,22 @@ struct Handshake {
     since: Instant,
 }
 
+/// A TCP connection its holder closed (REQ_CLOSE) that has still to end:
+/// queued data and the FIN to send, the peer's FIN to wait for. netfs frees
+/// the index at that close's "hangup", so the socket lingers here, nobody's,
+/// until Closed or CLOSE_GRACE. It used to stay at the index as a closing
+/// conversation, and the next clone of the index overwrote it: the socket
+/// and its buffers stayed in the SocketSet for good, and netd's heap ran out
+/// after a few dozen connections (issue #483).
+struct Lingering {
+    handle: SocketHandle,
+    /// Data written before the close that the socket had no room for yet
+    /// (`Conv::pending`); the FIN follows it.
+    pending: Vec<u8>,
+    /// The conversation's `closing_since`.
+    since: Option<Instant>,
+}
+
 fn parse_u8(s: &[u8]) -> Option<(u8, usize)> {
     if s.is_empty() || !s[0].is_ascii_digit() {
         return None;
@@ -576,6 +592,7 @@ fn convs_text(
     convs: &[Conv; MAX_CONV],
     sockets: &SocketSet<'_>,
     handshakes: &[Handshake],
+    lingering: &[Lingering],
     now: Instant,
 ) -> String {
     let mut s = String::new();
@@ -649,6 +666,15 @@ fn convs_text(
         let l = hs.listener as usize;
         let _ = writeln!(s, " port {} handshake {}s", convs[l].listen_port, (now - hs.since).secs());
     }
+    for l in lingering {
+        let sock = sockets.get::<tcp::Socket>(l.handle);
+        let _ = write!(s, "- tcp {:?}", sock.state());
+        if let Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) = sock.remote_endpoint() {
+            let _ = write!(s, " peer {a}!{port}");
+        }
+        let secs = l.since.map_or(0, |t| (now - t).secs());
+        let _ = writeln!(s, " closing {secs}s tx {} sendq {}", l.pending.len(), sock.send_queue());
+    }
     s
 }
 
@@ -694,12 +720,18 @@ fn ndb_text(cfg: &dhcpv4::Config<'_>) -> String {
     s
 }
 
-fn handle_clone(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, proto: u8, conv: u16) {
+fn handle_clone(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    lingering: &mut Vec<Lingering>,
+    proto: u8,
+    conv: u16,
+) {
     let i = conv as usize;
     if i >= MAX_CONV {
         return;
     }
-    drop_conv(convs, sockets, i);
+    release_conv(convs, sockets, lingering, i);
     match proto {
         PROTO_ICMP => {
             let rx = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
@@ -841,6 +873,58 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
         sockets.remove(h);
     }
     retire(convs, i);
+}
+
+/// The holder let go of conversation `i` (its REQ_CLOSE; a clone of the
+/// index, netfs having freed it): a TCP socket that has still to end goes
+/// on closing in `lingering` and the index is free.
+fn release_conv(
+    convs: &mut [Conv; MAX_CONV],
+    sockets: &mut SocketSet<'_>,
+    lingering: &mut Vec<Lingering>,
+    i: usize,
+) {
+    drop_conv(convs, sockets, i);
+    let c = &mut convs[i];
+    if !c.closing && !c.closing_after_flush {
+        return;
+    }
+    if let Some(h) = c.handle.take() {
+        if c.closing_after_flush && c.pending.is_empty() {
+            sockets.get_mut::<tcp::Socket>(h).close();
+        }
+        lingering.push(Lingering {
+            handle: h,
+            pending: core::mem::take(&mut c.pending),
+            since: c.closing_since,
+        });
+    }
+    *c = Conv::EMPTY;
+}
+
+/// Finish the lingering closes: the socket goes once Closed, or is aborted
+/// CLOSE_GRACE after the close began, as Linux gives up on an orphaned
+/// connection. What the peer still sends is read and dropped.
+fn sweep_lingering(sockets: &mut SocketSet<'_>, lingering: &mut Vec<Lingering>, now: Instant) {
+    lingering.retain_mut(|l| {
+        let s = sockets.get_mut::<tcp::Socket>(l.handle);
+        if !l.pending.is_empty() && s.can_send() {
+            let n = s.send_slice(&l.pending).unwrap_or(0);
+            l.pending.drain(..n);
+            if l.pending.is_empty() {
+                s.close();
+            }
+        }
+        while s.can_recv() && s.recv(|b| (b.len(), ())).is_ok() {}
+        let since = *l.since.get_or_insert(now);
+        let done = s.state() == tcp::State::Closed;
+        if !done && now - since < CLOSE_GRACE {
+            return true;
+        }
+        s.abort();
+        sockets.remove(l.handle);
+        false
+    });
 }
 
 /// The last holder of a listener closed it (netfs reports that close only,
@@ -1874,6 +1958,7 @@ fn handle_req(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
     handshakes: &mut Vec<Handshake>,
+    lingering: &mut Vec<Lingering>,
     iface: &mut Interface,
     lo: &mut Interface,
     device: &Net0Device,
@@ -1894,7 +1979,7 @@ fn handle_req(
     let payload = &msg[REQ_HDR..REQ_HDR + plen];
     match typ {
         REQ_CLONE => {
-            handle_clone(convs, sockets, proto, conv);
+            handle_clone(convs, sockets, lingering, proto, conv);
             reply(chan, REP_CLONE_OK, conv, 0, &[]);
         }
         REQ_CTL => handle_ctl(convs, sockets, iface, lo, chan, conv, payload, local_ports),
@@ -1905,8 +1990,8 @@ fn handle_req(
             }
             if convs.get(conv as usize).is_some_and(|c| matches!(c.kind, Kind::Tcp) && c.listen_port != 0) {
                 close_listener(convs, sockets, handshakes, chan, conv as usize);
-            } else {
-                drop_conv(convs, sockets, conv as usize);
+            } else if (conv as usize) < MAX_CONV {
+                release_conv(convs, sockets, lingering, conv as usize);
             }
             reply(chan, REP_STATUS, conv, 0, b"hangup");
         }
@@ -1936,6 +2021,7 @@ fn main() -> ! {
     let dhcp = sockets.add(dhcpv4::Socket::new());
     let mut convs = [Conv::EMPTY; MAX_CONV];
     let mut handshakes: Vec<Handshake> = Vec::new();
+    let mut lingering: Vec<Lingering> = Vec::new();
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
     let mut dhcp_ok =
@@ -1972,6 +2058,7 @@ fn main() -> ! {
                 &mut convs,
                 &mut sockets,
                 &mut handshakes,
+                &mut lingering,
                 &mut iface,
                 &mut lo,
                 &device,
@@ -2025,6 +2112,7 @@ fn main() -> ! {
                 Some(_) => {}
             }
         }
+        sweep_lingering(&mut sockets, &mut lingering, now);
         // Handoff + deliver BEFORE orphan/hungup destroy. #161's accept queue
         // hands off Established with connected=false; if the peer
         // already pushed payload+FIN, iface.poll leaves CloseWait with RX data.
@@ -2095,7 +2183,7 @@ fn main() -> ! {
 
         if now - convs_text_at >= Duration::from_secs(1) {
             convs_text_at = now;
-            let text = convs_text(&convs, &sockets, &handshakes, now);
+            let text = convs_text(&convs, &sockets, &handshakes, &lingering, now);
             if text != convs_text_last {
                 // In pieces of what one reply carries, `status` the piece's
                 // offset: netfs starts the table over at 0 (a full table's
