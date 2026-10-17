@@ -136,10 +136,14 @@ impl Mode {
     /// (1000 tests at a few hundred milliseconds each under TCG) after
     /// installing the packages; a quick list must fail well inside the
     /// 5-minute CI job.
-    pub fn budget(&self, linux_compat: bool) -> Duration {
+    /// riscv64 (`slow`), the slowest under TCG, gets half as much again,
+    /// as in CI (`scripts/ci-select.py`): its quick list took 232 s of the
+    /// 240 on a 4-core host with nothing else running.
+    pub fn budget(&self, linux_compat: bool, slow: bool) -> Duration {
+        let scale = |s: u64| Duration::from_secs(if slow { s * 3 / 2 } else { s });
         match self {
             Mode::Tests(sel) if sel.budget.is_some() => sel.budget.unwrap(),
-            Mode::Tests(sel) if sel.quick() => Duration::from_secs(if linux_compat { 300 } else { 240 }),
+            Mode::Tests(sel) if sel.quick() => scale(if linux_compat { 300 } else { 240 }),
             Mode::Tests(_) => Duration::from_secs(3000),
             Mode::Reboot { .. } | Mode::Installed => Duration::from_secs(300),
         }
@@ -495,7 +499,7 @@ fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
 /// stdio. Does not return: exits the process with the result.
 /// The outcome: every test passed (a crash, a stall or the budget running out
 /// ends the launcher at once instead).
-pub fn run(mut child: Child, mode: &Mode, linux_compat: bool) -> Outcome {
+pub fn run(mut child: Child, mode: &Mode, linux_compat: bool, slow: bool) -> Outcome {
     let mut stdin = child.stdin.take().expect("qemu stdin");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let mut stdout = child.stdout.take().expect("qemu stdout");
@@ -539,7 +543,7 @@ pub fn run(mut child: Child, mode: &Mode, linux_compat: bool) -> Outcome {
     });
 
     let started = Instant::now();
-    let budget = mode.budget(linux_compat);
+    let budget = mode.budget(linux_compat, slow);
     // The descriptors: a `HOST <port> ...` line runs that port's host script.
     let ports = crate::ports::load_all(&repo_root());
     let deadline = started + budget;
