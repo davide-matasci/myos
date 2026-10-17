@@ -265,7 +265,12 @@ overrides and home directories; which of those move there is its own
 change. Only the
 administrator may write it (the policy's `sys.file` label). On a disk larger
 than the image (a VPS), the space after it is left unused: growing the
-partition to the disk needs the GPT rewritten, which can come later.
+partition to the disk needs the GPT rewritten and the ext2 grown (issue
+#488). So a disk written from the image has 64 MiB of `/data`: room for
+get-myos's apps, not for an Alpine root (a browser's takes some hundreds
+of MiB; apk stops with `No space left on device`). A VPS that needs one
+installs with `get-myos --install` from the ISO (below), which gives the
+data partition the rest of the disk.
 
 ## The first install
 

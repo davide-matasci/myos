@@ -159,14 +159,18 @@ itself; issue #480).
 [STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
 `peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
 process has its files, `released` once it closed them, `connected`,
-`hungup`, `closing Ns`), then a line per handshake in progress (`- tcp
-SynReceived peer a.b.c.d!p port P handshake Ns`: not a conversation yet,
-no index) and per connection closing after its process closed it (`- tcp
-STATE peer a.b.c.d!p closing Ns`, no index either), refreshed once a
-second. It shows what the status files cannot: the connections still
-closing after their processes let go, one accepted and not yet taken, the
-SYNs a scanner left unanswered. When connections are reset
-at the accept, this is where the indices went.
+`hungup`, `closing Ns`; for a connection, where its bytes wait: `tx N`
+sent ones netd has not yet put in the socket, `rxroom N` what netfs can
+take, `local a.b.c.d!p` its local address, `sendq N` in the socket and not
+yet acknowledged, `recvq N` received and not yet handed to netfs), then a
+line per handshake in progress (`- tcp SynReceived peer a.b.c.d!p port P
+handshake Ns`: not a conversation yet, no index) and per connection
+closing after its process closed it (`- tcp STATE peer a.b.c.d!p closing
+Ns tx N sendq N`, no index either), refreshed once a second. It shows
+what the status files cannot: the connections still closing after their
+processes let go, one accepted and not yet taken, the SYNs a scanner left
+unanswered. When connections are reset at the accept, this is where the
+indices went.
 
 netd has 128 conversations (TCP, UDP and ICMP together; netfs has as many
 slots), each a line of `/net/convs` while in use. A server on the

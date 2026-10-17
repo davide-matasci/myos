@@ -17,7 +17,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ext2fs::{Device, Fs, Kind};
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT};
+use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT, VFS_ENOSPC};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
@@ -95,10 +95,12 @@ fn rc<T>(r: Option<ext2fs::Result<T>>) -> i32 {
     }
 }
 
-/// A count of bytes as the hooks return it, or -1.
+/// A count of bytes as the hooks return it, or the failure: a full
+/// filesystem told apart from the rest.
 fn count(r: Option<ext2fs::Result<usize>>) -> i32 {
     match r {
         Some(Ok(n)) => n.min(i32::MAX as usize) as i32,
+        Some(Err(ext2fs::Error::NoSpace)) => VFS_ENOSPC,
         _ => -1,
     }
 }
