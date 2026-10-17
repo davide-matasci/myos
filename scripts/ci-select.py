@@ -49,8 +49,10 @@ MACHINES = [
 # them, the heavy smoke, stays with the rest).
 HEAVY_GROUPS = ["ostest", "alpine"]
 # The budget of a boot in minutes, by what it runs; riscv64 (the slowest
-# under TCG) gets half as much again.
-BUDGETS = {"light": 20, "smoke": 8, "ostest": 15, "alpine": 12}
+# under TCG) gets half as much again. A budget is a guard against a hang,
+# not a target: the x86 Alpine boot takes 11 minutes on a good runner and
+# a slow one adds a quarter.
+BUDGETS = {"light": 20, "smoke": 8, "ostest": 15, "alpine": 15}
 # A module's directory selects these tags (its own name otherwise).
 MODULE_TAGS = {
     "console": {"console", "tty", "mouse"},
