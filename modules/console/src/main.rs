@@ -1,9 +1,10 @@
 //! Console module: the framebuffer text screen (ANSI-capable, status-line
 //! colouring, block cursor), `/dev/fb` for programs that draw on the screen
 //! themselves ([`fbdev`]), the local keyboards (PS/2 on x86_64,
-//! virtio-input on the `virt` boards; raw presses and releases at
-//! `/dev/console/kbd`, [`kbdev`]), the loadable keymap, and the pointer
-//! other modules' drivers feed (`/dev/console/mouse`, [`mouse`]).
+//! virtio-input on the `virt` boards, and the ones other modules' drivers
+//! feed, [`keyboards`]; raw presses and releases at `/dev/console/kbd`,
+//! [`kbdev`]), the loadable keymap, and the pointer other modules' drivers
+//! feed (`/dev/console/mouse`, [`mouse`]).
 //!
 //! The screen is one of [`SCREENS`] text screens at a time (`docs/tty.md`):
 //! 0 the console's, 1–9 the ttys'. Each keeps its cells, so the kernel
@@ -20,6 +21,7 @@ mod fbdev;
 mod font;
 mod kbd;
 mod kbdev;
+mod keyboards;
 mod keymap;
 mod mouse;
 #[cfg(target_arch = "x86_64")]
@@ -194,11 +196,13 @@ unsafe extern "C" fn blink() {
 }
 
 unsafe extern "C" fn keyboard_present() -> i32 {
-    i32::from(keyboard::present())
+    i32::from(keyboard::present() || keyboards::attached())
 }
 
+/// The keyboards wake the console's readers: the console's own by its
+/// interrupt, the other modules' always (nothing to poll).
 unsafe extern "C" fn keyboard_irq() -> i32 {
-    i32::from(keyboard::irq())
+    i32::from(if keyboard::present() { keyboard::irq() } else { true })
 }
 
 /// The text screen is there and not taken over by `/dev/fb`. No lock: the
@@ -213,7 +217,7 @@ unsafe extern "C" fn keyboard_poll() -> i32 {
     if let Some(n) = kbd::take_screen() {
         return CONSOLE_KEY_SCREEN + n as i32;
     }
-    let b = keyboard::poll_byte();
+    let b = keyboard::poll_byte().or_else(keyboards::poll_byte);
     if let Some(n) = kbd::take_screen() {
         // The byte before it is not lost: it comes first.
         return match b {
@@ -287,6 +291,9 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     }
     if mouse::init() != 0 {
         status_fail("console: /dev/console/mouse");
+    }
+    if keyboards::init() != 0 {
+        status_fail("console: keyboard service");
     }
     let rc = api.console_register(&OPS);
     if screen && fbdev::mount(info) != 0 {

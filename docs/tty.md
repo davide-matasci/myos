@@ -137,7 +137,8 @@ The serial port gets the bytes as written.
 ## The raw keyboard
 
 `/dev/console/kbd` is the local keyboard (PS/2 on x86_64, virtio-input on
-aarch64 and riscv64) as key events, for programs that need more than the
+aarch64 and riscv64, and the USB keyboards on every arch) as key events,
+for programs that need more than the
 characters a terminal gives: a game, a graphical session drawing on
 `/dev/fb` (`docs/fb.md`). One event per line:
 
@@ -165,7 +166,18 @@ holds 128 events and drops new ones while full. The keyboard interrupts
 on input where the platform can route it (IRQ 1 through the I/O APIC, the
 virtio-input device's interrupt); otherwise it is polled every 10 ms while
 someone waits. The file exists when the
-console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)).
+console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)),
+or from the first USB keyboard on.
+
+A keyboard another module drives (`usb_hid`'s USB keyboards,
+`docs/usb.md`) hands the console its presses and releases through the
+`keyboard` service ([`modules/console/src/keyboards.rs`](../modules/console/src/keyboards.rs)),
+in the same `KEY_*` codes; they go where the console's own keyboard's go
+(this file, the shown screen's terminal, `Alt+N`), and every keyboard
+shares the modifiers and Caps Lock. A USB keyboard does not repeat a held
+key, so the console does, for the terminals only: 500 ms after the press,
+then every 33 ms, until the key is released or another is pressed. Its
+Caps Lock LED follows the console's Caps Lock.
 
 Keyboard and serial input goes through the line discipline as it arrives,
 whether or not anything reads the terminal (the `console-input` kernel

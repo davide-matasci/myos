@@ -5,15 +5,15 @@
 //! `/dev/console/mouse` ([`crate::mouse`]); the first other one is the
 //! keyboard.
 //!
-//! UTM SE routes the iPad keyboard through `usb-kbd` by default; add
-//! `virtio-keyboard-device` in the VM's QEMU settings (and remove `usb-kbd`
-//! if both fight). Interrupt-driven when the node's interrupt can be routed
+//! UTM SE routes the iPad keyboard through `usb-kbd` by default, which
+//! `usb_hid` drives ([`crate::keyboards`]). Interrupt-driven when the
+//! node's interrupt can be routed
 //! (the handler only acks it and wakes the console's readers, which take
 //! the events), polled otherwise.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::kbd::{self, ByteFifo};
+use crate::kbd::{ByteFifo, LinuxKeys};
 use myos_abi::Lock as Mutex;
 use crate::status_ok;
 use virtq::{dcache_civac, dsb};
@@ -130,38 +130,10 @@ static POINTER_POLLED: AtomicBool = AtomicBool::new(false);
 static READY: AtomicBool = AtomicBool::new(false);
 /// The keyboard interrupts on events ([`interrupt`]); each `Dev` says its own.
 static IRQ: AtomicBool = AtomicBool::new(false);
-static SHIFT: AtomicBool = AtomicBool::new(false);
-static ALTGR: AtomicBool = AtomicBool::new(false);
-/// Left Alt (the right one is AltGr).
-static ALT: AtomicBool = AtomicBool::new(false);
-static CTRL: AtomicBool = AtomicBool::new(false);
+/// The keyboard's modifiers.
+static KEYS: Mutex<LinuxKeys> = Mutex::new(LinuxKeys::new());
 /// Bytes (single or multi-byte CSI sequences) waiting to drain from `poll_byte`.
 static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
-
-/// Linux `KEY_*` codes for arrows (these differ from PS/2 set-1 makes).
-const KEY_LEFT: u16 = 105;
-const KEY_UP: u16 = 103;
-const KEY_RIGHT: u16 = 106;
-const KEY_DOWN: u16 = 108;
-
-/// Map a virtio/Linux `KEY_*` code to the kernel's canonical set-1 space.
-fn canonical(code: u16) -> Option<u8> {
-    // Most Linux codes match PS/2 set-1 makes; arrows differ, so handle them
-    // explicitly first.
-    match code {
-        KEY_UP => Some(kbd::KEY_UP),
-        KEY_DOWN => Some(kbd::KEY_DOWN),
-        KEY_LEFT => Some(kbd::KEY_LEFT),
-        KEY_RIGHT => Some(kbd::KEY_RIGHT),
-        _ => {
-            if code > 127 {
-                None
-            } else {
-                Some(code as u8)
-            }
-        }
-    }
-}
 
 fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8, irq: bool) {
     dcache_civac(desc, 4096);
@@ -282,67 +254,8 @@ fn pointer_event(p: &mut Pointer, type_: u16, code: u16, value: i32) {
 }
 
 fn handle_event(type_: u16, code: u16, value: u32) {
-    if type_ == EV_SYN {
-        return;
-    }
-    if type_ != EV_KEY {
-        return;
-    }
-    // Value 2 is evdev's auto-repeat: the raw keyboard has presses and
-    // releases only (its reader repeats keys itself).
-    if value != 2 {
-        kbd::raw_key(code, value != 0);
-    }
-    // Linux KEY_* codes for modifiers.
-    const KEY_LEFTSHIFT: u16 = 42;
-    const KEY_RIGHTSHIFT: u16 = 54;
-    const KEY_LEFTCTRL: u16 = 29;
-    const KEY_RIGHTCTRL: u16 = 97;
-    const KEY_LEFTALT: u16 = 56;
-    const KEY_RIGHTALT: u16 = 100; // AltGr
-    if value == 0 {
-        match code {
-            KEY_LEFTSHIFT | KEY_RIGHTSHIFT => SHIFT.store(false, Ordering::SeqCst),
-            KEY_LEFTALT => ALT.store(false, Ordering::SeqCst),
-            KEY_RIGHTALT => ALTGR.store(false, Ordering::SeqCst),
-            KEY_LEFTCTRL | KEY_RIGHTCTRL => CTRL.store(false, Ordering::SeqCst),
-            _ => {}
-        }
-        return;
-    }
-    match code {
-        KEY_LEFTSHIFT | KEY_RIGHTSHIFT => {
-            SHIFT.store(true, Ordering::SeqCst);
-        }
-        KEY_LEFTALT => {
-            ALT.store(true, Ordering::SeqCst);
-        }
-        KEY_RIGHTALT => {
-            ALTGR.store(true, Ordering::SeqCst);
-        }
-        KEY_LEFTCTRL | KEY_RIGHTCTRL => {
-            CTRL.store(true, Ordering::SeqCst);
-        }
-        _ => {
-            // Held by `/dev/console/kbd`: no characters for the tty.
-            if kbd::grabbed() {
-                return;
-            }
-            let Some(kc) = canonical(code) else {
-                return;
-            };
-            if kbd::screen_key(kc, ALT.load(Ordering::SeqCst)) {
-                return;
-            }
-            if let Some(kb) = kbd::translate(
-                kc,
-                SHIFT.load(Ordering::SeqCst),
-                ALTGR.load(Ordering::SeqCst),
-                CTRL.load(Ordering::SeqCst),
-            ) {
-                FIFO.lock().push_bytes(kb.as_slice());
-            }
-        }
+    if type_ == EV_KEY {
+        KEYS.lock().event(code, value, &mut FIFO.lock());
     }
 }
 
@@ -507,10 +420,6 @@ pub fn init() {
         IRQ.store(irq, Ordering::SeqCst);
         *DEV.lock() = Some(dev);
         READY.store(true, Ordering::SeqCst);
-        SHIFT.store(false, Ordering::SeqCst);
-        ALTGR.store(false, Ordering::SeqCst);
-        ALT.store(false, Ordering::SeqCst);
-        CTRL.store(false, Ordering::SeqCst);
         status_ok("keyboard");
     }
 }

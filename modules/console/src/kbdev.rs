@@ -68,7 +68,7 @@ unsafe extern "C" fn kbd_poll(_: *const u8, _: usize, changes: *mut u64) -> u32 
     keyboard::pump();
     // SAFETY: the kernel passes a live out-parameter.
     unsafe { *changes = kbd::raw_changes() };
-    let recheck = if keyboard::irq() { 0 } else { MYOS_POLL_RECHECK };
+    let recheck = if keyboard::present() && !keyboard::irq() { MYOS_POLL_RECHECK } else { 0 };
     recheck | if kbd::raw_pending() { MYOS_POLLIN } else { 0 }
 }
 
