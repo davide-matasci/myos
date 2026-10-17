@@ -64,7 +64,17 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 45: a filesystem's `write` and `write_ino` hooks and
 /// [`KernelApi::vfs_write`] tell a full filesystem apart ([`VFS_ENOSPC`],
 /// the caller's `ENOSPC`).
-pub const ABI_VERSION: u32 = 45;
+/// 46: [`ModuleVfsOps::mmap`] says how its page is mapped
+/// ([`MYOS_MMAP_UNCACHED`]: a device's registers),
+/// [`KernelApi::pci_irq_enable`] gives a function without MSI-X its MSI
+/// ([`MYOS_IRQ_MSI`], x86_64), and a PCI function has one owner at a time
+/// ([`KernelApi::pci_claim`], `pci_release`, `pci_owner`).
+pub const ABI_VERSION: u32 = 46;
+
+/// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
+/// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
+/// platform's attributes for the address).
+pub const MYOS_MMAP_UNCACHED: u32 = 1;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -80,6 +90,9 @@ pub type IrqHandler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 /// `pci_irq_enable` out value: the device is on legacy INTx (read its ISR
 /// register in the handler to deassert the line).
 pub const MYOS_IRQ_INTX: u16 = 0xFFFF;
+/// `pci_irq_enable` out value: the device raises its one MSI message
+/// (x86_64, a function without MSI-X); nothing to deassert.
+pub const MYOS_IRQ_MSI: u16 = 0xFFFE;
 
 /// How full a filesystem is ([`ModuleVfsOps::statfs`], `statvfs(3)`):
 /// sizes in blocks of `bsize` bytes.
@@ -196,8 +209,10 @@ pub struct ModuleVfsOps {
     /// aligned) of `path`, for `mmap` of device memory (`/dev/fb/data`), or 0
     /// when that page cannot be mapped. The page stays the module's: the
     /// kernel maps it shared into every process that asks, never copies it
-    /// on fork and never frees it.
-    pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize) -> u64>,
+    /// on fork and never frees it. `*attrs` (0 on entry) takes
+    /// [`MYOS_MMAP_UNCACHED`] for a page of registers (a PCI BAR); the
+    /// others are mapped as memory.
+    pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize, attrs: *mut u32) -> u64>,
     // --- ABI 17: readiness ---
     /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`],
     /// [`MYOS_POLLERR`], [`MYOS_POLLHUP`]) that hold now for `path`, whatever
@@ -701,8 +716,8 @@ pub struct KernelApi {
     // --- ABI 11: device interrupts and blocking waits ---
     /// Route the PCI function's interrupt to `handler(ctx)`. The kernel picks
     /// the mechanism: `*msix_entry` is the MSI-X table entry the device must
-    /// use (virtio: `queue_msix_vector`), or [`MYOS_IRQ_INTX`] for a legacy
-    /// INTx line. `name` labels `/proc/interrupts`. 0 ok, negative on error.
+    /// use (virtio: `queue_msix_vector`), [`MYOS_IRQ_MSI`] for plain MSI or
+    /// [`MYOS_IRQ_INTX`] for a legacy INTx line. `name` labels `/proc/interrupts`. 0 ok, negative on error.
     pub pci_irq_enable: unsafe extern "C" fn(
         bus: u8,
         slot: u8,
@@ -986,7 +1001,23 @@ pub struct KernelApi {
     /// A memory barrier on every CPU that runs a task now, done before it
     /// returns (the CPUs are interrupted and answer): `membarrier`.
     pub membarrier: unsafe extern "C" fn(),
+    // --- ABI 46 ---
+    /// Claim the PCI function for `owner` (up to [`PCI_OWNER_MAX`] bytes):
+    /// 0 when it is now `owner`'s (it was free or already so), -1 when
+    /// another holds it. A module's `pci_enable`, `pci_bar_map` and
+    /// `pci_irq_enable` from its `module_init` or `module_rescan` claim the
+    /// function for it; a claim made through here lasts until
+    /// [`KernelApi::pci_release`].
+    pub pci_claim: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, owner: *const u8, owner_len: usize) -> i32,
+    /// Give back `owner`'s claim of the function (another's stays).
+    pub pci_release: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, owner: *const u8, owner_len: usize),
+    /// The holder of the function's claim into `out`: its length, 0 when
+    /// the function is free.
+    pub pci_owner: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, out: *mut u8, cap: usize) -> usize,
 }
+
+/// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
+pub const PCI_OWNER_MAX: usize = 16;
 
 /// [`KernelApi::cpu_time`]'s `which`.
 pub const MYOS_CPU_PROCESS: u32 = 0;
@@ -1499,6 +1530,20 @@ impl KernelApi {
 
     pub fn membarrier(&self) {
         unsafe { (self.membarrier)() }
+    }
+
+    pub fn pci_claim(&self, bus: u8, slot: u8, func: u8, owner: &str) -> bool {
+        unsafe { (self.pci_claim)(bus, slot, func, owner.as_ptr(), owner.len()) == 0 }
+    }
+
+    pub fn pci_release(&self, bus: u8, slot: u8, func: u8, owner: &str) {
+        unsafe { (self.pci_release)(bus, slot, func, owner.as_ptr(), owner.len()) }
+    }
+
+    /// The holder of the function's claim, in `out`; empty when it is free.
+    pub fn pci_owner<'a>(&self, bus: u8, slot: u8, func: u8, out: &'a mut [u8; PCI_OWNER_MAX]) -> &'a [u8] {
+        let n = unsafe { (self.pci_owner)(bus, slot, func, out.as_mut_ptr(), out.len()) };
+        &out[..n.min(PCI_OWNER_MAX)]
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {

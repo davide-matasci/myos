@@ -60,7 +60,9 @@ and releases) and `/dev/console/mouse` (the pointer), both in `docs/tty.md`.
 - The user mapping uses the same memory type as other user pages (normal,
   write-back). That is right for `ramfb`, which is guest RAM, and fine
   under QEMU; real hardware with the framebuffer in a PCI BAR would want a
-  write-combining or uncached mapping.
+  write-combining mapping. A hook can ask for an uncached one
+  (`MYOS_MMAP_UNCACHED`, `/dev/pci`'s registers); there is no
+  write-combining type.
 - The framebuffer must fit in the process's mmap window (64 GiB,
   `docs/linux-compat.md`).
 - Programs written for Linux's `/dev/fb0` (fbdev ioctls) need a small shim
