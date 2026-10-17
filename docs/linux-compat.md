@@ -100,8 +100,8 @@ linux --root ROOT PROGRAM [ARG...]
 exec, with a Linux `PATH`, so the program finds its dynamic linker, shared
 objects and data files at their Alpine paths. Before the chroot it
 bind-mounts the system's `/dev`, `/proc` and `/net` into `ROOT` (`mount SRC
-TARGET bind`; binds last until reboot, and binding a target again replaces
-the bind), so the chrooted process sees them like any other directory.
+TARGET bind`; binds last until reboot or `umount TARGET`, and binding a
+target again replaces the bind), so the chrooted process sees them like any other directory.
 
 `ALPINE_MIRROR` overrides `https://dl-cdn.alpinelinux.org/alpine` and
 `ALPINE_BRANCH` overrides `latest-stable`. The default root is

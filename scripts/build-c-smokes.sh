@@ -40,6 +40,7 @@ smokes=(
   "mmap-smoke user/c/mmap_smoke.c"
   "shm-smoke user/c/shm_smoke.c"
   "fault-smoke user/c/fault_smoke.c"
+  "jit-smoke user/c/jit_smoke.c"
   "ctor-smoke user/c/ctor_smoke.c"
   "sched-smoke user/c/sched_smoke.c"
   "memhog user/c/memhog.c"

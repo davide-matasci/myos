@@ -47,7 +47,7 @@
  * message carries behind it. */
 #define UDP_HDR 12
 #define UDP_MAX 2030
-/* How long netd may take to answer a UDP ctl command. */
+/* How long netd may take to answer a UDP ctl command, or a listen. */
 #define UDP_CTL_TIMEOUT_MS 5000
 
 enum {
@@ -471,6 +471,7 @@ int myos_socket_fcntl(int fd, int cmd, int arg) {
  */
 static int listener_ctl(struct myos_sock *s, const char *cmd);
 static int listener_status(struct myos_sock *s, char *out, size_t cap);
+static int netd_errno(const char *why);
 static void listener_retry_taken(struct myos_sock *ls, int seq);
 /* Last whitespace-separated decimal in an "accepted ..." status = the
  * per-listener handoff seq; -1 when absent. */
@@ -1138,6 +1139,9 @@ int listen(int sockfd, int backlog) {
         s->state = SOCK_LISTENING;
         return 0;
     }
+    if (s->state == SOCK_LISTENING) {
+        return 0; /* already listening: Linux takes the new backlog */
+    }
     if (s->bind_port == 0) {
         errno = EINVAL;
         return -1;
@@ -1157,6 +1161,31 @@ int listen(int sockfd, int backlog) {
     }
     if (listener_ctl(s, cmd) < 0) {
         return -1;
+    }
+    {
+        /* netd answers "listening" (a first connection may already be
+         * "accepted"), or why not, in place of the conv's "cloned"
+         * ("addrinuse": another listener has the port). */
+        struct timeval start;
+        char st[80];
+        (void)gettimeofday(&start, NULL);
+        for (;;) {
+            if (listener_status(s, st, sizeof st) == 0 && strcmp(st, "cloned") != 0) {
+                if (strncmp(st, "listening", 9) == 0 || strncmp(st, "accepted", 8) == 0) {
+                    break;
+                }
+                errno = netd_errno(st);
+                return -1;
+            }
+            if (elapsed_ms(&start) >= UDP_CTL_TIMEOUT_MS) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            {
+                struct timespec ms = {0, 1000000};
+                (void)nanosleep(&ms, NULL);
+            }
+        }
     }
     s->state = SOCK_LISTENING;
     return 0;
@@ -1977,7 +2006,7 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 /* ---- UDP (SOCK_DGRAM over /net/udp; see the notes at the top) ---- */
 
 /* errno for netd's word for what went wrong. */
-static int udp_errno(const char *why) {
+static int netd_errno(const char *why) {
     static const struct {
         const char *why;
         int err;
@@ -2019,7 +2048,7 @@ static int udp_take_error(struct myos_sock *s) {
         return 0;
     }
     b[n] = '\0';
-    return udp_errno(b);
+    return netd_errno(b);
 }
 
 /* "a.b.c.d!port" at `t` into `sin`; the text after it, or NULL. */
@@ -2061,7 +2090,7 @@ static int udp_answer(struct myos_sock *s, const char *a) {
         }
         return 0;
     }
-    errno = strncmp(a, "fail ", 5) == 0 ? udp_errno(a + 5) : EIO;
+    errno = strncmp(a, "fail ", 5) == 0 ? netd_errno(a + 5) : EIO;
     return -1;
 }
 

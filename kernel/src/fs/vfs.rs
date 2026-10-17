@@ -281,6 +281,12 @@ pub fn mount_point_free(prefix: &str) -> bool {
     stat(prefix).is_some_and(|st| st.mode & super::S_IFMT == 0o040000)
 }
 
+/// A filesystem is mounted at `path` (a real path, binds resolved).
+pub fn is_mount_point(path: &str) -> bool {
+    let path = normalize_path(path);
+    !path.is_empty() && MOUNTS.lock().iter().any(|m| !m.gone() && m.prefix == path)
+}
+
 /// A mount point lies at `prefix` or below it: such a directory can be
 /// neither removed nor renamed, its mount would hang from nothing.
 pub fn holds_mount(prefix: &str) -> bool {
@@ -1336,7 +1342,7 @@ fn unbind(path: &str) -> Option<String> {
 /// replacing a bind already there. `target` need not exist: `get-myos`
 /// binds a package's files where the image would have them (`/lib/vim`,
 /// `/bin/custom/vim`), over a read-only tree or beside it. Binds last
-/// until reboot.
+/// until reboot, or until `umount` of the target ([`remove_bind`]).
 pub fn bind(source: &str, target: &str) -> bool {
     let (source, target) = (normalize_path(source), normalize_path(target));
     if target.is_empty() || stat(source).is_none() {
@@ -1346,6 +1352,17 @@ pub fn bind(source: &str, target: &str) -> bool {
     binds.retain(|(t, _)| t != target);
     binds.push((String::from(target), String::from(source)));
     true
+}
+
+/// Remove the bind at `target` (an absolute path), as `umount TARGET` does:
+/// false when nothing is bound there. What is open through it stays open
+/// (an open file is its source's).
+pub fn remove_bind(target: &str) -> bool {
+    let target = normalize_path(target);
+    let mut binds = BINDS.lock();
+    let before = binds.len();
+    binds.retain(|(t, _)| *t != target);
+    binds.len() != before
 }
 
 /// True when `path` resolves into the tmpfs mount (the only fs with FIFOs).

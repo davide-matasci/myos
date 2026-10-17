@@ -422,6 +422,10 @@ const FAULT_AROUND: usize = 16;
 /// top of the faulting ones, and the flushes of a whole user address
 /// space's translations (`flush_user_tlb`) and of one page's.
 static FAULTS: AtomicU64 = AtomicU64::new(0);
+/// Changes of a region's protection (`sys_mprotect`, under `FAULT_LOCK`):
+/// a fault that read a region's protection before one and takes the lock
+/// after it reads the protection again.
+pub(super) static PROT_GEN: AtomicU64 = AtomicU64::new(0);
 static FAULT_AROUND_PAGES: AtomicU64 = AtomicU64::new(0);
 static TLB_FLUSHES: AtomicU64 = AtomicU64::new(0);
 static TLB_PAGE_FLUSHES: AtomicU64 = AtomicU64::new(0);
@@ -557,6 +561,32 @@ pub fn fault_in(va: usize, access: Access) -> bool {
             return ok;
         }
     }
+    // A fetch from a page whose entry allows it: a translation this CPU
+    // cached before another thread made the page executable (`mprotect`
+    // flushes the other CPUs after its change; a shootdown gives up on a
+    // CPU that does not answer), so the translation goes and the fetch is
+    // retried. An entry that forbids it goes on below: the region's
+    // protection is applied to the page again when it allows the access
+    // (a page faulted in with an older protection), else it is a real
+    // violation. A load's stale translation takes the same way below.
+    if access == Access::Exec {
+        use crate::arch::upaging::{leaf_executable, leaf_mut};
+        let aspace = task::current_aspace();
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        let guard = FAULT_LOCK.lock();
+        let stale = leaf_mut(aspace, page as u64).is_some_and(|p| leaf_executable(unsafe { *p }));
+        if stale {
+            flush_page(page);
+        }
+        drop(guard);
+        crate::arch::irq_restore(flags);
+        if stale {
+            FAULTS.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+    }
+    let prot_gen = PROT_GEN.load(Ordering::SeqCst);
     let Some((prot, file, left)) = task::mmap_backing(page) else {
         return false;
     };
@@ -615,6 +645,16 @@ pub fn fault_in(va: usize, access: Access) -> bool {
     let flags = crate::arch::irq_save();
     crate::arch::irq_off();
     let guard = FAULT_LOCK.lock();
+    // An `mprotect` changed a region's protection since it was read: read
+    // it again (the fresh frame given back).
+    if PROT_GEN.load(Ordering::SeqCst) != prot_gen {
+        drop(guard);
+        crate::arch::irq_restore(flags);
+        if let Some(frame) = fresh {
+            release_frame(frame);
+        }
+        return fault_in(va, access);
+    }
     // Another thread may have paged it in meanwhile: then only the
     // protection is (re)applied.
     let present = virt_to_phys(aspace, page as u64);

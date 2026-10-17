@@ -38,6 +38,14 @@ before it, another thread could still reach them through its TLB. A change
 that only adds mappings (the heap growing, an `mmap` that is not `MAP_FIXED`)
 asks no other CPU to flush on x86_64 and aarch64, which cache no missing
 translation (`flush_user_tlb_added`); riscv64 may, and flushes everywhere.
+A change that widens a mapping's permissions (`mprotect` to writable or
+executable) records the region's new protection before it rewrites the
+pages present, so a page another thread faults in meanwhile takes the new
+one (a fault that read the old record reads it again under the fault lock,
+`PROT_GEN`), and flushes every CPU afterwards; a permission fault on a
+fetch or a load whose entry allows the access, a translation cached before
+that flush, drops the translation and retries, and one on a page whose
+region allows the access applies the region's protection to the page again.
 
 A new thread starts in user mode from a full register image
 (`task::UserRegs`, the same one a forked child resumes with): a native thread

@@ -111,6 +111,12 @@ t -t mm,fs shm /bin/etc/shm_smoke
 # userspace is contained the same way, but a test cannot fault on purpose:
 # the host treats the kernel's `user fault` line as a failure).
 t -t mm fault /bin/etc/fault_smoke
+# A JIT's pattern from two threads: one makes a range of pages not touched
+# yet executable with mprotect while the other reads them, then code
+# written into every page runs. A page the reader faulted in while mprotect
+# walked the range used to keep the old protection, and its first fetch
+# killed the process (jit_smoke.c, issue #492).
+t -t mm,sched jit /bin/etc/jit_smoke
 # Constructors run before main, by priority, with environ set up;
 # destructors at exit, after the atexit handlers (ctor_smoke.c).
 t -t exec ctor /bin/etc/ctor_smoke
@@ -301,7 +307,8 @@ t -t console caps_lock caps_lock
 # netd queues: the smoke's writes wait for room); it connects again to say
 # whether every byte arrived, then 40 times without a word (the FIN at
 # varying moments after the handshake), each of which the smoke must see
-# end, and the smoke reports.
+# end, and the smoke reports. (Before it listens for the host, the smoke
+# checks that a second listener on its port is refused.)
 net_listen() {
 	: > /tmp/listen.out
 	/bin/etc/tcp_listen_smoke >> /tmp/listen.out 2>&1 &

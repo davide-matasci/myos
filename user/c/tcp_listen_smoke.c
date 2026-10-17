@@ -13,7 +13,9 @@
  * seen established, the FIN with the handshake's last ACK, open for its
  * holder forever: an nginx on a VPS waited on dozens of those until netd
  * had no conversation left and reset every new connection). A last one
- * says "done".
+ * says "done". Before any of it, a second listener on the port (on any
+ * address, then on 127.0.0.1) fails with EADDRINUSE, as on Linux: a second
+ * nginx used to start beside the first.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -27,6 +29,31 @@
 #define LISTEN_PORT 2323
 #define BULK_LINES 40000 /* "%06d\n": 280000 bytes */
 #define MUTE_PROBES 40
+
+/* A second listener on LISTEN_PORT at `addr`: its listen must fail with
+ * EADDRINUSE, SO_REUSEADDR or not. */
+static int taken_twice(in_addr_t addr) {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(LISTEN_PORT);
+    sa.sin_addr.s_addr = addr;
+    (void)setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    int r = s < 0 ? -1 : bind(s, (struct sockaddr *)&sa, sizeof sa);
+    if (r == 0) {
+        r = listen(s, 1);
+    }
+    int err = errno;
+    close(s);
+    if (r == 0 || err != EADDRINUSE) {
+        printf("[ FAIL ] second listener on %s: %s (errno %d)\n", addr ? "127.0.0.1" : "any",
+            r == 0 ? "listening" : "failed", err);
+        return -1;
+    }
+    return 0;
+}
 
 /* A blocking accept on `l`, then the first bytes the peer sends. */
 static int accept_read(int l, char *buf, size_t cap, ssize_t *n) {
@@ -118,6 +145,9 @@ int main(void) {
     }
     if (listen(l, 1) < 0) {
         printf("[ FAIL ] listen announce (%d)\n", errno);
+        return 1;
+    }
+    if (taken_twice(INADDR_ANY) < 0 || taken_twice(htonl(INADDR_LOOPBACK)) < 0) {
         return 1;
     }
     if (write(2, "[ INFO ] listening on 2323\n", 27) < 0) {
