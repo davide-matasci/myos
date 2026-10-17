@@ -257,6 +257,20 @@ qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
 ### Second disk (`target/fat.img`)
 Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `[ OK ] fat` / msg markers. Bare metal without it still boots to shell.
 
+### A persistent disk
+
+Every `cargo run` boots a freshly built image and rewrites the test disks, so nothing the guest writes survives. To test over a long time on one disk (QEMU only; interactive runs, not `test`):
+
+```sh
+MYOS_DISK=~/myos-disk.img cargo run          # attach a persistent extra disk (created sparse, 8 GiB, if missing)
+# in the guest: cat /dev/*/info to find it, then
+get-myos --install --local <disk>            # lay the boot disk out on it (docs/install.md)
+# power off, then boot that disk alone from now on:
+MYOS_BOOT_DISK=~/myos-disk.img cargo run     # also: uefi, aarch64, riscv64
+```
+
+An installed disk keeps `/data` (apps, the Alpine root) and upgrades itself with `get-myos --upgrade`; a newer `cargo build` does not touch it. `MYOS_DISK` can stay set while booting `MYOS_BOOT_DISK` from another file to attach a second data disk. QEMU locks images, so the two paths must differ.
+
 ---
 
 ## Real Hardware

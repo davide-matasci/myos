@@ -79,6 +79,13 @@ fn main() {
     // checked-in file a port ships changes. Packages (packages/) are not
     // built here; CI builds and publishes them.
     let all_ports = ports::load_all(&manifest);
+    // The `linux` launcher is packed into every image but is no port: its
+    // script builds all three arches' launchers.
+    ensure_artifact(
+        &manifest,
+        "target/linux-launcher-x86_64-unknown-none",
+        "linux-compat/build-launcher.sh",
+    );
     for port in all_ports.iter().filter(|p| p.role == ports::Role::Image) {
         println!("cargo:rerun-if-changed={}", manifest.join(&port.dir).join("port.env").display());
         for f in &port.files {

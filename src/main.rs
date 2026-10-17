@@ -144,7 +144,11 @@ Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--tags TAG,...] [--skip T
              with any of the tags, --skip leaves out those with any; `test-mini` is
              `test --skip net,pkg,heavy,install,alpine-disk` (no network, a few minutes), `test-full` is `test`
   iso        Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
-  packages   Write the package tarballs and indexes of the three arches to target/packages/",
+  packages   Write the package tarballs and indexes of the three arches to target/packages/
+
+Environment (the interactive runs, not `test`; see README, A persistent disk):
+  MYOS_DISK=PATH       attach PATH as an extra virtio disk, created sparse (8 GiB) if missing
+  MYOS_BOOT_DISK=PATH  boot PATH (a disk `get-myos --install` made) instead of the built image",
     );
 }
 
@@ -501,7 +505,8 @@ fn run_bios(bios_path: &str) {
         .arg("menu=off");
     add_virtio_blk_x86(&mut cmd);
     add_pointer(&mut cmd, false);
-    add_boot_disk(&mut cmd, Path::new(bios_path));
+    add_persistent_disk(&mut cmd, "virtio-blk-pci");
+    add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -533,7 +538,8 @@ fn run_uefi(uefi_path: &str) {
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
     add_pointer(&mut cmd, false);
-    add_boot_disk(&mut cmd, Path::new(uefi_path));
+    add_persistent_disk(&mut cmd, "virtio-blk-pci");
+    add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -541,9 +547,9 @@ fn run_uefi(uefi_path: &str) {
 
 fn run_aarch64() {
     let image = build_aarch64_image();
-    let status = qemu_aarch64(&image, false)
-        .status()
-        .expect("failed to start qemu-system-aarch64");
+    let mut cmd = qemu_aarch64(&boot_image(&image), false);
+    add_persistent_disk(&mut cmd, "virtio-blk-device");
+    let status = cmd.status().expect("failed to start qemu-system-aarch64");
     exit(status.code().unwrap_or(1));
 }
 
@@ -769,6 +775,40 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
 /// BAR (64-bit) above 4 GiB, out of its reach, and finds no disk to boot;
 /// the transitional virtio-blk keeps its legacy BAR0 in I/O ports for the
 /// firmware, and the modern layout the module drives beside it.
+/// A persistent disk the interactive runs attach with `MYOS_DISK=PATH`
+/// (README "A persistent disk"): created sparse on first use, left alone
+/// after, so what the guest wrote to it is there on the next run.
+const PERSISTENT_DISK_BYTES: u64 = 8 << 30;
+
+fn add_persistent_disk(cmd: &mut Command, device: &str) {
+    let Some(path) = std::env::var_os("MYOS_DISK").filter(|p| !p.is_empty()).map(PathBuf::from) else {
+        return;
+    };
+    if !path.exists() {
+        std::fs::File::create(&path)
+            .and_then(|f| f.set_len(PERSISTENT_DISK_BYTES))
+            .unwrap_or_else(|e| panic!("create {}: {e}", path.display()));
+        eprintln!("MYOS_DISK: created {} ({} GiB, sparse)", path.display(), PERSISTENT_DISK_BYTES >> 30);
+    }
+    cmd.arg("-drive")
+        .arg(format!("if=none,id=persist,format=raw,file={}", path.display()));
+    cmd.arg("-device").arg(format!("{device},drive=persist"));
+}
+
+/// The disk an interactive run boots: `MYOS_BOOT_DISK=PATH` (a disk
+/// `get-myos --install` made, docs/install.md) instead of the image just
+/// built.
+fn boot_image(built: &Path) -> PathBuf {
+    match std::env::var_os("MYOS_BOOT_DISK").filter(|p| !p.is_empty()) {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            assert!(path.is_file(), "MYOS_BOOT_DISK: {} does not exist", path.display());
+            path
+        }
+        None => built.to_path_buf(),
+    }
+}
+
 fn add_boot_disk(cmd: &mut Command, image: &Path) {
     cmd.arg("-drive")
         .arg(format!("if=none,id=bootdisk,format=raw,file={}", image.display()));
@@ -1195,9 +1235,9 @@ fn build_aarch64_kernel() -> PathBuf {
 
 fn run_riscv64() {
     let image = build_riscv64_image();
-    let status = qemu_riscv64(&image, false)
-        .status()
-        .expect("failed to start qemu-system-riscv64");
+    let mut cmd = qemu_riscv64(&boot_image(&image), false);
+    add_persistent_disk(&mut cmd, "virtio-blk-device");
+    let status = cmd.status().expect("failed to start qemu-system-riscv64");
     exit(status.code().unwrap_or(1));
 }
 

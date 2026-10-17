@@ -147,7 +147,7 @@ build_arch() {
   ar_bin="$(command -v llvm-ar 2>/dev/null || echo ar)"
   local lib
   for lib in crypto ssl tls; do
-    xargs -a "$obj/$lib.objs" "$ar_bin" rcs "$out/lib/lib$lib.a"
+    xargs "$ar_bin" rcs "$out/lib/lib$lib.a" <"$obj/$lib.objs"
   done
   cp -a "$SRC/include/openssl" "$out/include/"
   rm -f "$out/include/openssl/Makefile.am" "$out/include/openssl/Makefile.in"
