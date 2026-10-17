@@ -949,6 +949,20 @@ fn handle_ctl(
                     reply(chan, REP_ERR, conv, -1, b"no conv");
                     return;
                 };
+                // A port another listener has, on this address or any, is
+                // taken (Linux's EADDRINUSE, SO_REUSEADDR or not): a second
+                // nginx used to start beside the first and take over its pid
+                // file, so `nginx -s quit` left the first one running.
+                let taken = convs.iter().enumerate().any(|(j, c)| {
+                    j != i
+                        && matches!(c.kind, Kind::Tcp)
+                        && c.listen_port == port
+                        && (c.local4.is_unspecified() || addr.is_unspecified() || c.local4 == addr)
+                });
+                if taken {
+                    reply(chan, REP_ERR, conv, -1, b"addrinuse");
+                    return;
+                }
                 convs[i].local4 = addr;
                 convs[i].listen_port = port;
                 let s = sockets.get_mut::<tcp::Socket>(h);
