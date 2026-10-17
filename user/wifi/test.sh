@@ -56,3 +56,46 @@ wifi_connect() {
 	return $wifi_rc
 }
 t -t wifi wifi_connect wifi_connect
+
+# The link's data path: associated to `myos-open`, the daemon holds a
+# virtual NIC (/dev/tap) that netd takes, leasing 10.0.8.x from the access
+# point's router (src/wifi_net.rs); a ping to the router crosses the link
+# as 802.11 data frames, net0 keeps the default route, and the NIC goes
+# with the link at `disconnect`.
+wifi_data() {
+	/bin/custom/wifi daemon /dev/net1 &
+	wifi_pid=$!
+	wifi_rc=1
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		/bin/custom/wifi status > /dev/null 2>&1 && break
+		sleep 1
+	done
+	leased=0
+	if /bin/custom/wifi connect myos-open > /tmp/wifi.err 2>&1; then
+		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+			grep -q '^tap[0-3] 10\.0\.8\.[0-9]* 255\.255\.255\.0 ' /net/ifaddrs && leased=1 && break
+			sleep 1
+		done
+	fi
+	pinged=0
+	if [ $leased = 1 ]; then
+		for i in 1 2 3; do
+			/bin/custom/ping 10.0.8.1 > /tmp/wifi.ping 2>&1 && pinged=1 && break
+		done
+	fi
+	if [ $pinged = 1 ] && ! grep -q 'ip=10\.0\.8\.' /net/ndb &&
+		[ "$(/bin/custom/wifi disconnect)" = disconnected ]; then
+		for i in 1 2 3 4 5; do
+			grep -q '^tap' /net/ifaddrs || { wifi_rc=0; break; }
+			sleep 1
+		done
+	fi
+	if [ $wifi_rc != 0 ]; then
+		echo "leased $leased pinged $pinged"
+		cat /tmp/wifi.err /tmp/wifi.ping /net/ifaddrs /net/ndb 2>/dev/null
+		/bin/custom/wifi status
+	fi
+	kill $wifi_pid
+	return $wifi_rc
+}
+t -t wifi,tap wifi_data wifi_data

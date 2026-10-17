@@ -1,10 +1,10 @@
 # Wi-Fi
 
 Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
-(`user/wifi`). Today it scans and joins an open network, through the test
-boots' simulated radio; handing frames to netd, WPA2 and the radio of a
-real laptop (Intel's AX201, a port of OpenBSD's `iwx` over `/dev/pci`)
-come next.
+(`user/wifi`). Today it scans, joins an open network and carries netd's
+traffic over it, through the test boots' simulated radio; WPA2 and the
+radio of a real laptop (Intel's AX201, a port of OpenBSD's `iwx` over
+`/dev/pci`) come next.
 
 ## `wifi`
 
@@ -46,6 +46,17 @@ point gave (`error: association refused, status 43`). `connect` first
 leaves the network it is on (a deauthentication), and an access point's
 deauthentication or disassociation ends the link.
 
+While associated, the daemon holds a virtual NIC (`/dev/tap`, below; its
+address the radio's) with its link up, so netd takes it as `tapN` and
+asks the network's DHCP for an address (`tap.rs`). An Ethernet frame
+netd sends on it goes out as a data frame to the access point (to the
+distribution system: the BSSID, the station, the destination; an
+LLC/SNAP header before the EtherType), and a data frame from the access
+point to the station or a group comes back in as Ethernet (`frame.rs`).
+Leaving the network, or the access point letting the station go, takes
+the NIC away, and netd lets go of it and its lease. A scan while
+associated tunes the radio back to the link's channel when it is done.
+
 ## The simulated radio
 
 QEMU has no Wi-Fi device, so the test boots get a simulated one: a second
@@ -69,7 +80,10 @@ the probe requests on them (for their SSID or the wildcard), take
 open-system authentication and association (a WPA2 one refuses an
 association request without an RSN element: status 43), give each
 association the next association id, and let a station go at its
-deauthentication. They beacon
+deauthentication. An associated station's data frames reach a router
+behind each one (`src/wifi_net.rs`): 10.0.8.1/24, the access point's
+address, leasing the station 10.0.8.(1 + its association id) by DHCP,
+answering ARP for 10.0.8.1 and the pings sent to it. They beacon
 only for 5 seconds after the radio last sent a frame: a boot that never
 scans is not woken thirty times a second for nothing.
 
@@ -83,7 +97,10 @@ The tests (`user/wifi/test.sh`, tag `wifi`) start the daemon. `wifi_scan`
 scans and expects those three lines, from `scan` and `list` alike.
 `wifi_connect` joins `myos-open` (`status` names it, aid 1), is refused
 `myos-wpa2` (not supported yet, the open network left meanwhile), joins
-again (aid 2) and disconnects.
+again (aid 2) and disconnects. `wifi_data` (tags `wifi,tap`) joins
+`myos-open`, waits for netd's lease on the link's NIC, pings 10.0.8.1
+across it, checks that `net0` keeps the default route, and that the NIC
+goes at `disconnect`.
 
 ## Virtual NICs (`/dev/tap`)
 

@@ -1,6 +1,7 @@
-//! 802.11 management frames: the probe request a scan sends and what a
-//! beacon or a probe response says about its network; the authentication,
-//! association and deauthentication of a station.
+//! 802.11 frames: the probe request a scan sends and what a beacon or a
+//! probe response says about its network; the authentication, association
+//! and deauthentication of a station; the data frames of its link, to and
+//! from Ethernet.
 
 use alloc::vec::Vec;
 
@@ -176,4 +177,58 @@ pub fn auth_status(body: &[u8]) -> Option<u16> {
 pub fn assoc_status(body: &[u8]) -> Option<(u16, u16)> {
     let b = body.get(..6)?;
     Some((u16::from_le_bytes([b[2], b[3]]), u16::from_le_bytes([b[4], b[5]]) & 0x3fff))
+}
+
+/// Frame control byte 0 of a data frame, and of a QoS data frame (whose
+/// header carries two more bytes, the QoS control).
+const DATA: u8 = 0x08;
+const QOS_DATA: u8 = 0x88;
+/// Frame control byte 1: to the distribution system (station to access
+/// point), from it.
+const TO_DS: u8 = 0x01;
+const FROM_DS: u8 = 0x02;
+/// The LLC/SNAP header before a data frame's EtherType (RFC 1042).
+const SNAP: [u8; 6] = [0xaa, 0xaa, 0x03, 0, 0, 0];
+
+/// The data frame station `me` sends to `bssid` for Ethernet frame `eth`
+/// (destination, source, EtherType, payload).
+pub fn data_to_ds(me: [u8; 6], bssid: [u8; 6], eth: &[u8]) -> Option<Vec<u8>> {
+    if eth.len() < 14 {
+        return None;
+    }
+    let mut f = Vec::with_capacity(HDR + SNAP.len() + eth.len() - 12);
+    f.extend_from_slice(&[DATA, TO_DS, 0, 0]);
+    f.extend_from_slice(&bssid);
+    f.extend_from_slice(&me);
+    f.extend_from_slice(&eth[..6]);
+    f.extend_from_slice(&[0, 0]);
+    f.extend_from_slice(&SNAP);
+    f.extend_from_slice(&eth[12..]);
+    Some(f)
+}
+
+/// The Ethernet frame a data frame from access point `bssid` carries, when
+/// it is to station `me` or to a group.
+pub fn data_from_ds(f: &[u8], me: [u8; 6], bssid: [u8; 6]) -> Option<Vec<u8>> {
+    let hdr = match f.first()? {
+        &DATA => HDR,
+        &QOS_DATA => HDR + 2,
+        _ => return None,
+    };
+    if f.len() < hdr + SNAP.len() + 2 || f[1] & (TO_DS | FROM_DS) != FROM_DS || f[10..16] != bssid {
+        return None;
+    }
+    let (da, sa) = (&f[4..10], &f[16..22]);
+    if da != me && da[0] & 1 == 0 {
+        return None;
+    }
+    let body = &f[hdr..];
+    if body[..SNAP.len()] != SNAP {
+        return None;
+    }
+    let mut eth = Vec::with_capacity(12 + body.len() - SNAP.len());
+    eth.extend_from_slice(da);
+    eth.extend_from_slice(sa);
+    eth.extend_from_slice(&body[SNAP.len()..]);
+    Some(eth)
 }
