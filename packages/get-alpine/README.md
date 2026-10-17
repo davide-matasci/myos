@@ -25,6 +25,23 @@ for an Alpine root (a browser's takes some hundreds of MiB); `get-myos
 --install` gives the data partition the rest of the disk. On a full
 filesystem apk stops with `No space left on device`.
 
+Alpine's packages depend on no font: a root with just a GTK program has
+fontconfig and nothing under `/usr/share/fonts`, and GTK, laying its text
+out without one, asks X for a window wider than X allows and dies with an
+X error (`BadAlloc`); get-alpine says so at the end of such an install. A
+browser, with its font, on the `tinyx` package's X server (under its
+`dwm`, or alone):
+
+```sh
+run-myos get-alpine badwolf font-dejavu
+WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+WEBKIT_DISABLE_DMABUF_RENDERER=1 linux --root /data/alpine badwolf
+```
+
+The three variables keep WebKit off what the layer and the server lack:
+namespaces for its sandbox, GL for its compositor, dma-buf between its
+processes (`docs/linux-compat.md`).
+
 Besides the packages asked for, a root always gets the bootstrap set:
 `apk-tools`, `alpine-keys`, `busybox`, `busybox-binsh`, `alpine-baselayout`
 and Alpine's CA bundle (`ca-certificates-bundle`, the trust store of TLS
@@ -33,6 +50,7 @@ clients such as Python, curl and wget, which do not depend on it).
 install scripts): what `linux-compat/alpine-disk.sh` does on the host.
 
 `test.sh` (full mode, after the install) installs jq into a scratch root
-and checks the files, apk's database and busybox's trigger; running what
-it installed is the Linux layer's test (`lx_alpine` in
+and checks the files, apk's database and busybox's trigger, then that
+fontconfig without a font gets the hint and font-dejavu ends it; running
+what it installed is the Linux layer's test (`lx_alpine` in
 `user/tests/kernel.sh`).

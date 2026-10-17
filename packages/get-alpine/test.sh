@@ -26,6 +26,12 @@ get_alpine_fetch() {
 	run-myos get-alpine -r $r jq > /tmp/get-alpine-again.out 2>&1 || return 1
 	cat /tmp/get-alpine-again.out
 	! grep -q -e '^get-alpine: bootstrapping' -e 'Installing' /tmp/get-alpine-again.out || return 1
+	# fontconfig without a font gets the hint (a GTK program dies without
+	# one), a font ends it.
+	run-myos get-alpine -r $r fontconfig > /tmp/get-alpine-fc.out 2>&1 || { cat /tmp/get-alpine-fc.out; return 1; }
+	grep -q '^get-alpine: no fonts in' /tmp/get-alpine-fc.out || { cat /tmp/get-alpine-fc.out; return 1; }
+	run-myos get-alpine -r $r font-dejavu > /tmp/get-alpine-fc.out 2>&1 || { cat /tmp/get-alpine-fc.out; return 1; }
+	! grep -q '^get-alpine: no fonts in' /tmp/get-alpine-fc.out || { cat /tmp/get-alpine-fc.out; return 1; }
 	# The native unpack (-n, what alpine-disk.sh does on the host) of a
 	# package whose .PKGINFO runs past 8 KiB (netpbm: a line for each of the
 	# 370 programs it provides), with its datahash on the last line.
