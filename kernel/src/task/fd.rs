@@ -62,6 +62,18 @@ struct OpenFile {
     rights: crate::sec::Rights,
     /// The fds referring to it, over every process.
     refs: u32,
+    /// The text of a file made anew for each read (procfs), as a read at
+    /// offset 0 took it: the reads after it take the rest of the same text.
+    text: Text,
+}
+
+/// What [`OpenFile::text`] knows of its file.
+enum Text {
+    /// Not read yet.
+    Unknown,
+    /// A file read as it is (not made anew for each read).
+    Plain,
+    Taken(alloc::vec::Vec<u8>),
 }
 
 /// Open file descriptions in the whole system (docs/linux-compat.md lists
@@ -83,7 +95,17 @@ fn open_file_alloc(
 ) -> Option<usize> {
     let mut files = OPEN_FILES.lock();
     let id = files.iter().position(Option::is_none)?;
-    files[id] = Some(OpenFile { node, pos: 0, readable, writable, append, append_only: false, rights, refs: 1 });
+    files[id] = Some(OpenFile {
+        node,
+        pos: 0,
+        readable,
+        writable,
+        append,
+        append_only: false,
+        rights,
+        refs: 1,
+        text: Text::Unknown,
+    });
     Some(id)
 }
 
@@ -157,6 +179,33 @@ fn open_file_set_pos(id: usize, pos: usize) {
     if let Some(Some(f)) = OPEN_FILES.lock().get_mut(id) {
         f.pos = pos;
     }
+}
+
+/// Read description `id`'s file at `pos` when it is made anew for each read
+/// (`crate::fs::vfs::text`, issue #472): a read at offset 0, or the first
+/// one, takes its text; the others copy from that text, so that a reader
+/// taking it in pieces sees one version, as Linux's `seq_file` gives. `None`
+/// for any other file, to be read as it is.
+fn open_file_read_text(id: usize, node: &crate::fs::Vnode, pos: usize, out: &mut [u8]) -> Option<usize> {
+    let mut copy = |text: &[u8]| {
+        let n = out.len().min(text.len().saturating_sub(pos));
+        if n != 0 {
+            out[..n].copy_from_slice(&text[pos..pos + n]);
+        }
+        n
+    };
+    match &OPEN_FILES.lock().get(id)?.as_ref()?.text {
+        Text::Plain => return None,
+        Text::Taken(text) if pos != 0 => return Some(copy(text)),
+        _ => {}
+    }
+    // Made without the lock: it may take others (the tasks', the mounts').
+    let text = crate::fs::vfs::text(node);
+    let n = text.as_deref().map(copy);
+    if let Some(Some(f)) = OPEN_FILES.lock().get_mut(id) {
+        f.text = text.map_or(Text::Plain, Text::Taken);
+    }
+    n
 }
 
 fn open_file_advance(id: usize, n: usize) {
@@ -788,7 +837,11 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 let mut tmp = [0u8; FILE_READ_TMP];
                 let want = len.min(tmp.len());
                 let seq = wait_seq();
-                let Some(n) = crate::fs::vfs::read_or_wait(&node, pos, &mut tmp[..want]) else {
+                let n = match open_file_read_text(id, &node, pos, &mut tmp[..want]) {
+                    Some(n) => Some(n),
+                    None => crate::fs::vfs::read_or_wait(&node, pos, &mut tmp[..want]),
+                };
+                let Some(n) = n else {
                     // A device with nothing yet (the raw keyboard): wait for
                     // it, re-checking at the keyboard's polling rate when it
                     // is polled (`MYOS_POLL_RECHECK`).
@@ -813,7 +866,8 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 if n == want && total < len && crate::fs::vfs::reads_whole(&node) {
                     while total < len {
                         let want = (len - total).min(tmp.len());
-                        let n = crate::fs::vfs::read(&node, pos + total, &mut tmp[..want]);
+                        let n = open_file_read_text(id, &node, pos + total, &mut tmp[..want])
+                            .unwrap_or_else(|| crate::fs::vfs::read(&node, pos + total, &mut tmp[..want]));
                         if n == 0
                             || !user::buffer_ok(buf + total, n)
                             || !user::copy_to_user(current_aspace(), buf + total, &tmp[..n])
@@ -1232,6 +1286,17 @@ pub fn fd_file_node(fd: usize) -> Option<crate::fs::Vnode> {
         FdEntry::File(id) => open_file_node(id),
         _ => None,
     }
+}
+
+/// `pread` of file `fd` at `pos` for a module (the Linux layer): from the
+/// text its description took for a file made anew for each read, as a
+/// `read` would. `None` when `fd` is not a file open for reading.
+pub fn fd_file_pread(fd: usize, pos: usize, out: &mut [u8]) -> Option<usize> {
+    let FdEntry::File(id) = with_process_mut(|t| t.fds.get(fd).copied())? else {
+        return None;
+    };
+    let node = open_file_node(id).filter(|_| open_file_readable(id))?;
+    Some(open_file_read_text(id, &node, pos, out).unwrap_or_else(|| crate::fs::read(&node, pos, out)))
 }
 
 pub fn fd_close(fd: usize) -> bool {

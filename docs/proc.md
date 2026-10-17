@@ -17,6 +17,13 @@ issue #291.
 /proc/boot/partuuid                 the GPT partition it booted from, its unique GUID (mount -a: /boot)
 ```
 
+Its text files are made when they are read: each shows the moment of the
+read. An open file reads one such text, the one a read at offset 0 took
+(`MountOps::text`, `kernel/src/task/fd.rs`), so a reader taking a file in
+several `read`s (a shell's `while read`) gets whole lines of one version
+of it; a read at offset 0 (a new open, `lseek` back to 0) takes a fresh
+one. That is Linux's `seq_file` for a whole-file read.
+
 `ls /proc` lists the processes. A thread is a task slot and its tid is the
 slot (`docs/threads.md`), so pids and tids share one number space: any tid
 also resolves as `/proc/<tid>`, which is then its process's directory (as on

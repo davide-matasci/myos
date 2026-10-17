@@ -336,6 +336,26 @@ proc_fd_listing() {
 }
 t -t proc proc_fd_listing proc_fd_listing
 
+# A file made anew for each read is read from one text per open file
+# (issue #472): a bind made between two reads of one fd is not in the rest
+# it reads (whose lines would otherwise shift), and a new open shows it. A
+# first read past its end (dd's skip seeks) reads nothing.
+proc_one_text() {
+	[ -z "$(dd if=/proc/mounts bs=1 skip=1000000 2> /dev/null)" ] || return 1
+	mkdir -p /tmp/one-text /tmp/one-text-at || return 1
+	exec 4< /proc/mounts
+	read -r first <&4
+	mount /tmp/one-text /tmp/one-text-at bind || { exec 4<&-; return 1; }
+	rest=$(cat <&4)
+	exec 4<&-
+	now=$(cat /proc/mounts)
+	umount /tmp/one-text-at 2> /dev/null # a bind stays (umount takes a disk)
+	echo "$first"
+	echo "$rest"
+	! echo "$rest" | grep -q one-text-at && echo "$now" | grep -q '^/tmp/one-text /tmp/one-text-at bind '
+}
+t -t proc proc_one_text proc_one_text
+
 # A pty comes from /dev/pts/clone: the fd it returns is /dev/pts/N/master,
 # the pair's directory lists master, data and ctl, its window size is set
 # through ctl, master is not openable by name, and the pair goes away with

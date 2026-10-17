@@ -485,6 +485,7 @@ fn ro_ops(
         files: None,
         statfs: None,
         waits: None,
+        text: None,
         writable: false,
     }
 }
@@ -526,6 +527,7 @@ fn rw_ops(
         files: None,
         statfs: None,
         waits: None,
+        text: None,
         writable: true,
     }
 }
@@ -709,22 +711,25 @@ pub fn init() {
     vfs::mount(
         "procfs",
         "proc",
-        rw_ops(
-            procfs::lookup,
-            procfs::stat,
-            procfs::listdir_at,
-            procfs::register,
-            procfs::create,
-            procfs::truncate,
-            procfs::read,
-            procfs::write,
-            reject_mkdir,
-            reject_rmdir,
-            reject_unlink,
-            reject_rename,
-            reject_symlink,
-            procfs::readlink,
-        ),
+        vfs::MountOps {
+            text: Some(procfs::text),
+            ..rw_ops(
+                procfs::lookup,
+                procfs::stat,
+                procfs::listdir_at,
+                procfs::register,
+                procfs::create,
+                procfs::truncate,
+                procfs::read,
+                procfs::write,
+                reject_mkdir,
+                reject_rmdir,
+                reject_unlink,
+                reject_rename,
+                reject_symlink,
+                procfs::readlink,
+            )
+        },
     );
     // POSIX shared memory (`shm_open`, `memfd_create`): `/dev/shm` is a
     // directory of the tmpfs (`/tmp/.shm`, label `tmp`), bound there; devfs

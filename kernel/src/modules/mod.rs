@@ -1046,14 +1046,14 @@ unsafe extern "C" fn api_chdir_path(path: StrRef) -> usize {
 }
 
 unsafe extern "C" fn api_fd_pread(fd: usize, pos: usize, buf: *mut u8, len: usize) -> i32 {
-    let Some(node) = crate::task::fd_file_node(fd).filter(|_| crate::task::fd_readable(fd)) else {
-        return -1;
-    };
     if buf.is_null() {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
-    crate::fs::read(&node, pos, out).min(i32::MAX as usize) as i32
+    match crate::task::fd_file_pread(fd, pos, out) {
+        Some(n) => n.min(i32::MAX as usize) as i32,
+        None => -1,
+    }
 }
 
 unsafe extern "C" fn api_fd_kind(fd: usize, size: *mut usize) -> i32 {
