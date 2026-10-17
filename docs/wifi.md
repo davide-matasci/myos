@@ -67,3 +67,21 @@ scans is not woken thirty times a second for nothing.
 
 The test (`user/wifi/test.sh`, tag `wifi`) starts the daemon, scans and
 expects those three lines, from `scan` and `list` alike.
+
+## Virtual NICs (`/dev/tap`)
+
+The link the daemon brings up reaches netd through a virtual NIC
+(`modules/tap`), as Linux's TAP devices do: a NIC whose wire is a program.
+NIC `N` (0 to 3) is there while a program holds `/dev/tap/N/prog`
+(opening it makes the NIC, one holder at a time, root only; its last
+close takes the NIC away):
+
+| File | |
+|------|-|
+| `prog` | the program's end: a write is one Ethernet frame for netd, a read one frame netd sent (it waits for one; `poll` says one is there) |
+| `data` | the NIC's end, as `/dev/netN/data` is: a write sends a frame, a read takes one (0 bytes when none waits), `poll` says one is there |
+| `ctl` | `mac ADDR`, `irq on` and `link up` or `link down`, as lines; the program writes `mac ADDR`, `up` and `down` (the association) |
+
+A frame netd sends while the link is down is dropped. Each direction
+queues up to 64 frames; past that the newest is dropped, as a full NIC
+drops. The test is `tap_smoke` (`user/c/test.sh`, tag `tap`).
