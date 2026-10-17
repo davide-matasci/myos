@@ -126,6 +126,9 @@ struct RingBuf {
     /// Requests in and out so far: the change count `/dev/net/data`'s
     /// `poll` reports.
     ops: u64,
+    /// A request queued since netd's pollers were last woken: the hook that
+    /// queued it wakes them once it has let go of the lock (`take_wake`).
+    wake: bool,
 }
 
 impl RingBuf {
@@ -135,6 +138,7 @@ impl RingBuf {
         tail: 0,
         count: 0,
         ops: 0,
+        wake: false,
     };
 
     fn push(&mut self, src: &[u8]) -> bool {
@@ -147,7 +151,17 @@ impl RingBuf {
         self.head = self.head.wrapping_add(1);
         self.count += 1;
         self.ops = self.ops.wrapping_add(1);
+        self.wake = true;
         true
+    }
+
+    /// Whether a request was queued since the last call: netd, polling
+    /// `/dev/netd/data`, is owed a wake. A reader's credit used to wait
+    /// for whatever woke the pollers next, a second at most: a download
+    /// whose reader kept up with it paused for that long each time the
+    /// buffers filled.
+    fn take_wake(&mut self) -> bool {
+        core::mem::replace(&mut self.wake, false)
     }
 
     /// The oldest request into `dst`: whole, or not at all (`None` when
@@ -306,7 +320,8 @@ fn api() -> &'static KernelApi {
 }
 
 /// Wake the kernel's pollers: readiness changed without a write or close
-/// (a unix reader made room for its peer).
+/// (a unix reader made room for its peer, a read or a poll queued a request
+/// for netd).
 fn wake_any() {
     if let Some(api) = API.try_get() {
         api.wake_any();
@@ -1076,7 +1091,18 @@ unsafe extern "C" fn net_read(
     if node.proto() == Some(PROTO_UNIX) {
         return unix::read(node, pos, out);
     }
-    let st = &mut *lock();
+    let (n, wake) = {
+        let st = &mut *lock();
+        (read_locked(st, node, pos, out), st.req.take_wake())
+    };
+    if wake {
+        wake_any();
+    }
+    n
+}
+
+/// [`net_read`] with the state locked.
+fn read_locked(st: &mut State, node: Node, pos: usize, out: &mut [u8]) -> i32 {
     // hdata is data with the headers, peek data that stays.
     let (node, hdr, peek) = match node {
         Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true, false),
@@ -1287,7 +1313,18 @@ unsafe extern "C" fn net_write(
     if node.proto() == Some(PROTO_UNIX) {
         return unix::write(node, src);
     }
-    let st = &mut *lock();
+    let (n, wake) = {
+        let st = &mut *lock();
+        (write_locked(st, node, src), st.req.take_wake())
+    };
+    if wake {
+        wake_any();
+    }
+    n
+}
+
+/// [`net_write`] with the state locked.
+fn write_locked(st: &mut State, node: Node, src: &[u8]) -> i32 {
     let (node, hdr) = match node {
         Node::Hdata(id) => (Node::Data(PROTO_UDP, id), true),
         n => (n, false),
@@ -1372,20 +1409,32 @@ unsafe extern "C" fn net_write(
 /// hangup to read, a connection up for writing, a connection to accept.
 /// netd's replies arrive as writes to `/dev/netd`, which wake the pollers.
 unsafe extern "C" fn net_poll(path: *const u8, path_len: usize, changes: *mut u64) -> u32 {
-    let st = &mut *lock();
     let Some(node) = (unsafe { c_str(path, path_len) }).and_then(parse_path) else {
         return MYOS_POLLERR | MYOS_POLLHUP;
     };
     if node.proto() == Some(PROTO_UNIX) {
         return unix::poll(node, changes);
     }
+    // SAFETY: the kernel passes a live out-parameter.
+    let changes = unsafe { &mut *changes };
+    let (bits, wake) = {
+        let st = &mut *lock();
+        (poll_locked(st, node, changes), st.req.take_wake())
+    };
+    if wake {
+        wake_any();
+    }
+    bits
+}
+
+/// [`net_poll`] with the state locked.
+fn poll_locked(st: &mut State, node: Node, changes: &mut u64) -> u32 {
     let (p, id) = match node {
         Node::Data(p, id) => (p, id),
         Node::Hdata(id) => (PROTO_UDP, id),
         _ => return MYOS_POLLIN | MYOS_POLLOUT,
     };
-    // SAFETY: the kernel passes a live out-parameter.
-    unsafe { *changes = st.changes.get(id as usize).copied().unwrap_or(0) };
+    *changes = st.changes.get(id as usize).copied().unwrap_or(0);
     if !conv_ok(&st.convs, id, p) {
         return MYOS_POLLERR | MYOS_POLLHUP;
     }
