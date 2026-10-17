@@ -44,6 +44,7 @@
  * (user/get-myos/pkgtools.c). Uses fputs, not printf: newlib's printf
  * needs extra soft-float helpers on aarch64 and riscv64.
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -718,6 +719,32 @@ static void write_resolv_conf(FILE *f) {
     }
 }
 
+/* Alpine's packages depend on no font: a root with just a GTK program (a
+ * browser) has fontconfig and nothing under /usr/share/fonts, and GTK, laying
+ * its text out without one, asks X for a window wider than X allows and dies
+ * with an X error (BadAlloc). Say so when the install is done. */
+static void font_hint(void) {
+    char path[PATH_MAX_GV];
+    if (under_root(path, "usr/lib/libfontconfig.so.1") != 0 || access(path, F_OK) != 0) {
+        return;
+    }
+    int any = 0;
+    if (under_root(path, "usr/share/fonts") == 0) {
+        DIR *d = opendir(path);
+        if (d != NULL) {
+            struct dirent *e;
+            while (!any && (e = readdir(d)) != NULL) {
+                any = strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0;
+            }
+            closedir(d);
+        }
+    }
+    if (!any) {
+        say("no fonts in ", pkg_root,
+            "/usr/share/fonts: a program that draws text (GTK, a browser) needs one: get-alpine font-dejavu");
+    }
+}
+
 /* `linux --root ROOT apk add --initdb [-U] BASE... PACKAGE...`: apk's exit
  * status, 127 when it did not run. --initdb makes the database on the first
  * run and is nothing afterwards; the base set is in every `add`, so apk's
@@ -861,6 +888,7 @@ int main(int argc, char **argv) {
             return die("apk failed in ", pkg_root);
         }
     }
+    font_hint();
     say("done; run with: linux --root ", pkg_root, " PROGRAM");
     return 0;
 }
