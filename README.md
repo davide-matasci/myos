@@ -120,7 +120,7 @@ Boot (Limine)
             │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, virtio_net, tap, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
-                 ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
+                 ├─ /netd (smoltcp over /dev/net0/data and /dev/tap; only opener of net0)
                  ├─ /etc/rc in the background → /data/etc/rc.local (insmod linux, dropbear :2222)
                  ├─ getty on ttyS0, tty1…ttyN → login → /sh (oksh 7.9 via newlib/libgloss)
                  └─ CI /heap: std / C / sbase / ripgrep / tcc (+ uutils, git: full mode)
@@ -185,7 +185,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `user/ok` | Slim always-on boot smoke (alloc/user/fat/proc) |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/ripgrep/tcc/bigalloc; uutils and git in the full mode) |
-| `user/netd` | Userspace smoltcp over `/dev/net0/data` |
+| `user/netd` | Userspace smoltcp over `/dev/net0/data` and the virtual NICs of `/dev/tap` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |

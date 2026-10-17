@@ -30,6 +30,21 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    net0 10.0.2.15 255.255.255.0 up,broadcast
    ```
    (`-` for the address and mask until DHCP is done)
+
+   netd also drives the virtual NICs of `/dev/tap` (`docs/wifi.md`: the
+   Wi-Fi link), each one whose link is up, as `tap0` to `tap3` after
+   `net0` in `/net/ifaddrs` (`user/netd/src/nics.rs`; it looks for them
+   once a second). Each NIC has its own smoltcp interface and DHCP lease
+   over the one socket set, and `lo` carries every NIC's address. The
+   default route and `/net/ndb`'s address line are the preferred NIC's:
+   `net0` while it has a lease, else the first other one with a lease; the
+   `dns=` lines are the preferred NIC's servers, then the others'. A new
+   connection takes the address of the NIC whose subnet holds its
+   destination, else the preferred NIC's, and a packet leaves through the
+   NIC its source address is: a third smoltcp patch (`multi-home`) makes
+   an interface send only from its own addresses, leave the other NICs'
+   to `lo`, and gives each DHCP socket the answers to its own NIC. The
+   test is `multihome_smoke` (`user/c/test.sh`).
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}` (and a tcp
    conversation's `peek`); a conversation's
    files are the user's whose process read `clone` (an accepted

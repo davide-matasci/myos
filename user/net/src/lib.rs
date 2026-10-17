@@ -93,18 +93,26 @@ impl Net0Device {
         Self::open_nth(0)
     }
 
-    /// Open `/dev/netN` for `n` in 0..=9: its `data` read/write, its `ctl`
-    /// read once for the MAC and the interrupt.
+    /// Open `/dev/netN` for `n` in 0..=9.
     pub fn open_nth(n: usize) -> Option<Self> {
         if n > 9 {
             return None;
         }
-        let mut data = *b"/dev/net0/data";
-        data[8] = b'0' + (n as u8);
-        let mut ctl = *b"/dev/net0/ctl";
-        ctl[8] = b'0' + (n as u8);
-        let fd = open_flags(&data, O_RDWR)?;
-        let (mac, rx_irq) = read_ctl(&ctl).unwrap_or(([0; 6], false));
+        let mut dir = *b"/dev/net0";
+        dir[8] = b'0' + (n as u8);
+        Self::open_dir(&dir)
+    }
+
+    /// Open the NIC whose directory is `dir` (`/dev/net0`, `/dev/tap/0`):
+    /// its `data` read/write, its `ctl` read once for the MAC and the
+    /// interrupt.
+    pub fn open_dir(dir: &[u8]) -> Option<Self> {
+        let mut data = [0u8; 64];
+        let mut ctl = [0u8; 64];
+        let data = join(&mut data, dir, b"/data")?;
+        let ctl = join(&mut ctl, dir, b"/ctl")?;
+        let fd = open_flags(data, O_RDWR)?;
+        let (mac, rx_irq) = read_ctl(ctl).unwrap_or(([0; 6], false));
         Some(Self {
             fd,
             rx: [0; FRAME_BUF],
@@ -140,6 +148,34 @@ impl Net0Device {
             QEMU_DEFAULT_MAC
         }
     }
+}
+
+/// `a` then `b` in `out`.
+fn join<'a>(out: &'a mut [u8; 64], a: &[u8], b: &[u8]) -> Option<&'a [u8]> {
+    let n = a.len() + b.len();
+    if n > out.len() {
+        return None;
+    }
+    out[..a.len()].copy_from_slice(a);
+    out[a.len()..n].copy_from_slice(b);
+    Some(&out[..n])
+}
+
+/// Whether the NIC whose directory is `dir` is there and its link up: its
+/// `ctl` reads, and says no `link down` (a virtio NIC's says nothing of
+/// the link; a virtual NIC's, `/dev/tap`, does).
+pub fn link_up(dir: &[u8]) -> bool {
+    let mut ctl = [0u8; 64];
+    let Some(ctl) = join(&mut ctl, dir, b"/ctl") else {
+        return false;
+    };
+    let Some(fd) = open(ctl) else {
+        return false;
+    };
+    let mut text = [0u8; 128];
+    let n = read(fd, &mut text);
+    close(fd);
+    n != usize::MAX && !text[..n].split(|&b| b == b'\n').any(|l| l == b"link down")
 }
 
 /// The `mac` and `irq` lines of a NIC's `ctl`.
