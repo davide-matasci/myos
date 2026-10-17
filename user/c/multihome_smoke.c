@@ -3,11 +3,12 @@
  *
  * The parent is the wire: it holds a free NIC's `prog`, brings its link up
  * and answers what netd sends on it as a small router 10.0.9.1 would (DHCP
- * offering 10.0.9.2/24, ARP, UDP echo on port 7). The child checks that
- * netd took the NIC: `/net/ifaddrs` shows it with its lease, `/net/ndb`
- * keeps net0's (the wired link carries the default route), a UDP socket
- * connected to 10.0.9.1 has 10.0.9.2 as its source and gets its datagram
- * echoed. When the child is done the parent lets go of `prog`, and the NIC
+ * offering 10.0.9.2/24, ARP, UDP echo on port 7, ping). The child checks
+ * that netd took the NIC: `/net/ifaddrs` shows it with its lease,
+ * `/net/ndb` keeps net0's (the wired link carries the default route), a
+ * UDP socket connected to 10.0.9.1 has 10.0.9.2 as its source and gets its
+ * datagram echoed, and a ping (`/net/icmp`) to 10.0.9.1 is answered.
+ * When the child is done the parent lets go of `prog`, and the NIC
  * leaves `/net/ifaddrs`. Prints [ OK ] multihome.
  */
 #include <arpa/inet.h>
@@ -27,6 +28,7 @@ static const unsigned char LEASE_IP[4] = {10, 0, 9, 2};
 
 static int fail(const char *what) {
     printf("[ FAIL ] multihome %s (errno %d)\n", what, errno);
+    fflush(stdout); /* the child leaves by _exit */
     return 1;
 }
 
@@ -165,6 +167,23 @@ static void answer(int prog, const unsigned char *f, size_t n) {
             memcpy(out + 42, payload, plen);
             len = udp_frame(out, f + 6, f + 26, 7, (udp[0] << 8) | udp[1], plen);
         }
+    } else if (type == 0x0800 && n >= 42 && n <= sizeof out && f[14] == 0x45 && f[23] == 1 && f[34] == 8 &&
+               !memcmp(f + 30, PEER_IP, 4)) {
+        /* An echo request to 10.0.9.1: the same packet back, as a reply. */
+        memcpy(out, f + 6, 6);
+        memcpy(out + 6, PEER_MAC, 6);
+        memcpy(out + 12, f + 12, n - 12);
+        memcpy(out + 26, PEER_IP, 4);
+        memcpy(out + 30, f + 26, 4);
+        out[24] = out[25] = 0;
+        put16(out + 24, fold(sum16(out + 14, 20, 0)));
+        size_t icmp_len = ((f[16] << 8) | f[17]) - 20; /* smoltcp: no IP options */
+        if (icmp_len > n - 34)
+            return;
+        out[34] = 0;
+        out[36] = out[37] = 0;
+        put16(out + 36, fold(sum16(out + 34, icmp_len, 0)));
+        len = n;
     }
     if (len)
         write(prog, out, len);
@@ -199,6 +218,15 @@ static int check(const char *name) {
     if (memcmp(got, "multihome", 9))
         return fail("no echo from 10.0.9.1");
     close(s);
+    /* An ICMP socket's source names its NIC too. */
+    pid_t ping = fork();
+    if (ping == 0) {
+        execl("/bin/custom/ping", "ping", "10.0.9.1", (char *)NULL);
+        _exit(127);
+    }
+    int st = 0;
+    if (ping < 0 || waitpid(ping, &st, 0) != ping || !WIFEXITED(st) || WEXITSTATUS(st) != 0)
+        return fail("no answer to a ping of 10.0.9.1");
     return 0;
 }
 
