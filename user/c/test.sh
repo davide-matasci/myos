@@ -43,6 +43,10 @@ t -t events epoll /bin/etc/epoll_smoke
 # one outside the mask delivered, EAGAIN, a child's kill ending a read, the
 # mask changed, the fd in a wait set (sigfd_smoke.c).
 t -t events sigfd /bin/etc/sigfd_smoke
+# /dev/pci: a userspace driver for QEMU's edu device: its registers mapped
+# uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
+# copy through a buffer of /dev/pci (pcidev_smoke.c).
+t -t pcidev pcidev /bin/etc/pcidev_smoke
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t -t fs uio /bin/etc/uio_smoke
