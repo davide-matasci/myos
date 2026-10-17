@@ -11,6 +11,8 @@ use super::user::DEFAULT_USER_BASE;
 const PRESENT: u64 = 1;
 const WRITE: u64 = 1 << 1;
 const USER: u64 = 1 << 2;
+const PWT: u64 = 1 << 3;
+const PCD: u64 = 1 << 4;
 const HUGE: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
 
@@ -231,6 +233,16 @@ pub fn map_user_page_prot(aspace: u64, va: u64, pa: u64, w: bool, x: bool) {
     }
     if !x {
         flags |= NX;
+    }
+    map_page_x86(aspace, va, pa, flags);
+}
+
+/// A device's registers at `pa` (a PCI BAR), uncached (PCD|PWT: PAT entry
+/// 3, UC) and never executable.
+pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    let mut flags = PRESENT | USER | PWT | PCD | NX;
+    if w {
+        flags |= WRITE;
     }
     map_page_x86(aspace, va, pa, flags);
 }

@@ -64,7 +64,16 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 45: a filesystem's `write` and `write_ino` hooks and
 /// [`KernelApi::vfs_write`] tell a full filesystem apart ([`VFS_ENOSPC`],
 /// the caller's `ENOSPC`).
-pub const ABI_VERSION: u32 = 45;
+/// 46: [`ModuleVfsOps::mmap`] says how its page is mapped
+/// ([`MYOS_MMAP_UNCACHED`]: a device's registers), and
+/// [`KernelApi::pci_irq_enable`] gives a function without MSI-X its MSI
+/// ([`MYOS_IRQ_MSI`], x86_64).
+pub const ABI_VERSION: u32 = 46;
+
+/// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
+/// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
+/// platform's attributes for the address).
+pub const MYOS_MMAP_UNCACHED: u32 = 1;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -80,6 +89,9 @@ pub type IrqHandler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 /// `pci_irq_enable` out value: the device is on legacy INTx (read its ISR
 /// register in the handler to deassert the line).
 pub const MYOS_IRQ_INTX: u16 = 0xFFFF;
+/// `pci_irq_enable` out value: the device raises its one MSI message
+/// (x86_64, a function without MSI-X); nothing to deassert.
+pub const MYOS_IRQ_MSI: u16 = 0xFFFE;
 
 /// How full a filesystem is ([`ModuleVfsOps::statfs`], `statvfs(3)`):
 /// sizes in blocks of `bsize` bytes.
@@ -196,8 +208,10 @@ pub struct ModuleVfsOps {
     /// aligned) of `path`, for `mmap` of device memory (`/dev/fb/data`), or 0
     /// when that page cannot be mapped. The page stays the module's: the
     /// kernel maps it shared into every process that asks, never copies it
-    /// on fork and never frees it.
-    pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize) -> u64>,
+    /// on fork and never frees it. `*attrs` (0 on entry) takes
+    /// [`MYOS_MMAP_UNCACHED`] for a page of registers (a PCI BAR); the
+    /// others are mapped as memory.
+    pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize, attrs: *mut u32) -> u64>,
     // --- ABI 17: readiness ---
     /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`],
     /// [`MYOS_POLLERR`], [`MYOS_POLLHUP`]) that hold now for `path`, whatever
@@ -701,8 +715,8 @@ pub struct KernelApi {
     // --- ABI 11: device interrupts and blocking waits ---
     /// Route the PCI function's interrupt to `handler(ctx)`. The kernel picks
     /// the mechanism: `*msix_entry` is the MSI-X table entry the device must
-    /// use (virtio: `queue_msix_vector`), or [`MYOS_IRQ_INTX`] for a legacy
-    /// INTx line. `name` labels `/proc/interrupts`. 0 ok, negative on error.
+    /// use (virtio: `queue_msix_vector`), [`MYOS_IRQ_MSI`] for plain MSI or
+    /// [`MYOS_IRQ_INTX`] for a legacy INTx line. `name` labels `/proc/interrupts`. 0 ok, negative on error.
     pub pci_irq_enable: unsafe extern "C" fn(
         bus: u8,
         slot: u8,

@@ -142,7 +142,7 @@ static API: KernelApi = KernelApi {
 /// Modules that print their own `[ OK ]` line (only when they found a
 /// device, or with their own wording); the loader announces the others.
 const SELF_REPORTING: &[&str] =
-    &["console", "virtio_blk", "virtio_scsi", "nvme", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage", "usb_hid"];
+    &["console", "virtio_blk", "virtio_scsi", "nvme", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage", "usb_hid", "pcidev"];
 
 /// Load the boot modules: the names in the initramfs's `/lib/modules/boot.list`
 /// (one per line), each from `/lib/modules/<name>`, in that order. Called
@@ -659,7 +659,11 @@ unsafe extern "C" fn api_pci_irq_enable(
     }
     registry::note_registration();
     unsafe {
-        *msix_entry = route.msix_entry.unwrap_or(myos_abi::MYOS_IRQ_INTX);
+        *msix_entry = match route.delivery {
+            crate::irq::Delivery::MsiX(entry) => entry,
+            crate::irq::Delivery::Msi => myos_abi::MYOS_IRQ_MSI,
+            crate::irq::Delivery::IntX => myos_abi::MYOS_IRQ_INTX,
+        };
     }
     0
 }

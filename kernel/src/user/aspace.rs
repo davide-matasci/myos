@@ -755,6 +755,16 @@ pub(super) fn map_user_page_prot(aspace: u64, va: u64, pa: u64, prot: usize) {
     crate::arch::upaging::map_user_page_prot(aspace, va, pa, prot & PROT_WRITE != 0, prot & PROT_EXEC != 0);
 }
 
+/// [`map_user_page_prot`], or a device's registers (`uncached`: never
+/// executable).
+pub(super) fn map_user_page_kind(aspace: u64, va: u64, pa: u64, prot: usize, uncached: bool) {
+    if uncached {
+        crate::arch::upaging::map_user_device_page(aspace, va, pa, prot & PROT_WRITE != 0);
+    } else {
+        map_user_page_prot(aspace, va, pa, prot);
+    }
+}
+
 /// Make freshly written user code visible to instruction fetch.
 pub(super) fn sync_icache(start: usize, size: usize) {
     crate::arch::sync_icache(start, size);

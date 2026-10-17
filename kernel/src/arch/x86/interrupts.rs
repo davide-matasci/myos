@@ -423,12 +423,9 @@ dev_stub!(dev_irq13, 13);
 dev_stub!(dev_irq14, 14);
 dev_stub!(dev_irq15, 15);
 
-/// Program MSI-X table entry 0 of the PCI function to raise a fresh LAPIC
-/// vector on the BSP, and enable MSI-X. Returns the vector (`irq::dispatch`
-/// number). The caller still has to point the device's queue at entry 0
-/// (virtio: `queue_msix_vector`).
-pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
-    const CAP_MSIX: u32 = 0x11;
+/// The offset of the PCI function's capability `id` in configuration
+/// space, if it has one.
+fn pci_cap(bus: u8, slot: u8, func: u8, id: u32) -> Option<u8> {
     let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
     let status = (cfg(4) >> 16) as u16;
     if status & 0x10 == 0 {
@@ -439,14 +436,29 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     while cap != 0 && hops < 48 {
         hops += 1;
         let w0 = cfg(cap);
-        if w0 & 0xFF == CAP_MSIX {
-            break;
+        if w0 & 0xFF == id {
+            return Some(cap);
         }
         cap = ((w0 >> 8) & 0xFC) as u8;
     }
-    if cap == 0 || cfg(cap) & 0xFF != CAP_MSIX {
-        return None;
-    }
+    None
+}
+
+/// The BSP's MSI message address. It names the destination in 8 bits: a
+/// BSP with a larger x2APIC id would need interrupt remapping to be
+/// reached.
+fn msi_address() -> Option<u32> {
+    let apic_id = crate::smp::cpu_hw_id(0) as u32;
+    (apic_id <= 0xFF).then_some(0xFEE0_0000 | (apic_id << 12))
+}
+
+/// Program MSI-X table entry 0 of the PCI function to raise a fresh LAPIC
+/// vector on the BSP, and enable MSI-X. Returns the vector (`irq::dispatch`
+/// number). The caller still has to point the device's queue at entry 0
+/// (virtio: `queue_msix_vector`).
+pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
+    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
+    let cap = pci_cap(bus, slot, func, 0x11)?;
     let table = cfg(cap.wrapping_add(4));
     let bir = (table & 0x7) as u8;
     let offset = (table & !0x7) as u64;
@@ -454,18 +466,13 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     if offset.saturating_add(16) > size {
         return None;
     }
-    // The message address names the destination in 8 bits: a BSP with a
-    // larger x2APIC id would need interrupt remapping to be reached.
-    let apic_id = crate::smp::cpu_hw_id(0) as u32;
-    if apic_id > 0xFF {
-        return None;
-    }
+    let address = msi_address()?;
     let vector = u32::from(alloc_vector()?);
     let entry = va + offset as usize;
     unsafe {
         // Mask the entry while programming it (vector control bit 0).
         core::ptr::write_volatile((entry + 12) as *mut u32, 1);
-        core::ptr::write_volatile(entry as *mut u32, 0xFEE0_0000 | (apic_id << 12));
+        core::ptr::write_volatile(entry as *mut u32, address);
         core::ptr::write_volatile((entry + 4) as *mut u32, 0);
         core::ptr::write_volatile((entry + 8) as *mut u32, vector);
         core::ptr::write_volatile((entry + 12) as *mut u32, 0);
@@ -474,6 +481,31 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     let w0 = cfg(cap);
     let ctrl = ((w0 >> 16) as u16 | 0x8000) & !0x4000;
     crate::pci::cfg_write32(bus, slot, func, cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
+    Some(vector)
+}
+
+/// A function with MSI and no MSI-X (QEMU's `edu`): its one message raises
+/// a fresh LAPIC vector on the BSP. Returns the vector.
+pub fn pci_msi_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
+    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
+    let write = |off: u8, v: u32| crate::pci::cfg_write32(bus, slot, func, off, v);
+    let cap = pci_cap(bus, slot, func, 0x05)?;
+    let address = msi_address()?;
+    let vector = u32::from(alloc_vector()?);
+    // Message control (cap+2): bit 0 enable, bits 4..6 the vectors enabled
+    // (0: one), bit 7 a 64-bit address (the data then at cap+12, not +8).
+    let w0 = cfg(cap);
+    let ctrl = (w0 >> 16) as u16;
+    write(cap.wrapping_add(4), address);
+    let data = if ctrl & 0x80 != 0 {
+        write(cap.wrapping_add(8), 0);
+        cap.wrapping_add(12)
+    } else {
+        cap.wrapping_add(8)
+    };
+    write(data, (cfg(data) & 0xFFFF_0000) | vector);
+    let ctrl = (ctrl & !0x70) | 1;
+    write(cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
     Some(vector)
 }
 

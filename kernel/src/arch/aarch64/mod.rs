@@ -159,7 +159,7 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     interrupts::gic_enable_spi(intid);
     Some(crate::irq::PciIrq {
         irq: intid,
-        msix_entry: None,
+        delivery: crate::irq::Delivery::IntX,
     })
 }
 
