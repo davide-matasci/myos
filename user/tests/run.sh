@@ -186,6 +186,8 @@ if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 		# (/data/apps/apps.list), with the mirror that install used:
 		# nothing to change, so it ends at the same generation.
 		t -t app_kept apps_synced apps_synced
+		# apps_data made clear global: /etc/rc bound it again, on PATH.
+		t -t app_kept app_global sh -c '[ "$(/bin/custom/clear -T linux)" = "$(printf "\033[H\033[J")" ]'
 	else
 		t booted_installed booted_slot a
 	fi

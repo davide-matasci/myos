@@ -2151,26 +2151,40 @@ fn sys_mount(args_ptr: usize) -> usize {
     }
 }
 
-/// `umount(2)`: `a0`/`a1` the mount point. 0, or `SYSERR` when nothing
-/// that can be unmounted is mounted there or the mount is busy.
+/// `umount(2)`: `a0`/`a1` the mount point, or the target of a bind. 0, or
+/// `SYSERR` when nothing that can be unmounted is mounted or bound there or
+/// the mount is busy.
 fn sys_umount(ptr: usize, len: usize) -> usize {
     let Some(buf) = copy_user_path(ptr, len) else {
         return SYSERR;
     };
-    let Ok(path) = core::str::from_utf8(&buf[..len]) else {
+    let Ok(name) = core::str::from_utf8(&buf[..len]) else {
         return SYSERR;
     };
-    let Some(path) = resolve_copied_path(path) else {
+    // A bind is named as it was made: a symlink bound there (a program's
+    // alias, `get-myos --global`) is not followed.
+    let Some(bound) = resolve_copied_path_nofollow(name) else {
         return SYSERR;
     };
-    if !crate::sec::allowed_object("kernel.mounts", None, Rights::WRITE) || !may(&path, Rights::MOUNT) {
+    let Some(path) = resolve_copied_path(name) else {
+        return SYSERR;
+    };
+    if !crate::sec::allowed_object("kernel.mounts", None, Rights::WRITE)
+        || !may(&bound, Rights::MOUNT)
+        || !may(&path, Rights::MOUNT)
+    {
         return SYSERR;
     }
-    // Where a mount under a bind was made (sys_mount).
-    let Some(path) = fs::vfs::canonical(&path) else {
+    // Where a mount under a bind was made (sys_mount). A disk mounted where
+    // the path leads is what goes (`umount /mnt` with /tmp/mnt bound at
+    // /mnt and a disk on /tmp/mnt), busy or not; else a bind there.
+    let Some(real) = fs::vfs::canonical(&path) else {
         return SYSERR;
     };
-    if fs::vfs::unmount(&path) { 0 } else { SYSERR }
+    if fs::vfs::is_mount_point(&real) {
+        return if fs::vfs::unmount(&real) { 0 } else { SYSERR };
+    }
+    if fs::vfs::remove_bind(&bound) { 0 } else { SYSERR }
 }
 
 /// The auxiliary vector for an image about to start with a foreign

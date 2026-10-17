@@ -15,6 +15,7 @@ the same.
 get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
 get-myos [-r ROOT] -d PACKAGE... | --sync [FILE] | --gc
 get-myos [-r ROOT] --generations | --rollback [PACKAGE...] | --switch N
+get-myos [-r ROOT] --global [PACKAGE...] | --unglobal PACKAGE...
 get-myos [-r ROOT] --root
 run-myos [-r ROOT] APP[@VERSION][,APP...][:CMD] [ARGS...]
 ```
@@ -187,6 +188,33 @@ The rights are the caller's: the namespace only adds what the apps hold,
 under the `sys.pkg` label (`etc/policy`: `/tmp/apps/**` and
 `/data/apps/**`). An app is not isolated from the rest of the system yet.
 
+### Global apps
+
+`get-myos --global NAME` makes an app part of the system for every process:
+its files, and those of what it needs, are bound where the image would
+have them (`mount SOURCE TARGET bind`), by `run-myos`'s rule (the
+shallowest path the system lacks, or a file alone in a directory it has),
+so its programs are on `PATH` (`/bin/custom/vim`) with no `run-myos`.
+`get-myos --unglobal NAME` takes them away (`umount TARGET` removes a
+bind), and what only it needed with them. Binds change the tree for
+everyone: they need `write` on `kernel.mounts`, root's (`etc/policy`).
+
+- The global apps are `ROOT/.get-myos/global/<name>`, the binds get-myos
+  made `ROOT/.get-myos/binds` (`target source app`, those `/proc/mounts`
+  still shows). A bind names a version's directory (`ROOT/vim-<version>/`),
+  so every command that moves versions (an install, `-u`, `--sync`,
+  `--rollback`, `--switch`) binds the global apps again at the versions
+  now current, and what they need at the versions their manifests name.
+- Taking an app out (`-d`, `--sync`, a generation without it) takes it
+  out of the global set first. Generations do not record the global set.
+- A path two apps would provide (two global apps, or one global app's
+  dependency at two versions) is refused, naming the app that has it:
+  nothing is bound then.
+- `get-myos --global` without a name binds the global apps again: `/etc/rc`
+  runs it for `/data/apps` at boot, before the first login
+  (`docs/install.md`). Each root has its own global set; two roots' global
+  apps are not checked against each other.
+
 It shares its download, tar and gzip code with `get-alpine`
 (`user/get-myos/pkgtools.c`; the Linux layer's installer bootstraps Alpine's
 `apk` the same way from Alpine's repositories).
@@ -237,7 +265,11 @@ The image has the same header's fields in `/lib/myos-release`
   without a download, `--gc` removing the old one) and the set of apps in
   a root of its own (`apps_set`: exact dependency versions, `apps.list`,
   `-d` refusing a needed app, `--rollback` and `--switch` of the whole
-  set, `--sync` to a shorter list, `--gc`, the remembered mirror). The
+  set, `--sync` to a shorter list, `--gc`, the remembered mirror) and
+  global apps (`apps_global`: binds made, refused for a path another app
+  has, following a rollback, taken away by `-d` and `--unglobal`;
+  `app_global` after the reboot: `clear`, made global on `/data/apps` by
+  `apps_data`, bound again by `/etc/rc`). The
   boot job needs `gzip` and `sha256sum`.
 - The build job writes the packages of the three arches (`cargo run --
   packages`) and uploads them as the `myos-packages` artifact (7 days).

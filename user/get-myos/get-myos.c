@@ -2,6 +2,7 @@
  * get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...
  * get-myos [-r ROOT] -d PACKAGE... | --sync [FILE] | --gc
  * get-myos [-r ROOT] --generations | --rollback [PACKAGE...] | --switch N
+ * get-myos [-r ROOT] --global [PACKAGE...] | --unglobal PACKAGE...
  * get-myos [-r ROOT] --root
  * get-myos [-m MIRROR] --upgrade [-f]
  * get-myos [-m MIRROR] --install DISK [--local]
@@ -34,6 +35,10 @@
  * version, listed or needed); --rollback and --switch N return the whole
  * set to one, apps.list included, and --rollback NAME one app. Versions
  * stay on disk until --gc, which keeps the current generation only.
+ *
+ * --global NAME binds an app's files (and what it needs) where the image
+ * would have them, for every process, until --unglobal NAME (root only:
+ * binds need kernel.mounts); /etc/rc binds them again at boot.
  *
  * The mirror holds one index per architecture (<arch>-index.txt: a header
  * naming the build's release and syscall ABI, then name, version, size,
@@ -69,8 +74,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/myos_extra.h> /* lstat */
+#include <sys/myos_extra.h> /* lstat, mount */
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "boot.h"
@@ -970,6 +976,328 @@ static int commit_generation(void) {
     return 0;
 }
 
+/* ---- global apps: bound where the image would have them --------------- */
+
+/* `get-myos --global NAME` binds an app's files, and those of what it
+ * needs, over the system for every process (`mount SRC TARGET bind`), by
+ * run-myos's rule: the shallowest path the system lacks, or a file alone
+ * in a directory it has. The global apps are ROOT/.get-myos/global/<name>;
+ * the binds get-myos made, ROOT/.get-myos/binds (`target source app` a
+ * line). After every command that moves versions they are made again for
+ * the versions now current (binds name a version's directory: the kernel
+ * does not follow ROOT/<name> in a bind's source). Binds need `write` on
+ * kernel.mounts: root's. /etc/rc binds them again at boot. */
+
+#define MAX_BINDS 512
+
+typedef struct {
+    char target[160], source[PATH_MAX_GV], app[64];
+} bind_at;
+
+typedef struct {
+    int n;
+    bind_at b[MAX_BINDS];
+} bind_set;
+
+/* ROOT/.get-myos/global/<name>. */
+static int global_path(char *out, const char *name) {
+    char rel[PATH_MAX_GV];
+    if (strlen(name) + 8 > sizeof rel) {
+        return -1;
+    }
+    strcpy(rel, "global/");
+    strcat(rel, name);
+    return db_path(out, rel);
+}
+
+/* Whether the kernel has `source` bound at `target` (a /proc/mounts line
+ * `SOURCE TARGET bind ...`): a record outlives the binds at a reboot. */
+static int bound_now(const bind_at *b) {
+    char line[600];
+    size_t sl = strlen(b->source), tl = strlen(b->target);
+    int found = 0;
+    FILE *f = fopen("/proc/mounts", "r");
+    while (f != NULL && !found && fgets(line, sizeof line, f) != NULL) {
+        found = strncmp(line, b->source, sl) == 0 && line[sl] == ' ' && strncmp(line + sl + 1, b->target, tl) == 0 &&
+                strncmp(line + sl + 1 + tl, " bind ", 6) == 0;
+    }
+    if (f != NULL) {
+        fclose(f);
+    }
+    return found;
+}
+
+/* The binds get-myos made that are still there. */
+static void read_binds(bind_set *s) {
+    char path[PATH_MAX_GV], line[600];
+    s->n = 0;
+    FILE *f = db_path(path, "binds") == 0 ? fopen(path, "r") : NULL;
+    if (f == NULL) {
+        return;
+    }
+    while (s->n < MAX_BINDS && fgets(line, sizeof line, f) != NULL) {
+        bind_at *b = &s->b[s->n];
+        const char *p = line;
+        char *fields[3] = {b->target, b->source, b->app};
+        size_t caps[3] = {sizeof b->target, sizeof b->source, sizeof b->app};
+        for (int i = 0; i < 3; i++) {
+            size_t n = strcspn(p, " \n");
+            copy_field(fields[i], caps[i], p, n);
+            p += n + (p[n] == ' ');
+        }
+        if (b->target[0] == '/' && b->source[0] == '/' && bound_now(b)) {
+            s->n++;
+        }
+    }
+    fclose(f);
+}
+
+static int write_binds(const bind_set *s) {
+    static char text[MAX_BINDS * 480];
+    char path[PATH_MAX_GV];
+    if (s->n == 0) {
+        return db_path(path, "binds") != 0 || (unlink(path) != 0 && access(path, F_OK) == 0) ? -1 : 0;
+    }
+    text[0] = '\0';
+    for (int i = 0; i < s->n; i++) {
+        strcat(text, s->b[i].target);
+        strcat(text, " ");
+        strcat(text, s->b[i].source);
+        strcat(text, " ");
+        strcat(text, s->b[i].app);
+        if (i + 1 < s->n) {
+            strcat(text, "\n");
+        }
+    }
+    return db_path(path, "binds") == 0 ? write_text(path, text) : -1;
+}
+
+/* Whether `path` is `under` or below it. */
+static int is_under(const char *path, const char *under) {
+    size_t n = strlen(under);
+    return strncmp(path, under, n) == 0 && (path[n] == '\0' || path[n] == '/');
+}
+
+/* Whether the system has `path`, get-myos's own binds (`ours`) aside. */
+static int system_has(const char *path, const bind_set *ours) {
+    struct stat st;
+    for (int i = 0; i < ours->n; i++) {
+        if (is_under(path, ours->b[i].target)) {
+            return 0;
+        }
+    }
+    return stat(path, &st) == 0;
+}
+
+/* The binds of the app in directory `dir` (ROOT/<name>-<version>), below
+ * its `rel` (from "/"), added to `want`; -1 when one would be another
+ * app's path, said with its owner. */
+static int app_binds(const char *app, const char *dir, const char *rel, const bind_set *ours, bind_set *want,
+                     int depth) {
+    char path[PATH_MAX_GV], target[160];
+    if (depth > 32 || strlen(dir) + strlen(rel) + 1 >= sizeof path) {
+        return 0;
+    }
+    strcpy(path, dir);
+    strcat(path, rel);
+    DIR *d = opendir(path);
+    if (d == NULL) {
+        return 0;
+    }
+    int rc = 0;
+    struct dirent *e;
+    while (rc == 0 && (e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.' && (e->d_name[1] == '\0' || (e->d_name[1] == '.' && e->d_name[2] == '\0'))) {
+            continue;
+        }
+        if (strlen(rel) + 1 + strlen(e->d_name) >= sizeof target) {
+            continue;
+        }
+        strcpy(target, strcmp(rel, "/") == 0 ? "" : rel);
+        strcat(target, "/");
+        strcat(target, e->d_name);
+        /* The manifest and the app's tests are not part of it (run-myos). */
+        if (strcmp(target, "/app") == 0 || strcmp(target, "/lib/myos-tests") == 0) {
+            continue;
+        }
+        char source[PATH_MAX_GV];
+        struct stat st;
+        if (strlen(dir) + strlen(target) >= sizeof source) {
+            continue;
+        }
+        strcpy(source, dir);
+        strcat(source, target);
+        if (system_has(target, ours) && lstat(source, &st) == 0 && S_ISDIR(st.st_mode)) {
+            rc = app_binds(app, dir, target, ours, want, depth + 1);
+            continue;
+        }
+        for (int i = 0; i < want->n; i++) {
+            if (is_under(target, want->b[i].target) || is_under(want->b[i].target, target)) {
+                say(want->b[i].target, " is provided by ", want->b[i].app);
+                say(app, " would provide ", target);
+                rc = -1;
+                break;
+            }
+        }
+        if (rc == 0 && want->n < MAX_BINDS) {
+            bind_at *b = &want->b[want->n++];
+            copy_field(b->target, sizeof b->target, target, strlen(target));
+            copy_field(b->source, sizeof b->source, source, strlen(source));
+            copy_field(b->app, sizeof b->app, app, strlen(app));
+        }
+    }
+    closedir(d);
+    return rc;
+}
+
+/* `umount TARGET` (the image's; libc has no umount): 0 when it went. */
+static int unbind(const char *target) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/custom/umount", "umount", target, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    return pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+/* Bind every global app (and `adding`, NULL for none) and what it needs,
+ * at the versions now current (what an app needs: the version its
+ * manifest names), and take away the binds no global app has any more.
+ * Nothing changes when two apps would have one path, or one app's two
+ * versions are needed: -1 then, said. */
+static int rebind_global(const char *adding) {
+    static app_set apps;
+    static bind_set ours, want;
+    char path[PATH_MAX_GV], v[64], added[64];
+    apps.n = 0;
+    if (adding != NULL && current_version(adding, added, sizeof added) != 0) {
+        return die("not installed: ", adding);
+    }
+    if (db_path(path, "global") == 0) {
+        DIR *d = opendir(path);
+        struct dirent *e;
+        while (d != NULL && (e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.' || set_find(&apps, e->d_name) != NULL) {
+                continue;
+            }
+            if (current_version(e->d_name, v, sizeof v) != 0) {
+                say(e->d_name, " is not installed: not global any more", NULL);
+                if (global_path(path, e->d_name) == 0) {
+                    unlink(path);
+                }
+                continue;
+            }
+            set_add(&apps, e->d_name, v);
+        }
+        if (d != NULL) {
+            closedir(d);
+        }
+    }
+    /* After the global ones: a path both have is named theirs. */
+    if (adding != NULL && set_find(&apps, adding) == NULL) {
+        set_add(&apps, adding, added);
+    }
+    read_binds(&ours);
+    if (apps.n == 0 && ours.n == 0) {
+        return 0;
+    }
+    /* The global apps and, transitively, what they need: one version of
+     * each (`owner`: who brought it, for the messages). */
+    static app_set all;
+    all.n = 0;
+    for (int i = 0; i < apps.n; i++) {
+        set_add(&all, apps.a[i].name, apps.a[i].version);
+    }
+    for (int i = 0; i < all.n; i++) {
+        char needs[512], dep[64], dv[64];
+        needs_of(all.a[i].name, all.a[i].version, needs, sizeof needs);
+        for (const char *p = needs; (p = next_need(p, dep, dv)) != NULL;) {
+            if (dv[0] == '\0' && current_version(dep, dv, sizeof dv) != 0) {
+                return die(all.a[i].name, " needs an app that is not installed");
+            }
+            app_at *have = set_find(&all, dep);
+            if (have != NULL && strcmp(have->version, dv) != 0) {
+                say(dep, " is needed at two versions: ", have->version);
+                return die("and ", dv);
+            }
+            if (have == NULL && set_add(&all, dep, dv) == NULL) {
+                return die("too many global apps", NULL);
+            }
+        }
+    }
+    want.n = 0;
+    for (int i = 0; i < all.n; i++) {
+        char dir[PATH_MAX_GV];
+        if (version_path(dir, all.a[i].name, all.a[i].version, "", 0) != 0 ||
+            app_binds(all.a[i].name, dir, "/", &ours, &want, 0) != 0) {
+            return die("nothing bound", NULL);
+        }
+    }
+    /* Away what goes, then the new ones (a bind replaces one at its
+     * target); the record follows what was done. */
+    int rc = 0;
+    for (int i = 0; i < ours.n; i++) {
+        int kept = 0;
+        for (int k = 0; k < want.n && !kept; k++) {
+            kept = strcmp(want.b[k].target, ours.b[i].target) == 0;
+        }
+        if (!kept && unbind(ours.b[i].target) != 0) {
+            /* Still bound: still recorded, for the next try. */
+            say("cannot unbind ", ours.b[i].target, NULL);
+            if (want.n < MAX_BINDS) {
+                want.b[want.n++] = ours.b[i];
+            }
+            rc = 1;
+        }
+    }
+    for (int k = 0; k < want.n; k++) {
+        int same = 0;
+        for (int i = 0; i < ours.n && !same; i++) {
+            same = strcmp(want.b[k].target, ours.b[i].target) == 0 && strcmp(want.b[k].source, ours.b[i].source) == 0;
+        }
+        if (!same && mount(want.b[k].source, want.b[k].target, "bind") != 0) {
+            say("cannot bind ", want.b[k].target, " (binds are root's)");
+            want.b[k].target[0] = '\0';
+            rc = 1;
+        }
+    }
+    int n = 0;
+    for (int k = 0; k < want.n; k++) {
+        if (want.b[k].target[0] != '\0') {
+            want.b[n++] = want.b[k];
+        }
+    }
+    want.n = n;
+    if (write_binds(&want) != 0) {
+        return die("cannot record the binds", NULL);
+    }
+    return rc;
+}
+
+/* --global NAME: make it global (its record once it is bound). */
+static int make_global(const char *name) {
+    char path[PATH_MAX_GV];
+    if (rebind_global(name) != 0 || global_path(path, name) != 0 || write_text(path, "") != 0) {
+        return die("not global: ", name);
+    }
+    say(name, " is global", NULL);
+    return 0;
+}
+
+/* --unglobal NAME: its binds and those of what only it needed go. */
+static int unmake_global(const char *name) {
+    char path[PATH_MAX_GV];
+    if (global_path(path, name) != 0 || unlink(path) != 0) {
+        return die("not global: ", name);
+    }
+    if (rebind_global(NULL) != 0) {
+        return 1;
+    }
+    say(name, " is not global any more", NULL);
+    return 0;
+}
+
 /* Take app `name` out: its pointer (an app installed before versions: its
  * directory) and its record. Its versions stay, for the generations. */
 static void unpoint(const char *name) {
@@ -978,6 +1306,11 @@ static void unpoint(const char *name) {
         remove_tree(path);
     }
     if (record_path(path, name) == 0) {
+        unlink(path);
+    }
+    /* A global app goes out of the global set with it (its binds go at
+     * the end of the command, rebind_global). */
+    if (global_path(path, name) == 0) {
         unlink(path);
     }
 }
@@ -1445,7 +1778,7 @@ static const char *default_root(void) {
 
 int main(int argc, char **argv) {
     int update = 0, list = 0, upgrade = 0, force = 0, local = 0, root = 0, back = 0, i = 1;
-    int remove = 0, gc = 0, sync = 0, gens = 0, to = 0;
+    int remove = 0, gc = 0, sync = 0, gens = 0, to = 0, global = 0, unglobal = 0;
     const char *install_disk = NULL, *m = NULL;
     pkg_prog = "get-myos";
     pkg_root = default_root();
@@ -1480,6 +1813,10 @@ int main(int argc, char **argv) {
             gc = 1;
         } else if (strcmp(argv[i], "--sync") == 0) {
             sync = 1;
+        } else if (strcmp(argv[i], "--global") == 0) {
+            global = 1;
+        } else if (strcmp(argv[i], "--unglobal") == 0) {
+            unglobal = 1;
         } else {
             break;
         }
@@ -1490,11 +1827,12 @@ int main(int argc, char **argv) {
         return 0;
     }
     if ((i >= argc && !update && !list && !upgrade && install_disk == NULL && !back && !gc && !sync && !gens &&
-         to <= 0) ||
-        (local && install_disk == NULL) || (remove && i >= argc) || (sync && argc - i > 1)) {
+         to <= 0 && !global) ||
+        (local && install_disk == NULL) || ((remove || unglobal) && i >= argc) || (sync && argc - i > 1)) {
         fputs("usage: get-myos [-r ROOT] [-m MIRROR] [-u] [-l] PACKAGE...\n"
               "       get-myos [-r ROOT] -d PACKAGE... | --sync [FILE] | --gc\n"
               "       get-myos [-r ROOT] --generations | --rollback [PACKAGE...] | --switch N\n"
+              "       get-myos [-r ROOT] --global [PACKAGE...] | --unglobal PACKAGE...\n"
               "       get-myos [-r ROOT] --root\n"
               "       get-myos [-m MIRROR] --upgrade [-f] | --install DISK [--local]\n"
               "  Install myos (" MYOS_ARCH ") packages and what they need as apps, each in\n"
@@ -1515,6 +1853,10 @@ int main(int argc, char **argv) {
               "  --rollback  the previous generation; with PACKAGE, that one's version\n"
               "              before its current one\n"
               "  --switch N  make generation N the installed apps\n"
+              "  --global  bind PACKAGE's files (and what it needs) where the image would\n"
+              "            have them, for every process (root only); no PACKAGE: bind the\n"
+              "            global apps again (at boot)\n"
+              "  --unglobal  take PACKAGE's binds away\n"
               "  --upgrade  write the mirror's kernel and initramfs into the boot slot that is\n"
               "             not running and boot it by default (-f: even when not newer)\n"
               "  --install  lay the boot disk out on DISK (erasing it) and fill its slot a\n"
@@ -1553,20 +1895,34 @@ int main(int argc, char **argv) {
     if (gens) {
         return list_generations();
     }
-    if (to > 0) {
-        return switch_to(to);
-    }
-    if (back && i >= argc) {
-        return rollback_set();
-    }
-    if (back || remove) {
+    /* Each command that moves versions or takes an app out binds the
+     * global apps again, at what is now current (rebind_global). */
+    if (global || unglobal) {
+        if (i >= argc) {
+            return rebind_global(NULL) != 0;
+        }
         for (; i < argc; i++) {
-            if ((back ? rollback(argv[i]) : uninstall(argv[i])) != 0) {
-                commit_generation();
+            if ((global ? make_global(argv[i]) : unmake_global(argv[i])) != 0) {
                 return 1;
             }
         }
-        return commit_generation();
+        return 0;
+    }
+    if (to > 0) {
+        int rc = switch_to(to);
+        return rebind_global(NULL) != 0 || rc != 0;
+    }
+    if (back && i >= argc) {
+        int rc = rollback_set();
+        return rebind_global(NULL) != 0 || rc != 0;
+    }
+    if (back || remove) {
+        int rc = 0;
+        for (; rc == 0 && i < argc; i++) {
+            rc = back ? rollback(argv[i]) : uninstall(argv[i]);
+        }
+        rc |= commit_generation();
+        return rebind_global(NULL) != 0 || rc != 0;
     }
     if (gc) {
         return commit_generation() != 0 || collect_garbage() != 0;
@@ -1599,7 +1955,8 @@ int main(int argc, char **argv) {
         }
     }
     /* What changed is a generation, even when a later step failed. */
-    if (commit_generation() != 0 || rc != 0) {
+    rc |= commit_generation();
+    if (rebind_global(NULL) != 0 || rc != 0) {
         return 1;
     }
     say("done", NULL, NULL);
