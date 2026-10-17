@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "USB HID class driver module: mice and tablets, into the console's pointer (/dev/console/mouse)."
+description = "USB HID class driver module: mice and tablets, into the console's pointer (/dev/console/mouse), and boot keyboards, into its keyboard input."
 
 [[bin]]
 name = "usb_hid"
