@@ -1,47 +1,62 @@
 //! USB HID class driver (`docs/usb.md`): mice and tablets, into the
 //! console's pointer (`/dev/console/mouse`, `docs/tty.md`) through its
-//! [`POINTER_SERVICE`]. It takes an interface of class 3 whose report
-//! descriptor ([`report`]) has an X and a Y axis: a mouse's are relative,
-//! a tablet's (QEMU's `usb-tablet`) absolute, scaled to the pointer's
+//! [`POINTER_SERVICE`], and keyboards, into the console's keyboard input
+//! through its [`KEYBOARD_SERVICE`].
+//!
+//! A pointer is an interface of class 3 whose report descriptor
+//! ([`report`]) has an X and a Y axis: a mouse's are relative, a tablet's
+//! (QEMU's `usb-tablet`) absolute, scaled to the pointer's
 //! `0..=POINTER_ABS_MAX`. A boot mouse whose descriptor cannot be read or
-//! parsed is switched to the boot protocol and its fixed report. Keyboards
-//! are not taken: the console's are PS/2 and virtio-input.
+//! parsed is switched to the boot protocol and its fixed report.
+//!
+//! A keyboard is a boot keyboard's interface (subclass 1, protocol 1),
+//! switched to the boot protocol: every keyboard has it, and its report is
+//! fixed ([`keyboard`]), so its descriptor is not read. Its presses and
+//! releases go to the console, which repeats a held key; when the console's
+//! lock LEDs change (Caps Lock), the keyboard is told with an output report.
 //!
 //! The device reports on its interrupt IN endpoint: one transfer is always
 //! queued (`interrupt_start`) and its completion, on the host's USB
-//! thread, hands the changes to the pointer and queues the next. Like the
-//! hub driver, everything here runs on that thread, so the table's lock is
-//! never contended.
+//! thread, hands the changes on and queues the next. Like the hub driver,
+//! everything here runs on that thread, so the table's lock is never
+//! contended.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod keyboard;
 mod report;
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, BTN_EXTRA, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE, KernelApi, Lock, POINTER_ABS_MAX,
-    POINTER_SERVICE, POINTER_VERSION, PointerOps, StrRef, USB_EGONE, USB_ESTALL, USB_HOST_VERSION, USB_SERVICE,
-    UsbDeviceInfo, UsbDriverOps, UsbHostOps, UsbInterfaceInfo, status_fail, status_ok,
+    ABI_VERSION, ApiCell, BTN_EXTRA, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE, KEYBOARD_SERVICE, KEYBOARD_VERSION,
+    KernelApi, KeyboardOps, Lock, POINTER_ABS_MAX, POINTER_SERVICE, POINTER_VERSION, PointerOps, StrRef, USB_EGONE,
+    USB_ESTALL, USB_HOST_VERSION, USB_SERVICE, UsbDeviceInfo, UsbDriverOps, UsbHostOps, UsbInterfaceInfo, status_fail,
+    status_ok,
 };
 
 use report::{Layout, MAX_BUTTONS};
 
-const MAX_POINTERS: usize = 8;
+/// Pointers and keyboards together.
+const MAX_DEVICES: usize = 8;
 const CLASS_HID: u8 = 3;
 const SUBCLASS_BOOT: u8 = 1;
+const PROTOCOL_KEYBOARD: u8 = 1;
 const PROTOCOL_MOUSE: u8 = 2;
 /// The bytes of a report transfer (the host's interrupt bounce buffer).
 const REPORT_MAX: usize = 64;
 
 // Requests: the standard GET_DESCRIPTOR (of the interface: its HID report
-// descriptor) and the HID class's SET_IDLE and SET_PROTOCOL.
+// descriptor) and the HID class's SET_REPORT, SET_IDLE and SET_PROTOCOL.
 const GET_DESCRIPTOR: u8 = 6;
+const SET_REPORT: u8 = 0x09;
 const SET_IDLE: u8 = 0x0A;
 const SET_PROTOCOL: u8 = 0x0B;
+/// SET_REPORT's report type, in its value's high byte.
+const REPORT_OUTPUT: u16 = 2;
 const RT_INTERFACE_IN: u8 = 0x81;
 const RT_CLASS_OUT: u8 = 0x21;
 const DESC_REPORT: u16 = 0x22;
@@ -49,31 +64,45 @@ const DESC_REPORT: u16 = 0x22;
 /// Button usages 1 to 5 as the pointer's codes.
 const BUTTONS: [u16; MAX_BUTTONS] = [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA];
 
-/// A pointer, as the hooks copy it out of [`POINTERS`].
+/// A device, as the hooks copy it out of [`DEVICES`].
 #[derive(Clone, Copy)]
-struct Pointer {
+struct Device {
     dev: u32,
     intf: u8,
     ep: u8,
     len: usize,
-    layout: Layout,
-    /// The buttons held, bit `n` for usage `n + 1`.
-    buttons: u8,
-    /// A tablet's last position: every report repeats it.
-    position: Option<(i32, i32)>,
     /// Transfers failed in a row.
     errors: u8,
+    kind: Kind,
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Pointer {
+        layout: Layout,
+        /// The buttons held, bit `n` for usage `n + 1`.
+        buttons: u8,
+        /// A tablet's last position: every report repeats it.
+        position: Option<(i32, i32)>,
+    },
+    Keyboard {
+        /// The last report: the keys held.
+        held: [u8; keyboard::REPORT_LEN],
+        /// The LEDs the keyboard was last told to light.
+        leds: u8,
+    },
 }
 
 static API: ApiCell = ApiCell::new();
 /// The host's and the console's tables, kept by `module_init`.
 static HOST: AtomicPtr<UsbHostOps> = AtomicPtr::new(core::ptr::null_mut());
 static POINTER: AtomicPtr<PointerOps> = AtomicPtr::new(core::ptr::null_mut());
-static POINTERS: Lock<[Option<Pointer>; MAX_POINTERS]> = Lock::new([None; MAX_POINTERS]);
-/// Each pointer's report: the host writes it when the transfer completes,
+static KEYBOARD: AtomicPtr<KeyboardOps> = AtomicPtr::new(core::ptr::null_mut());
+static DEVICES: Lock<[Option<Device>; MAX_DEVICES]> = Lock::new([None; MAX_DEVICES]);
+/// Each device's report: the host writes it when the transfer completes,
 /// outside any lock of this module, so it is atomics.
-static REPORTS: [[AtomicU8; REPORT_MAX]; MAX_POINTERS] =
-    [const { [const { AtomicU8::new(0) }; REPORT_MAX] }; MAX_POINTERS];
+static REPORTS: [[AtomicU8; REPORT_MAX]; MAX_DEVICES] =
+    [const { [const { AtomicU8::new(0) }; REPORT_MAX] }; MAX_DEVICES];
 
 static DRIVER: UsbDriverOps = UsbDriverOps {
     name: StrRef { ptr: b"usb_hid".as_ptr(), len: 7 },
@@ -95,8 +124,13 @@ fn pointer() -> &'static PointerOps {
     unsafe { POINTER.load(Ordering::Acquire).as_ref() }.expect("usb_hid: pointer")
 }
 
-fn pointer_at(i: usize) -> Option<Pointer> {
-    *POINTERS.lock().get(i)?
+fn keyboard_ops() -> &'static KeyboardOps {
+    // SAFETY: the console's service table, which outlives this module.
+    unsafe { KEYBOARD.load(Ordering::Acquire).as_ref() }.expect("usb_hid: keyboard")
+}
+
+fn device_at(i: usize) -> Option<Device> {
+    *DEVICES.lock().get(i)?
 }
 
 fn sleep_ms(ms: u64) {
@@ -113,10 +147,9 @@ fn scale(v: i32, min: i32, max: i32) -> i32 {
     (v * i64::from(POINTER_ABS_MAX) / (i64::from(max) - i64::from(min))) as i32
 }
 
-/// Hand what report `r` says to the pointer, and note in `p` the buttons
-/// held now and a tablet's position.
-fn deliver(p: &mut Pointer, r: &[u8]) {
-    let l = &p.layout;
+/// Hand what report `r` says to the pointer, and note the buttons held now
+/// and a tablet's position.
+fn deliver_pointer(l: &Layout, buttons: &mut u8, position: &mut Option<(i32, i32)>, r: &[u8]) {
     let r = if l.id != 0 {
         match r.split_first() {
             Some((&id, rest)) if id == l.id => rest,
@@ -132,9 +165,9 @@ fn deliver(p: &mut Pointer, r: &[u8]) {
             out.motion(x, y);
         } else {
             let at = (scale(x, l.x.min, l.x.max), scale(y, l.y.min, l.y.max));
-            if p.position != Some(at) {
+            if *position != Some(at) {
                 out.absolute(at.0, at.1);
-                p.position = Some(at);
+                *position = Some(at);
             }
         }
     }
@@ -148,16 +181,52 @@ fn deliver(p: &mut Pointer, r: &[u8]) {
         }
     }
     for (n, code) in BUTTONS.iter().enumerate() {
-        if (held ^ p.buttons) & (1 << n) != 0 {
+        if (held ^ *buttons) & (1 << n) != 0 {
             out.button(*code, held & (1 << n) != 0);
         }
     }
-    p.buttons = held;
+    *buttons = held;
+}
+
+/// Hand what changed since the keyboard's last report to the console, and
+/// keep report `r` as the keys held now.
+fn deliver_keyboard(held: &mut [u8; keyboard::REPORT_LEN], r: &[u8]) {
+    let mut now = [0u8; keyboard::REPORT_LEN];
+    let n = r.len().min(now.len());
+    now[..n].copy_from_slice(&r[..n]);
+    if keyboard::rolled_over(&now) {
+        return;
+    }
+    let out = keyboard_ops();
+    keyboard::changes(held, &now, |code, pressed| out.key(code, pressed));
+    *held = now;
+}
+
+/// Light the LEDs the console has lit (Caps Lock), if the keyboard's are
+/// not those: an output report. A keyboard without LEDs may stall it.
+fn sync_leds(dev: u32, intf: u8, leds: &mut u8) {
+    let want = keyboard_ops().leds();
+    if want != *leds {
+        let mut report = [want];
+        let _ = host().control(dev, RT_CLASS_OUT, SET_REPORT, REPORT_OUTPUT << 8, u16::from(intf), &mut report);
+        *leds = want;
+    }
+}
+
+/// Hand what report `r` says on.
+fn deliver(d: &mut Device, r: &[u8]) {
+    match &mut d.kind {
+        Kind::Pointer { layout, buttons, position } => deliver_pointer(layout, buttons, position, r),
+        Kind::Keyboard { held, leds } => {
+            deliver_keyboard(held, r);
+            sync_leds(d.dev, d.intf, leds);
+        }
+    }
 }
 
 /// Queue the report transfer of the pointer in slot `i`.
 fn arm(i: usize) {
-    let Some(p) = pointer_at(i) else {
+    let Some(p) = device_at(i) else {
         return;
     };
     // The report's bytes: the atomics are contiguous, and the host writes
@@ -175,7 +244,7 @@ unsafe extern "C" fn report_done(ctx: *mut c_void, status: i32) {
     if status == USB_EGONE {
         return;
     }
-    let Some(mut p) = pointer_at(i) else {
+    let Some(mut p) = device_at(i) else {
         return;
     };
     if status >= 0 {
@@ -193,14 +262,20 @@ unsafe extern "C" fn report_done(ctx: *mut c_void, status: i32) {
         p.errors += 1;
         if p.errors >= 5 {
             status_fail(api(), "usb_hid: the device stopped reporting");
+            // A key it held would repeat for good.
+            if let Kind::Keyboard { held, .. } = &mut p.kind {
+                deliver_keyboard(held, &[]);
+                if let Some(slot) = DEVICES.lock()[i].as_mut() {
+                    slot.kind = p.kind;
+                }
+            }
             return;
         }
         sleep_ms(100);
     }
-    let mut table = POINTERS.lock();
+    let mut table = DEVICES.lock();
     if let Some(slot) = table[i].as_mut() {
-        slot.buttons = p.buttons;
-        slot.position = p.position;
+        slot.kind = p.kind;
         slot.errors = p.errors;
     } else {
         return;
@@ -229,12 +304,17 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     else {
         return -1;
     };
+    let boot_keyboard = intf.subclass == SUBCLASS_BOOT && intf.protocol == PROTOCOL_KEYBOARD;
     let boot_mouse = intf.subclass == SUBCLASS_BOOT && intf.protocol == PROTOCOL_MOUSE;
     let index = u16::from(intf.number);
-    let (layout, boot) = match report_layout(dev.id, intf.number) {
-        Some(l) => (l, false),
-        None if boot_mouse => (Layout::boot_mouse(), true),
-        None => return -1,
+    let (kind, boot) = if boot_keyboard {
+        (Kind::Keyboard { held: [0; keyboard::REPORT_LEN], leds: 0 }, true)
+    } else {
+        match report_layout(dev.id, intf.number) {
+            Some(layout) => (Kind::Pointer { layout, buttons: 0, position: None }, false),
+            None if boot_mouse => (Kind::Pointer { layout: Layout::boot_mouse(), buttons: 0, position: None }, true),
+            None => return -1,
+        }
     };
     // A boot device starts in the report protocol, but say so; then the
     // boot protocol if that is what it speaks here. Reports only when
@@ -243,45 +323,64 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
         let _ = host().control(dev.id, RT_CLASS_OUT, SET_PROTOCOL, u16::from(!boot), index, &mut []);
     }
     let _ = host().control(dev.id, RT_CLASS_OUT, SET_IDLE, 0, index, &mut []);
-    let pointer = Pointer {
+    let mut device = Device {
         dev: dev.id,
         intf: intf.number,
         ep: ep.address,
         len: usize::from(ep.max_packet).clamp(1, REPORT_MAX),
-        layout,
-        buttons: 0,
-        position: None,
         errors: 0,
+        kind,
     };
     let slot = {
-        let mut table = POINTERS.lock();
+        let mut table = DEVICES.lock();
         let Some(slot) = table.iter().position(|p| p.is_none()) else {
             return -1;
         };
-        table[slot] = Some(pointer);
+        table[slot] = Some(device);
         slot
     };
-    let label: &[u8] = if layout.x.relative { b"mouse" } else { b"tablet" };
+    let label: &[u8] = match &mut device.kind {
+        Kind::Keyboard { leds, .. } => {
+            keyboard_ops().attach();
+            // Caps Lock may be on already (another keyboard's).
+            sync_leds(device.dev, device.intf, leds);
+            if let Some(d) = DEVICES.lock()[slot].as_mut() {
+                d.kind = device.kind;
+            }
+            b"keyboard"
+        }
+        Kind::Pointer { layout, .. } if layout.x.relative => b"mouse",
+        Kind::Pointer { .. } => b"tablet",
+    };
     let _ = host().interface_label(dev.id, intf.number, label);
     arm(slot);
     0
 }
 
 unsafe extern "C" fn disconnect(dev: u32, intf: u8) {
-    let mut released = 0u8;
-    for p in POINTERS.lock().iter_mut() {
-        if p.is_some_and(|p| p.dev == dev && p.intf == intf) {
+    let mut gone = None;
+    for d in DEVICES.lock().iter_mut() {
+        if d.is_some_and(|d| d.dev == dev && d.intf == intf) {
             // The host failed the pending transfer (`report_done` got
             // `USB_EGONE` and did not re-arm).
-            released |= p.map_or(0, |p| p.buttons);
-            *p = None;
+            gone = d.take();
         }
     }
-    // A button held while the device went away is up now.
-    for (n, code) in BUTTONS.iter().enumerate() {
-        if released & (1 << n) != 0 {
-            pointer().button(*code, false);
+    // What was held while the device went away is up now.
+    match gone.map(|d| d.kind) {
+        Some(Kind::Pointer { buttons, .. }) => {
+            for (n, code) in BUTTONS.iter().enumerate() {
+                if buttons & (1 << n) != 0 {
+                    pointer().button(*code, false);
+                }
+            }
         }
+        Some(Kind::Keyboard { held, .. }) => {
+            let out = keyboard_ops();
+            keyboard::changes(&held, &[0; keyboard::REPORT_LEN], |code, pressed| out.key(code, pressed));
+            out.detach();
+        }
+        None => {}
     }
 }
 
@@ -302,6 +401,12 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         return -3;
     }
     POINTER.store(ptr_table.cast_mut(), Ordering::Release);
+    let kbd_table = api.service_lookup(KEYBOARD_SERVICE) as *const KeyboardOps;
+    if kbd_table.is_null() || unsafe { (*kbd_table).version } != KEYBOARD_VERSION {
+        api.write_str("usb_hid: no keyboard input\n");
+        return -3;
+    }
+    KEYBOARD.store(kbd_table.cast_mut(), Ordering::Release);
     let table = api.service_lookup(USB_SERVICE) as *const UsbHostOps;
     if table.is_null() {
         api.write_str("usb_hid: no usb host\n");

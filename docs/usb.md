@@ -3,21 +3,23 @@
 Four modules give myos a USB bus: `xhci` drives the host controller and
 publishes the bus, `usb_hub` makes the devices behind hubs reachable,
 `usb_hid` feeds mice and tablets to the console's pointer
-(`/dev/console/mouse`, `docs/tty.md`), and
+(`/dev/console/mouse`, `docs/tty.md`) and keyboards to its keyboard
+input, and
 `usb_storage` turns memory sticks and disk enclosures into `/dev/sdX/`
 (`data`, the whole disk, `p<N>` per GPT partition, and `info`: the
 disk's size, its `/proc/usb` device and vendor:product, and the vendor
 and model its INQUIRY answer gives). A device plugged
 in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries a
-controller, a hub, a mouse and two sticks (one plugged in by a test).
+controller, a hub, a mouse and two sticks (one plugged in by a test),
+and a test plugs in a keyboard.
 
 | Module | What |
 |--------|------|
 | `modules/xhci` | The xHCI controller (PCI class `0C/03`, interface `30`): rings, interrupter, device slots, enumeration, root-port hot-plug, the `UsbHostOps` service, `/proc/usb` |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
-| `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service |
+| `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service; boot keyboards (3/1/1): the boot report's keys into the console's `keyboard` service, its Caps Lock LED from the console |
 
 ## How the modules reach each other
 
@@ -111,7 +113,21 @@ asks for reports only on change (`SET_IDLE` 0), keeps one transfer queued
 on the interrupt IN endpoint (`interrupt_start`) and queues the next from
 the completion, on the host's thread; motion goes to the console as it
 comes (a tablet's position when it moved), buttons as presses and
-releases of what changed. A keyboard interface is left alone.
+releases of what changed.
+
+A boot keyboard's interface (class 3, subclass 1, protocol 1) is switched
+to the boot protocol, whatever its descriptor says: every keyboard has
+it, and its eight-byte report is fixed (the modifier bits, then up to six
+keys held, as usages of the Keyboard/Keypad page). What changed from the
+last report goes to the console's `keyboard` service as presses and
+releases in Linux `KEY_*` codes (`modules/usb_hid/src/keyboard.rs` maps
+the usages; a report of ErrorRollOver, more keys held than it can name,
+changes nothing), where the console's own keyboard's go (`docs/tty.md`).
+A USB keyboard does not repeat a held key; the console does. After each
+report, and when the keyboard is plugged in, `usb_hid` asks the console
+which lock LEDs to light (Caps Lock) and sends the keyboard an output
+report (`SET_REPORT`) when that changed. A keyboard pulled out releases
+the keys it held.
 
 `usb_storage` claims an interface of class 8, subclass 6, protocol `0x50`
 with a bulk IN and a bulk OUT endpoint, runs `TEST UNIT READY` until the
@@ -169,7 +185,13 @@ a `usb-mouse` on `port=3` (number 7 of the controller's, a high-speed
 device), which `user/c/test.sh`'s `mouse` test moves and
 clicks through the monitor (`user/c/host.sh mouse`: `mouse_move`,
 `mouse_button`) while `mouse_smoke` reads `/dev/console/mouse`;
-`packages/x11-apps` checks the same through Xfbdev and xev. A boot in a
+`packages/x11-apps` checks the same through Xfbdev and xev. The
+`usb_keyboard` test of `user/c/test.sh` has the host plug a `usb-kbd` into
+`port=4` (`user/c/host.sh usb-kbd plug`), which then takes the monitor's
+`sendkey` (QEMU types on the keyboard added last), checks
+`/dev/console/kbd`'s events, a line typed on tty9 with Caps Lock and a
+held key's repeats, that the console's own keyboard's interrupt count did
+not move, and the unplug. A boot in a
 window (`cargo run` without a test) has a `usb-tablet` there instead,
 which follows the host's pointer without grabbing it (the monitor's
 `mouse_move` is relative, so the tests use the mouse). The boot markers
@@ -178,7 +200,8 @@ which follows the host's pointer without grabbing it (the monitor's
 ## Limits
 
 - Two controllers, 32 devices each, hubs five deep, 8 hubs, 8 disks and 8
-  pointers (the class modules' tables).
+  HID devices, pointers and keyboards together (the class modules'
+  tables).
 - A pointer's report descriptor is read up to 512 bytes and its reports
   up to 64; no horizontal wheel, no buttons past the fifth. One pointer
   per interface: the reports of a composite device's other collections (a
@@ -189,9 +212,11 @@ which follows the host's pointer without grabbing it (the monitor's
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at
   a time; a control transfer's data stage is 1 KiB at most.
-- No USB keyboard yet: the console module's keyboards are PS/2 and
-  virtio-input; `usb_hid` takes only pointers (a keyboard interface's
-  boot report would be the next step).
+- Keyboards through the boot protocol only: six keys at once (more is
+  ErrorRollOver), no media or system keys (they are another interface,
+  in the report protocol, which `usb_hid` does not take), and only the
+  Caps Lock LED (the console has no Num or Scroll Lock state). The LED
+  report is not checked by a test: QEMU shows it nowhere.
 - Real-hardware notes: the BIOS handoff (`USBLEGSUP`) is done; the
   EHCI-to-xHCI port routing of older Intel chipsets and the Raspberry
   Pi 4's VL805 firmware load are not.

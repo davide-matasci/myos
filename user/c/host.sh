@@ -17,6 +17,7 @@
 #                   on the guest's keyboard through the QEMU monitor (the
 #                   launcher's socket, $MYOS_QEMU_MONITOR). One request per
 #                   key would not keep the order: requests run in parallel.
+#                   KEY@MS holds the key down MS milliseconds.
 #   keyburst N KEY  type KEY N times, 10 ms apart: a burst of interrupts
 #                   for the keyboard's readers to drain together.
 #   mouse [ps2|virtio]  move the guest's usb-mouse 10 right and 5 up,
@@ -24,6 +25,11 @@
 #                   monitor; with `ps2` or `virtio`, QEMU's PS/2 or virtio
 #                   mouse instead (the monitor's `mouse_set` makes it the
 #                   one that moves, and gives the usb-mouse back after).
+#   usb-kbd plug|unplug  plug a usb-kbd into root port 4 of the xHCI
+#                   controller (or pull it out), through the monitor. While
+#                   it is in, `sendkey` types on it: QEMU gives the keys to
+#                   the keyboard added last, then back to the PS/2 or virtio
+#                   one.
 set -u
 
 # The smoke's bulk: BULK_LINES lines "%06d\n" (tcp_listen_smoke.c).
@@ -100,8 +106,9 @@ s.connect(sys.argv[1])
 s.settimeout(5)
 s.recv(4096)  # the banner and prompt
 for key in sys.argv[2:]:
-    s.sendall(f"sendkey {key}\n".encode())
-    time.sleep(0.5)
+    key, _, hold = key.partition("@")
+    s.sendall(f"sendkey {key} {hold}\n".encode() if hold else f"sendkey {key}\n".encode())
+    time.sleep(0.5 + int(hold or 0) / 1000)
 time.sleep(1)
 s.close()
 PY
@@ -155,10 +162,37 @@ PY
   echo "boot test: mouse ${1:-usb}" >&2
 }
 
+usb_kbd() {
+  local cmd
+  case "$1" in
+    plug) cmd="device_add usb-kbd,bus=xhci.0,port=4,id=usbkbd" ;;
+    unplug) cmd="device_del usbkbd" ;;
+    *) echo "host.sh: usb-kbd plug|unplug: $1" >&2; return 2 ;;
+  esac
+  python3 - "${MYOS_QEMU_MONITOR:?no QEMU monitor}" "$cmd" <<'PY'
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.settimeout(5)
+s.recv(4096)  # the banner and prompt
+s.sendall(f"{sys.argv[2]}\n".encode())
+time.sleep(0.5)
+try:
+    for line in s.recv(65536).decode(errors="replace").splitlines():
+        if line.strip().startswith("Error:"):
+            print(f"boot test: monitor error: {line.strip()}", file=sys.stderr)
+except Exception:
+    pass
+s.close()
+PY
+  echo "boot test: usb-kbd $1" >&2
+}
+
 case "${1:-}" in
   tcp-ping) tcp_ping "${2:?port}" ;;
   sendkey) shift; sendkey "${1:?keys}" "${@:2}" ;;
   keyburst) keyburst "${2:?count}" "${3:?key}" ;;
   mouse) mouse "${2:-usb}" ;;
+  usb-kbd) usb_kbd "${2:?plug|unplug}" ;;
   *) echo "host.sh: unknown request: $*" >&2; exit 2 ;;
 esac
