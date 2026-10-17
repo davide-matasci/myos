@@ -137,6 +137,9 @@ static API: KernelApi = KernelApi {
     fd_release: api_fd_release,
     cpu_time: api_cpu_time,
     membarrier: api_membarrier,
+    pci_claim: api_pci_claim,
+    pci_release: api_pci_release,
+    pci_owner: api_pci_owner,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -481,8 +484,37 @@ unsafe extern "C" fn api_pci_cfg_write32(bus: u8, slot: u8, func: u8, off: u8, v
     crate::pci::cfg_write32(bus, slot, func, off, val)
 }
 
+/// A module binding to the function (from its init or rescan) claims it.
+fn bind_claim(bus: u8, slot: u8, func: u8) {
+    if let Some(name) = registry::current() {
+        crate::pci::claim(bus, slot, func, name.as_bytes());
+    }
+}
+
 unsafe extern "C" fn api_pci_enable(bus: u8, slot: u8, func: u8) {
+    bind_claim(bus, slot, func);
     crate::pci::enable(bus, slot, func)
+}
+
+unsafe extern "C" fn api_pci_claim(bus: u8, slot: u8, func: u8, owner: *const u8, owner_len: usize) -> i32 {
+    if owner.is_null() || owner_len == 0 {
+        return -1;
+    }
+    let owner = unsafe { core::slice::from_raw_parts(owner, owner_len) };
+    if crate::pci::claim(bus, slot, func, owner) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_pci_release(bus: u8, slot: u8, func: u8, owner: *const u8, owner_len: usize) {
+    if !owner.is_null() {
+        crate::pci::release(bus, slot, func, unsafe { core::slice::from_raw_parts(owner, owner_len) });
+    }
+}
+
+unsafe extern "C" fn api_pci_owner(bus: u8, slot: u8, func: u8, out: *mut u8, cap: usize) -> usize {
+    if out.is_null() {
+        return 0;
+    }
+    crate::pci::owner(bus, slot, func, unsafe { core::slice::from_raw_parts_mut(out, cap) })
 }
 
 unsafe extern "C" fn api_pci_find(
@@ -520,6 +552,7 @@ unsafe extern "C" fn api_pci_bar_map(
     if va.is_null() || size.is_null() {
         return -1;
     }
+    bind_claim(bus, slot, func);
     match crate::pci::bar_map(bus, slot, func, bar) {
         Some((mapped, sz)) => {
             unsafe {
@@ -645,6 +678,7 @@ unsafe extern "C" fn api_pci_irq_enable(
     if msix_entry.is_null() {
         return -1;
     }
+    bind_claim(bus, slot, func);
     let name = if name.is_null() || name_len == 0 {
         "pci"
     } else {

@@ -62,6 +62,11 @@ pub fn as_module<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     out
 }
 
+/// The module whose `module_init` or `module_rescan` is running.
+pub fn current() -> Option<&'static str> {
+    *CURRENT.lock()
+}
+
 /// A successful registration through the `KernelApi`, for the module whose
 /// call is running (none when the kernel itself registers).
 pub fn note_registration() {

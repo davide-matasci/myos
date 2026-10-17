@@ -169,9 +169,18 @@ stay non-blocking.
 
 `modules/pcidev` hands a PCI function to a driver that is a program (the
 Wi-Fi driver, issue #495): a directory per endpoint, `/dev/pci/BB:SS.F`.
-Its `info` says what it is (`id VVVV:DDDD`, `class CC:SS:PP`); its `ctl`
-is the driver's, one at a time and root only (the `dev` label too), and
-while it is held the others are there:
+Its `info` says what it is (`id VVVV:DDDD`, `class CC:SS:PP`) and who
+drives it (`driver nvme`); its `ctl` is the driver's, one at a time and
+root only (the `dev` label too), and while it is held the others are
+there.
+
+A PCI function has one owner at a time (`kernel/src/pci.rs`, ABI 46): a
+module that binds to it, its `pci_enable`, `pci_bar_map` or
+`pci_irq_enable` from its `module_init` or `module_rescan`, or a claim
+through `KernelApi::pci_claim` until `pci_release`, which is how
+`/dev/pci` holds a function while a program drives it. Opening the `ctl`
+of a function a kernel driver drives is refused: closing it would turn
+the device off under its driver (`cat` of the boot disk's `ctl` did).
 
 | File | What |
 |------|------|
@@ -184,10 +193,12 @@ while it is held the others are there:
 Closing `ctl` (the driver's exit too) turns bus mastering and memory
 decoding off, so the device stops reaching memory and raising messages,
 and keeps the DMA buffers for the next driver, zeroed: they are never
-freed, since a mapping of one may outlive its fd. Nothing stops root from
-opening a function a kernel driver drives. The test (`pcidev_smoke`,
+freed, since a mapping of one may outlive its fd. Without an IOMMU the
+program reaches all of memory through the device's DMA, as the kernel
+does (issue #501). The test (`pcidev_smoke`,
 tag `pcidev`) drives QEMU's `edu` device, which every test boot gets
-(`edu,dma_mask=...`: its own mask is 28 bits): the id, liveness and
+(`edu,dma_mask=...`: its own mask is 28 bits): a kernel driver's
+function its `ctl` refused, the id, liveness and
 factorial registers, an interrupt it raises, a DMA copy through a buffer
 and back with the interrupt at its end. It takes MSI on x86 (`edu` has no
 MSI-X) and a shared INTx line on aarch64 and riscv64.

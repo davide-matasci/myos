@@ -65,9 +65,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// [`KernelApi::vfs_write`] tell a full filesystem apart ([`VFS_ENOSPC`],
 /// the caller's `ENOSPC`).
 /// 46: [`ModuleVfsOps::mmap`] says how its page is mapped
-/// ([`MYOS_MMAP_UNCACHED`]: a device's registers), and
+/// ([`MYOS_MMAP_UNCACHED`]: a device's registers),
 /// [`KernelApi::pci_irq_enable`] gives a function without MSI-X its MSI
-/// ([`MYOS_IRQ_MSI`], x86_64).
+/// ([`MYOS_IRQ_MSI`], x86_64), and a PCI function has one owner at a time
+/// ([`KernelApi::pci_claim`], `pci_release`, `pci_owner`).
 pub const ABI_VERSION: u32 = 46;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
@@ -1000,7 +1001,23 @@ pub struct KernelApi {
     /// A memory barrier on every CPU that runs a task now, done before it
     /// returns (the CPUs are interrupted and answer): `membarrier`.
     pub membarrier: unsafe extern "C" fn(),
+    // --- ABI 46 ---
+    /// Claim the PCI function for `owner` (up to [`PCI_OWNER_MAX`] bytes):
+    /// 0 when it is now `owner`'s (it was free or already so), -1 when
+    /// another holds it. A module's `pci_enable`, `pci_bar_map` and
+    /// `pci_irq_enable` from its `module_init` or `module_rescan` claim the
+    /// function for it; a claim made through here lasts until
+    /// [`KernelApi::pci_release`].
+    pub pci_claim: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, owner: *const u8, owner_len: usize) -> i32,
+    /// Give back `owner`'s claim of the function (another's stays).
+    pub pci_release: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, owner: *const u8, owner_len: usize),
+    /// The holder of the function's claim into `out`: its length, 0 when
+    /// the function is free.
+    pub pci_owner: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, out: *mut u8, cap: usize) -> usize,
 }
+
+/// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
+pub const PCI_OWNER_MAX: usize = 16;
 
 /// [`KernelApi::cpu_time`]'s `which`.
 pub const MYOS_CPU_PROCESS: u32 = 0;
@@ -1513,6 +1530,20 @@ impl KernelApi {
 
     pub fn membarrier(&self) {
         unsafe { (self.membarrier)() }
+    }
+
+    pub fn pci_claim(&self, bus: u8, slot: u8, func: u8, owner: &str) -> bool {
+        unsafe { (self.pci_claim)(bus, slot, func, owner.as_ptr(), owner.len()) == 0 }
+    }
+
+    pub fn pci_release(&self, bus: u8, slot: u8, func: u8, owner: &str) {
+        unsafe { (self.pci_release)(bus, slot, func, owner.as_ptr(), owner.len()) }
+    }
+
+    /// The holder of the function's claim, in `out`; empty when it is free.
+    pub fn pci_owner<'a>(&self, bus: u8, slot: u8, func: u8, out: &'a mut [u8; PCI_OWNER_MAX]) -> &'a [u8] {
+        let n = unsafe { (self.pci_owner)(bus, slot, func, out.as_mut_ptr(), out.len()) };
+        &out[..n.min(PCI_OWNER_MAX)]
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {

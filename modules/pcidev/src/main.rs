@@ -4,9 +4,12 @@
 //! only (no bridges), with:
 //!
 //! - `info`: what the function is, `id VVVV:DDDD` and `class CC:SS:PP`
-//!   (vendor and device; class, subclass and programming interface).
+//!   (vendor and device; class, subclass and programming interface), and
+//!   who drives it (`driver nvme`, `driver pcidev` while a program holds
+//!   it; no line when nobody does).
 //! - `ctl`: held by one program at a time (the driver; root only), from
-//!   its open on. Reads as lines: each memory BAR (`barN PHYS SIZE`), the
+//!   its open on, and only on a function no kernel driver drives (its
+//!   open is refused then: the PCI claim, `KernelApi::pci_claim`). Reads as lines: each memory BAR (`barN PHYS SIZE`), the
 //!   interrupt once routed (`irq msix|msi|intx`) and each DMA buffer
 //!   (`dmaN PHYS PAGES`). Writes: `enable` (memory decoding
 //!   and bus mastering on), `disable` (off), `irq` (route the function's
@@ -26,8 +29,6 @@
 //! - `dmaN`: the buffer, for `mmap(MAP_SHARED)`.
 //!
 //! The files besides `info` and `ctl` are only there while `ctl` is held.
-//! Nothing stops root from opening a function a kernel driver drives:
-//! don't (issue #495).
 
 #![no_std]
 #![no_main]
@@ -37,7 +38,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use myos_abi::{
     status_ok, status_warn, ApiCell, KernelApi, Lock, ModuleVfsOps, VfsStatInfo, ABI_VERSION, MYOS_IRQ_INTX,
-    MYOS_IRQ_MSI, MYOS_MMAP_UNCACHED, MYOS_POLLIN, MYOS_READ_WAIT,
+    MYOS_IRQ_MSI, MYOS_MMAP_UNCACHED, MYOS_POLLIN, MYOS_READ_WAIT, PCI_OWNER_MAX,
 };
 
 const S_IFDIR: u32 = 0o040000;
@@ -55,6 +56,8 @@ const CONFIG_LEN: usize = 256;
 const CMD_MEM: u32 = 1 << 1;
 const CMD_MASTER: u32 = 1 << 2;
 const CMD_INTX_OFF: u32 = 1 << 10;
+/// The owner of the functions a program drives ([`KernelApi::pci_claim`]).
+const OWNER: &str = "pcidev";
 
 static API: ApiCell = ApiCell::new();
 
@@ -239,6 +242,13 @@ fn info_text(d: &Dev) -> Text {
     t.push(b":");
     t.hex(u64::from((d.class >> 8) & 0xFF), 2);
     t.push(b"\n");
+    let mut owner = [0u8; PCI_OWNER_MAX];
+    let owner = api().pci_owner(d.bus, d.slot, d.func, &mut owner);
+    if !owner.is_empty() {
+        t.push(b"driver ");
+        t.push(owner);
+        t.push(b"\n");
+    }
     t
 }
 
@@ -412,6 +422,7 @@ fn let_go(i: usize, d: &mut Dev) {
     }
     PENDING[i].store(0, Ordering::Relaxed);
     d.held = false;
+    api().pci_release(d.bus, d.slot, d.func, OWNER);
 }
 
 fn file_size(d: &Dev, f: File) -> u64 {
@@ -510,7 +521,9 @@ unsafe extern "C" fn pci_open(path: *const u8, len: usize) -> i32 {
         return 0;
     }
     let d = devs[i].as_mut().unwrap();
-    if d.held || api().current_uid() != 0 {
+    // A function a kernel driver drives is the driver's: closing ctl turns
+    // the device off.
+    if d.held || api().current_uid() != 0 || !api().pci_claim(d.bus, d.slot, d.func, OWNER) {
         return -1;
     }
     if !d.probed {

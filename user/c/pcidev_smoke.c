@@ -2,9 +2,11 @@
  * userspace driver for QEMU's `edu` device (vendor 1234, device 11e8; the
  * launcher adds one to every test boot).
  *
- * Finds the device by its `info`, holds it (a second open is refused),
- * maps BAR 0 uncached and checks the id, the liveness register (it
- * inverts what is written) and the factorial unit; routes the interrupt
+ * Finds the device by its `info`, and one a kernel driver drives, whose
+ * `ctl` must not open (its info names the driver); holds the edu device
+ * (a second open is refused), maps BAR 0 uncached and checks the id, the
+ * liveness register (it inverts what is written) and the factorial unit;
+ * routes the interrupt
  * and has the device raise one (the `irq` read returns it, the status
  * register names it); allocates a DMA buffer and has the device copy a
  * pattern from it into its own memory and back to another part of it,
@@ -37,6 +39,8 @@
 #define EDU_DMA_IRQ 0x100   /* the status bit of a finished copy */
 
 static char dir[64];
+/* A function a kernel driver drives (`driver ...` in its info). */
+static char driven[64];
 static volatile uint32_t *regs;
 
 static int fail(const char *what) {
@@ -97,7 +101,7 @@ static int find_edu(void) {
         return 0;
     struct dirent *e;
     int found = 0;
-    while (!found && (e = readdir(d))) {
+    while ((e = readdir(d))) {
         if (e->d_name[0] == '.')
             continue;
         char p[128], text[512];
@@ -108,6 +112,8 @@ static int find_edu(void) {
         if (read_ctl(fd, text, sizeof text) && strstr(text, "id 1234:11e8")) {
             snprintf(dir, sizeof dir, "%s", e->d_name);
             found = 1;
+        } else if (strstr(text, "driver ") && !driven[0]) {
+            snprintf(driven, sizeof driven, "%s", e->d_name);
         }
         close(fd);
     }
@@ -130,6 +136,13 @@ int main(void) {
     if (!find_edu())
         return fail("no edu device in /dev/pci");
     char p[128], text[512];
+    /* The kernel's drivers keep their devices (a virtio NIC or disk, NVMe,
+     * xHCI): their ctl does not open. */
+    if (!driven[0])
+        return fail("no function a kernel driver drives");
+    snprintf(p, sizeof p, "/dev/pci/%s/ctl", driven);
+    if (open(p, O_RDWR) >= 0)
+        return fail("a kernel driver's function opened");
     path(p, sizeof p, "ctl");
     int ctl = open(p, O_RDWR);
     if (ctl < 0)
