@@ -37,7 +37,7 @@ use alloc::vec::Vec;
 
 use frame::{Bss, Security};
 use mlme::{Link, Refused};
-use myos_user::{exit_code, heap_init, now_us, poll, write, Heap, PollFd, POLLIN};
+use myos_user::{exit_code, heap_init, monotonic_ns, poll, write, Heap, PollFd, POLLIN};
 use radio::{Radio, Sim};
 use tap::Tap;
 use unix::Conv;
@@ -58,7 +58,7 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 const CHANNELS: core::ops::RangeInclusive<u8> = 1..=13;
 /// How long a scan listens on each channel after its probe request, in
 /// ms: beacons come every 100 TU (102.4 ms), so one is heard too.
-const DWELL_MS: i64 = 120;
+const DWELL_MS: u64 = 120;
 
 fn usage() -> ! {
     write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID | status | disconnect\n");
@@ -251,7 +251,7 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
     for ch in CHANNELS {
         radio.set_channel(ch);
         radio.send(&frame::probe_request(radio.mac()));
-        let end = now_us().unwrap_or(0) + DWELL_MS * 1000;
+        let end = monotonic_ns() + DWELL_MS * 1_000_000;
         loop {
             while let Some(rx) = radio.recv(&mut buf) {
                 let Some(bss) = frame::parse_bss(&buf[..rx.len], rx.channel) else {
@@ -262,12 +262,12 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
                     None => seen.push(Seen { bss, rssi: rx.rssi }),
                 }
             }
-            let left = end - now_us().unwrap_or(end);
-            if left <= 0 {
+            let left = end.saturating_sub(monotonic_ns());
+            if left == 0 {
                 break;
             }
             let mut fds = [PollFd { fd: radio.fd() as i32, events: POLLIN, revents: 0 }];
-            poll(&mut fds, (left / 1000).max(1) as i32);
+            poll(&mut fds, (left / 1_000_000).max(1) as i32);
         }
     }
     seen.sort_by(|a, b| b.rssi.cmp(&a.rssi));
