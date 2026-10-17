@@ -18,6 +18,7 @@ mod initramfs;
 mod packages;
 #[allow(dead_code)]
 mod ports;
+mod wifi_sim;
 mod release;
 
 use boot_test::{Mode, Selection};
@@ -454,6 +455,17 @@ fn host_listening(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
+/// The simulated Wi-Fi radio (`src/wifi_sim.rs`): a second virtio-net NIC,
+/// `/dev/net1`, whose frames go to the access points on a launcher thread.
+fn add_wifi_radio(cmd: &mut Command) {
+    let Some(sim) = wifi_sim::start() else {
+        eprintln!("warning: no simulated Wi-Fi radio (no UDP socket)");
+        return;
+    };
+    cmd.arg("-netdev").arg(sim.netdev_arg());
+    cmd.arg("-device").arg("virtio-net-pci,netdev=wifi0");
+}
+
 fn add_virtio_net(cmd: &mut Command) {
     // Local boot-stress packs socket_smoke → 10.0.2.100:80 with host http.server
     // on :8765 and starts that server *before* QEMU. Only add guestfwd when the
@@ -508,6 +520,7 @@ fn run_bios(bios_path: &str) {
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
+    add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
 }
@@ -541,6 +554,7 @@ fn run_uefi(uefi_path: &str) {
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
+    add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
 }
@@ -645,6 +659,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
     add_pointer(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
+    add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -712,6 +727,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     add_pointer(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
+    add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -841,6 +857,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // Data disks first so they become /dev/vda/ and /dev/vdb/; ESP boots via bootindex.
     add_virtio_blk_aarch64(&mut cmd);
     add_virtio_net(&mut cmd);
+    add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
             "if=none,id=hd0,format=raw,file={}",
@@ -1308,6 +1325,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         ));
     add_virtio_blk_riscv64(&mut cmd);
     add_virtio_net(&mut cmd);
+    add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
             "if=none,id=hd0,format=raw,file={}",
