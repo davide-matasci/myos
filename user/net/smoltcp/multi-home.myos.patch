@@ -14,7 +14,9 @@ the others in their socket for the NIC they belong to (as local-pair
 does); set_elsewhere_addrs() names the other NICs' addresses, which a
 set_local_elsewhere() interface leaves to the loopback one; and
 Dhcpv4Socket::set_owner() ties a DHCP socket to the NIC with that
-hardware address, for its requests and its replies.
+hardware address, for its requests and its replies. An ICMP socket's
+source is the interface's own address, so the first NIC to poll it sent
+it: IcmpSocket::set_source() names it, and with it the NIC.
 
 --- a/src/iface/interface/ipv4.rs
 +++ b/src/iface/interface/ipv4.rs
@@ -180,3 +182,49 @@ hardware address, for its requests and its replies.
      /// Set the retry/timeouts configuration.
      pub fn set_retry_config(&mut self, config: RetryConfig) {
          self.retry_config = config;
+--- a/src/socket/icmp.rs
++++ b/src/socket/icmp.rs
+@@ -122,6 +122,8 @@
+     endpoint: Endpoint,
+     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
+     hop_limit: Option<u8>,
++    /// myos: the source address of what it sends (`set_source`).
++    source: Option<IpAddress>,
+     #[cfg(feature = "async")]
+     rx_waker: WakerRegistration,
+     #[cfg(feature = "async")]
+@@ -136,6 +138,7 @@
+             tx_buffer,
+             endpoint: Default::default(),
+             hop_limit: None,
++            source: None,
+             #[cfg(feature = "async")]
+             rx_waker: WakerRegistration::new(),
+             #[cfg(feature = "async")]
+@@ -205,6 +208,13 @@
+         self.hop_limit = hop_limit
+     }
+ 
++    /// myos: send from `source` instead of the address the interface
++    /// picks: with several NICs over one socket set, the address names
++    /// the NIC that sends it (`Interface::set_own_source_only`).
++    pub fn set_source(&mut self, source: Option<IpAddress>) {
++        self.source = source;
++    }
++
+     /// Bind the socket to the given endpoint.
+     ///
+     /// This function returns `Err(Error::Illegal)` if the socket was open
+@@ -572,7 +582,11 @@
+             match *remote_endpoint {
+                 #[cfg(feature = "proto-ipv4")]
+                 IpAddress::Ipv4(dst_addr) => {
+-                    let src_addr = match cx.get_source_address_ipv4(&dst_addr) {
++                    let source = match self.source {
++                        Some(IpAddress::Ipv4(a)) => Some(a),
++                        _ => cx.get_source_address_ipv4(&dst_addr),
++                    };
++                    let src_addr = match source {
+                         Some(addr) => addr,
+                         None => {
+                             net_trace!(

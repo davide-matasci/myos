@@ -1651,6 +1651,9 @@ fn handle_send(
             if !s.is_open() {
                 let _ = s.bind(icmp::Endpoint::Ident(ident));
             }
+            // From the NIC whose subnet holds the destination (a NIC's
+            // interface sends only from its own addresses).
+            s.set_source(nics.source_for(convs[i].remote4).map(IpAddress::Ipv4));
             if !s.can_send() {
                 return;
             }
