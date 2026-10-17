@@ -93,6 +93,8 @@ wifi_data() {
 	if [ $wifi_rc != 0 ]; then
 		echo "leased $leased pinged $pinged"
 		cat /tmp/wifi.err /tmp/wifi.ping /net/ifaddrs /net/ndb 2>/dev/null
+		for c in /dev/tap/*/ctl; do echo "$c:"; cat "$c"; done 2>/dev/null
+		ps 2>/dev/null | grep -e netd -e wifi
 		/bin/custom/wifi status
 	fi
 	kill $wifi_pid
