@@ -297,7 +297,8 @@ t -t console caps_lock caps_lock
 # netd queues: the smoke's writes wait for room); it connects again to say
 # whether every byte arrived, then 40 times without a word (the FIN at
 # varying moments after the handshake), each of which the smoke must see
-# end, and the smoke reports.
+# end, and the smoke reports. (Before it listens for the host, the smoke
+# checks that a second listener on its port is refused.)
 net_listen() {
 	: > /tmp/listen.out
 	/bin/etc/tcp_listen_smoke >> /tmp/listen.out 2>&1 &

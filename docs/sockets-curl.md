@@ -183,6 +183,9 @@ server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's
 own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname` reports
 it; `listen` writes `announce a.b.c.d!port` (a bare `announce port` is any
 address), and netd's listener takes only connections to that address.
+`listen` waits for netd's answer: a port another listener has, on that
+address or any, is `EADDRINUSE` there (Linux says so at `bind`; nginx and
+the like take it from either), `SO_REUSEADDR` or not.
 Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go over
 `/net/unix` instead, served by the kernel without netd
 (`docs/sockets-unix.md`).

@@ -1,5 +1,6 @@
-# nginx, installed as an app: its default configuration checks, then a
-# server of the test's own on 127.0.0.1 (master and a worker) answers a
+# nginx, installed as an app: its default configuration checks, and a
+# second start on its port refused; then a server of the test's own on
+# 127.0.0.1 (master and a worker) answers a
 # page, a 404, a directory listing, a regex location, a rewrite and gzip,
 # logs the requests, and stops on `nginx -s quit`; then HTTPS (the
 # certificates are test/mkcerts.py's): a page over TLS 1.3, the server of
@@ -181,7 +182,34 @@ nginx_default() {
 	[ $ok = 0 ] || { echo "--- error.log"; cat /tmp/nginx/error.log; }
 	return $ok
 }
+# A second start on the port the first one has fails, as on Linux ("still
+# could not bind()"), and leaves the first one's pid file: `nginx -s quit`
+# then stops every nginx (the second one used to start too, take over the
+# pid file, and leave the first one running past the quit).
+nginx_procs() {
+	for f in /proc/[0-9]*/status; do
+		read pid name rest < $f 2> /dev/null && [ "$name" = nginx ] && echo $pid
+	done
+}
+nginx_twice() {
+	run-myos nginx -g 'error_log /tmp/nginx/error.log info;' || { echo "first start"; return 1; }
+	pid=$(cat /tmp/nginx/nginx.pid)
+	ok=0
+	out=$(run-myos nginx -g 'error_log /tmp/nginx/error.log info;' 2>&1) && { echo "second start: $out"; ok=1; }
+	[ "$(cat /tmp/nginx/nginx.pid)" = "$pid" ] || { echo "pid file: $pid, now $(cat /tmp/nginx/nginx.pid)"; ok=1; }
+	curl -fsS --max-time 30 http://127.0.0.1/ | grep -q "Welcome to nginx" || { echo "first one serves"; ok=1; }
+	nginx_stop /lib/nginx/nginx.conf || ok=1
+	i=0
+	while [ -n "$(nginx_procs)" ] && [ $i -lt 10 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	[ -z "$(nginx_procs)" ] || { echo "left running: $(nginx_procs)"; ok=1; }
+	[ $ok = 0 ] || { echo "second start said: $out"; echo "--- error.log"; cat /tmp/nginx/error.log; }
+	return $ok
+}
 t -t netfs nginx_conf nginx_conf
 t -t netfs nginx_default nginx_default
+t -t netfs nginx_twice nginx_twice
 t -t netfs nginx_serve nginx_serve
 t -t netfs nginx_https nginx_https
