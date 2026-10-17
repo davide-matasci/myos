@@ -19,6 +19,12 @@ linux --root /data/alpine jq -n '1+1'
 linux --root /data/alpine apk add python3   # or get-alpine python3
 ```
 
+The root needs room: a boot disk written from the image has a 64 MiB
+`/data` (`docs/install.md`, issue #488), enough for get-myos's apps, not
+for an Alpine root (a browser's takes some hundreds of MiB); `get-myos
+--install` gives the data partition the rest of the disk. On a full
+filesystem apk stops with `No space left on device`.
+
 Besides the packages asked for, a root always gets the bootstrap set:
 `apk-tools`, `alpine-keys`, `busybox`, `busybox-binsh`, `alpine-baselayout`
 and Alpine's CA bundle (`ca-certificates-bundle`, the trust store of TLS

@@ -1324,9 +1324,12 @@ fn write_at(real: &str, off: usize, data: &[u8]) -> R {
     let mut end = fs::stat(real).ok_or(EBADF)?.size as usize;
     while end < off {
         let n = (off - end).min(zeros.len());
-        end += fs::write(real, end, &zeros[..n]).filter(|&w| w > 0).ok_or(EIO)?;
+        match fs::write_errno(real, end, &zeros[..n])? {
+            0 => return Err(EIO),
+            w => end += w,
+        }
     }
-    fs::write(real, off, data).ok_or(EIO)
+    fs::write_errno(real, off, data)
 }
 
 /// `pwrite64`: the VFS writes at a position by path (the fd's offset stays).

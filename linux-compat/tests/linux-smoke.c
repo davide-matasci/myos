@@ -1280,6 +1280,21 @@ int main(int argc, char **argv) {
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);
     }
+    /* `enospc FILE`: on a full filesystem (fileio_smoke filled it) a write
+     * says ENOSPC, as does a pwrite into the hole a grown file has; apk
+     * used to see EIO and stop with "I/O error". */
+    if (argc > 2 && strcmp(argv[1], "enospc") == 0) {
+        static char mib[1 << 20];
+        int fd = open(argv[2], O_RDWR | O_CREAT | O_TRUNC, 0644);
+        check(fd >= 0, "open on a full filesystem");
+        errno = 0;
+        check(write(fd, mib, sizeof mib) == -1 && errno == ENOSPC, "write: ENOSPC");
+        errno = 0;
+        check(ftruncate(fd, 1 << 20) == 0 && pwrite(fd, mib, 4096, 4096) == -1 && errno == ENOSPC,
+              "pwrite into a hole: ENOSPC");
+        out(failures ? "LINUX-ENOSPC FAIL\n" : "LINUX-ENOSPC OK\n");
+        return failures != 0;
+    }
     /* `enosys`: a syscall no arch has gets ENOSYS (with the layer's trace
      * on, user/tests/kernel.sh, it is also reported on the console). */
     if (argc > 1 && strcmp(argv[1], "enosys") == 0) {

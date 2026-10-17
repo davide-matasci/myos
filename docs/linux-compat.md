@@ -609,7 +609,10 @@ three, the kernel crate itself an hour. Known gaps:
   - `/tmp` (tmpfs) files of at most 16 MiB each, all of them in the
     kernel heap (a quarter of the memory, 64 MiB to 1 GiB and at most
     half its largest region: 1 GiB in the 4 GiB CI guests; the boot's
-    `[ OK ] heap: N MiB` line says how much).
+    `[ OK ] heap: N MiB` line says how much);
+  - a full filesystem refuses the write that does not fit with `ENOSPC`,
+    after the one that filled it took what fit (`/data` is 64 MiB on a
+    boot disk written from the image, `docs/install.md`).
 
 ## Debugging
 

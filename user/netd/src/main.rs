@@ -625,6 +625,19 @@ fn convs_text(
                 None => s.push_str(" closing"),
             }
         }
+        if matches!(c.kind, Kind::Tcp) && c.listen_port == 0 {
+            // Where the bytes wait: sent ones not yet in the socket (`tx`)
+            // and in it, not yet acknowledged (`sendq`); received ones in
+            // the socket, netfs's room for them (`recvq`, `rxroom`).
+            let _ = write!(s, " tx {} rxroom {}", c.pending.len(), c.rx_room);
+            if let Some(h) = c.handle {
+                let sock = sockets.get::<tcp::Socket>(h);
+                if let Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) = sock.local_endpoint() {
+                    let _ = write!(s, " local {a}!{port}");
+                }
+                let _ = write!(s, " sendq {} recvq {}", sock.send_queue(), sock.recv_queue());
+            }
+        }
         s.push('\n');
     }
     for hs in handshakes {

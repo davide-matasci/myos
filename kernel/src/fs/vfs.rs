@@ -638,8 +638,28 @@ pub fn reads_whole(node: &Vnode) -> bool {
     }
 }
 
-/// Write to an open vnode at `pos`. Returns bytes written, or `None` on error.
-pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
+/// Why a write did nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WriteError {
+    /// The generic failure: nothing there, read-only, a device that refused.
+    Failed,
+    /// The filesystem has no room for the bytes (`ENOSPC`).
+    NoSpace,
+}
+
+impl WriteError {
+    /// A module write hook's result: the count, or which failure.
+    fn from_rc(rc: i32) -> Result<usize, WriteError> {
+        match rc {
+            myos_abi::VFS_ENOSPC => Err(WriteError::NoSpace),
+            rc if rc < 0 => Err(WriteError::Failed),
+            rc => Ok(rc as usize),
+        }
+    }
+}
+
+/// Write to an open vnode at `pos`: the bytes written, or why none were.
+pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let written = write_through(node, pos, buf);
     // After the write: its shared mappings show it, and a page read before
     // it is dropped, or not kept.
@@ -649,9 +669,9 @@ pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
 
 /// [`write`] without the page cache hearing of it: the cache's own write
 /// back of a shared mapping's pages.
-pub(super) fn write_through(node: &Vnode, pos: usize, buf: &[u8]) -> Option<usize> {
+pub(super) fn write_through(node: &Vnode, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let _tree = tree_read();
-    match node::locate(node)? {
+    match node::locate(node).ok_or(WriteError::Failed)? {
         (idx, node::Loc::File(id)) => file_write(idx, id, pos, buf),
         (idx, node::Loc::Path(rel)) => backend_write(idx, rel.as_str(), pos, buf),
     }
@@ -1440,12 +1460,12 @@ fn file_read(idx: usize, id: u64, pos: usize, out: &mut [u8]) -> usize {
     }
 }
 
-fn file_write(idx: usize, id: u64, pos: usize, buf: &[u8]) -> Option<usize> {
-    match backend_of(idx)? {
-        MountBackend::Kernel(ops) => (ops.files?.write)(id, pos, buf),
+fn file_write(idx: usize, id: u64, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
+    match backend_of(idx).ok_or(WriteError::Failed)? {
+        MountBackend::Kernel(ops) => ops.files.and_then(|f| (f.write)(id, pos, buf)).ok_or(WriteError::Failed),
         MountBackend::Module(ops) => {
-            let rc = unsafe { ops.write_ino?(id, pos, buf.as_ptr(), buf.len()) };
-            if rc < 0 { None } else { Some(rc as usize) }
+            let write = ops.write_ino.ok_or(WriteError::Failed)?;
+            WriteError::from_rc(unsafe { write(id, pos, buf.as_ptr(), buf.len()) })
         }
     }
 }
@@ -1637,14 +1657,14 @@ fn backend_read(idx: usize, rel: &str, pos: usize, out: &mut [u8]) -> usize {
     }
 }
 
-fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let backend = {
         let mounts = MOUNTS.lock();
-        let m = mounts.get(idx)?;
+        let m = mounts.get(idx).ok_or(WriteError::Failed)?;
         m.backend
     };
     match backend {
-        MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
+        MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf).ok_or(WriteError::Failed),
         MountBackend::Module(ops) => module_write(&ops, rel, pos, buf),
     }
 }
@@ -1825,10 +1845,9 @@ fn module_read(ops: &ModuleVfsOps, rel: &str, pos: usize, out: &mut [u8]) -> usi
     }
 }
 
-fn module_write(ops: &ModuleVfsOps, rel: &str, pos: usize, buf: &[u8]) -> Option<usize> {
-    let write = ops.write?;
-    let rc = unsafe { (write)(rel.as_ptr(), rel.len(), pos, buf.as_ptr(), buf.len()) };
-    if rc < 0 { None } else { Some(rc as usize) }
+fn module_write(ops: &ModuleVfsOps, rel: &str, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
+    let write = ops.write.ok_or(WriteError::Failed)?;
+    WriteError::from_rc(unsafe { (write)(rel.as_ptr(), rel.len(), pos, buf.as_ptr(), buf.len()) })
 }
 
 fn module_rename(ops: &ModuleVfsOps, old: &str, new: &str) -> bool {

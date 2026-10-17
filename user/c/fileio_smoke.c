@@ -637,6 +637,37 @@ static void space(void) {
           "a removed file gives its space back");
 }
 
+/* `enospc DIR`: fill the filesystem DIR is on. The write that finds it full
+ * gives what fit and the next one ENOSPC (not EIO, which apk showed on a
+ * full /data), as does a pwrite into the hole a grown file has; statvfs
+ * shows it full. The file stays, for the Linux layer's check
+ * (user/tests/kernel.sh). */
+static void fill(void) {
+    static char mib[1 << 20];
+    const char *f = in_dir("fill");
+    struct statvfs st;
+    long long total = 0;
+    ssize_t n;
+    int fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "open");
+    memset(mib, 9, sizeof mib);
+    while ((n = write(fd, mib, sizeof mib)) > 0) {
+        total += n;
+        if (total >= 1LL << 30) {
+            check(0, "a GiB written and still room");
+            return;
+        }
+    }
+    check(n == -1 && errno == ENOSPC, "the write on a full filesystem says ENOSPC");
+    check(total > 0 && total % sizeof mib != 0, "the write that filled it gave what fit");
+    errno = 0;
+    check(ftruncate(fd, total + (1 << 20)) == 0, "a grown file takes no blocks");
+    errno = 0;
+    check(pwrite(fd, mib, 4096, total + 4096) == -1 && errno == ENOSPC, "pwrite into the hole: ENOSPC");
+    check(fstatvfs(fd, &st) == 0 && st.f_bavail * st.f_frsize < sizeof mib, "statvfs shows it full");
+    close(fd);
+}
+
 /* The image is read-only and full, and a missing path is on no filesystem. */
 static void root_space(void) {
     struct statvfs st;
@@ -656,6 +687,11 @@ int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "space") == 0) {
         snprintf(dir, sizeof dir, "%s", argv[2]);
         space();
+        return failures != 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "enospc") == 0) {
+        snprintf(dir, sizeof dir, "%s", argv[2]);
+        fill();
         return failures != 0;
     }
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");

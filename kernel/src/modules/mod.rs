@@ -1026,8 +1026,9 @@ unsafe extern "C" fn api_vfs_write(path: StrRef, pos: usize, buf: *const u8, len
     };
     let src = unsafe { core::slice::from_raw_parts(buf, len) };
     match crate::fs::write(&node, pos, src) {
-        Some(n) => n.min(i32::MAX as usize) as i32,
-        None => -1,
+        Ok(n) => n.min(i32::MAX as usize) as i32,
+        Err(crate::fs::WriteError::NoSpace) => myos_abi::VFS_ENOSPC,
+        Err(crate::fs::WriteError::Failed) => -1,
     }
 }
 
