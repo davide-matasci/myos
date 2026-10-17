@@ -1978,6 +1978,25 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     }
     let aspace = task::current_aspace();
     let area_lo = mmap_base_va(base, stack_off);
+    // The regions' record first: a page of the range another thread
+    // faults in from now on takes the new protection (`fault_in` reads the
+    // record), and the walk below rewrites the pages present before. A
+    // fault that read the old record before this and takes the lock after
+    // the walk started finds `PROT_GEN` changed and reads it again: no
+    // page of the range keeps the old protection (a page faulted in
+    // writable and not executable while a JIT made its range executable
+    // faulted on its first fetch, issue #492).
+    if !task::mmap_set_prot(addr as u64, pages as u32, prot as u32) {
+        return SYSERR;
+    }
+    {
+        let flags = crate::arch::irq_save();
+        crate::arch::irq_off();
+        let guard = FAULT_LOCK.lock();
+        PROT_GEN.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        drop(guard);
+        crate::arch::irq_restore(flags);
+    }
     let mut off = 0;
     while off < map_len {
         let va = (addr + off) as u64;
@@ -2044,9 +2063,8 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         }
         off += PAGE;
     }
-    let recorded = task::mmap_set_prot(addr as u64, pages as u32, prot as u32);
     flush_user_tlb();
-    if recorded { 0 } else { SYSERR }
+    0
 }
 
 pub(crate) fn sys_lseek(fd: usize, offset: usize, whence: usize) -> usize {

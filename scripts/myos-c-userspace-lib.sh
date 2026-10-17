@@ -225,7 +225,7 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/child_smoke.c" \
         "$MYOS_ROOT/user/c/libc_smoke.c" "$MYOS_ROOT/user/c/sec.c" "$MYOS_ROOT/user/c/at_smoke.c" \
         "$MYOS_ROOT/user/c/fileio_smoke.c" "$MYOS_ROOT/user/c/mmap_smoke.c" "$MYOS_ROOT/user/c/shm_smoke.c" \
-        "$MYOS_ROOT/user/c/fault_smoke.c" "$MYOS_ROOT/user/c/ctor_smoke.c" "$MYOS_ROOT/user/c/sched_smoke.c" \
+        "$MYOS_ROOT/user/c/jit_smoke.c" "$MYOS_ROOT/user/c/fault_smoke.c" "$MYOS_ROOT/user/c/ctor_smoke.c" "$MYOS_ROOT/user/c/sched_smoke.c" \
         "$MYOS_ROOT/user/c/memhog.c" "$MYOS_ROOT/user/c/evfd_smoke.c" "$MYOS_ROOT/user/c/epoll_smoke.c" \
         "$MYOS_ROOT/user/c/sigfd_smoke.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"

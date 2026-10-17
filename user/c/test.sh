@@ -107,6 +107,12 @@ t -t mm,fs shm /bin/etc/shm_smoke
 # userspace is contained the same way, but a test cannot fault on purpose:
 # the host treats the kernel's `user fault` line as a failure).
 t -t mm fault /bin/etc/fault_smoke
+# A JIT's pattern from two threads: one makes a range of pages not touched
+# yet executable with mprotect while the other reads them, then code
+# written into every page runs. A page the reader faulted in while mprotect
+# walked the range used to keep the old protection, and its first fetch
+# killed the process (jit_smoke.c, issue #492).
+t -t mm,sched jit /bin/etc/jit_smoke
 # Constructors run before main, by priority, with environ set up;
 # destructors at exit, after the atexit handlers (ctor_smoke.c).
 t -t exec ctor /bin/etc/ctor_smoke

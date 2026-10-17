@@ -877,8 +877,10 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     if ec == 0x20 || ec == 0x24 {
         // A translation fault (status 0b0001xx) on an mmap page not touched
         // yet: page it in and retry the instruction. A permission fault
-        // (0b0011xx) on a store: a page the page cache shares read-only,
-        // copied for the process (`fault_in` says when it is a real one).
+        // (0b0011xx): on a store, a page the page cache or a fork shares
+        // read-only, copied for the process; on a fetch or a load, a stale
+        // translation, or a page whose region was made executable after it
+        // was mapped (`fault_in` says when it is a real one).
         let translation = esr & 0x3c == 0x04;
         let permission = esr & 0x3c == 0x0c;
         let access = if ec == 0x20 {
@@ -888,8 +890,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
         } else {
             crate::user::Access::Read
         };
-        let cow = permission && access == crate::user::Access::Write;
-        if (translation || cow) && crate::user::fault_in(far as usize, access) {
+        if (translation || permission) && crate::user::fault_in(far as usize, access) {
             return;
         }
         crate::exception::user_fault_kill(
