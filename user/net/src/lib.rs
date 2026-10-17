@@ -32,20 +32,21 @@ pub const QEMU_DEFAULT_MAC: EthernetAddress =
     EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
 
 /// Stack clock in milliseconds. `bump` advances it to the real elapsed time
-/// (`gettimeofday`, microsecond resolution since the kernel's monotonic
-/// clock) so smoltcp's retransmit/keepalive timers run at wall speed whether
-/// netd is busy or sleeping; it never goes backwards and advances by at least
-/// the caller's `millis` when no clock is available.
+/// (the kernel's monotonic clock) so smoltcp's retransmit/keepalive timers
+/// run at wall speed whether netd is busy or sleeping, and setting the date
+/// does not move them (on the wall clock, a date years ahead and back again
+/// stopped them until the clock caught up); it never goes backwards and
+/// advances by at least the caller's `millis`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VirtualInstant {
     millis: u64,
-    /// Wall clock (µs) at the first bump; 0 until then.
-    epoch_us: i64,
+    /// The monotonic clock (ns) at the first bump; 0 until then.
+    epoch_ns: u64,
 }
 
 impl VirtualInstant {
     pub const fn new() -> Self {
-        Self { millis: 0, epoch_us: 0 }
+        Self { millis: 0, epoch_ns: 0 }
     }
 
     pub fn now(&self) -> Instant {
@@ -53,18 +54,16 @@ impl VirtualInstant {
     }
 
     pub fn bump(&mut self, millis: u64) {
-        if let Some((s, us)) = myos_user::gettimeofday() {
-            let now_us = s.saturating_mul(1_000_000).saturating_add(us);
-            if self.epoch_us == 0 {
-                self.epoch_us = now_us;
-            }
-            let elapsed_ms = (now_us.saturating_sub(self.epoch_us) / 1000).max(0) as u64;
-            if elapsed_ms > self.millis {
-                self.millis = elapsed_ms;
-                return;
-            }
+        let now_ns = myos_user::monotonic_ns();
+        if self.epoch_ns == 0 {
+            self.epoch_ns = now_ns;
         }
-        self.millis = self.millis.saturating_add(millis.max(1));
+        let elapsed_ms = now_ns.saturating_sub(self.epoch_ns) / 1_000_000;
+        if elapsed_ms > self.millis {
+            self.millis = elapsed_ms;
+        } else {
+            self.millis = self.millis.saturating_add(millis.max(1));
+        }
     }
 
     pub fn millis(&self) -> u64 {

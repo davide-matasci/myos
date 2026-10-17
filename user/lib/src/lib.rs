@@ -412,35 +412,34 @@ pub fn gettimeofday() -> Option<(i64, i64)> {
     }
 }
 
-/// Wall-clock budget for a polling loop, replacing iteration counts (which
+/// Nanoseconds since boot on the monotonic clock (`SYS_CLOCK_MONOTONIC` =
+/// 91): unlike [`gettimeofday`], setting the date does not move it.
+pub fn monotonic_ns() -> u64 {
+    unsafe { sys3(91, 0, 0, 0) as u64 }
+}
+
+/// A time budget for a polling loop, replacing iteration counts (which
 /// scale with syscall speed: a 400k-read loop used to last seconds, now well
 /// under one). `wait()` sleeps 1 ms, ended early by any kernel event (a netd
 /// reply landing in the channel), so the loop neither spins nor adds latency.
 pub struct Timeout {
-    end_us: i64,
-    /// Fallback when there is no clock: remaining polls.
-    polls_left: u64,
+    /// The monotonic clock (ns) it ends at: setting the date does not move
+    /// it.
+    end_ns: u64,
 }
 
 impl Timeout {
     pub fn ms(ms: i64) -> Self {
-        let end_us = now_us().map(|n| n.saturating_add(ms.saturating_mul(1000))).unwrap_or(i64::MAX);
-        Self {
-            end_us,
-            polls_left: (ms.max(1) as u64).saturating_mul(1000),
-        }
+        let ms = ms.max(0) as u64;
+        Self { end_ns: monotonic_ns().saturating_add(ms.saturating_mul(1_000_000)) }
     }
 
     pub fn expired(&self) -> bool {
-        match now_us() {
-            Some(n) => n >= self.end_us,
-            None => self.polls_left == 0,
-        }
+        monotonic_ns() >= self.end_ns
     }
 
     /// Sleep briefly before the next poll (any kernel event ends it).
     pub fn wait(&mut self) {
-        self.polls_left = self.polls_left.saturating_sub(1);
         sleep_ns(1_000_000, true);
     }
 }
