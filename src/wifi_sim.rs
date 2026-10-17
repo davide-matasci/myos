@@ -8,7 +8,10 @@
 //! signal it arrives with) and the 802.11 frame without its FCS. Each
 //! access point beacons on its channel every 100 TU and answers the probe
 //! requests sent on it; the guest hears only what is on the channel its
-//! radio is tuned to (`user/wifid`, `docs/wifi.md`).
+//! radio is tuned to (`user/wifi`, `docs/wifi.md`). They beacon only for
+//! [`AWAKE`] after the radio last sent something: a boot that never scans
+//! is not woken thirty times a second for nothing (under TCG on riscv64
+//! that cost the quick tests their budget).
 
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
@@ -17,6 +20,8 @@ use std::time::{Duration, Instant};
 pub const ETHERTYPE: u16 = 0x88b5;
 /// The beacon interval: 100 TU of 1024 µs.
 const BEACON_TU: u16 = 100;
+/// How long the access points beacon after the radio's last frame.
+const AWAKE: Duration = Duration::from_secs(5);
 
 /// One simulated access point.
 struct Ap {
@@ -77,15 +82,17 @@ impl WifiSim {
 fn run(sock: UdpSocket) {
     let start = Instant::now();
     let mut next_beacon = start;
+    let mut heard: Option<Instant> = None;
     let mut buf = [0u8; 2048];
     loop {
-        if Instant::now() >= next_beacon {
+        let awake = heard.is_some_and(|t| t.elapsed() < AWAKE);
+        if awake && Instant::now() >= next_beacon {
             let ts = start.elapsed().as_micros() as u64;
             for ap in &APS {
                 let frame = mgmt(ap, 0x80, [0xff; 6], ts);
                 let _ = sock.send(&wrap(SimHeader { channel: ap.channel, rssi: ap.rssi }, &frame));
             }
-            next_beacon += Duration::from_micros(u64::from(BEACON_TU) * 1024);
+            next_beacon = Instant::now() + Duration::from_micros(u64::from(BEACON_TU) * 1024);
         }
         // A send to a QEMU not up yet fails (connection refused): the next
         // beacon tries again.
@@ -95,6 +102,7 @@ fn run(sock: UdpSocket) {
         let Some((hdr, frame)) = unwrap(&buf[..n]) else {
             continue;
         };
+        heard = Some(Instant::now());
         // A probe request (management, subtype 4): each access point on
         // the channel answers one for its SSID or the wildcard.
         if frame.len() < 24 || frame[0] != 0x40 {

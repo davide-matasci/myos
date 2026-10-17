@@ -55,7 +55,9 @@ its FCS:
 
 The radio hears only the frames of the channel it is tuned to. The
 launcher's access points beacon on their channels every 100 TU and answer
-the probe requests on them (for their SSID or the wildcard):
+the probe requests on them (for their SSID or the wildcard). They beacon
+only for 5 seconds after the radio last sent a frame: a boot that never
+scans is not woken thirty times a second for nothing.
 
 | SSID | BSSID | Channel | Signal | Security |
 |------|-------|---------|--------|----------|
