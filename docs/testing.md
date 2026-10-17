@@ -154,7 +154,9 @@ and `user/c/host.sh mouse` moves and clicks the test boots' `usb-mouse`
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
 (`src/main.rs` sets up the machine, the disks, the network with the port
-forwards, unless `net` is skipped the package mirror and, with the
+forwards, the simulated Wi-Fi radio and its access points
+(`src/wifi_sim.rs`, `docs/wifi.md`), unless `net` is skipped the package
+mirror and, with the
 Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
 `linux-compat/alpine-disks.sh` builds it once into
 `target/alpine-<arch>.img`, the roots of rustc, Python and an X client
