@@ -25,6 +25,13 @@ fi
 mkdir -p $keep/dropbear && mount $keep/dropbear /etc/dropbear bind \
 	|| echo "[ WARN ] rc: cannot bind $keep/dropbear on /etc/dropbear"
 
+# The global apps (`get-myos --global`, docs/packages.md): bound again
+# where the image would have their files, before the first login.
+if [ $keep = /data ] && [ -d /data/apps/.get-myos/global ]; then
+	get-myos -r /data/apps --global > /tmp/get-myos-global.log 2>&1 \
+		|| echo "[ WARN ] rc: get-myos --global failed: /tmp/get-myos-global.log"
+fi
+
 # The apps the data partition's list asks for (docs/packages.md): get-myos
 # --sync, in the background (it waits for the network and downloads), its
 # output in /tmp/get-myos-sync.log.

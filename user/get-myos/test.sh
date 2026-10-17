@@ -246,19 +246,54 @@ boot_install_local() {
 
 # An app in the default root, the boot disk's data partition (/data/apps:
 # the full list's own are in /tmp/apps, MYOS_APPS): installed there, it
-# runs, and is still there at the next boot (run.sh reboot).
+# runs, and is still there at the next boot (run.sh reboot), global: on
+# PATH without run-myos, bound again by /etc/rc at that boot.
 apps_data() {
 	[ "$(MYOS_APPS= get-myos --root)" = /data/apps ] || return 1
 	MYOS_APPS= get-myos -m $MIRROR clear || return 1
 	ls /data/apps/clear/bin/custom/clear /data/apps/clear/app || return 1
 	MYOS_APPS= run-myos clear -T linux > /tmp/apps-data.out || return 1
-	[ "$(cat /tmp/apps-data.out)" = "$(printf '\033[H\033[J')" ]
+	[ "$(cat /tmp/apps-data.out)" = "$(printf '\033[H\033[J')" ] || return 1
+	MYOS_APPS= get-myos --global clear > /tmp/apps-data.out 2>&1 || { cat /tmp/apps-data.out; return 1; }
+	[ "$(/bin/custom/clear -T linux)" = "$(printf '\033[H\033[J')" ]
+}
+
+# Global apps (`--global`), in a root of their own: lua on PATH without
+# run-myos, x11-apps with x11-libs (what it needs) bound too; an app with
+# lua's files refused, naming lua; a rollback of lua binds the version it
+# moved to, and back; -d x11-apps takes its binds and x11-libs' away, and
+# --unglobal lua its own.
+apps_global() {
+	R=/tmp/apps-global
+	G="get-myos -r $R"
+	rm -rf $R
+	$G -m $MIRROR lua x11-apps > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	lua=$(readlink $R/lua)
+	$G --global lua > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	grep -q "^$R/$lua/bin/custom/lua /bin/custom/lua bind " /proc/mounts && [ -x /bin/custom/lua ] || return 1
+	$G --global x11-apps > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	[ -x /bin/custom/xev ] && grep -q "^$R/x11-libs-[0-9a-f]*/" /proc/mounts || { cat /proc/mounts; return 1; }
+	cp -r $R/$lua $R/lua2-000000000001 && ln -s lua2-000000000001 $R/lua2 && echo 000000000001 > $R/.get-myos/pkgs/lua2
+	$G --global lua2 > /tmp/glob.out 2>&1 && return 1
+	grep -q "is provided by lua\$" /tmp/glob.out || { cat /tmp/glob.out; return 1; }
+	rm -rf $R/lua2 $R/lua2-000000000001 $R/.get-myos/pkgs/lua2
+	cp -r $R/$lua $R/lua-111111111111 || return 1
+	$G --rollback lua > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	grep -q "^$R/lua-111111111111/bin/custom/lua /bin/custom/lua bind " /proc/mounts || { cat /proc/mounts; return 1; }
+	$G --rollback lua > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	grep -q "^$R/$lua/bin/custom/lua /bin/custom/lua bind " /proc/mounts || return 1
+	$G -d x11-apps > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	[ ! -e /bin/custom/xev ] && ! grep -q "^$R/x11-" /proc/mounts || { cat /proc/mounts; return 1; }
+	$G --unglobal lua > /tmp/glob.out 2>&1 || { cat /tmp/glob.out; return 1; }
+	[ ! -e /bin/custom/lua ] && ! grep -q "^$R/" /proc/mounts && [ ! -s $R/.get-myos/binds ] || return 1
+	rm -rf $R
 }
 
 t -t net,pkg get_myos_list get_myos_list
 t -t net,pkg apps_data apps_data
 t -t net,pkg get_myos_versions get_myos_versions
 t -t net,pkg apps_set apps_set
+t -t net,pkg apps_global apps_global
 t -t net,pkg,install boot_upgrade boot_upgrade
 t_last -t net,pkg,install boot_install
 t_last -t install boot_install_local

@@ -15,7 +15,7 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 
 fn main() -> ! {
     if myos_user::argc() != 2 {
-        write(b"usage: umount DIRECTORY   (a mount point, see /proc/mounts)\n");
+        write(b"usage: umount PATH   (a mount point or a bind's target, see /proc/mounts)\n");
         myos_user::exit_code(1);
     }
     let dir = myos_user::arg(1).unwrap_or(b"");
@@ -26,7 +26,7 @@ fn main() -> ! {
     let msg: &[u8] = if disk_mounted(dir) {
         b": busy (a file on it is open, or something is mounted below it)\n"
     } else {
-        b": not a mount point of a disk\n"
+        b": not a mount point of a disk nor a bind\n"
     };
     write_fd(2, b"umount: ");
     write_fd(2, dir);

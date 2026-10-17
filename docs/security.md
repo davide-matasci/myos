@@ -103,7 +103,7 @@ exec /bin/custom/netd -> netd
 | `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file); for a directory, `remove` on every name beneath it and `create` on where each goes |
 | `execat` | `exec` (a script's interpreter and a Linux program's dynamic linker too) |
 | `utimensat` | `setattr` |
-| `mount`, `umount` | `write` on `kernel.mounts`, `mount` on the directory; a disk `read write`, a bind's source `read` |
+| `mount`, `umount` | `write` on `kernel.mounts`, `mount` on the directory (`umount` of a bind: on its target); a disk `read write`, a bind's source `read` |
 | `insmod`, `rmmod` | `read` on the module, `write` on `kernel.modules` |
 | `kill` | `signal` on `proc(target's user)` |
 | `power` (`poweroff`, `reboot`, `halt`) | `write` on `kernel.power` |
