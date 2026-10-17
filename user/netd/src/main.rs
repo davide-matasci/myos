@@ -84,8 +84,8 @@ const REP_CAP: usize = 8192;
 const MAX_CONV: usize = 128;
 const FILE_IO: usize = 2048;
 const DHCP_POLLS: usize = 3000;
-/// Minimum clock advance per poll when `gettimeofday` is unavailable; the
-/// stack clock otherwise follows wall time (`VirtualInstant::bump`).
+/// Minimum clock advance per poll (when not a whole millisecond went by); the
+/// stack clock otherwise follows the monotonic clock (`VirtualInstant::bump`).
 const TICK_MS: u64 = 1;
 /// How long a conversation its process closed may take to finish closing
 /// before netd aborts it: a peer that never answers the FIN (a scanner
