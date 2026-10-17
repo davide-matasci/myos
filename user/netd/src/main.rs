@@ -5,6 +5,7 @@
 extern crate alloc;
 
 mod lo;
+mod nics;
 
 use alloc::string::String;
 use alloc::vec;
@@ -12,16 +13,16 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 use myos_net::smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use myos_net::smoltcp::phy::Device;
 use myos_net::smoltcp::socket::{dhcpv4, icmp, tcp, udp};
 use myos_net::smoltcp::time::{Duration, Instant};
 use myos_net::smoltcp::wire::{
     HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint,
     Ipv4Address, Ipv4Cidr,
 };
-use myos_net::{build_interface, Net0Device, VirtualInstant};
+use myos_net::{device_capabilities, Net0Device, VirtualInstant};
 
 use lo::LoopDevice;
+use nics::Nics;
 use myos_user::{close, heap_init, open_flags, poll, read, write, write_fd, Heap, PollFd, O_RDWR, POLLIN};
 
 #[global_allocator]
@@ -479,64 +480,26 @@ fn wait_devices() -> (Net0Device, usize) {
     }
 }
 
+/// Wait for net0's lease at start (a bounded time: without one netd
+/// starts anyway, and a lease that comes later is taken in the main loop).
 fn poll_dhcp(
-    iface: &mut Interface,
+    nics: &mut Nics,
     lo: &mut Interface,
-    device: &mut Net0Device,
     sockets: &mut SocketSet<'_>,
-    dhcp: SocketHandle,
     chan: usize,
     clock: &mut VirtualInstant,
-) -> bool {
+) {
     for _ in 0..DHCP_POLLS {
         clock.bump(TICK_MS);
         let now = clock.now();
-        let rx_before = device.rx_frames();
-        iface.poll(now, device, sockets);
-        if device.rx_frames() == rx_before {
+        let rx_before = nics.rx_frames();
+        nics.poll(now, sockets);
+        if nics.rx_frames() == rx_before {
             // Nothing arrived: wait a little instead of spinning on the NIC.
             myos_user::sleep_ns(1_000_000, false);
         }
-        if let Some(event) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
-            if apply_lease(iface, lo, chan, event) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Configure the interfaces from a DHCP event and hand the lease to netfs
-/// (`/net/ndb`, `/net/ifaddrs`); true when configured.
-fn apply_lease(
-    iface: &mut Interface,
-    lo: &mut Interface,
-    chan: usize,
-    event: dhcpv4::Event<'_>,
-) -> bool {
-    match event {
-        dhcpv4::Event::Configured(cfg) => {
-            iface.update_ip_addrs(|addrs| {
-                addrs.clear();
-                let _ = addrs.push(IpCidr::Ipv4(cfg.address));
-            });
-            if let Some(router) = cfg.router {
-                let _ = iface.routes_mut().add_default_ipv4_route(router);
-            } else {
-                iface.routes_mut().remove_default_ipv4_route();
-            }
-            set_lo_addrs(lo, Some(cfg.address));
-            reply(chan, REP_NDB, 0, 0, ndb_text(&cfg).as_bytes());
-            reply(chan, REP_IFADDRS, 0, 0, ifaddrs_text(Some(cfg.address)).as_bytes());
-            true
-        }
-        dhcpv4::Event::Deconfigured => {
-            iface.update_ip_addrs(|addrs| addrs.clear());
-            iface.routes_mut().remove_default_ipv4_route();
-            set_lo_addrs(lo, None);
-            reply(chan, REP_NDB, 0, 0, b"");
-            reply(chan, REP_IFADDRS, 0, 0, ifaddrs_text(None).as_bytes());
-            false
+        if nics.dhcp(sockets, lo, chan) {
+            return;
         }
     }
 }
@@ -549,33 +512,11 @@ fn build_loopback(dev: &mut LoopDevice, now: Instant) -> Interface {
     config.random_seed = 0x6c6f;
     let mut lo = Interface::new(config, dev, now);
     lo.set_local_only(true);
-    set_lo_addrs(&mut lo, None);
-    lo
-}
-
-fn set_lo_addrs(lo: &mut Interface, lease: Option<Ipv4Cidr>) {
+    // Every NIC's address joins 127.0.0.1 with its lease (`Nics`).
     lo.update_ip_addrs(|addrs| {
-        addrs.clear();
         let _ = addrs.push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8));
-        if let Some(c) = lease {
-            let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(c.address()), 32));
-        }
     });
-}
-
-/// The interfaces the way `/net/ifaddrs` shows them, one per line in index
-/// order (`lo` is 1, `net0` 2): the name, the IPv4 address and netmask ("-"
-/// for none) and the flags. libgloss's `getifaddrs` and `if_nametoindex`
-/// read it.
-fn ifaddrs_text(lease: Option<Ipv4Cidr>) -> String {
-    let mut s = String::from("lo 127.0.0.1 255.0.0.0 up,loopback\n");
-    match lease {
-        Some(c) => {
-            let _ = writeln!(s, "net0 {} {} up,broadcast", c.address(), c.netmask());
-        }
-        None => s.push_str("net0 - - up,broadcast\n"),
-    }
-    s
+    lo
 }
 
 /// netd's conversation table as `/net/convs` text, a line per index in
@@ -678,10 +619,10 @@ fn convs_text(
     s
 }
 
-/// An address of this host's: 127.0.0.0/8, the NIC's, and 0.0.0.0 (which
+/// An address of this host's: 127.0.0.0/8, a NIC's, and 0.0.0.0 (which
 /// a connect or send means as 127.0.0.1, as on Linux).
-fn is_local(iface: &Interface, a: Ipv4Address) -> bool {
-    a.is_loopback() || a.is_unspecified() || iface.has_ip_addr(a)
+fn is_local(nics: &Nics, a: Ipv4Address) -> bool {
+    a.is_loopback() || a.is_unspecified() || nics.has_ip_addr(a)
 }
 
 /// Where TCP listener conv `c` listens: its port, on the address its
@@ -691,33 +632,6 @@ fn listen_endpoint(c: &Conv) -> IpListenEndpoint {
         addr: (!c.local4.is_unspecified()).then_some(IpAddress::Ipv4(c.local4)),
         port: c.listen_port,
     }
-}
-
-/// The source address of what goes to `dst`, as on Linux: 127.0.0.1 to
-/// 127.0.0.0/8, the host's own address to itself, otherwise the NIC's
-/// (none before DHCP is done). smoltcp's loopback interface would take its
-/// first address, 127.0.0.1, every time.
-fn source_for(iface: &Interface, dst: Ipv4Address) -> Option<Ipv4Address> {
-    if dst.is_loopback() || dst.is_unspecified() {
-        Some(Ipv4Address::LOCALHOST)
-    } else {
-        iface.ipv4_addr()
-    }
-}
-
-/// A lease the way Plan 9's `/net/ndb` shows it: the address line, then
-/// one indented `dns=` line per server (libgloss's resolver reads those).
-fn ndb_text(cfg: &dhcpv4::Config<'_>) -> String {
-    let mut s = String::new();
-    let _ = write!(s, "ip={} ipmask={}", cfg.address.address(), cfg.address.netmask());
-    if let Some(router) = cfg.router {
-        let _ = write!(s, " ipgw={router}");
-    }
-    s.push('\n');
-    for dns in cfg.dns_servers.iter() {
-        let _ = writeln!(s, "\tdns={dns}");
-    }
-    s
 }
 
 fn handle_clone(
@@ -996,7 +910,7 @@ fn retire(convs: &mut [Conv; MAX_CONV], i: usize) {
 fn handle_ctl(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
-    iface: &mut Interface,
+    nics: &mut Nics,
     lo: &mut Interface,
     chan: usize,
     conv: u16,
@@ -1019,7 +933,7 @@ fn handle_ctl(
         return;
     }
     if matches!(convs[i].kind, Kind::Udp) {
-        handle_udp_ctl(convs, sockets, iface, chan, i, cmd, local_ports);
+        handle_udp_ctl(convs, sockets, nics, chan, i, cmd, local_ports);
         return;
     }
     // Plan 9 announce: start a TCP listener on this conv ("announce
@@ -1036,7 +950,7 @@ fn handle_ctl(
                 }
             },
         };
-        if !is_local(iface, addr) {
+        if !is_local(nics, addr) {
             reply(chan, REP_ERR, conv, -1, b"addrnotavail");
             return;
         }
@@ -1181,10 +1095,14 @@ fn handle_ctl(
             convs[i].remote_port = p;
             convs[i].have_remote = true;
             let port = next_local_port(local_ports);
-            let local = IpListenEndpoint { addr: source_for(iface, addr).map(IpAddress::Ipv4), port };
+            let local = IpListenEndpoint { addr: nics.source_for(addr).map(IpAddress::Ipv4), port };
             let remote = IpEndpoint::new(IpAddress::Ipv4(addr), p);
             // The loopback interface carries a local connection.
-            let cx = if is_local(iface, addr) { lo.context() } else { iface.context() };
+            let cx = if is_local(nics, addr) {
+                lo.context()
+            } else {
+                nics.context_for(nics.source_for(addr))
+            };
             if let Some(h) = convs[i].handle {
                 let s = sockets.get_mut::<tcp::Socket>(h);
                 match s.connect(cx, remote, local) {
@@ -1214,7 +1132,7 @@ fn handle_ctl(
 fn handle_udp_ctl(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
-    iface: &Interface,
+    nics: &Nics,
     chan: usize,
     i: usize,
     cmd: &[u8],
@@ -1231,12 +1149,12 @@ fn handle_udp_ctl(
             None => (rest, false),
         };
         match parse_endpoint(ep) {
-            Some((addr, port)) => udp_bind(convs, sockets, iface, i, addr, port, reuse, local_ports),
+            Some((addr, port)) => udp_bind(convs, sockets, nics, i, addr, port, reuse, local_ports),
             None => Err("inval"),
         }
     } else if let Some((addr, port)) = parse_connect(cmd) {
         let port = port.unwrap_or(0);
-        let r = udp_connect(convs, sockets, iface, i, addr, port, local_ports);
+        let r = udp_connect(convs, sockets, nics, i, addr, port, local_ports);
         if r.is_ok() {
             let c = &convs[i];
             let mut peer = [0u8; 6];
@@ -1288,18 +1206,10 @@ fn parse_endpoint(s: &[u8]) -> Option<(Ipv4Address, u16)> {
 }
 
 /// What a UDP conv may bind to, as on Linux: any address, 127.0.0.0/8,
-/// the NIC's address, and the broadcast addresses (all ones, and the
-/// first and last of the NIC's prefix).
-fn udp_bindable(iface: &Interface, a: Ipv4Address) -> bool {
-    if a.is_unspecified() || a.is_loopback() || a.is_broadcast() || iface.has_ip_addr(a) {
-        return true;
-    }
-    iface.ip_addrs().iter().any(|c| match c {
-        IpCidr::Ipv4(c) if c.prefix_len() < 31 => {
-            a == c.network().address() || c.broadcast() == Some(a)
-        }
-        _ => false,
-    })
+/// a NIC's address, and the broadcast addresses (all ones, and the
+/// first and last of a NIC's prefix).
+fn udp_bindable(nics: &Nics, a: Ipv4Address) -> bool {
+    a.is_unspecified() || a.is_loopback() || a.is_broadcast() || nics.bindable(a)
 }
 
 /// Whether UDP conv `i` may have `addr`!`port`: no other conv has that
@@ -1362,7 +1272,7 @@ fn udp_free_port(
 fn udp_bind(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
-    iface: &Interface,
+    nics: &Nics,
     i: usize,
     addr: Ipv4Address,
     port: u16,
@@ -1372,7 +1282,7 @@ fn udp_bind(
     if convs[i].local_port != 0 {
         return Err("inval");
     }
-    if !udp_bindable(iface, addr) {
+    if !udp_bindable(nics, addr) {
         return Err("addrnotavail");
     }
     let port = match port {
@@ -1407,7 +1317,7 @@ fn udp_autobind(
 fn udp_connect(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
-    iface: &Interface,
+    nics: &Nics,
     i: usize,
     addr: Ipv4Address,
     port: u16,
@@ -1417,7 +1327,7 @@ fn udp_connect(
     let addr = if addr.is_unspecified() { Ipv4Address::LOCALHOST } else { addr };
     // The source address a send there would have, unless bind chose one.
     if !convs[i].addr_bound {
-        convs[i].local4 = source_for(iface, addr).ok_or("netunreach")?;
+        convs[i].local4 = nics.source_for(addr).ok_or("netunreach")?;
     }
     udp_autobind(convs, sockets, i, local_ports)?;
     let c = &mut convs[i];
@@ -1712,8 +1622,7 @@ fn pump_accepts(
 fn handle_send(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
-    iface: &Interface,
-    device: &Net0Device,
+    nics: &Nics,
     chan: usize,
     conv: u16,
     payload: &[u8],
@@ -1737,11 +1646,14 @@ fn handle_send(
             convs[i].seq = convs[i].seq.wrapping_add(1);
             let seq = convs[i].seq;
             let dst = IpAddress::Ipv4(convs[i].remote4);
-            let checksum = device.capabilities().checksum;
+            let checksum = device_capabilities().checksum;
             let s = sockets.get_mut::<icmp::Socket>(h);
             if !s.is_open() {
                 let _ = s.bind(icmp::Endpoint::Ident(ident));
             }
+            // From the NIC whose subnet holds the destination (a NIC's
+            // interface sends only from its own addresses).
+            s.set_source(nics.source_for(convs[i].remote4).map(IpAddress::Ipv4));
             if !s.can_send() {
                 return;
             }
@@ -1785,7 +1697,7 @@ fn handle_send(
             meta.local_address = if !src.is_unspecified() && !src.is_broadcast() {
                 Some(IpAddress::Ipv4(src))
             } else {
-                source_for(iface, dst).map(IpAddress::Ipv4)
+                nics.source_for(dst).map(IpAddress::Ipv4)
             };
             let s = sockets.get_mut::<udp::Socket>(h);
             if s.can_send() {
@@ -1808,10 +1720,9 @@ fn handle_send(
 fn pump_sockets(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
-    device: &Net0Device,
     chan: usize,
 ) {
-    let checksum = device.capabilities().checksum;
+    let checksum = device_capabilities().checksum;
     let mut rx_tmp = [0u8; REP_CAP - REP_HDR];
     for i in 0..MAX_CONV {
         let conv = i as u16;
@@ -1973,9 +1884,8 @@ fn handle_req(
     sockets: &mut SocketSet<'_>,
     handshakes: &mut Vec<Handshake>,
     lingering: &mut Vec<Lingering>,
-    iface: &mut Interface,
+    nics: &mut Nics,
     lo: &mut Interface,
-    device: &Net0Device,
     chan: usize,
     msg: &[u8],
     local_ports: &mut u16,
@@ -1996,8 +1906,8 @@ fn handle_req(
             handle_clone(convs, sockets, lingering, proto, conv);
             reply(chan, REP_CLONE_OK, conv, 0, &[]);
         }
-        REQ_CTL => handle_ctl(convs, sockets, iface, lo, chan, conv, payload, local_ports),
-        REQ_SEND => handle_send(convs, sockets, iface, device, chan, conv, payload, local_ports),
+        REQ_CTL => handle_ctl(convs, sockets, nics, lo, chan, conv, payload, local_ports),
+        REQ_SEND => handle_send(convs, sockets, nics, chan, conv, payload, local_ports),
         REQ_CLOSE => {
             if let Some(c) = convs.get_mut(conv as usize) {
                 c.released = true;
@@ -2020,44 +1930,33 @@ fn handle_req(
 
 fn main() -> ! {
     heap_init();
-    let (mut device, chan) = wait_devices();
+    let (device, chan) = wait_devices();
 
     let mut clock = VirtualInstant::new();
     // /net/convs: netd's table, pushed to netfs once a second when it changed.
     let mut convs_text_last = String::new();
     let mut convs_text_at = Instant::from_millis(0);
-    let mut iface = build_interface(&mut device, clock.now());
-    iface.set_local_elsewhere(true);
     let mut lodev = LoopDevice::new();
     let mut lo = build_loopback(&mut lodev, clock.now());
-    reply(chan, REP_IFADDRS, 0, 0, ifaddrs_text(None).as_bytes());
     let mut sockets = SocketSet::new(Vec::new());
-    let dhcp = sockets.add(dhcpv4::Socket::new());
+    let mut nics = Nics::new(device, &mut sockets, clock.now());
+    reply(chan, REP_IFADDRS, 0, 0, nics.ifaddrs_text().as_bytes());
     let mut convs = [Conv::EMPTY; MAX_CONV];
     let mut handshakes: Vec<Handshake> = Vec::new();
     let mut lingering: Vec<Lingering> = Vec::new();
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
-    let mut dhcp_ok =
-        poll_dhcp(&mut iface, &mut lo, &mut device, &mut sockets, dhcp, chan, &mut clock);
-    // RX interrupts available? (`irq on` in the NIC's ctl.) Not announced on
-    // the console: netd starts around the `login:` prompt and a line there
-    // confuses serial-driven harnesses; `/proc/interrupts` shows it.
-    let rx_irq = device.rx_irq();
+    poll_dhcp(&mut nics, &mut lo, &mut sockets, chan, &mut clock);
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
     loop {
         clock.bump(TICK_MS);
         let now = clock.now();
-        let rx_before = device.rx_frames();
-        iface.poll(now, &mut device, &mut sockets);
+        nics.rescan(now, &mut sockets, &mut lo, chan);
+        let rx_before = nics.rx_frames();
+        nics.poll(now, &mut sockets);
         poll_loopback(&mut lo, &mut lodev, &mut sockets, now, &convs, chan);
-
-        if !dhcp_ok {
-            if let Some(event) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
-                dhcp_ok = apply_lease(&mut iface, &mut lo, chan, event);
-            }
-        }
+        nics.dhcp(&mut sockets, &mut lo, chan);
 
         let mut req = [0u8; FILE_IO];
         // Drain a few queued reqs per tick (ring is 8); 0 = nothing ready.
@@ -2073,9 +1972,8 @@ fn main() -> ! {
                 &mut sockets,
                 &mut handshakes,
                 &mut lingering,
-                &mut iface,
+                &mut nics,
                 &mut lo,
-                &device,
                 chan,
                 &req[..n],
                 &mut local_ports,
@@ -2086,7 +1984,7 @@ fn main() -> ! {
         // in this same tick instead of waiting for the next VirtualInstant bump.
         if got_req {
             let now = clock.now();
-            iface.poll(now, &mut device, &mut sockets);
+            nics.poll(now, &mut sockets);
             poll_loopback(&mut lo, &mut lodev, &mut sockets, now, &convs, chan);
         }
 
@@ -2133,11 +2031,11 @@ fn main() -> ! {
         // Orphan reclaim used to run *before* pump_sockets and treat CloseWait
         // as dead → abort discarded the bytes → userspace hangup / "no data".
         pump_accepts(&mut convs, &mut sockets, &mut handshakes, chan, now);
-        pump_sockets(&mut convs, &mut sockets, &device, chan);
+        pump_sockets(&mut convs, &mut sockets, chan);
         // Push segments enqueued by pump (pending flush / ACKs) same tick.
         {
             let now = clock.now();
-            iface.poll(now, &mut device, &mut sockets);
+            nics.poll(now, &mut sockets);
             poll_loopback(&mut lo, &mut lodev, &mut sockets, now, &convs, chan);
         }
         for i in 0..MAX_CONV {
@@ -2220,7 +2118,7 @@ fn main() -> ! {
         // console/pipe traffic) or a short bound, instead of spinning: netd
         // used to pin a CPU at 100% forever. Frames or requests seen this
         // round mean the NIC/peer is active, so poll again at once.
-        let rx_now = device.rx_frames();
+        let rx_now = nics.rx_frames();
         // Received bytes netfs has room for (its credit came back while
         // the socket still held some): deliver them next pass, no sleep.
         let backlog = convs.iter().any(|c| {
@@ -2232,6 +2130,11 @@ fn main() -> ! {
             let active = convs
                 .iter()
                 .any(|c| !matches!(c.kind, Kind::Empty) && c.listen_port == 0);
+            // RX interrupts on every NIC? (`irq on` in its ctl.) Not
+            // announced on the console: netd starts around the `login:`
+            // prompt and a line there confuses serial-driven harnesses;
+            // `/proc/interrupts` shows it.
+            let rx_irq = nics.rx_irq();
             let mut ns = if rx_irq {
                 IDLE_WAIT_IRQ_NS
             } else if active {
@@ -2239,7 +2142,7 @@ fn main() -> ! {
             } else {
                 IDLE_SLEEP_QUIET_NS
             };
-            for d in [iface.poll_delay(clock.now(), &sockets), lo.poll_delay(clock.now(), &sockets)]
+            for d in [nics.poll_delay(clock.now(), &sockets), lo.poll_delay(clock.now(), &sockets)]
                 .into_iter()
                 .flatten()
             {
@@ -2254,10 +2157,8 @@ fn main() -> ! {
                 // sleeps, so one that landed just before is not missed) or a
                 // request on the channel, at most until the next timer.
                 let ms = ns.div_ceil(1_000_000).clamp(1, i32::MAX as u64) as i32;
-                let mut fds = [
-                    PollFd { fd: device.fd() as i32, events: POLLIN, revents: 0 },
-                    PollFd { fd: chan as i32, events: POLLIN, revents: 0 },
-                ];
+                let mut fds: Vec<PollFd> = nics.poll_fds().collect();
+                fds.push(PollFd { fd: chan as i32, events: POLLIN, revents: 0 });
                 let _ = poll(&mut fds, ms);
             } else {
                 myos_user::sleep_ns(ns, true);

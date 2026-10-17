@@ -47,6 +47,11 @@ t -t events sigfd /bin/etc/sigfd_smoke
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).
 t -t tap tap /bin/etc/tap_smoke
+# netd's virtual NICs: a program on /dev/tap is a router 10.0.9.1 (DHCP,
+# ARP, UDP echo); netd leases 10.0.9.2 on it beside net0, which keeps the
+# default route, sends a socket connected there from that address, and lets
+# go of the NIC with its program (multihome_smoke.c).
+t -t tap,netfs multihome /bin/etc/multihome_smoke
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t -t fs uio /bin/etc/uio_smoke

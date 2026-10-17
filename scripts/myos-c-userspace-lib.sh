@@ -228,6 +228,7 @@ myos_c_smokes_version_hash() {
         "$MYOS_ROOT/user/c/jit_smoke.c" "$MYOS_ROOT/user/c/fault_smoke.c" "$MYOS_ROOT/user/c/ctor_smoke.c" "$MYOS_ROOT/user/c/sched_smoke.c" \
         "$MYOS_ROOT/user/c/memhog.c" "$MYOS_ROOT/user/c/evfd_smoke.c" "$MYOS_ROOT/user/c/epoll_smoke.c" \
         "$MYOS_ROOT/user/c/tap_smoke.c" "$MYOS_ROOT/user/c/sigfd_smoke.c" \
+        "$MYOS_ROOT/user/c/multihome_smoke.c" \
         "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | myos_hash
   )"
@@ -240,7 +241,7 @@ myos_c_smokes_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke mouse-smoke uio-smoke pthread-smoke netconv-smoke loopback-smoke child-smoke libc-smoke sec at-smoke fileio-smoke mmap-smoke shm-smoke fault-smoke ctor-smoke sched-smoke memhog evfd-smoke epoll-smoke sigfd-smoke tap-smoke; do
+    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke mouse-smoke uio-smoke pthread-smoke netconv-smoke loopback-smoke child-smoke libc-smoke sec at-smoke fileio-smoke mmap-smoke shm-smoke fault-smoke ctor-smoke sched-smoke memhog evfd-smoke epoll-smoke sigfd-smoke tap-smoke multihome-smoke; do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
     done
   done

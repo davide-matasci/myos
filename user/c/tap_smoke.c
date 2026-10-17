@@ -6,7 +6,9 @@
  * program writes comes out of `data` whole, one netd sends through `data`
  * reaches `prog` (its `poll` saying so), and nothing netd sends while the
  * link is down does; `data` reads 0 bytes with nothing waiting. Closing
- * `prog` takes the NIC away. Prints [ OK ] tap.
+ * `prog` takes the NIC away. netd takes the NIC once its link is up
+ * (multihome_smoke.c), so the checks of `data` come before. Prints
+ * [ OK ] tap.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -57,14 +59,8 @@ int main(void) {
     if (readable(prog, 50))
         return fail("a frame through a link that is down");
 
-    if (write(ctl, "up", 2) != 2)
-        return fail("link up");
-    char text[128] = {0};
-    if (pread(ctl, text, sizeof text - 1, 0) <= 0 ||
-        !strstr(text, "mac 02:00:00:aa:bb:cc\n") || !strstr(text, "link up\n"))
-        return fail("ctl after up");
-
-    /* The program to netd, whole. */
+    /* The program to netd, whole (before the link is up: netd takes the
+     * NIC then, and reads data itself). */
     if (read(data, got, sizeof got) != 0)
         return fail("data read with nothing waiting");
     frame[0] = 1;
@@ -73,12 +69,23 @@ int main(void) {
     if (!readable(data, 1000) || read(data, got, sizeof got) != sizeof frame || got[0] != 1)
         return fail("frame from the program");
 
-    /* netd to the program. */
+    if (write(ctl, "up", 2) != 2)
+        return fail("link up");
+    char text[128] = {0};
+    if (pread(ctl, text, sizeof text - 1, 0) <= 0 ||
+        !strstr(text, "mac 02:00:00:aa:bb:cc\n") || !strstr(text, "link up\n"))
+        return fail("ctl after up");
+
+    /* netd to the program, past what netd itself sends (DHCP). */
     frame[0] = 2;
     if (write(data, frame, sizeof frame) != sizeof frame)
         return fail("send while up");
-    if (!readable(prog, 1000) || read(prog, got, sizeof got) != sizeof frame || got[0] != 2)
-        return fail("frame from netd");
+    for (;;) {
+        if (!readable(prog, 1000))
+            return fail("frame from netd");
+        if (read(prog, got, sizeof got) == sizeof frame && got[0] == 2)
+            break;
+    }
 
     close(prog);
     if (open(path, O_RDWR) >= 0)

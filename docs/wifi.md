@@ -85,3 +85,8 @@ close takes the NIC away):
 A frame netd sends while the link is down is dropped. Each direction
 queues up to 64 frames; past that the newest is dropped, as a full NIC
 drops. The test is `tap_smoke` (`user/c/test.sh`, tag `tap`).
+
+netd takes a NIC whose link is up, with its own DHCP lease, and lets go
+of it when its link goes down or its program goes; the wired `net0`
+keeps the default route while it has a lease (`docs/sockets-curl.md`,
+`multihome_smoke`).
