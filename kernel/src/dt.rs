@@ -126,12 +126,24 @@ fn ancestors<'b>(
     None
 }
 
+/// Some bus of the tree moves the addresses under it: a node with children
+/// and a non-empty `ranges`. Without one (QEMU `virt`) [`translate`] skips
+/// its walk of the tree, which [`mmio_device`]'s ranking would otherwise
+/// run for every pair of `virtio,mmio` nodes on every lookup.
+fn moves_addresses(fdt: &Fdt<'static>) -> bool {
+    static MOVES: Once<bool> = Once::new();
+    *MOVES.call_once(|| {
+        fdt.all_nodes()
+            .any(|n| n.property("ranges").is_some_and(|r| !r.value.is_empty()) && n.children().next().is_some())
+    })
+}
+
 /// `addr`, a `reg` address of `node`, as the CPU sees it: through the
 /// `ranges` of each bus above it, the innermost first. A bus without
 /// `ranges`, an empty one, or an address no entry covers is taken as
 /// one-to-one (QEMU `virt`'s nodes are all at the root).
 fn translate(node: FdtNode<'_, 'static>, mut addr: u64) -> u64 {
-    let Some(fdt) = get() else {
+    let Some(fdt) = get().filter(|fdt| moves_addresses(fdt)) else {
         return addr;
     };
     let mut chain = [None; MAX_DEPTH];
