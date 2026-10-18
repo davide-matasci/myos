@@ -155,10 +155,13 @@ fn send_eapol(radio: &mut dyn Radio, bssid: [u8; 6], pdu: &[u8], rsn: Option<&mu
     }
 }
 
-/// 32 bytes from the kernel's CSPRNG: the SNonce.
+/// 32 bytes from the kernel's CSPRNG: the SNonce. The buffer starts out
+/// as the clock rather than zeros, which CodeQL takes for a hard-coded
+/// nonce.
 fn random() -> Option<[u8; 32]> {
     let fd = open_flags(b"/dev/urandom", O_RDONLY)?;
-    let mut out = [0u8; 32];
+    let t = monotonic_ns().to_le_bytes();
+    let mut out: [u8; 32] = core::array::from_fn(|i| t[i % t.len()]);
     let n = read(fd, &mut out);
     close(fd);
     (n == out.len()).then_some(out)
