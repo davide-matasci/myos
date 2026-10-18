@@ -72,13 +72,16 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
    compared against what the tables did: a component both describe
    differently is flagged (`[WARN] platform: acpi and dt differ on ...`
    at boot, `differs` in `/proc/platform`) rather than silently resolved
-   in favour of either.
+   in favour of either. Nodes whose `status` is not `okay` are skipped,
+   and a `reg` is translated through the `ranges` of the buses above it
+   (the Raspberry Pi 4's peripherals sit at bus address `0x7e00_0000`
+   behind a `simple-bus`, `docs/raspberry-pi.md`).
 
 | Component | ACPI | Device tree (`compatible`) |
 |------|------|------|
 | CPUs | MADT enabled LAPIC / x2APIC / GICC entries | `/cpus` children |
 | Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | `arm,cortex-a15-gic` / `arm,gic-400` (GICv2), `arm,gic-v3`, `sifive,plic-1.0.0` / `riscv,plic0` |
-| Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | `arm,pl011`, `ns16550a` + `interrupts` |
+| Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | the one `/chosen` `stdout-path` names (through `/aliases`), else the first `arm,pl011`, else the first `ns16550a` / `ns16550` / `snps,dw-apb-uart` / `brcm,bcm2835-aux-uart` (the Pi's mini UART); + `interrupts` |
 | RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: no RTC, no wall clock) |
 | Timers | GTDT: EL1 physical and virtual timer INTIDs | `/cpus` `timebase-frequency` (riscv64 `time` CSR rate) |
 | PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg`, `bus-range` |
@@ -90,7 +93,9 @@ What each arch requires of the description: aarch64 a GIC (v2: the
 distributor and the CPU interface; v3: the distributor and the
 redistributor region, below), a PL011 or a 16550 (with its register stride
 and access width: the tree's `reg-shift` / `reg-io-width`, the SPCR's
-access size) and a PCIe host bridge with a 32-bit MMIO window; riscv64 a PLIC, a
+access size), and a PCIe host bridge, when it has one, with a 32-bit MMIO
+window (one the kernel cannot drive, like the Pi 4's `brcm,bcm2711-pcie`,
+leaves the board without PCI); riscv64 a PLIC, a
 16550, the timebase and a host bridge with a 64-bit window; x86_64
 takes the MCFG's ECAM window for PCI configuration space when the
 description has one (QEMU `q35`, every PCIe PC; `arch/x86/pci.rs` maps a

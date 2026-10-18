@@ -42,11 +42,10 @@ pub fn serial_rx_irq_on() {
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 
-/// The device window (`paging`), and QEMU `virt`'s UART in it until the
-/// platform description names the board's.
+/// The device window (`paging`). Nothing is written to a UART before the
+/// platform description names the board's (`apply_platform`).
 pub fn early_init() {
     paging::map_devices();
-    serial::map_default();
 }
 
 pub fn init_interrupts() {
@@ -78,9 +77,19 @@ pub const PREFER_ACPI: bool = true;
 /// Take the board's device bases from the platform description: the GIC
 /// (v2: distributor and CPU interface; v3: distributor and redistributors),
 /// the console (a PL011 or a 16550), the PL031 RTC and the PCIe host bridge
-/// (ECAM, bus range, 32-bit MMIO window). Required: a board the description
-/// does not cover does not boot.
+/// (ECAM, bus range, 32-bit MMIO window). The GIC and the console are
+/// required: a board the description does not cover there does not boot.
 pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
+    let applied = apply(p);
+    if applied.is_err() {
+        // The fatal line goes to the board's UART if it got that far, else
+        // to the one it most likely has (QEMU `virt`'s).
+        serial::map_default();
+    }
+    applied
+}
+
+fn apply(p: &crate::platform::Platform) -> Result<(), &'static str> {
     use crate::platform::Intc;
     if p.source.is_none() {
         return Err("no ACPI tables and no device tree from the bootloader");
@@ -107,12 +116,15 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
     if let Some(rtc) = p.rtc {
         clock::set_rtc_base(map(rtc.value.base, 0x1000, "platform: cannot map the RTC")?);
     }
-    let host = p.pci.ok_or("platform: no PCIe host bridge")?.value;
-    let (mmio, mmio_size) = p
-        .pci_windows
-        .and_then(|w| w.value.mmio32)
-        .ok_or("platform: PCIe host bridge has no 32-bit MMIO range")?;
-    pci::set_host(host.ecam, host.ecam_size, host.bus_end, mmio, mmio_size);
+    // A board without a generic (ECAM) host bridge has no PCI here: a
+    // Raspberry Pi 4's is the BCM2711's own controller.
+    if let Some(host) = p.pci.map(|c| c.value) {
+        let (mmio, mmio_size) = p
+            .pci_windows
+            .and_then(|w| w.value.mmio32)
+            .ok_or("platform: PCIe host bridge has no 32-bit MMIO range")?;
+        pci::set_host(host.ecam, host.ecam_size, host.bus_end, mmio, mmio_size);
+    }
     Ok(())
 }
 

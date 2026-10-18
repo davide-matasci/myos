@@ -9,10 +9,10 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::platform::{Uart, UartKind};
 
-/// The UART's registers (kernel virtual: the device window). Until
-/// `set_uart` runs, QEMU `virt`'s PL011 ([`map_default`]), so that a boot
-/// without a usable description can still say so on the console it most
-/// likely has; 0, no output, if not even that is mapped.
+/// The UART's registers (kernel virtual: the device window); 0, no output,
+/// until `set_uart` runs. A boot without a usable description says so on
+/// QEMU `virt`'s PL011 ([`map_default`]), the console it most likely has
+/// (on another board that address may be RAM: nothing goes there before).
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// QEMU `virt`'s PL011.
 const DEFAULT_PL011: u64 = 0x0900_0000;
@@ -22,8 +22,11 @@ static KIND: AtomicU8 = AtomicU8::new(0);
 static SHIFT: AtomicU8 = AtomicU8::new(0);
 static WIDTH: AtomicU8 = AtomicU8::new(1);
 
-/// Map QEMU `virt`'s PL011 as the console until the platform names one.
+/// Map QEMU `virt`'s PL011 as the console, unless the platform's is.
 pub fn map_default() {
+    if uart0() != 0 {
+        return;
+    }
     if let Some(va) = super::paging::map_mmio(DEFAULT_PL011, 0x1000) {
         BASE.store(va, Ordering::SeqCst);
     }
@@ -60,6 +63,11 @@ const UARTICR: usize = 0x44;
 /// UARTIMSC: the receive and receive-timeout interrupts.
 const IMSC_RX: u32 = (1 << 4) | (1 << 6);
 
+/// UARTCR: the UART, its transmitter and its receiver enabled.
+const CR_UARTEN: u32 = 1 << 0;
+const CR_TXE: u32 = 1 << 8;
+const CR_RXE: u32 = 1 << 9;
+
 const FR_TXFF: u32 = 1 << 5;
 const FR_BUSY: u32 = 1 << 3;
 const FR_RXFE: u32 = 1 << 4;
@@ -89,15 +97,25 @@ impl SerialPort {
         if INITIALIZED.swap(true, Ordering::AcqRel) {
             return Self;
         }
-        // 115200 8N1-ish. QEMU's PL011 largely ignores baud, but a real init
-        // sequence still makes TXE/UARTEN explicit.
+        // A UART the firmware enabled keeps its line settings: its baud
+        // divisors depend on the UART's clock, which only the firmware
+        // knows (a Raspberry Pi 4's PL011 runs at 48 MHz, the 115200
+        // divisors below assume 24 MHz). Only its interrupts are masked
+        // and transmit and receive made sure of.
+        if read32(UARTCR) & CR_UARTEN != 0 {
+            write32(UARTIMSC, 0);
+            write32(UARTCR, read32(UARTCR) | CR_TXE | CR_RXE);
+            return Self;
+        }
+        // 115200 8N1-ish with a 24 MHz clock (QEMU's PL011 largely ignores
+        // baud, but a real init sequence still makes TXE/UARTEN explicit).
         write32(UARTCR, 0);
         write32(UARTICR, 0x7FF);
         write32(UARTIBRD, 13);
         write32(UARTFBRD, 1);
         write32(UARTLCR_H, 0x70); // 8 bits, FIFO on
         write32(UARTIMSC, 0);
-        write32(UARTCR, 0x301); // UARTEN | TXE | RXE
+        write32(UARTCR, CR_UARTEN | CR_TXE | CR_RXE);
         Self
     }
 

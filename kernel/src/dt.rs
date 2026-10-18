@@ -6,7 +6,12 @@
 //! (`KernelApi::dt_mmio_find`) and the PCI INTx routing. x86_64 has no
 //! tree (ACPI instead): `init` finds none and the accessors stay unused.
 //!
-//! Lookups are by `compatible` string. Interrupt specifiers are returned
+//! Lookups are by `compatible` string, among the nodes not marked
+//! `status = "disabled"` (a SoC's tree lists every block it has, a board
+//! enables the ones it wires). A `reg` address is translated to the CPU's
+//! through the `ranges` of the buses above the node (a Raspberry Pi 4's
+//! peripherals sit at bus address 0x7e000000, CPU address 0xfe000000).
+//! Interrupt specifiers are returned
 //! raw (cells per the interrupt parent's `#interrupt-cells`) and decoded by
 //! `arch::irq_from_dt`, since their meaning depends on the controller.
 //! Everything here runs before the heap exists, so nothing allocates.
@@ -81,10 +86,106 @@ fn has_compatible(node: FdtNode, compat: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `reg` entry `index` of `node`: `(base, size)`.
-fn node_reg(node: FdtNode, index: usize) -> Option<(u64, u64)> {
+/// The node is in use: no `status`, or `okay` (`ok` in older trees).
+fn enabled(node: FdtNode) -> bool {
+    match node.property("status").and_then(|p| p.as_str()) {
+        None => true,
+        Some(s) => s == "okay" || s == "ok",
+    }
+}
+
+/// The first enabled node compatible with any of `compat`.
+fn find_enabled<'b>(fdt: &'b Fdt<'static>, compat: &[&str]) -> Option<FdtNode<'b, 'static>> {
+    fdt.all_nodes()
+        .find(|n| enabled(*n) && compat.iter().any(|c| has_compatible(*n, c)))
+}
+
+/// Buses a node may be nested in, the root included.
+const MAX_DEPTH: usize = 8;
+
+/// The nodes from the root down to `target`'s parent, into `chain`: how
+/// many. A node is told apart by its name's place in the tree's blob.
+fn ancestors<'b>(
+    node: FdtNode<'b, 'static>,
+    target: *const u8,
+    depth: usize,
+    chain: &mut [Option<FdtNode<'b, 'static>>; MAX_DEPTH],
+) -> Option<usize> {
+    if depth >= MAX_DEPTH {
+        return None;
+    }
+    chain[depth] = Some(node);
+    for child in node.children() {
+        if child.name.as_ptr() == target {
+            return Some(depth + 1);
+        }
+        if let Some(n) = ancestors(child, target, depth + 1, chain) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Some bus of the tree moves the addresses under it: a node with children
+/// and a non-empty `ranges`. Without one (QEMU `virt`) [`translate`] skips
+/// its walk of the tree, which [`mmio_device`]'s ranking would otherwise
+/// run for every pair of `virtio,mmio` nodes on every lookup.
+fn moves_addresses(fdt: &Fdt<'static>) -> bool {
+    static MOVES: Once<bool> = Once::new();
+    *MOVES.call_once(|| {
+        fdt.all_nodes()
+            .any(|n| n.property("ranges").is_some_and(|r| !r.value.is_empty()) && n.children().next().is_some())
+    })
+}
+
+/// `addr`, a `reg` address of `node`, as the CPU sees it: through the
+/// `ranges` of each bus above it, the innermost first. A bus without
+/// `ranges`, an empty one, or an address no entry covers is taken as
+/// one-to-one (QEMU `virt`'s nodes are all at the root).
+fn translate(node: FdtNode<'_, 'static>, mut addr: u64) -> u64 {
+    let Some(fdt) = get().filter(|fdt| moves_addresses(fdt)) else {
+        return addr;
+    };
+    let mut chain = [None; MAX_DEPTH];
+    let Some(n) = fdt.find_node("/").and_then(|root| ancestors(root, node.name.as_ptr(), 0, &mut chain)) else {
+        return addr;
+    };
+    for k in (1..n).rev() {
+        let (Some(bus), Some(up)) = (chain[k], chain[k - 1]) else {
+            continue;
+        };
+        let Some(ranges) = prop(bus, "ranges") else {
+            continue;
+        };
+        let child = bus.cell_sizes().address_cells;
+        let size = bus.cell_sizes().size_cells;
+        let parent = up.cell_sizes().address_cells;
+        let entry = child + parent + size;
+        if entry == 0 || child > 2 || parent > 2 || size > 2 {
+            continue;
+        }
+        let mut i = 0;
+        while i + entry <= ranges.len() {
+            let (Some(c), Some(p), Some(len)) =
+                (ranges.join(i, child), ranges.join(i + child, parent), ranges.join(i + child + parent, size))
+            else {
+                break;
+            };
+            if addr >= c && addr - c < len {
+                addr = addr - c + p;
+                break;
+            }
+            i += entry;
+        }
+    }
+    addr
+}
+
+/// `reg` entry `index` of `node`: `(base, size)`, the base as the CPU sees
+/// it.
+fn node_reg(node: FdtNode<'_, 'static>, index: usize) -> Option<(u64, u64)> {
     let r = node.reg()?.nth(index)?;
-    Some((r.starting_address as u64, r.size.unwrap_or(0) as u64))
+    Some((translate(node, r.starting_address as u64), r.size.unwrap_or(0) as u64))
 }
 
 /// `#address-cells` of the parent of `node`, as its `reg` is encoded.
@@ -92,9 +193,10 @@ fn parent_address_cells(node: FdtNode) -> Option<usize> {
     Some(node.raw_reg()?.next()?.address.len() / 4)
 }
 
-/// `reg` entry `index` of the first node compatible with any of `compat`.
+/// `reg` entry `index` of the first enabled node compatible with any of
+/// `compat`.
 pub fn reg(compat: &[&str], index: usize) -> Option<(u64, u64)> {
-    node_reg(get()?.find_compatible(compat)?, index)
+    node_reg(find_enabled(get()?, compat)?, index)
 }
 
 /// An interrupt specifier: `cells()`, per the interrupt parent.
@@ -150,7 +252,7 @@ pub fn mmio_device(compat: &str, index: usize) -> Option<MmioDevice> {
     let fdt = get()?;
     let matching = || {
         fdt.all_nodes()
-            .filter(|n| has_compatible(*n, compat))
+            .filter(|n| enabled(*n) && has_compatible(*n, compat))
             .filter_map(|n| node_reg(n, 0).map(|(base, size)| (base, size, n)))
     };
     // Selection by rank: the match with exactly `index` smaller bases.
@@ -172,7 +274,7 @@ pub struct PciHost {
 }
 
 pub fn pci_host() -> Option<PciHost> {
-    let host = get()?.find_compatible(&["pci-host-ecam-generic"])?;
+    let host = find_enabled(get()?, &["pci-host-ecam-generic"])?;
     let (ecam_base, ecam_size) = node_reg(host, 0)?;
     let bus_end = match prop(host, "bus-range") {
         Some(r) => r.get(1)? as u8,
@@ -193,7 +295,7 @@ pub const PCI_SPACE_MEM64: u32 = 0x0300_0000;
 /// The first MMIO window of the host bridge whose space flags equal
 /// `space` (`PCI_SPACE_MEM32` / `PCI_SPACE_MEM64`): `(cpu_base, size)`.
 pub fn pci_mmio_window(space: u32) -> Option<(u64, u64)> {
-    let host = get()?.find_compatible(&["pci-host-ecam-generic"])?;
+    let host = find_enabled(get()?, &["pci-host-ecam-generic"])?;
     let ranges = prop(host, "ranges")?;
     let child = host.cell_sizes().address_cells; // 3: flags, address hi, lo
     let size = host.cell_sizes().size_cells;
@@ -217,7 +319,7 @@ pub fn pci_mmio_window(space: u32) -> Option<(u64, u64)> {
 /// `interrupt-map-mask` (the slot swizzle is whatever the board says).
 pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
     let fdt = get()?;
-    let host = fdt.find_compatible(&["pci-host-ecam-generic"])?;
+    let host = find_enabled(fdt, &["pci-host-ecam-generic"])?;
     let addr_cells = host.cell_sizes().address_cells; // 3
     if addr_cells == 0 || addr_cells > 3 || host.interrupt_cells()? != 1 {
         return None;
@@ -264,13 +366,25 @@ pub fn timebase_frequency() -> Option<u64> {
 /// GICv2 `compatible` strings (QEMU `virt`: `arm,cortex-a15-gic`).
 const GICV2_COMPAT: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400", "arm,cortex-a9-gic"];
 
-/// The first node compatible with `compat`, as a UART of `kind`: base,
-/// first interrupt, and the `reg-shift` / `reg-io-width` of a 16550.
-fn uart(compat: &[&str], kind: UartKind) -> Option<Uart> {
-    let fdt = get()?;
-    let node = fdt.find_compatible(compat)?;
+/// UARTs the console can drive: PL011s, and 16550s (most SoCs; the
+/// Raspberry Pi's mini UART, a 16550 at a 4-byte stride).
+const PL011_COMPAT: &[&str] = &["arm,pl011"];
+const NS16550_COMPAT: &[&str] = &["ns16550a", "ns16550", "snps,dw-apb-uart", "brcm,bcm2835-aux-uart"];
+
+/// `node` as a UART the console can drive: base, first interrupt, and the
+/// `reg-shift` / `reg-io-width` of a 16550 (the Pi's mini UART has none:
+/// a 4-byte stride and 32-bit access, as its Linux driver programs it).
+fn uart_of(fdt: &Fdt<'static>, node: FdtNode<'_, 'static>) -> Option<Uart> {
+    let kind = if PL011_COMPAT.iter().any(|c| has_compatible(node, c)) {
+        UartKind::Pl011
+    } else if NS16550_COMPAT.iter().any(|c| has_compatible(node, c)) {
+        UartKind::Ns16550
+    } else {
+        return None;
+    };
     let (base, _) = node_reg(node, 0)?;
     let irq = interrupt_spec(fdt, node).and_then(|s| crate::arch::irq_from_dt(s.cells()));
+    let mini = has_compatible(node, "brcm,bcm2835-aux-uart");
     let cell = |name: &str, default: u32| match kind {
         UartKind::Ns16550 => prop(node, name).and_then(|c| c.get(0)).unwrap_or(default),
         UartKind::Pl011 => default,
@@ -280,14 +394,30 @@ fn uart(compat: &[&str], kind: UartKind) -> Option<Uart> {
         base,
         io: false,
         irq,
-        reg_shift: cell("reg-shift", 0) as u8,
-        reg_width: cell("reg-io-width", 1) as u8,
+        reg_shift: cell("reg-shift", if mini { 2 } else { 0 }) as u8,
+        reg_width: cell("reg-io-width", if mini { 4 } else { 1 }) as u8,
     })
+}
+
+/// The console UART: the one `/chosen`'s `stdout-path` names (a path or
+/// an alias, before its `:options`), if it is one the console can drive;
+/// else the first enabled PL011, else the first enabled 16550.
+fn console_uart(fdt: &Fdt<'static>) -> Option<Uart> {
+    let named = fdt
+        .find_node("/chosen")
+        .and_then(|c| c.property("stdout-path"))
+        .and_then(|p| p.as_str())
+        .and_then(|path| fdt.find_node(path.split(':').next()?))
+        .filter(|n| enabled(*n))
+        .and_then(|n| uart_of(fdt, n));
+    named
+        .or_else(|| uart_of(fdt, find_enabled(fdt, PL011_COMPAT)?))
+        .or_else(|| uart_of(fdt, find_enabled(fdt, NS16550_COMPAT)?))
 }
 
 /// Describe the board from the tree (`crate::platform::init`): the model,
 /// the CPUs, the interrupt controller (a GICv2, a GICv3 or a PLIC), the
-/// console UART (a PL011 or a 16550), the RTC (a PL031 or a goldfish), the
+/// console UART (`console_uart`: a PL011 or a 16550), the RTC (a PL031 or a goldfish), the
 /// `time` CSR rate and the PCIe host bridge with its MMIO windows.
 pub fn fill(p: &mut Platform) {
     use crate::platform::*;
@@ -309,9 +439,7 @@ pub fn fill(p: &mut Platform) {
     } else if let Some((base, _)) = reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0) {
         offer_intc(p, Intc::Plic { base }, from);
     }
-    if let Some(uart) = uart(&["arm,pl011"], UartKind::Pl011) {
-        offer_uart(p, uart, from);
-    } else if let Some(uart) = uart(&["ns16550a", "ns16550", "snps,dw-apb-uart"], UartKind::Ns16550) {
+    if let Some(uart) = console_uart(fdt) {
         offer_uart(p, uart, from);
     }
     if let Some((base, _)) = reg(&["arm,pl031"], 0) {
@@ -323,8 +451,7 @@ pub fn fill(p: &mut Platform) {
         offer_timer_hz(p, hz, from);
     }
     if let Some(host) = pci_host() {
-        let bus_start = fdt
-            .find_compatible(&["pci-host-ecam-generic"])
+        let bus_start = find_enabled(fdt, &["pci-host-ecam-generic"])
             .and_then(|h| prop(h, "bus-range"))
             .and_then(|r| r.get(0))
             .unwrap_or(0) as u8;
@@ -341,7 +468,7 @@ pub fn fill(p: &mut Platform) {
             offer_pci_windows(p, windows, from);
         }
     }
-    let psci = fdt.find_compatible(&["arm,psci-1.0", "arm,psci-0.2", "arm,psci"]);
+    let psci = find_enabled(fdt, &["arm,psci-1.0", "arm,psci-0.2", "arm,psci"]);
     match psci.and_then(|n| n.property("method")).and_then(|m| m.as_str()) {
         Some("hvc") => offer_psci(p, PsciConduit::Hvc, from),
         Some("smc") => offer_psci(p, PsciConduit::Smc, from),

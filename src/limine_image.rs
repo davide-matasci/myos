@@ -91,9 +91,15 @@ pub fn boot_list() -> String {
 /// `global_dtb`), `kernel_extra` after each `path:` (riscv64's
 /// `paging_mode`). Limine loads the kernel and the initramfs, nothing else.
 pub fn limine_conf(head_extra: &str, kernel_extra: &str, slots: &[&str]) -> String {
+    limine_conf_cmdline(head_extra, kernel_extra, slots, "")
+}
+
+/// [`limine_conf`] with `cmdline_extra` after each entry's `slot=` (the
+/// Raspberry Pi 4's `platform=dt`).
+pub fn limine_conf_cmdline(head_extra: &str, kernel_extra: &str, slots: &[&str], cmdline_extra: &str) -> String {
     let entries: Vec<(String, String, String)> = slots
         .iter()
-        .map(|s| (format!("myos {s}"), format!("boot/{s}"), format!("    cmdline: slot={s}\n")))
+        .map(|s| (format!("myos {s}"), format!("boot/{s}"), format!("    cmdline: slot={s}{cmdline_extra}\n")))
         .collect();
     limine_conf_entries(head_extra, kernel_extra, &entries)
 }
