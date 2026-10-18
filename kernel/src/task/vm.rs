@@ -270,7 +270,7 @@ pub fn mmap_set_prot(va: u64, pages: u32, prot: u32) -> bool {
         let at = t.mmap.partition_point(|r| (r.va as usize) < lo);
         let reprotected = parts
             .into_iter()
-            .map(|part| MmapRegion { prot: prot | (part.prot & (MMAP_DEVICE | MMAP_SHARED)), ..part });
+            .map(|part| MmapRegion { prot: prot | (part.prot & (MMAP_DEVICE | MMAP_SHARED | MMAP_UNCACHED)), ..part });
         t.mmap.splice(at..at, reprotected);
         coalesce(&mut t.mmap);
         if t.mmap.len() > MAX_MMAP_REGIONS {

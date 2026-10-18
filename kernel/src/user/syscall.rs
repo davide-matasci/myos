@@ -1803,12 +1803,16 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     // Only a MAP_FIXED one replaces mappings: the others only add some.
     let flush = |va: usize| if fixed { flush_user_pages(va, pages) } else { flush_user_tlb_added() };
     if let (true, Some(node)) = (device, &file) {
-        let Some(va) = record(prot as u32 | task::MMAP_DEVICE, None) else {
+        // Registers (a PCI BAR) are mapped uncached, and stay so through
+        // mprotect: the region says it.
+        let uncached = fs::device_frame(node, offset).is_some_and(|f| f.uncached);
+        let kind = task::MMAP_DEVICE | if uncached { task::MMAP_UNCACHED } else { 0 };
+        let Some(va) = record(prot as u32 | kind, None) else {
             return SYSERR;
         };
         for i in 0..pages {
             if let Some(frame) = fs::device_frame(node, offset + i * PAGE) {
-                map_user_page_prot(aspace, (va + i * PAGE) as u64, frame, prot);
+                map_user_page_kind(aspace, (va + i * PAGE) as u64, frame.phys, prot, uncached);
             }
         }
         flush(va);
@@ -2002,7 +2006,8 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
         let va = (addr + off) as u64;
         // A page's entry is read and rewritten under the fault lock: no
         // fault, free or fork may change it in between (`copy_user_aspace`).
-        let shared_file = task::mmap_backing(va as usize).is_some_and(|(p, _, _)| p & task::MMAP_SHARED != 0);
+        let backing = task::mmap_backing(va as usize).map(|(p, _, _)| p).unwrap_or(0);
+        let shared_file = backing & task::MMAP_SHARED != 0;
         let flags = crate::arch::irq_save();
         crate::arch::irq_off();
         let guard = FAULT_LOCK.lock();
@@ -2049,7 +2054,7 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
                 phys = own;
             }
         }
-        map_user_page_prot(aspace, va, phys, prot);
+        map_user_page_kind(aspace, va, phys, prot, backing & task::MMAP_UNCACHED != 0);
         if keep_cow {
             if let Some(p) = crate::arch::upaging::leaf_mut(aspace, va) {
                 unsafe { *p |= crate::arch::upaging::LEAF_COW };
