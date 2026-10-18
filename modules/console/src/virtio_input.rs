@@ -16,7 +16,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::kbd::{ByteFifo, LinuxKeys};
 use myos_abi::Lock as Mutex;
 use crate::status_ok;
-use virtq::{dcache_civac, dsb};
+use myos_abi::{DMA_FROM_DEVICE, DMA_TO_DEVICE, DmaDevice};
+use virtq::dsb;
 
 const MAGIC: u32 = 0x7472_6976; // "virt"
 const VERSION_2: u32 = 2;
@@ -64,11 +65,16 @@ fn write_phys(base: usize, lo: u32, hi: u32, phys: u64) {
     w32(base, hi, (phys >> 32) as u32);
 }
 
-/// One DMA page from the kernel: `(phys, va)`.
-fn dma_page() -> Option<(u64, *mut u8)> {
-    let mut phys = 0u64;
-    let va = crate::api().dma_alloc(1, &mut phys);
-    if va.is_null() { None } else { Some((phys, va)) }
+/// One DMA page from the kernel for device `dma`: `(bus address, va)`.
+fn dma_page(dma: i32) -> Option<(u64, *mut u8)> {
+    let mut bus = 0u64;
+    let va = crate::api().dma_alloc(dma, 1, &mut bus);
+    if va.is_null() { None } else { Some((bus, va)) }
+}
+
+/// `len` bytes at `va` over to device `dma` (`DMA_TO_DEVICE`) or back.
+fn sync(dma: i32, va: *mut u8, len: usize, dir: u32) {
+    crate::api().dma_sync(dma, va, len, dir);
 }
 
 const DEV_INPUT: u32 = 18;
@@ -93,6 +99,8 @@ const NUM_BUFS: u16 = 8;
 
 struct Dev {
     base: usize,
+    /// The device's DMA handle.
+    dma: i32,
     num: u16,
     desc: *mut u8,
     avail: *mut u8,
@@ -135,11 +143,11 @@ static KEYS: Mutex<LinuxKeys> = Mutex::new(LinuxKeys::new());
 /// Bytes (single or multi-byte CSI sequences) waiting to drain from `poll_byte`.
 static FIFO: Mutex<ByteFifo> = Mutex::new(ByteFifo::new());
 
-fn notify_raw(base: usize, desc: *mut u8, avail: *mut u8, irq: bool) {
-    dcache_civac(desc, 4096);
-    dcache_civac(avail, 4096);
+fn notify_raw(dev: &Dev) {
+    let (base, irq) = (dev.base, dev.irq);
+    sync(dev.dma, dev.desc, 4096, DMA_TO_DEVICE);
+    sync(dev.dma, dev.avail, 4096, DMA_TO_DEVICE);
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
-    dsb();
     w32(base, REG_QUEUE_NOTIFY, 0);
     // Polled: nobody else acks. With the interrupt, its handler does: an
     // ack here could take back an interrupt for an event this drain did
@@ -168,6 +176,7 @@ unsafe fn avail_idx_ptr(avail: *mut u8) -> *mut u16 {
 }
 
 unsafe fn post_buf(dev: &mut Dev, id: u16) {
+    sync(dev.dma, dev.event_va[id as usize], EVENT_SIZE as usize, DMA_TO_DEVICE);
     unsafe {
         virtq::write_desc(
             dev.desc,
@@ -183,25 +192,24 @@ unsafe fn post_buf(dev: &mut Dev, id: u16) {
         core::sync::atomic::compiler_fence(Ordering::Release);
         core::ptr::write_volatile(avail_idx_ptr(dev.avail), idx.wrapping_add(1));
     }
-    notify_raw(dev.base, dev.desc, dev.avail, dev.irq);
+    notify_raw(dev);
 }
 
 unsafe fn drain_events(dev: &mut Dev) {
     loop {
-        dcache_civac(dev.used, 4096);
+        sync(dev.dma, dev.used, 4096, DMA_FROM_DEVICE);
         let used_idx = unsafe { core::ptr::read_volatile(dev.used.add(2) as *const u16) };
         if used_idx == dev.last_used {
             break;
         }
         let slot = (dev.last_used as usize) % (dev.num as usize);
         let used_elem = unsafe { dev.used.add(4 + slot * 8) };
-        dcache_civac(used_elem, 8);
         // `struct virtq_used_elem { le32 id; le32 len; }`; `len` is always
         // one event here.
         let id = unsafe { core::ptr::read_volatile(used_elem as *const u32) } as u16;
 
         let va = dev.event_va[id as usize];
-        dcache_civac(va, EVENT_SIZE as usize);
+        sync(dev.dma, va, EVENT_SIZE as usize, DMA_FROM_DEVICE);
         let type_ = unsafe { core::ptr::read_volatile(va as *const u16) };
         let code = unsafe { core::ptr::read_volatile(va.add(2) as *const u16) };
         let value = unsafe { core::ptr::read_volatile(va.add(4) as *const u32) };
@@ -291,7 +299,11 @@ fn pointer_kind(base: usize) -> Option<Pointer> {
     (config_size(base, CFG_EV_BITS, EV_REL as u8) != 0).then(Pointer::default)
 }
 
-fn setup(base: usize) -> Option<Dev> {
+fn setup(base: usize, phys: u64) -> Option<Dev> {
+    let dma = crate::api().dma_attach(&DmaDevice::mmio(phys));
+    if dma < 0 {
+        return None;
+    }
     if r32(base, REG_VERSION) != VERSION_2 {
         return None;
     }
@@ -322,28 +334,25 @@ fn setup(base: usize) -> Option<Dev> {
     let num = (max.min(128) as u16).max(NUM_BUFS);
     w32(base, REG_QUEUE_NUM, u32::from(num));
 
-    let (desc_phys, desc_va) = dma_page()?;
-    let (avail_phys, avail_va) = dma_page()?;
-    let (used_phys, used_va) = dma_page()?;
+    let (desc_phys, desc_va) = dma_page(dma)?;
+    let (avail_phys, avail_va) = dma_page(dma)?;
+    let (used_phys, used_va) = dma_page(dma)?;
 
     let mut event_phys = [0u64; NUM_BUFS as usize];
     let mut event_va = [core::ptr::null_mut(); NUM_BUFS as usize];
     for i in 0..NUM_BUFS as usize {
-        let (phys, va) = dma_page()?;
+        let (phys, va) = dma_page(dma)?;
         event_phys[i] = phys;
         event_va[i] = va;
-        unsafe { core::ptr::write_bytes(va, 0, EVENT_SIZE as usize) };
-        dcache_civac(va, EVENT_SIZE as usize);
     }
 
     w32(base, REG_QUEUE_READY, 0);
     write_phys(base, REG_DESC_LO, REG_DESC_HI, desc_phys);
     write_phys(base, REG_AVAIL_LO, REG_AVAIL_HI, avail_phys);
     write_phys(base, REG_USED_LO, REG_USED_HI, used_phys);
-    dcache_civac(desc_va, 4096);
-    dcache_civac(avail_va, 4096);
-    dcache_civac(used_va, 4096);
-    dsb();
+    for page in [desc_va, avail_va, used_va] {
+        sync(dma, page, 4096, DMA_TO_DEVICE);
+    }
     w32(base, REG_QUEUE_READY, 1);
     if r32(base, REG_QUEUE_READY) != 1 {
         return None;
@@ -358,6 +367,7 @@ fn setup(base: usize) -> Option<Dev> {
 
     let mut dev = Dev {
         base,
+        dma,
         num,
         desc: desc_va,
         avail: avail_va,
@@ -396,7 +406,7 @@ pub fn init() {
         if pointer.is_none() && READY.load(Ordering::SeqCst) || pointer.is_some() && pointers == MAX_POINTERS {
             continue;
         }
-        let Some(mut dev) = setup(base) else {
+        let Some(mut dev) = setup(base, node.phys) else {
             continue;
         };
         let name = if pointer.is_some() { "virtio-pointer" } else { "virtio-input" };

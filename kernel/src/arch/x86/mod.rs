@@ -74,7 +74,7 @@ pub const PREFER_ACPI: bool = true;
 /// from port 0xCF8 without an MCFG), so a PC without ACPI tables boots too.
 pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
     if let Some(host) = p.pci {
-        pci::set_ecam(host.value.ecam, host.value.bus_start, host.value.bus_end);
+        pci::set_ecam(host.value.base, host.value.bus_start, host.value.bus_end);
     }
     Ok(())
 }

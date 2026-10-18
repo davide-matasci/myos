@@ -11,7 +11,7 @@
 //!   its open on, and only on a function no kernel driver drives (its
 //!   open is refused then: the PCI claim, `KernelApi::pci_claim`). Reads as lines: each memory BAR (`barN PHYS SIZE`), the
 //!   interrupt once routed (`irq msix|msi|intx`) and each DMA buffer
-//!   (`dmaN PHYS PAGES`). Writes: `enable` (memory decoding
+//!   (`dmaN BUS PAGES`, the address the device uses for it). Writes: `enable` (memory decoding
 //!   and bus mastering on), `disable` (off), `irq` (route the function's
 //!   interrupt to `irq`), `dma PAGES` (a physically contiguous, zeroed
 //!   buffer, the next `dmaN`). Closing it (the driver's exit too) turns
@@ -37,7 +37,7 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use myos_abi::{
-    status_ok, status_warn, ApiCell, KernelApi, Lock, ModuleVfsOps, VfsStatInfo, ABI_VERSION, MYOS_IRQ_INTX,
+    DmaDevice, status_ok, status_warn, ApiCell, KernelApi, Lock, ModuleVfsOps, VfsStatInfo, ABI_VERSION, MYOS_IRQ_INTX,
     MYOS_IRQ_MSI, MYOS_MMAP_UNCACHED, MYOS_POLLIN, MYOS_READ_WAIT, PCI_OWNER_MAX,
 };
 
@@ -76,7 +76,10 @@ enum Irq {
 
 #[derive(Clone, Copy)]
 struct Dma {
-    phys: u64,
+    /// The address the device uses for it.
+    bus: u64,
+    /// The kernel's mapping of it (the HHDM: its physical address too).
+    va: usize,
     pages: usize,
     /// The holder's (a `dmaN` file); else free for the next `dma` asked.
     used: bool,
@@ -98,7 +101,7 @@ struct Dev {
     dma: [Dma; MAX_DMA],
 }
 
-const NO_DMA: Dma = Dma { phys: 0, pages: 0, used: false };
+const NO_DMA: Dma = Dma { bus: 0, va: 0, pages: 0, used: false };
 
 static DEVS: Lock<[Option<Dev>; MAX_DEV]> = Lock::new([None; MAX_DEV]);
 /// Per function, for the interrupt handler (no lock there): interrupts
@@ -277,7 +280,7 @@ fn ctl_text(d: &Dev) -> Text {
             t.push(b"dma");
             t.dec(i as u64);
             t.push(b" 0x");
-            t.hex(b.phys, 1);
+            t.hex(b.bus, 1);
             t.push(b" ");
             t.dec(b.pages as u64);
             t.push(b"\n");
@@ -370,21 +373,21 @@ fn dma_get(d: &mut Dev, pages: usize) -> bool {
     let i = match reuse {
         Some(i) => {
             let b = d.dma[i];
-            let va = (b.phys + api().hhdm_offset()) as *mut u8;
-            // SAFETY: the kernel's HHDM maps every frame it allocated
-            // (dma_alloc returned this buffer's at `phys + hhdm`).
-            unsafe { core::ptr::write_bytes(va, 0, b.pages * PAGE) };
+            // SAFETY: dma_alloc returned this buffer's mapping.
+            unsafe { core::ptr::write_bytes(b.va as *mut u8, 0, b.pages * PAGE) };
             i
         }
         None => {
             let Some(i) = d.dma.iter().position(|b| b.pages == 0) else {
                 return false;
             };
-            let mut phys = 0;
-            if api().dma_alloc(pages, &mut phys).is_null() {
+            let dma = api().dma_attach(&DmaDevice::pci(d.bus, d.slot, d.func));
+            let mut bus = 0;
+            let va = api().dma_alloc(dma, pages, &mut bus);
+            if va.is_null() {
                 return false;
             }
-            d.dma[i] = Dma { phys, pages, used: false };
+            d.dma[i] = Dma { bus, va: va as usize, pages, used: false };
             i
         }
     };
@@ -653,7 +656,7 @@ unsafe extern "C" fn pci_mmap(path: *const u8, len: usize, offset: usize, attrs:
             if offset >= b.pages * PAGE {
                 return 0;
             }
-            b.phys + offset as u64
+            b.va as u64 - api().hhdm_offset() + offset as u64
         }
         _ => 0,
     }

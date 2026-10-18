@@ -265,24 +265,46 @@ pub fn mmio_device(compat: &str, index: usize) -> Option<MmioDevice> {
     })
 }
 
-/// The PCIe host bridge (`pci-host-ecam-generic`).
+/// PCIe host bridges: the generic ECAM one (QEMU `virt`), and the BCM2711's
+/// (Raspberry Pi 4), whose configuration space is reached one function at
+/// a time through a window of its registers (`arch::pci`).
+const PCI_HOST_COMPAT: &[&str] = &["pci-host-ecam-generic", "brcm,bcm2711-pcie"];
+
+fn pci_host_node<'b>(fdt: &'b Fdt<'static>) -> Option<FdtNode<'b, 'static>> {
+    find_enabled(fdt, PCI_HOST_COMPAT)
+}
+
+/// How a host bridge's configuration space is reached.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PciHostKind {
+    /// `reg` is the ECAM window.
+    Ecam,
+    /// `reg` is the BCM2711's registers.
+    Bcm2711,
+}
+
+/// The PCIe host bridge.
 pub struct PciHost {
-    pub ecam_base: u64,
-    pub ecam_size: u64,
+    pub kind: PciHostKind,
+    /// `reg` 0: the ECAM window, or the bridge's registers.
+    pub base: u64,
+    pub size: u64,
     /// Last bus of `bus-range` (255 when absent).
     pub bus_end: u8,
 }
 
 pub fn pci_host() -> Option<PciHost> {
-    let host = find_enabled(get()?, &["pci-host-ecam-generic"])?;
-    let (ecam_base, ecam_size) = node_reg(host, 0)?;
+    let host = pci_host_node(get()?)?;
+    let kind = if has_compatible(host, "brcm,bcm2711-pcie") { PciHostKind::Bcm2711 } else { PciHostKind::Ecam };
+    let (base, size) = node_reg(host, 0)?;
     let bus_end = match prop(host, "bus-range") {
         Some(r) => r.get(1)? as u8,
         None => 255,
     };
     Some(PciHost {
-        ecam_base,
-        ecam_size,
+        kind,
+        base,
+        size,
         bus_end,
     })
 }
@@ -292,26 +314,133 @@ pub const PCI_SPACE_MASK: u32 = 0x0300_0000;
 pub const PCI_SPACE_MEM32: u32 = 0x0200_0000;
 pub const PCI_SPACE_MEM64: u32 = 0x0300_0000;
 
+/// A window of a PCI bus: CPU addresses `[cpu, cpu + size)` are bus
+/// addresses `[pci, pci + size)` (equal on QEMU `virt`; a Raspberry Pi 4's
+/// 32-bit window is CPU 0x6_0000_0000, bus 0xc0000000).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PciWindow {
+    pub cpu: u64,
+    pub pci: u64,
+    pub size: u64,
+}
+
 /// The first MMIO window of the host bridge whose space flags equal
-/// `space` (`PCI_SPACE_MEM32` / `PCI_SPACE_MEM64`): `(cpu_base, size)`.
-pub fn pci_mmio_window(space: u32) -> Option<(u64, u64)> {
-    let host = find_enabled(get()?, &["pci-host-ecam-generic"])?;
+/// `space` (`PCI_SPACE_MEM32` / `PCI_SPACE_MEM64`).
+pub fn pci_mmio_window(space: u32) -> Option<PciWindow> {
+    let host = pci_host_node(get()?)?;
     let ranges = prop(host, "ranges")?;
     let child = host.cell_sizes().address_cells; // 3: flags, address hi, lo
     let size = host.cell_sizes().size_cells;
     let parent = parent_address_cells(host)?;
     let entry = child + parent + size;
-    if child == 0 || entry == 0 {
+    if child != 3 || entry == 0 {
         return None;
     }
     let mut i = 0;
     while i + entry <= ranges.len() {
         if ranges.get(i)? & PCI_SPACE_MASK == space {
-            return Some((ranges.join(i + child, parent)?, ranges.join(i + child + parent, size)?));
+            return Some(PciWindow {
+                cpu: translate(host, ranges.join(i + child, parent)?),
+                pci: ranges.join(i + 1, 2)?,
+                size: ranges.join(i + child + parent, size)?,
+            });
         }
         i += entry;
     }
     None
+}
+
+/// What a device's DMA reaches: CPU addresses `[cpu, cpu + size)`, which
+/// the device addresses from `bus` up; and whether the tree says its DMA
+/// is coherent with the caches (`dma-coherent`, `dma-noncoherent` on the
+/// node or a bus above it), `None` when it says nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DmaWindow {
+    pub bus: u64,
+    pub cpu: u64,
+    pub size: u64,
+    pub coherent: Option<bool>,
+}
+
+/// DMA of the functions behind the PCIe host bridge: its `dma-ranges`
+/// (bus addresses of the functions' DMA), then the buses' above it.
+pub fn pci_dma() -> Option<DmaWindow> {
+    let host = pci_host_node(get()?)?;
+    let mut w = DmaWindow { bus: 0, cpu: 0, size: u64::MAX, coherent: None };
+    if let Some(r) = prop(host, "dma-ranges").filter(|r| r.len() > 0) {
+        let child = host.cell_sizes().address_cells;
+        let size = host.cell_sizes().size_cells;
+        let parent = parent_address_cells(host)?;
+        if child != 3 || r.len() < child + parent + size {
+            return None;
+        }
+        w.bus = r.join(1, 2)?;
+        w.cpu = r.join(child, parent)?;
+        w.size = r.join(child + parent, size)?;
+    }
+    Some(dma_up(host, w))
+}
+
+/// DMA of the memory-mapped device whose registers are at `phys`: the
+/// `dma-ranges` of the buses above it.
+pub fn mmio_dma(phys: u64) -> Option<DmaWindow> {
+    let node = get()?
+        .all_nodes()
+        .find(|n| enabled(*n) && n.reg().is_some() && node_reg(*n, 0).is_some_and(|(b, _)| b == phys))?;
+    Some(dma_up(node, DmaWindow { bus: 0, cpu: 0, size: u64::MAX, coherent: None }))
+}
+
+/// `w`, the DMA of `node` in its parent's addresses, through the
+/// `dma-ranges` of each bus above (innermost first; none, or an empty one,
+/// is one-to-one), and the coherence the nearest of them states.
+fn dma_up(node: FdtNode<'_, 'static>, mut w: DmaWindow) -> DmaWindow {
+    let said = |n: FdtNode| {
+        if n.property("dma-coherent").is_some() {
+            Some(true)
+        } else if n.property("dma-noncoherent").is_some() {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    w.coherent = said(node);
+    let Some(fdt) = get() else {
+        return w;
+    };
+    let mut chain = [None; MAX_DEPTH];
+    let Some(n) = fdt.find_node("/").and_then(|root| ancestors(root, node.name.as_ptr(), 0, &mut chain)) else {
+        return w;
+    };
+    for k in (0..n).rev() {
+        let Some(bus) = chain[k] else {
+            continue;
+        };
+        w.coherent = w.coherent.or_else(|| said(bus));
+        let (Some(up), Some(r)) = (k.checked_sub(1).and_then(|u| chain[u]), prop(bus, "dma-ranges")) else {
+            continue;
+        };
+        let child = bus.cell_sizes().address_cells;
+        let size = bus.cell_sizes().size_cells;
+        let parent = up.cell_sizes().address_cells;
+        let entry = child + parent + size;
+        if r.len() == 0 || child > 2 || parent > 2 || size > 2 || entry == 0 {
+            continue;
+        }
+        let mut i = 0;
+        while i + entry <= r.len() {
+            let (Some(c), Some(p), Some(len)) = (r.join(i, child), r.join(i + child, parent), r.join(i + child + parent, size))
+            else {
+                break;
+            };
+            if w.cpu >= c && w.cpu - c < len {
+                w.size = w.size.min(len - (w.cpu - c));
+                w.cpu = w.cpu - c + p;
+                break;
+            }
+            i += entry;
+        }
+    }
+    w
 }
 
 /// Interrupt specifier for INTx `pin` (1..=4) of the PCI function
@@ -319,7 +448,7 @@ pub fn pci_mmio_window(space: u32) -> Option<(u64, u64)> {
 /// `interrupt-map-mask` (the slot swizzle is whatever the board says).
 pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
     let fdt = get()?;
-    let host = find_enabled(fdt, &["pci-host-ecam-generic"])?;
+    let host = pci_host_node(fdt)?;
     let addr_cells = host.cell_sizes().address_cells; // 3
     if addr_cells == 0 || addr_cells > 3 || host.interrupt_cells()? != 1 {
         return None;
@@ -451,13 +580,19 @@ pub fn fill(p: &mut Platform) {
         offer_timer_hz(p, hz, from);
     }
     if let Some(host) = pci_host() {
-        let bus_start = find_enabled(fdt, &["pci-host-ecam-generic"])
+        let bus_start = pci_host_node(fdt)
             .and_then(|h| prop(h, "bus-range"))
             .and_then(|r| r.get(0))
             .unwrap_or(0) as u8;
         offer_pci(
             p,
-            PciHost { ecam: host.ecam_base, ecam_size: host.ecam_size, bus_start, bus_end: host.bus_end },
+            crate::platform::PciHost {
+                kind: host.kind,
+                base: host.base,
+                size: host.size,
+                bus_start,
+                bus_end: host.bus_end,
+            },
             from,
         );
         let windows = PciWindows {

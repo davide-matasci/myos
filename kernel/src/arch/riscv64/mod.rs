@@ -92,11 +92,14 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
     let host = p.pci.ok_or("platform: no PCIe host bridge")?.value;
     // The 64-bit window (the 32-bit one, at 0x4000_0000 on QEMU `virt`, is
     // in the user address space; a BAR there is relocated, `paging`).
-    let (mmio, mmio_size) = p
+    let mmio = p
         .pci_windows
         .and_then(|w| w.value.mmio64)
         .ok_or("platform: PCIe host bridge has no 64-bit MMIO range")?;
-    pci::set_host(host.ecam, host.ecam_size, host.bus_end, mmio, mmio_size);
+    if host.kind != crate::platform::PciHostKind::Ecam {
+        return Err("platform: PCIe host bridge is not ECAM");
+    }
+    pci::set_host(host, mmio);
     Ok(())
 }
 

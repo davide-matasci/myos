@@ -92,6 +92,11 @@ pub fn mmio_assign() -> u64 {
     MMIO_ASSIGN
 }
 
+/// The CPU address of bus address `addr` (a BAR's): the same on a PC.
+pub fn bus_to_cpu(addr: u64) -> u64 {
+    addr
+}
+
 #[derive(Clone, Copy)]
 pub struct Bdf {
     pub bus: u8,

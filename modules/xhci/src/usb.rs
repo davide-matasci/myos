@@ -251,9 +251,9 @@ fn ep_interval(speed: u8, kind: u8, b_interval: u8) -> u8 {
     }
 }
 
-fn new_endpoint(dev: &mut Device, address: u8, kind: u8, max_packet: u16) -> Option<Endpoint> {
+fn new_endpoint(dma: i32, dev: &mut Device, address: u8, kind: u8, max_packet: u16) -> Option<Endpoint> {
     let dci = dci_of(address);
-    let ring = Ring::new()?;
+    let ring = Ring::new(dma)?;
     Some(Endpoint {
         ring,
         address,
@@ -294,7 +294,7 @@ pub fn control(c: &Controller, s: &Slot, dev: &mut Device, request_type: u8, req
             core::ptr::copy_nonoverlapping(data, bounce, usize::from(len));
         }
     }
-    dma::clean(bounce, usize::from(len).max(1));
+    dma::clean(c.dma, bounce, usize::from(len).max(1));
     hc::enqueue_control(ep, p, request_type, request, value, index, bounce_phys, len);
     hc::ring_doorbell(c, slot, 1);
     if !hc::wait(c, &p.done, 1000) {
@@ -305,7 +305,7 @@ pub fn control(c: &Controller, s: &Slot, dev: &mut Device, request_type: u8, req
     p.active.store(false, Ordering::Release);
     let r = p.result();
     if r > 0 && request_type & 0x80 != 0 {
-        dma::invalidate(bounce, usize::from(len));
+        dma::invalidate(c.dma, bounce, usize::from(len));
         unsafe {
             core::ptr::copy_nonoverlapping(bounce, data, (r as usize).min(usize::from(len)));
         }
@@ -339,7 +339,7 @@ pub fn bulk(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut 
                 core::ptr::copy_nonoverlapping(data.add(done_bytes), bounce.va, chunk);
             }
         }
-        dma::clean(bounce.va, chunk);
+        dma::clean(c.dma, bounce.va, chunk);
         if let Err(e) = hc::enqueue_normal(ep, p, bounce.phys, chunk) {
             return e;
         }
@@ -356,7 +356,7 @@ pub fn bulk(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut 
         }
         let moved = (r as usize).min(chunk);
         if to_host {
-            dma::invalidate(bounce.va, moved);
+            dma::invalidate(c.dma, bounce.va, moved);
             unsafe {
                 core::ptr::copy_nonoverlapping(bounce.va, data.add(done_bytes), moved);
             }
@@ -388,6 +388,7 @@ pub fn interrupt_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, 
     // Known to the handler before the doorbell: a completion wakes the
     // thread, not a waiter.
     p.has_callback.store(true, Ordering::Release);
+    dma::clean(c.dma, ep.bounce, len);
     if let Err(e) = hc::enqueue_normal(ep, p, ep.bounce_phys, len) {
         p.has_callback.store(false, Ordering::Release);
         ep.callback = None;
@@ -413,7 +414,7 @@ fn take_completion(s: &Slot) -> Option<(myos_abi::UsbCompletion, *mut c_void, i3
         }
         let r = p.result();
         if r > 0 {
-            dma::invalidate(ep.bounce, ep.user_len);
+            dma::invalidate(ep.ring.dma, ep.bounce, ep.user_len);
             unsafe {
                 core::ptr::copy_nonoverlapping(ep.bounce, ep.user, (r as usize).min(ep.user_len));
             }
@@ -486,8 +487,8 @@ pub fn attach(c: &Controller, parent: Option<(u32, u8)>, root_port: u8, speed: u
     if slot == 0 {
         return Err(USB_EIO);
     }
-    let (input_phys, input) = dma::page().ok_or(USB_EIO)?;
-    let (out_phys, out) = dma::page().ok_or(USB_EIO)?;
+    let (input_phys, input) = dma::page(c.dma).ok_or(USB_EIO)?;
+    let (out_phys, out) = dma::page(c.dma).ok_or(USB_EIO)?;
     unsafe {
         core::ptr::write_bytes(input, 0, 4096);
         core::ptr::write_bytes(out, 0, 4096);
@@ -516,12 +517,12 @@ pub fn attach(c: &Controller, parent: Option<(u32, u8)>, root_port: u8, speed: u
         eps: [const { None }; MAX_DCI],
         interfaces: [const { None }; MAX_INTERFACES],
     };
-    let ep0 = new_endpoint(&mut dev, 0, 0, ep0_max_packet(speed)).ok_or(USB_EIO)?;
+    let ep0 = new_endpoint(c.dma, &mut dev, 0, 0, ep0_max_packet(speed)).ok_or(USB_EIO)?;
     install_endpoint(s, &mut dev, ep0);
     unsafe {
         core::ptr::write_volatile(c.dcbaa.add(usize::from(slot)), out_phys);
     }
-    dma::clean(c.dcbaa as *mut u8, 4096);
+    dma::clean(c.dma, c.dcbaa as *mut u8, 4096);
     c.slot_owner[usize::from(slot)].store(index as u8 + 1, Ordering::Release);
     s.gone.store(false, Ordering::Release);
     let id = dev.info.id;
@@ -573,7 +574,7 @@ fn enumerate(c: &Controller, s: &Slot, dev: &mut Device) -> Result<(), i32> {
         e.set_dequeue_cycle_state();
         e.set_average_trb_length(8);
     }
-    dma::clean(dev.input, INPUT_CTX_BYTES);
+    dma::clean(c.dma, dev.input, INPUT_CTX_BYTES);
     step("address device");
     hc::command(c, hc::trb_address_device(dev.input_phys, slot))?;
     step("device descriptor");
@@ -599,7 +600,7 @@ fn enumerate(c: &Controller, s: &Slot, dev: &mut Device) -> Result<(), i32> {
             e.set_max_packet_size(mps0);
             e.set_error_count(3);
         }
-        dma::clean(dev.input, INPUT_CTX_BYTES);
+        dma::clean(c.dma, dev.input, INPUT_CTX_BYTES);
         step("evaluate context");
         hc::command(c, hc::trb_evaluate_context(dev.input_phys, slot))?;
         step("device descriptor");
@@ -651,7 +652,7 @@ fn enumerate(c: &Controller, s: &Slot, dev: &mut Device) -> Result<(), i32> {
             if kind == 1 {
                 continue; // isochronous: not driven
             }
-            new_eps[dci] = Some(new_endpoint(dev, e.address, kind, e.max_packet & 0x7FF).ok_or(USB_EIO)?);
+            new_eps[dci] = Some(new_endpoint(c.dma, dev, e.address, kind, e.max_packet & 0x7FF).ok_or(USB_EIO)?);
             max_dci = max_dci.max(dci as u8);
         }
     }
@@ -709,7 +710,7 @@ fn enumerate(c: &Controller, s: &Slot, dev: &mut Device) -> Result<(), i32> {
         }
     }
     if max_dci > 1 {
-        dma::clean(dev.input, INPUT_CTX_BYTES);
+        dma::clean(c.dma, dev.input, INPUT_CTX_BYTES);
         step("configure endpoint");
         hc::command(c, hc::trb_configure_endpoint(dev.input_phys, slot))?;
     }
@@ -910,7 +911,7 @@ pub fn detach_id(c: &Controller, id: u32) {
     unsafe {
         core::ptr::write_volatile(c.dcbaa.add(usize::from(slot)), 0);
     }
-    dma::clean(c.dcbaa as *mut u8, 4096);
+    dma::clean(c.dma, c.dcbaa as *mut u8, 4096);
     c.slot_owner[usize::from(slot)].store(0, Ordering::Release);
     // The records, clean for the next device in the entry, whatever a
     // transfer that slipped in after the sweep above left in them.
@@ -918,10 +919,10 @@ pub fn detach_id(c: &Controller, id: u32) {
         p.reset();
     }
     for ep in dev.eps.into_iter().flatten() {
-        dma::free(ep.ring.phys, ep.ring.trbs as *mut u8);
+        dma::free(c.dma, ep.ring.phys, ep.ring.trbs as *mut u8);
     }
-    dma::free(dev.input_phys, dev.input);
-    dma::free(dev.out_phys, dev.out);
+    dma::free(c.dma, dev.input_phys, dev.input);
+    dma::free(c.dma, dev.out_phys, dev.out);
     drop(entry);
     crate::proc_update();
 }
@@ -933,7 +934,7 @@ pub fn hub_configure(c: &Controller, dev: &mut Device, ports: u8, tt_think: u8, 
     dev.hub_ports = ports;
     dev.hub_tt_think = tt_think;
     dev.hub_multi_tt = multi_tt;
-    dma::invalidate(dev.out, OUT_CTX_BYTES);
+    dma::invalidate(c.dma, dev.out, OUT_CTX_BYTES);
     dev.clear_input();
     let high_speed = dev.info.speed == USB_SPEED_HIGH;
     {
@@ -965,7 +966,7 @@ pub fn hub_configure(c: &Controller, dev: &mut Device, ports: u8, tt_think: u8, 
         s.set_slot_state(xhci::context::SlotState::DisabledEnabled);
         s.set_usb_device_address(0);
     }
-    dma::clean(dev.input, INPUT_CTX_BYTES);
+    dma::clean(c.dma, dev.input, INPUT_CTX_BYTES);
     match hc::command(c, hc::trb_configure_endpoint(dev.input_phys, slot)) {
         Ok(_) => 0,
         Err(e) => e,

@@ -218,5 +218,7 @@ which follows the host's pointer without grabbing it (the monitor's
   Caps Lock LED (the console has no Num or Scroll Lock state). The LED
   report is not checked by a test: QEMU shows it nowhere.
 - Real-hardware notes: the BIOS handoff (`USBLEGSUP`) is done; the
-  EHCI-to-xHCI port routing of older Intel chipsets and the Raspberry
-  Pi 4's VL805 firmware load are not.
+  EHCI-to-xHCI port routing of older Intel chipsets is not. The
+  Raspberry Pi 4's VL805 is taken with the firmware its UEFI firmware
+  loaded (`docs/raspberry-pi.md`); a controller whose DMA is not coherent
+  gets the cache maintenance of its handle (`docs/pci-acpi-smp.md` "DMA").

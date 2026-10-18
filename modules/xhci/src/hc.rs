@@ -52,6 +52,8 @@ pub type Regs = xhci::Registers<Ident>;
 /// A producer ring (command or transfer): TRBs, the enqueue index and the
 /// producer cycle state.
 pub struct Ring {
+    /// The controller's DMA handle.
+    pub dma: i32,
     pub trbs: *mut [u32; 4],
     pub phys: u64,
     pub enq: usize,
@@ -70,9 +72,9 @@ pub fn next_slot(i: usize) -> usize {
 }
 
 impl Ring {
-    pub fn new() -> Option<Ring> {
-        let (phys, va) = dma::page()?;
-        let mut r = Ring { trbs: va as *mut [u32; 4], phys, enq: 0, cycle: true, last_chain: false };
+    pub fn new(dma: i32) -> Option<Ring> {
+        let (phys, va) = dma::page(dma)?;
+        let mut r = Ring { dma, trbs: va as *mut [u32; 4], phys, enq: 0, cycle: true, last_chain: false };
         r.reset();
         Some(r)
     }
@@ -91,7 +93,7 @@ impl Ring {
         self.enq = 0;
         self.cycle = true;
         self.last_chain = false;
-        dma::clean(self.trbs as *mut u8, TRBS * TRB_BYTES);
+        dma::clean(self.dma, self.trbs as *mut u8, TRBS * TRB_BYTES);
     }
 
     /// The physical address of slot `i`.
@@ -123,7 +125,7 @@ impl Ring {
             unsafe {
                 core::ptr::write_volatile(self.trbs.add(TRBS - 1), link);
             }
-            dma::clean(unsafe { self.trbs.add(TRBS - 1) } as *mut u8, TRB_BYTES);
+            dma::clean(self.dma, unsafe { self.trbs.add(TRBS - 1) } as *mut u8, TRB_BYTES);
             self.enq = 0;
             self.cycle = !self.cycle;
         }
@@ -133,7 +135,7 @@ impl Ring {
         unsafe {
             core::ptr::write_volatile(self.trbs.add(i), trb);
         }
-        dma::clean(unsafe { self.trbs.add(i) } as *mut u8, TRB_BYTES);
+        dma::clean(self.dma, unsafe { self.trbs.add(i) } as *mut u8, TRB_BYTES);
         self.enq += 1;
         i
     }
@@ -284,6 +286,8 @@ unsafe impl Send for Bounce {}
 /// (not the xHCI slot id).
 pub struct Controller {
     pub mmio_base: usize,
+    /// Its DMA handle (`dma_attach`).
+    pub dma: i32,
     /// The first port's `PORTSC` (operational base + 0x400).
     pub portsc_base: usize,
     pub index: u8,
@@ -403,7 +407,7 @@ fn drain_events(c: &Controller) {
     let ev = unsafe { &mut *c.evt.get() };
     let mut any = false;
     loop {
-        dma::invalidate(unsafe { ev.trbs.add(ev.deq) } as *mut u8, TRB_BYTES);
+        dma::invalidate(c.dma, unsafe { ev.trbs.add(ev.deq) } as *mut u8, TRB_BYTES);
         let raw = unsafe { core::ptr::read_volatile(ev.trbs.add(ev.deq)) };
         if (raw[3] & 1 != 0) != ev.cycle {
             break;
@@ -655,7 +659,10 @@ pub fn enqueue_control(
 /// Bring the controller at `mmio` up: BIOS handoff, reset, the device
 /// context array (with scratchpads), command and event rings, the
 /// interrupter, run. `None` with a reason when it refuses.
-pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
+pub fn init(mmio: usize, index: u8, dma: i32) -> Result<Controller, &'static str> {
+    if dma < 0 {
+        return Err("no DMA handle");
+    }
     let mut regs = unsafe { Regs::new(mmio, Ident) };
     let caplength = regs.capability.caplength.read_volatile().get();
     let hcs1 = regs.capability.hcsparams1.read_volatile();
@@ -727,31 +734,27 @@ pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
     }
 
     // The device context base address array (slot 0: the scratchpad array).
-    let (dcbaa_phys, dcbaa) = dma::page().ok_or("no memory")?;
-    unsafe {
-        core::ptr::write_bytes(dcbaa, 0, 4096);
-    }
+    let (dcbaa_phys, dcbaa) = dma::page(dma).ok_or("no memory")?;
     let dcbaa = dcbaa as *mut u64;
     let scratch = hcs2.max_scratchpad_buffers() as usize;
     if scratch > 0 {
         if scratch > 512 {
             return Err("too many scratchpads");
         }
-        let (arr_phys, arr) = dma::page().ok_or("no memory")?;
+        let (arr_phys, arr) = dma::page(dma).ok_or("no memory")?;
         let arr = arr as *mut u64;
         for i in 0..scratch {
-            let (p, va) = dma::page().ok_or("no memory")?;
+            let (p, _) = dma::page(dma).ok_or("no memory")?;
             unsafe {
-                core::ptr::write_bytes(va, 0, 4096);
                 core::ptr::write_volatile(arr.add(i), p);
             }
         }
-        dma::clean(arr as *mut u8, 4096);
+        dma::clean(dma, arr as *mut u8, 4096);
         unsafe {
             core::ptr::write_volatile(dcbaa, arr_phys);
         }
     }
-    dma::clean(dcbaa as *mut u8, 4096);
+    dma::clean(dma, dcbaa as *mut u8, 4096);
     regs.operational.config.update_volatile(|c| {
         c.set_max_device_slots_enabled(slots);
     });
@@ -760,25 +763,20 @@ pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
     });
 
     // The command ring.
-    let cmd = Ring::new().ok_or("no memory")?;
+    let cmd = Ring::new(dma).ok_or("no memory")?;
     regs.operational.crcr.update_volatile(|r| {
         r.set_command_ring_pointer(cmd.phys);
         r.set_ring_cycle_state();
     });
 
     // The event ring: one segment, one interrupter.
-    let (evt_phys, evt) = dma::page().ok_or("no memory")?;
+    let (evt_phys, evt) = dma::page(dma).ok_or("no memory")?;
+    let (erst_phys, erst) = dma::page(dma).ok_or("no memory")?;
     unsafe {
-        core::ptr::write_bytes(evt, 0, 4096);
-    }
-    dma::clean(evt, 4096);
-    let (erst_phys, erst) = dma::page().ok_or("no memory")?;
-    unsafe {
-        core::ptr::write_bytes(erst, 0, 4096);
         core::ptr::write_volatile(erst as *mut u64, evt_phys);
         core::ptr::write_volatile((erst as *mut u64).add(1), TRBS as u64);
     }
-    dma::clean(erst, 4096);
+    dma::clean(dma, erst, 4096);
     {
         let mut ir = regs.interrupter_register_set.interrupter_mut(0);
         ir.erstsz.update_volatile(|s| {
@@ -807,16 +805,17 @@ pub fn init(mmio: usize, index: u8) -> Result<Controller, &'static str> {
     }
 
     // The bulk bounce buffer.
-    let (bounce, bounce_phys, bounce_len) = match dma::pages(BOUNCE_PAGES) {
+    let (bounce, bounce_phys, bounce_len) = match dma::pages(dma, BOUNCE_PAGES) {
         Some((p, va)) => (va, p, BOUNCE_PAGES * 4096),
         None => {
-            let (p, va) = dma::page().ok_or("no memory")?;
+            let (p, va) = dma::page(dma).ok_or("no memory")?;
             (va, p, 4096)
         }
     };
 
     Ok(Controller {
         mmio_base: mmio,
+        dma,
         portsc_base: mmio + usize::from(caplength) + 0x400,
         index,
         ports,

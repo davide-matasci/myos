@@ -104,8 +104,8 @@ cargo run -- aarch64   # serial only for now
 ```
 
 `cargo run -- rpi4` writes `target/rpi4.img`, the AArch64 boot disk for a
-Raspberry Pi 4 behind its UEFI firmware (serial shell, untested on
-hardware; `docs/raspberry-pi.md`).
+Raspberry Pi 4 behind its UEFI firmware (serial console, HDMI and USB,
+untested on hardware; `docs/raspberry-pi.md`).
 
 The boot test types `root` at `login: ` (the password is empty), then `sh /lib/myos-tests/run.sh mini|full` at `$ `.
 

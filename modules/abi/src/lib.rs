@@ -69,7 +69,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// [`KernelApi::pci_irq_enable`] gives a function without MSI-X its MSI
 /// ([`MYOS_IRQ_MSI`], x86_64), and a PCI function has one owner at a time
 /// ([`KernelApi::pci_claim`], `pci_release`, `pci_owner`).
-pub const ABI_VERSION: u32 = 46;
+/// 47: DMA is per device ([`KernelApi::dma_attach`], [`DmaDevice`]):
+/// [`KernelApi::dma_alloc`] gives memory the device reaches and the address
+/// it uses for it, [`KernelApi::dma_sync`] keeps a device without coherent
+/// DMA and the caches in step.
+pub const ABI_VERSION: u32 = 47;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -682,7 +686,18 @@ pub struct KernelApi {
         va: *mut usize,
         size: *mut u64,
     ) -> i32,
-    pub dma_alloc: unsafe extern "C" fn(n_pages: usize, phys: *mut u64) -> *mut u8,
+    /// The DMA handle of a device (`dev`): >= 0, or negative when the
+    /// kernel's table of them is full. The same device gets the same handle.
+    pub dma_attach: unsafe extern "C" fn(dev: *const DmaDevice) -> i32,
+    /// `n_pages` zeroed, contiguous pages device `dma` can reach (its
+    /// `dma-ranges`), never returned: their kernel address, and in `bus`
+    /// the address the device uses for them; null when none is left.
+    pub dma_alloc: unsafe extern "C" fn(dma: i32, n_pages: usize, bus: *mut u64) -> *mut u8,
+    /// Hand `len` bytes at `va` of DMA memory over ([`DMA_TO_DEVICE`], also
+    /// before the device writes them) or back ([`DMA_FROM_DEVICE`], before
+    /// the CPU reads what it wrote): cache maintenance for a device without
+    /// coherent DMA, a barrier for one with.
+    pub dma_sync: unsafe extern "C" fn(dma: i32, va: *const u8, len: usize, dir: u32),
     pub dev_register: unsafe extern "C" fn(
         name: *const u8,
         name_len: usize,
@@ -1164,8 +1179,16 @@ impl KernelApi {
         unsafe { (self.pci_bar_map)(bus, slot, func, bar, va, size) }
     }
 
-    pub fn dma_alloc(&self, n_pages: usize, phys: &mut u64) -> *mut u8 {
-        unsafe { (self.dma_alloc)(n_pages, phys) }
+    pub fn dma_attach(&self, dev: &DmaDevice) -> i32 {
+        unsafe { (self.dma_attach)(dev) }
+    }
+
+    pub fn dma_alloc(&self, dma: i32, n_pages: usize, bus: &mut u64) -> *mut u8 {
+        unsafe { (self.dma_alloc)(dma, n_pages, bus) }
+    }
+
+    pub fn dma_sync(&self, dma: i32, va: *const u8, len: usize, dir: u32) {
+        unsafe { (self.dma_sync)(dma, va, len, dir) }
     }
 
     pub fn dev_register(&self, name: &str, ops: &ModuleChrOps) -> i32 {
@@ -1933,6 +1956,39 @@ impl KeyboardOps {
         unsafe { (self.leds)() }
     }
 }
+
+/// A device that does DMA ([`KernelApi::dma_attach`]): a PCI function, or a
+/// memory-mapped device by the physical address of its registers.
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct DmaDevice {
+    /// [`DMA_DEVICE_PCI`] or [`DMA_DEVICE_MMIO`].
+    pub kind: u32,
+    pub bus: u8,
+    pub slot: u8,
+    pub func: u8,
+    /// [`DMA_DEVICE_MMIO`]: [`MmioDevice::phys`].
+    pub phys: u64,
+}
+
+pub const DMA_DEVICE_PCI: u32 = 0;
+pub const DMA_DEVICE_MMIO: u32 = 1;
+
+impl DmaDevice {
+    pub const fn pci(bus: u8, slot: u8, func: u8) -> Self {
+        Self { kind: DMA_DEVICE_PCI, bus, slot, func, phys: 0 }
+    }
+
+    pub const fn mmio(phys: u64) -> Self {
+        Self { kind: DMA_DEVICE_MMIO, bus: 0, slot: 0, func: 0, phys }
+    }
+}
+
+/// [`KernelApi::dma_sync`]: the CPU wrote, or the device is about to write
+/// (no dirty cache line may land on its data later).
+pub const DMA_TO_DEVICE: u32 = 1;
+/// [`KernelApi::dma_sync`]: the device wrote, the CPU is about to read.
+pub const DMA_FROM_DEVICE: u32 = 2;
 
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).
 #[repr(C)]
