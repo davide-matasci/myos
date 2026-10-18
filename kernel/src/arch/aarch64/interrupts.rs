@@ -25,17 +25,15 @@ static GICD_V3_DONE: AtomicBool = AtomicBool::new(false);
 /// The BSP's affinity, where SPIs are routed (GICv3 `GICD_IROUTER`).
 static BSP_AFFINITY: AtomicU64 = AtomicU64::new(0);
 
+/// The GICv2's distributor and CPU interface, mapped (device window).
 pub fn set_gic(gicd: usize, gicc: usize) {
     GICD_BASE.store(gicd, Ordering::SeqCst);
     GICC_BASE.store(gicc, Ordering::SeqCst);
     GIC_V3.store(false, Ordering::SeqCst);
 }
 
+/// The GICv3's distributor and redistributor range, mapped (device window).
 pub fn set_gicv3(gicd: usize, gicr: usize, gicr_size: usize) {
-    // QEMU `virt` keeps both in the identity-mapped low 1 GiB; a board
-    // with them elsewhere gets its 1 GiB device blocks.
-    let gicd = super::paging::map_mmio(gicd as u64, 0x1_0000).unwrap_or(gicd);
-    let gicr = super::paging::map_mmio(gicr as u64, gicr_size as u64).unwrap_or(gicr);
     GICD_BASE.store(gicd, Ordering::SeqCst);
     GICR_BASE.store(gicr, Ordering::SeqCst);
     GICR_SIZE.store(gicr_size, Ordering::SeqCst);

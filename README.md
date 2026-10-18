@@ -130,7 +130,7 @@ Boot (Limine)
 Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes the boot disk (GPT, a FAT32 ESP with boot slots `a` and `b`, an ext2 data partition: `docs/install.md`), `limine.conf`, the kernel ELF (its loadable segments only: the debug info and symbols stay in the ELF under `target/`, `boot_kernel` in `src/limine_image.rs`) and the initramfs, which carries the module ELFs (`/lib/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`): Limine loads those two files and nothing else. On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
 
 ### Memory
-Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device block (UART, GIC, virtio-mmio) identity-mapped via `TTBR0`.
+Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device MMIO (UART, GIC, RTC, PCIe, virtio-mmio) mapped in a window of the higher half (`TTBR1`, `kernel/src/arch/aarch64/paging.rs`); `TTBR0` is user space only.
 
 ### Scheduling
 Round-robin kernel threads + user tasks across all online CPUs, from per-CPU run queues; a user process can run several threads, which share its address space and run on its home CPU, and an idle CPU takes a user task waiting behind a busy one (`docs/threads.md`) (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule, idle-halt and pull counts. x86_64: LAPIC timer (x2APIC when the CPU has one), TSC for the monotonic clock at the rate CPUID states or calibrated against the PIT. AArch64: generic timer (GICv2 or GICv3 PPIs), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR at the device tree's `timebase-frequency`. All three tick at 100 Hz but program the timer for the earliest sleep deadline when it is sooner (x86_64 by cutting the LAPIC timer's current period short), so `nanosleep` / `poll` timeouts are not rounded up to 10 ms.
@@ -406,7 +406,7 @@ Every run boots the disk images with the tests the change needs, selected by tag
 
 - `poweroff` exits QEMU on every arch (`docs/power.md`); the boot test ends with it. A kernel panic exits too: `isa-debug-exit` on x86_64, PSCI `SYSTEM_OFF` / SBI shutdown elsewhere
 - Kernel linked in higher half; Limine sets stack, enables MMU, provides HHDM
-- AArch64 device MMIO identity-mapped on `TTBR0` (not in HHDM at Limine base rev 3+)
+- AArch64 device MMIO in a higher-half window (`0xffff_8000_0000_0000 + phys`, 1 GiB device blocks, the first 1 TiB of physical addresses; not in the HHDM at Limine base rev 3+)
 - Modules run from HHDM heap (rwx); loader flushes I-cache on AArch64 after copy
 - Limine binaries downloaded from GitHub release `v12.6.1` (sha256-pinned) into `target/limine-v12.6.1`
 - `user/ok` exits early if `/msg` absent (FAT disk not present); CI fails if `[ OK ] msg` / fat markers are missing

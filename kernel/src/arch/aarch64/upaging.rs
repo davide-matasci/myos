@@ -26,9 +26,8 @@ pub const USER_L3_PAGES: usize = 512;
 pub const USER_L2_TABLES: usize = 512;
 /// L1 slots of the process span, from L1[1] (the gigabyte the image loads
 /// at, `DEFAULT_USER_BASE`): 65 GiB, the image, stack and heap in the
-/// first and the 64 GiB mmap window after them. The kernel's TTBR0 maps
-/// devices in L1[0] and from L1[256] (the PCIe windows): nothing of the
-/// kernel's is in between.
+/// first and the 64 GiB mmap window after them. The kernel's devices are
+/// in the higher half (`paging`), not here.
 pub const USER_L1_TABLES: usize = 65;
 /// The first L1 slot of the process span.
 const USER_L1_FIRST: usize = 1;
@@ -172,9 +171,7 @@ pub fn switch_aspace(aspace: u64) {
 ///
 /// `create_aspace_aarch64` gives each aspace its own L0 and the L1 under
 /// L0[0], and `aarch64_l3_table_mut` adds L2 tables under the L1's user
-/// slots and L3 tables under those. Only that tree is freed (L3 → L2 → L1
-/// → L0): the other L0 and L1 entries are value-copies of the kernel's and
-/// point at its tables.
+/// slots and L3 tables under those. That tree is freed (L3 → L2 → L1 → L0).
 pub fn free_user_page_tables(aspace: u64) {
     const TABLE: u64 = 0b11;
     let l0_phys = aspace & PA;
@@ -218,31 +215,15 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
     const TABLE: u64 = 0b11;
     const AP_RW: u64 = 0b01 << 6; // EL1 RW, EL0 RW
 
-    let k_l0 = task::kernel_aspace() & PA;
-    let k_l0_t = unsafe { &*mm::table(k_l0) };
-    let k_l1_phys = k_l0_t[0] & PA;
-    let k_l1 = unsafe { &*mm::table(k_l1_phys) };
-
     let l0 = mm::alloc_frame_site(3);
     let l1 = mm::alloc_frame_site(3);
 
     unsafe {
         let l0_t = &mut *mm::table(l0);
-        let l1_t = &mut *mm::table(l1);
-        // Copy kernel TTBR0 extras (high PCI) and L1 device blocks; the
-        // user slots of L1 stay empty (`aarch64_l3_table_mut` fills them).
-        for i in 0..512 {
-            if i != 0 && k_l0_t[i] != 0 {
-                l0_t[i] = k_l0_t[i];
-            }
-        }
+        // Nothing of the kernel's is in TTBR0 (its devices are in the
+        // higher half): the L1's user slots fill as the process needs them
+        // (`aarch64_l3_table_mut`).
         l0_t[0] = l1 | TABLE;
-        for i in 0..512 {
-            let user = (USER_L1_FIRST..USER_L1_FIRST + USER_L1_TABLES).contains(&i);
-            if !user && k_l1[i] != 0 {
-                l1_t[i] = k_l1[i];
-            }
-        }
         // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.
         for (i, &phys) in code.iter().enumerate() {
             let Some(l3p) = aarch64_l3_table_mut(l0, i) else {

@@ -45,8 +45,8 @@ const RISCV_SMP: &str = "2";
 /// QEMU `virt` for the aarch64 boots. `gic-version` is `$MYOS_AARCH64_GIC`
 /// (2, the default: the memory-mapped GICv2 CPU interface; 3: redistributors
 /// and the `ICC_*` system registers; CI boots both). `highmem-*=off` keeps
-/// the PCIe ECAM and MMIO windows in the identity-mapped low 1 GiB, and
-/// virtio-mmio transports default to legacy (version 1): the driver is v2.
+/// the PCIe ECAM and MMIO windows below 4 GiB, where the 32-bit BARs the
+/// kernel assigns reach them, and virtio-mmio transports default to legacy (version 1): the driver is v2.
 fn aarch64_machine() -> String {
     let gic = match std::env::var("MYOS_AARCH64_GIC").as_deref() {
         Ok("3") => "3",
