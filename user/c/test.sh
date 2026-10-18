@@ -319,6 +319,75 @@ caps_lock() {
 	grep -q '^screen 1$' /dev/console/ctl
 }
 t -t console caps_lock caps_lock
+# A USB keyboard (usb_hid's boot keyboard, into the console's keyboard
+# service): the host plugs a usb-kbd in and types on it (host.sh usb-kbd).
+# Shift+A reaches /dev/console/kbd as four events; then tty9 reads a line
+# typed with Caps Lock (whose LED usb_hid sets) and an `x` held for a
+# second, which the console repeats (a USB keyboard does not); Alt+1 shows
+# tty1 again. The console's own keyboard took none of it (its interrupt
+# count), and the keyboard is gone from /proc/usb once pulled out.
+usb_keyboard() {
+	native=$(grep -o -e ' ps2 keyboard$' -e ' virtio-input$' /proc/interrupts | head -n 1 | sed 's/^ //')
+	before=$(mouse_irqs "$native")
+	echo "HOST c-smokes usb-kbd plug" >&3
+	i=0
+	while [ $i -lt 30 ] && ! grep -q ':usb_hid keyboard$' /proc/usb; do
+		sleep 1
+		i=$((i + 1))
+	done
+	ok=0
+	grep -q ':usb_hid keyboard$' /proc/usb || { cat /proc/usb; ok=1; }
+	: > /tmp/ukbd.out
+	cat /dev/console/kbd > /tmp/ukbd.out &
+	pid=$!
+	sleep 1
+	echo "HOST c-smokes sendkey shift-a" >&3
+	i=0
+	while [ $i -lt 30 ] && [ "$(wc -l < /tmp/ukbd.out)" -lt 4 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	sleep 1
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	for e in 'd 42' 'd 30 A' 'u 30' 'u 42'; do
+		grep -qx "$e" /tmp/ukbd.out || { echo "no \"$e\" in:"; cat /tmp/ukbd.out; ok=1; }
+	done
+	[ "$(wc -l < /tmp/ukbd.out)" -eq 4 ] || { echo "events:"; cat /tmp/ukbd.out; ok=1; }
+	: > /tmp/ukbd.line
+	echo 'screen 9' > /dev/console/ctl || return 1
+	head -n 1 < /dev/tty9/data > /tmp/ukbd.line &
+	pid=$!
+	echo "HOST c-smokes sendkey caps_lock a shift-b caps_lock c x@1000 ret alt-1" >&3
+	i=0
+	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	line=$(cat /tmp/ukbd.line)
+	echo "read: $line"
+	# The held x: its press and at least four repeats, not one every tick.
+	echo "$line" | grep -qx 'Abcx\{5,40\}' || ok=1
+	i=0
+	while [ $i -lt 10 ] && ! grep -q '^screen 1$' /dev/console/ctl; do
+		sleep 1
+		i=$((i + 1))
+	done
+	grep -q '^screen 1$' /dev/console/ctl || { echo 'screen 1' > /dev/console/ctl; echo "no Alt+1"; ok=1; }
+	after=$(mouse_irqs "$native")
+	[ "$after" = "$before" ] || { echo "$native: $before, then $after"; ok=1; }
+	echo "HOST c-smokes usb-kbd unplug" >&3
+	i=0
+	while [ $i -lt 30 ] && grep -q ':usb_hid keyboard$' /proc/usb; do
+		sleep 1
+		i=$((i + 1))
+	done
+	! grep -q ':usb_hid keyboard$' /proc/usb || { cat /proc/usb; ok=1; }
+	return $ok
+}
+t -t console,usb,keyboard usb_keyboard usb_keyboard
 # netd listen/accept: the smoke announces TCP 2323; the host connects back
 # through QEMU's port forward (the HOST request runs host.sh tcp-ping),
 # sends "ping" and expects "pong", then 280 KB of numbered lines (more than
