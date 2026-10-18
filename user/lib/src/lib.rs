@@ -121,6 +121,8 @@ const SYS_EXECAT: usize = 80;
 /// when the offset and flags arguments are 0.
 const SYS_PREAD: usize = 81;
 const SYS_PWRITE: usize = 82;
+/// Their flag: at the offset given.
+const FILE_AT: usize = 1;
 const SYS_PIPE: usize = 10;
 const SYS_DUPFD: usize = 14;
 const SYS_WAITPID: usize = 46;
@@ -138,6 +140,29 @@ pub fn open_flags(path: &[u8], flags: u32) -> Option<usize> {
 
 pub fn read(fd: usize, buf: &mut [u8]) -> usize {
     unsafe { sys_read(fd, buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+/// `pread`: read at `offset`, the file position left alone. Returns the
+/// count, or `usize::MAX` on error.
+pub fn read_at(fd: usize, buf: &mut [u8], offset: usize) -> usize {
+    unsafe { sys6(SYS_PREAD, fd, buf.as_mut_ptr() as usize, buf.len(), offset, FILE_AT, 0) }
+}
+
+/// `pwrite`: write at `offset`, as [`read_at`].
+pub fn write_at(fd: usize, buf: &[u8], offset: usize) -> usize {
+    unsafe { sys6(SYS_PWRITE, fd, buf.as_ptr() as usize, buf.len(), offset, FILE_AT, 0) }
+}
+
+pub const PROT_READ: usize = 1;
+pub const PROT_WRITE: usize = 2;
+pub const MAP_SHARED: usize = 0x01;
+
+/// `mmap` of `len` bytes of `fd` from `offset` (`SYS_MMAP` = 23: its six
+/// arguments in memory): where it landed, `None` on error.
+pub fn mmap(len: usize, prot: usize, flags: usize, fd: usize, offset: usize) -> Option<*mut u8> {
+    let args: [u64; 6] = [0, len as u64, prot as u64, flags as u64, fd as u64, offset as u64];
+    let p = unsafe { sys3(23, args.as_ptr() as usize, 0, 0) };
+    if p > usize::MAX - 4096 { None } else { Some(p as *mut u8) }
 }
 
 pub fn close(fd: usize) {

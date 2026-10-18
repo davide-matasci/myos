@@ -1,6 +1,8 @@
-//! The radio a scan (and later an association) goes through: tuned to a
-//! channel, it sends and hears 802.11 frames. The simulated one is the
-//! test boots'; the AX201's (issue #495) will be another.
+//! The radio a scan and an association go through: tuned to a channel, it
+//! sends and hears 802.11 frames. The simulated one is the test boots';
+//! the AX201's is `ax201.rs`.
+
+use alloc::vec::Vec;
 
 use myos_user::{close, open_flags, read, write_fd, O_RDONLY, O_RDWR};
 
@@ -21,6 +23,22 @@ pub trait Radio {
     fn recv(&mut self, buf: &mut [u8]) -> Option<Rx>;
     /// The fd a `poll` for [`Radio::recv`] waits on.
     fn fd(&self) -> usize;
+    /// Whether it can join a network (send frames).
+    fn joins(&self) -> bool {
+        true
+    }
+    /// A scan the radio does by itself (its firmware's): what it heard;
+    /// `None` when the daemon visits the channels itself.
+    fn scan(&mut self) -> Option<Vec<Heard>> {
+        None
+    }
+}
+
+/// A frame a radio's own scan heard.
+pub struct Heard {
+    pub frame: Vec<u8>,
+    pub channel: u8,
+    pub rssi: i8,
 }
 
 /// The simulated radio: a NIC whose Ethernet frames carry 802.11 frames to

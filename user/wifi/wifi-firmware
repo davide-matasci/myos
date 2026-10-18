@@ -1,0 +1,87 @@
+#!/bin/sh
+# wifi-firmware [fetch | path | list]: the firmware of the Wi-Fi radios the
+# wifi daemon drives (docs/wifi.md). The images never carry it (Intel's
+# licence lets it be redistributed unmodified, but myos ships no
+# third-party binaries): `fetch` downloads each file from linux-firmware at
+# a pinned commit, checks its SHA-256 and keeps it in the firmware
+# directory, `path` prints that directory, `list` says what is there.
+#
+# The directory is $MYOS_FIRMWARE, else /data/firmware when the boot disk's
+# data partition is mounted at /data (it survives a reboot), else
+# /tmp/firmware. $WIFI_FIRMWARE_MIRROR replaces the download's base URL; a
+# directory there is a copy of linux-firmware's tree (a USB stick for a
+# machine with no other network), copied from instead.
+
+# linux-firmware's main branch on 2026-10-17.
+COMMIT=a2dcb924f0897368b0b4f305cbf9808cdda90ce0
+MIRROR=${WIFI_FIRMWARE_MIRROR:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain}
+
+# NAME PATH SHA-256, one radio's firmware per line.
+FILES='iwlwifi-QuZ-a0-hr-b0-77.ucode intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode 39d79587dd035bc84172b6bcf6de81217560088b0ceb06304d5121ba56db8d83'
+
+dir() {
+	if [ -n "$MYOS_FIRMWARE" ]; then
+		echo "$MYOS_FIRMWARE"
+	elif grep -q '^[^ ]* /data ' /proc/mounts 2>/dev/null; then
+		echo /data/firmware
+	else
+		echo /tmp/firmware
+	fi
+}
+
+# Whether $1 has SHA-256 $2.
+good() {
+	[ -f "$1" ] && [ "$(sha256sum < "$1" | cut -d' ' -f1)" = "$2" ]
+}
+
+fetch() {
+	d=$(dir)
+	mkdir -p "$d" || return 1
+	rc=0
+	echo "$FILES" | while read -r name path sum; do
+		if good "$d/$name" "$sum"; then
+			echo "have $name"
+			continue
+		fi
+		rm -f "$d/.$name.new"
+		if [ -d "$MIRROR" ]; then
+			cp "$MIRROR/$path" "$d/.$name.new"
+		else
+			curl -fsSL -o "$d/.$name.new" "$MIRROR/$path?id=$COMMIT"
+		fi || {
+			echo "wifi-firmware: could not get $path from $MIRROR" >&2
+			rm -f "$d/.$name.new"
+			exit 1
+		}
+		if ! good "$d/.$name.new" "$sum"; then
+			echo "wifi-firmware: $name: wrong SHA-256, not kept" >&2
+			rm -f "$d/.$name.new"
+			exit 1
+		fi
+		mv "$d/.$name.new" "$d/$name" && echo "fetched $name"
+	done || rc=1
+	return $rc
+}
+
+list() {
+	d=$(dir)
+	echo "$FILES" | while read -r name path sum; do
+		if good "$d/$name" "$sum"; then
+			echo "$name ok"
+		elif [ -f "$d/$name" ]; then
+			echo "$name corrupt"
+		else
+			echo "$name missing"
+		fi
+	done
+}
+
+case $1 in
+fetch) fetch ;;
+path) dir ;;
+list) list ;;
+*)
+	echo "usage: wifi-firmware fetch | path | list" >&2
+	exit 2
+	;;
+esac
