@@ -1,10 +1,11 @@
-/* myos libgloss: clock_gettime (CLOCK_REALTIME via gettimeofday,
- * CLOCK_MONOTONIC the kernel's time since boot, which settimeofday does not
- * move), settimeofday and clock_settime (the kernel keeps the set time
- * until the next boot; the RTC is not written).
+/* myos libgloss: clock_gettime and clock_getres (CLOCK_REALTIME via
+ * gettimeofday, the monotonic clocks the kernel's time since boot, which
+ * settimeofday does not move), settimeofday and clock_settime (the kernel
+ * keeps the set time until the next boot; the RTC is not written).
  * Do not define time()/localtime() here — newlib libc already provides them.
  */
 
+#define _GNU_SOURCE /* CLOCK_BOOTTIME and the _RAW and _COARSE clocks */
 #include <errno.h>
 #include <stdint.h>
 #include <time.h>
@@ -15,15 +16,32 @@
 /* <time.h> declares clock_gettime and the CLOCK_* ids: the installed
  * features.h sets _POSIX_TIMERS (toolchain/newlib/build-libgloss.sh). */
 
+/* CLOCK_MONOTONIC and the GNU clocks on the same count: myos does not
+ * suspend (CLOCK_BOOTTIME is the same time) nor slew it (_RAW), and reads
+ * it cheaply enough (_COARSE). */
+static int
+is_monotonic(clockid_t clock_id)
+{
+    return clock_id == CLOCK_MONOTONIC || clock_id == CLOCK_MONOTONIC_RAW
+        || clock_id == CLOCK_MONOTONIC_COARSE || clock_id == CLOCK_BOOTTIME;
+}
+
+static int
+is_realtime(clockid_t clock_id)
+{
+    return clock_id == CLOCK_REALTIME || clock_id == CLOCK_REALTIME_COARSE;
+}
+
 int
 clock_gettime(clockid_t clock_id, struct timespec *tp)
 {
     struct timeval tv;
 
-    if (tp == NULL) {
+    if (tp == NULL || !(is_monotonic(clock_id) || is_realtime(clock_id))) {
+        errno = EINVAL;
         return -1;
     }
-    if (clock_id == CLOCK_MONOTONIC) {
+    if (is_monotonic(clock_id)) {
         unsigned long ns = (unsigned long)myos_syscall0(MYOS_SYS_CLOCK_MONOTONIC);
         tp->tv_sec = (time_t)(ns / 1000000000UL);
         tp->tv_nsec = (long)(ns % 1000000000UL);
@@ -36,6 +54,21 @@ clock_gettime(clockid_t clock_id, struct timespec *tp)
     }
     tp->tv_sec = (time_t)tv.tv_sec;
     tp->tv_nsec = (long)tv.tv_usec * 1000L;
+    return 0;
+}
+
+/* The monotonic clocks count nanoseconds, the wall clock microseconds. */
+int
+clock_getres(clockid_t clock_id, struct timespec *res)
+{
+    if (!(is_monotonic(clock_id) || is_realtime(clock_id))) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (res != NULL) {
+        res->tv_sec = 0;
+        res->tv_nsec = is_monotonic(clock_id) ? 1L : 1000L;
+    }
     return 0;
 }
 
