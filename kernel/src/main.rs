@@ -205,8 +205,7 @@ pub(crate) fn kernel_main() -> ! {
         console::write_info(
             "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \
              Output is mirrored to the screen when a framebuffer exists.\n\
-             Connect USB-serial if no keyboard was detected.\n\
-             UTM SE: add virtio-keyboard-device in QEMU settings.\n\n",
+             A USB keyboard types too once the USB bus found it.\n\n",
         );
     }
     user::spawn_init();

@@ -1,7 +1,9 @@
 //! Keycode + modifiers → console output bytes, including multi-byte sequences.
 //!
-//! Hardware drivers (PS/2, virtio-input) decode events to **keycodes** and
-//! modifier state, then hand them to [`translate`]. Most keys map to a single
+//! Hardware drivers (PS/2, virtio-input, the other modules' keyboards of
+//! [`crate::keyboards`]) decode events to **keycodes** and modifier state,
+//! then hand them to [`translate`]; the ones that speak Linux `KEY_*`
+//! codes through [`LinuxKeys`]. Most keys map to a single
 //! byte via the loadable [`crate::keymap`], but a few need reserved handling:
 //!
 //! - **Esc** (`0x01`) → `0x1b`, regardless of the keymap. Without this, an
@@ -109,6 +111,94 @@ pub fn translate(keycode: u8, shift: bool, altgr: bool, ctrl: bool) -> Option<Ke
     Some(one(ch))
 }
 
+/// Linux `KEY_*` codes of the arrows (these differ from PS/2 set-1 makes)
+/// and of the modifiers.
+const CODE_UP: u16 = 103;
+const CODE_DOWN: u16 = 108;
+const CODE_LEFT: u16 = 105;
+const CODE_RIGHT: u16 = 106;
+const CODE_LEFTSHIFT: u16 = 42;
+const CODE_RIGHTSHIFT: u16 = 54;
+const CODE_LEFTCTRL: u16 = 29;
+const CODE_RIGHTCTRL: u16 = 97;
+const CODE_LEFTALT: u16 = 56;
+/// AltGr.
+const CODE_RIGHTALT: u16 = 100;
+
+/// A Linux `KEY_*` code in the keycode (set-1) space of [`translate`]:
+/// most are the same, the arrows are not.
+fn canonical(code: u16) -> Option<u8> {
+    match code {
+        CODE_UP => Some(KEY_UP),
+        CODE_DOWN => Some(KEY_DOWN),
+        CODE_LEFT => Some(KEY_LEFT),
+        CODE_RIGHT => Some(KEY_RIGHT),
+        0..=127 => Some(code as u8),
+        _ => None,
+    }
+}
+
+/// Whether `code` is a modifier: it chooses what the other keys type and
+/// does not repeat.
+pub fn modifier(code: u16) -> bool {
+    matches!(
+        code,
+        CODE_LEFTSHIFT | CODE_RIGHTSHIFT | CODE_LEFTCTRL | CODE_RIGHTCTRL | CODE_LEFTALT | CODE_RIGHTALT
+    ) || code == CODE_CAPSLOCK
+        // The Meta keys.
+        || code == 125
+        || code == 126
+}
+
+/// A keyboard whose driver speaks Linux `KEY_*` codes (virtio-input, the
+/// other modules' keyboards of [`crate::keyboards`]): its modifiers, and
+/// what its events type.
+pub struct LinuxKeys {
+    shift: bool,
+    /// Left Alt (the right one is AltGr).
+    alt: bool,
+    altgr: bool,
+    ctrl: bool,
+}
+
+impl LinuxKeys {
+    pub const fn new() -> Self {
+        Self { shift: false, alt: false, altgr: false, ctrl: false }
+    }
+
+    /// An event of the keyboard: `value` 0 a release, 1 a press, 2 a held
+    /// key's repeat (evdev's numbering). The presses and releases go to
+    /// [`raw_key`] as well; what a press or a repeat types goes into `fifo`
+    /// (nothing while `/dev/console/kbd` is held), a screen's Alt+digit to
+    /// [`screen_key`].
+    pub fn event(&mut self, code: u16, value: u32, fifo: &mut ByteFifo) {
+        // The raw keyboard has presses and releases only: its reader
+        // repeats keys itself.
+        if value != 2 {
+            raw_key(code, value != 0);
+        }
+        let down = value != 0;
+        match code {
+            CODE_LEFTSHIFT | CODE_RIGHTSHIFT => self.shift = down,
+            CODE_LEFTALT => self.alt = down,
+            CODE_RIGHTALT => self.altgr = down,
+            CODE_LEFTCTRL | CODE_RIGHTCTRL => self.ctrl = down,
+            _ if down && !grabbed() => {
+                let Some(kc) = canonical(code) else {
+                    return;
+                };
+                if screen_key(kc, self.alt) {
+                    return;
+                }
+                if let Some(kb) = translate(kc, self.shift, self.altgr, self.ctrl) {
+                    fifo.push_bytes(kb.as_slice());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn one(b: u8) -> KeyBytes {
     KeyBytes {
         data: [b, 0, 0],
@@ -132,6 +222,11 @@ static CAPS_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Linux `KEY_CAPSLOCK`.
 const CODE_CAPSLOCK: u16 = 58;
+
+/// Caps Lock is on (its LED).
+pub fn caps_lock() -> bool {
+    CAPS.load(Ordering::SeqCst)
+}
 
 /// The Shift level for `keycode` with Caps Lock applied: flipped for a key
 /// whose plain character is a letter, as is for every other.
