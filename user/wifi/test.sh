@@ -101,3 +101,35 @@ wifi_data() {
 	return $wifi_rc
 }
 t -t wifi,tap wifi_data wifi_data
+
+# wifi-firmware: a file whose SHA-256 is not the pinned one is refused and
+# not kept (a mirror directory with the wrong bytes); `list` says it is
+# missing.
+wifi_firmware_check() {
+	fw=/tmp/fw-check
+	rm -rf $fw $fw.mirror
+	mkdir -p $fw.mirror/intel/iwlwifi
+	echo "not firmware" > $fw.mirror/intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode
+	if MYOS_FIRMWARE=$fw WIFI_FIRMWARE_MIRROR=$fw.mirror /bin/custom/wifi-firmware fetch > $fw.out 2>&1; then
+		cat $fw.out
+		return 1
+	fi
+	grep -q 'wrong SHA-256' $fw.out && [ -z "$(ls -A $fw)" ] &&
+		[ "$(MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware list)" = "iwlwifi-QuZ-a0-hr-b0-77.ucode missing" ] ||
+		{ cat $fw.out; ls -la $fw; return 1; }
+}
+t -t wifi wifi_firmware_check wifi_firmware_check
+
+# wifi-firmware fetch: the pinned AX201 firmware from linux-firmware, its
+# SHA-256 checked; a second fetch keeps it.
+wifi_firmware_fetch() {
+	fw=/tmp/fw-fetch
+	rm -rf $fw
+	MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware fetch > $fw.out 2>&1 &&
+		grep -q '^fetched iwlwifi-QuZ-a0-hr-b0-77.ucode$' $fw.out &&
+		[ "$(MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware fetch)" = "have iwlwifi-QuZ-a0-hr-b0-77.ucode" ] &&
+		[ "$(MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware list)" = "iwlwifi-QuZ-a0-hr-b0-77.ucode ok" ] ||
+		{ cat $fw.out; return 1; }
+	rm -rf $fw
+}
+t -t wifi,net wifi_firmware_fetch wifi_firmware_fetch

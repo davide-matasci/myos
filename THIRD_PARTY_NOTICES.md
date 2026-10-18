@@ -87,6 +87,7 @@ Files in this repository that carry notices from upstream (kept as required):
 | LLVM compiler-rt builtins (soft-float helpers, riscv64 / `libtf.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `ports/curl/build-softfloat-riscv64.sh` (linked into curl and, on riscv64, every port built with `myos_write_cross_cc`: the X packages) and `linux-compat/build.sh` |
 | EDK2 / OVMF firmware (used on the host only to boot QEMU) | via `ovmf-prebuilt` 0.2.9 (MIT OR Apache-2.0) | BSD-2-Clause-Patent | not part of any image |
 | Alpine Linux packages | n/a | per package | downloaded **at run time** by `get-alpine` on the user's machine; nothing from Alpine is in the image |
+| Intel Wi-Fi firmware (`iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX201's) | linux-firmware `a2dcb924` | Intel's redistributable licence (`LICENCE.iwlwifi_firmware` in linux-firmware: binary only, unmodified, no reverse engineering) | downloaded **at run time** by `wifi-firmware fetch` on the user's machine, SHA-256 pinned; not in the image |
 
 ## Source code for copyleft components
 

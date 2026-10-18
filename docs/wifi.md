@@ -57,6 +57,27 @@ Leaving the network, or the access point letting the station go, takes
 the NIC away, and netd lets go of it and its lease. A scan while
 associated tunes the radio back to the link's channel when it is done.
 
+## Firmware
+
+A real radio runs Intel's firmware (the AX201's is
+`iwlwifi-QuZ-a0-hr-b0-77.ucode`). The images never carry it: its licence
+lets it be redistributed unmodified, but myos ships no third-party
+binaries. `wifi-firmware` gets it:
+
+| Command | |
+|------|-|
+| `wifi-firmware fetch` | downloads each file from linux-firmware at a pinned commit, checks its SHA-256 (a file that does not match is not kept) and keeps it in the firmware directory; one already there is left alone |
+| `wifi-firmware list` | each file, `ok`, `corrupt` or `missing` |
+| `wifi-firmware path` | the firmware directory |
+
+The directory is `$MYOS_FIRMWARE`, else `/data/firmware` when the boot
+disk's data partition is mounted at `/data` (`docs/install.md`; it is
+there after a reboot), else `/tmp/firmware`. A first fetch needs a
+network: wired, or `$WIFI_FIRMWARE_MIRROR` naming a directory with a copy
+of linux-firmware's tree (a USB stick) to copy from instead. The tests are
+`wifi_firmware_check` (a file with the wrong SHA-256 is refused) and
+`wifi_firmware_fetch` (tag `net`: the real download).
+
 ## The simulated radio
 
 QEMU has no Wi-Fi device, so the test boots get a simulated one: a second
