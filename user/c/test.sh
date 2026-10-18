@@ -43,6 +43,10 @@ t -t events epoll /bin/etc/epoll_smoke
 # one outside the mask delivered, EAGAIN, a child's kill ending a read, the
 # mask changed, the fd in a wait set (sigfd_smoke.c).
 t -t events sigfd /bin/etc/sigfd_smoke
+# /dev/pci: a userspace driver for QEMU's edu device: its registers mapped
+# uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
+# copy through a buffer of /dev/pci (pcidev_smoke.c).
+t -t pcidev pcidev /bin/etc/pcidev_smoke
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).

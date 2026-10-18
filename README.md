@@ -117,7 +117,7 @@ Boot (Limine)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, virtio_net, tap, netfs, fat, ext2
+            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, pcidev, virtio_net, tap, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
                  ├─ /netd (smoltcp over /dev/net0/data and /dev/tap; only opener of net0)
@@ -173,6 +173,8 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/xhci` | xHCI USB host controller: the USB bus service (`UsbHostOps`), enumeration and hot-plug on its own kernel thread, `/proc/usb` (`docs/usb.md`) |
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |
+| `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
+| `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt (`docs/pci-acpi-smp.md`) |
 | `modules/usb_hid` | USB HID mice and tablets, the console's pointer (`/dev/console/mouse`), and boot keyboards, the console's keyboard (`docs/tty.md`, `docs/usb.md`) |
 | `modules/tap` | Virtual NICs: `/dev/tap/N`, a NIC whose wire is a program (the Wi-Fi daemon's link, `docs/wifi.md`) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
@@ -320,7 +322,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), virtio_net, tap, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), pcidev, virtio_net, tap, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
 
 Module exports:
 ```rust

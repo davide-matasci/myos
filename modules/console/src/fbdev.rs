@@ -266,7 +266,7 @@ unsafe extern "C" fn fb_release(path: *const u8, len: usize) -> i32 {
 }
 
 /// `mmap` of `data`: the framebuffer page at `offset` (its physical address).
-unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize) -> u64 {
+unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize, _attrs: *mut u32) -> u64 {
     let (Some(Node::Data), Some(fb)) = (node(path, len), info()) else {
         return 0;
     };

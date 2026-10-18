@@ -41,6 +41,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "usb_hub",
     "usb_storage",
     "usb_hid",
+    "pcidev",
     "virtio_net",
     "tap",
     "netfs",

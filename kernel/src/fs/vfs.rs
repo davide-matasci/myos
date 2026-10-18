@@ -844,13 +844,25 @@ pub fn node_at(node: &Vnode, path: &str) -> bool {
 
 /// The page holding byte `offset` (page aligned) of a device file, from its
 /// module's `mmap` hook (`/dev/fb/data`); `None` for anything else.
-pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
+pub fn device_frame(node: &Vnode, offset: usize) -> Option<DeviceFrame> {
     let _tree = tree_read();
     let (ops, rel) = module_location(node)?;
     let mmap = ops.mmap?;
     let rel = rel.as_str();
-    let phys = unsafe { mmap(rel.as_ptr(), rel.len(), offset) };
-    (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(phys)
+    let mut attrs = 0u32;
+    let phys = unsafe { mmap(rel.as_ptr(), rel.len(), offset, &mut attrs) };
+    (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(DeviceFrame {
+        phys,
+        uncached: attrs & myos_abi::MYOS_MMAP_UNCACHED != 0,
+    })
+}
+
+/// A device page a module's `mmap` hook gave: where it is and how to map it.
+#[derive(Clone, Copy)]
+pub struct DeviceFrame {
+    pub phys: u64,
+    /// Registers, not memory: mapped uncached.
+    pub uncached: bool,
 }
 
 /// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node` and

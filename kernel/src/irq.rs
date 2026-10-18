@@ -12,7 +12,10 @@
 //!
 //! Handlers run in interrupt context on the CPU that took the interrupt
 //! (CPU 0: every interrupt is routed to the BSP). They ack the device
-//! (virtio ISR read) and typically `task::wake*` a sleeper.
+//! (virtio ISR read) and typically `task::wake*` a sleeper. An INTx line is
+//! shared by the PCI slots the swizzle puts on it (QEMU `virt` has four
+//! for every slot): every handler on it runs, and each one's device says
+//! whether it was the one.
 //!
 //! Modules get this through `KernelApi::pci_irq_enable`, which also picks
 //! the delivery mechanism per arch (`pci_irq_setup`), and
@@ -23,7 +26,7 @@ use spin::Mutex;
 
 pub type Handler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 
-const MAX_HANDLERS: usize = 16;
+const MAX_HANDLERS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -44,16 +47,28 @@ static SPURIOUS: AtomicU64 = AtomicU64::new(0);
 pub struct PciIrq {
     /// Interrupt number as seen by [`dispatch`] (vector / INTID / PLIC source).
     pub irq: u32,
-    /// MSI-X table entry the device must use (`None` = legacy INTx: the
-    /// handler has to read the device's ISR register to deassert the line).
-    pub msix_entry: Option<u16>,
+    pub delivery: Delivery,
 }
 
-/// Register `handler(ctx)` for interrupt `irq`. Fails when the table is full
-/// or the irq already has a handler.
+/// What raises a PCI function's interrupt (each arch has its own).
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub enum Delivery {
+    /// The MSI-X table entry the device must use.
+    MsiX(u16),
+    /// Its one MSI message (a function without MSI-X).
+    Msi,
+    /// The legacy INTx line: the handler has to read the device's ISR
+    /// register to deassert it.
+    IntX,
+}
+
+/// Register `handler(ctx)` for interrupt `irq`, beside any other handler of
+/// it (a shared line). Fails when the table is full or the same handler
+/// and context are registered for it already.
 pub fn register(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
     let mut table = TABLE.lock();
-    if table.iter().flatten().any(|e| e.irq == irq) {
+    if table.iter().flatten().any(|e| e.irq == irq && e.handler as usize == handler as usize && e.ctx == ctx) {
         return false;
     }
     let Some(slot) = table.iter().position(|e| e.is_none()) else {
@@ -93,23 +108,27 @@ pub fn dispatch(irq: u32) {
     // `try_lock`: a registration racing with an interrupt on another CPU is
     // harmless (the interrupt is simply counted as spurious once); the
     // interrupted CPU can never be the holder because `register` runs with
-    // IRQs on only from module init, and we never spin in IRQ context.
-    let entry = TABLE
-        .try_lock()
-        .and_then(|t| t.iter().enumerate().find_map(|(i, e)| e.filter(|e| e.irq == irq).map(|e| (i, e))));
-    match entry {
-        Some((i, e)) => {
-            COUNTS[i].fetch_add(1, Ordering::Relaxed);
-            unsafe { (e.handler)(e.ctx as *mut core::ffi::c_void) };
-        }
-        None => {
-            SPURIOUS.fetch_add(1, Ordering::Relaxed);
-        }
+    // IRQs on only from module init, and we never spin in IRQ context. The
+    // handlers run with the table unlocked (copied out).
+    let Some(table) = TABLE.try_lock().map(|t| *t) else {
+        SPURIOUS.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let mut handled = false;
+    for (i, e) in table.iter().enumerate() {
+        let Some(e) = e.filter(|e| e.irq == irq) else { continue };
+        handled = true;
+        COUNTS[i].fetch_add(1, Ordering::Relaxed);
+        unsafe { (e.handler)(e.ctx as *mut core::ffi::c_void) };
+    }
+    if !handled {
+        SPURIOUS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 /// Route a PCI function's interrupt to CPU 0 and return how it is delivered.
-/// x86_64 uses MSI-X (entry 0); aarch64 and riscv64 use the INTx line the
+/// x86_64 uses MSI-X (entry 0), or MSI on a function without it; aarch64
+/// and riscv64 use the INTx line the
 /// QEMU `virt` machine wires to a GIC SPI / PLIC source.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
     crate::arch::pci_irq_setup(bus, slot, func)
