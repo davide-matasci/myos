@@ -10,6 +10,9 @@ use super::user::DEFAULT_USER_BASE;
 
 const PAGE_DESC: u64 = 0b11;
 const SH_INNER: u64 = 0b11 << 8;
+const SH_OUTER: u64 = 0b10 << 8;
+/// MAIR Attr2: Device-nGnRE (`paging::ATTR_DEVICE`).
+const ATTR_DEVICE: u64 = 2 << 2;
 const AF: u64 = 1 << 10;
 const AP_RW: u64 = 0b01 << 6;
 const AP_RO: u64 = 0b11 << 6;
@@ -261,6 +264,19 @@ pub fn map_user_page_prot(aspace: u64, va: u64, pa: u64, w: bool, x: bool) {
         }
         l3_t[l3_idx] = ent;
     }
+}
+
+/// A device's registers at `pa` (a PCI BAR): MAIR Attr2, Device-nGnRE
+/// (the kernel's own device mappings'), never executable.
+pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    let page = aarch64_user_page_idx(va);
+    let l3_idx = page % USER_L3_PAGES;
+    let Some(l3) = aarch64_l3_table_mut(aspace, page) else {
+        return;
+    };
+    let mut ent = PAGE_DESC | (pa & PA) | ATTR_DEVICE | SH_OUTER | AF | PXN | UXN;
+    ent |= if w { AP_RW } else { AP_RO };
+    unsafe { (*l3)[l3_idx] = ent };
 }
 
 pub fn unmap_user_page(aspace: u64, va: u64) {

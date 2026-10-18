@@ -18,6 +18,7 @@ mod initramfs;
 mod packages;
 #[allow(dead_code)]
 mod ports;
+mod wifi_net;
 mod wifi_sim;
 mod release;
 
@@ -462,6 +463,13 @@ fn host_listening(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
+/// QEMU's `edu` device, the userspace PCI driver test's (pcidev_smoke,
+/// `/dev/pci`). Its DMA reaches all of memory (its default mask is 28
+/// bits).
+fn add_edu(cmd: &mut Command) {
+    cmd.arg("-device").arg("edu,dma_mask=0xffffffffffffffff");
+}
+
 /// The simulated Wi-Fi radio (`src/wifi_sim.rs`): a second virtio-net NIC,
 /// `/dev/net1`, whose frames go to the access points on a launcher thread.
 fn add_wifi_radio(cmd: &mut Command) {
@@ -527,6 +535,7 @@ fn run_bios(bios_path: &str) {
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
+    add_edu(&mut cmd);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -561,6 +570,7 @@ fn run_uefi(uefi_path: &str) {
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
+    add_edu(&mut cmd);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -666,6 +676,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
     add_pointer(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
+    add_edu(&mut cmd);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -734,6 +745,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     add_pointer(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
+    add_edu(&mut cmd);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -772,7 +784,8 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     let disk = target.join(format!("boot-test-{name}.img"));
     limine_image::copy_sparse(image, &disk);
     let linux = linux_compat_enabled();
-    let outcome = boot_test::run(spawn(&disk), &mode, linux);
+    let slow = name.starts_with("riscv64");
+    let outcome = boot_test::run(spawn(&disk), &mode, linux, slow);
     let mut ok = outcome.ok;
     let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
     // The installed disk is kept before the next boot makes a new scratch disk.
@@ -782,11 +795,11 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     }
     if ok && ran("boot_upgrade") {
         eprintln!("boot test: the upgraded disk boots again");
-        ok = boot_test::run(spawn(&disk), &Mode::Reboot { app: ran("apps_data") }, linux).ok;
+        ok = boot_test::run(spawn(&disk), &Mode::Reboot { app: ran("apps_data") }, linux, slow).ok;
     }
     if ok && ran("boot_install_local") {
         eprintln!("boot test: the disk get-myos --install made boots");
-        ok = boot_test::run(spawn(&installed), &Mode::Installed, linux).ok;
+        ok = boot_test::run(spawn(&installed), &Mode::Installed, linux, slow).ok;
     }
     exit(if ok { 0 } else { 1 })
 }
@@ -864,6 +877,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // Data disks first so they become /dev/vda/ and /dev/vdb/; ESP boots via bootindex.
     add_virtio_blk_aarch64(&mut cmd);
     add_virtio_net(&mut cmd);
+    add_edu(&mut cmd);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
@@ -1351,6 +1365,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         ));
     add_virtio_blk_riscv64(&mut cmd);
     add_virtio_net(&mut cmd);
+    add_edu(&mut cmd);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(

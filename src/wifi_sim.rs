@@ -7,14 +7,22 @@
 //! [`ETHERTYPE`], then [`SimHeader`] (the channel it is sent on, the
 //! signal it arrives with) and the 802.11 frame without its FCS. Each
 //! access point beacons on its channel every 100 TU and answers the probe
-//! requests sent on it; the guest hears only what is on the channel its
-//! radio is tuned to (`user/wifi`, `docs/wifi.md`). They beacon only for
+//! requests sent on it, takes open-system authentication and association
+//! (refused for a WPA2 network when the request carries no RSN element)
+//! and lets a station go at its deauthentication or disassociation; an
+//! associated station's data frames reach the network behind it
+//! (`src/wifi_net.rs`), whose answers come back as data frames. The guest
+//! hears only what is on the channel its radio is tuned to (`user/wifi`,
+//! `docs/wifi.md`). They beacon only for
 //! [`AWAKE`] after the radio last sent something: a boot that never scans
 //! is not woken thirty times a second for nothing (under TCG on riscv64
 //! that cost the quick tests their budget).
 
+use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
+
+use crate::wifi_net;
 
 /// IEEE 802 local experimental EtherType 1.
 pub const ETHERTYPE: u16 = 0x88b5;
@@ -83,6 +91,7 @@ fn run(sock: UdpSocket) {
     let start = Instant::now();
     let mut next_beacon = start;
     let mut heard: Option<Instant> = None;
+    let mut stations = Stations::default();
     let mut buf = [0u8; 2048];
     loop {
         let awake = heard.is_some_and(|t| t.elapsed() < AWAKE);
@@ -103,12 +112,22 @@ fn run(sock: UdpSocket) {
             continue;
         };
         heard = Some(Instant::now());
-        // A probe request (management, subtype 4): each access point on
-        // the channel answers one for its SSID or the wildcard.
-        if frame.len() < 24 || frame[0] != 0x40 {
+        if frame.len() < 24 {
             continue;
         }
         let ta: [u8; 6] = frame[10..16].try_into().unwrap();
+        if frame[0] != 0x40 {
+            // Addressed to one access point, on its channel.
+            let ra: [u8; 6] = frame[4..10].try_into().unwrap();
+            if let Some(ap) = APS.iter().find(|ap| ap.bssid == ra && ap.channel == hdr.channel) {
+                if let Some(resp) = stations.answer(ap, ta, frame) {
+                    let _ = sock.send(&wrap(SimHeader { channel: ap.channel, rssi: ap.rssi }, &resp));
+                }
+            }
+            continue;
+        }
+        // A probe request (management, subtype 4): each access point on
+        // the channel answers one for its SSID or the wildcard.
         let wanted = ie(&frame[24..], 0);
         let ts = start.elapsed().as_micros() as u64;
         for ap in APS.iter().filter(|ap| ap.channel == hdr.channel) {
@@ -119,6 +138,116 @@ fn run(sock: UdpSocket) {
             let _ = sock.send(&wrap(SimHeader { channel: ap.channel, rssi: ap.rssi }, &resp));
         }
     }
+}
+
+/// Where a station stands with an access point.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sta {
+    Authenticated,
+    Associated(u16),
+}
+
+/// The stations of every access point: `(BSSID, station)`.
+#[derive(Default)]
+struct Stations {
+    sta: HashMap<([u8; 6], [u8; 6]), Sta>,
+    next_aid: u16,
+}
+
+/// IEEE 802.11 status codes the access points answer with.
+const STATUS_OK: u16 = 0;
+const STATUS_UNSPECIFIED: u16 = 1;
+const STATUS_ALG_UNSUPPORTED: u16 = 13;
+/// "Invalid AKMP": a WPA2 network associated without an RSN element.
+const STATUS_INVALID_AKMP: u16 = 43;
+
+impl Stations {
+    /// What `ap` answers station `sta`'s `frame` with: an authentication
+    /// (subtype 0xb0) or association request (0x00), or a data frame to
+    /// the distribution system (0x08 or QoS data, 0x88) once associated; a
+    /// deauthentication (0xc0) or disassociation (0xa0) takes it off the
+    /// list.
+    fn answer(&mut self, ap: &Ap, sta: [u8; 6], frame: &[u8]) -> Option<Vec<u8>> {
+        let key = (ap.bssid, sta);
+        let body = &frame[24..];
+        match frame[0] {
+            0xb0 if body.len() >= 6 => {
+                let alg = u16::from_le_bytes([body[0], body[1]]);
+                let seq = u16::from_le_bytes([body[2], body[3]]);
+                if seq != 1 {
+                    return None;
+                }
+                let status = if alg == 0 { STATUS_OK } else { STATUS_ALG_UNSUPPORTED };
+                if status == STATUS_OK {
+                    self.sta.insert(key, Sta::Authenticated);
+                }
+                let mut f = header(0xb0, sta, ap.bssid);
+                f.extend_from_slice(&alg.to_le_bytes());
+                f.extend_from_slice(&2u16.to_le_bytes());
+                f.extend_from_slice(&status.to_le_bytes());
+                Some(f)
+            }
+            0x00 if body.len() >= 4 => {
+                let rsn = ie(&body[4..], 48).is_some();
+                let status = match self.sta.get(&key) {
+                    None => STATUS_UNSPECIFIED,
+                    Some(_) if ap.wpa2 && !rsn => STATUS_INVALID_AKMP,
+                    Some(_) => STATUS_OK,
+                };
+                let mut aid = 0;
+                if status == STATUS_OK {
+                    self.next_aid = self.next_aid % 2007 + 1;
+                    aid = self.next_aid;
+                    self.sta.insert(key, Sta::Associated(aid));
+                }
+                let mut f = header(0x10, sta, ap.bssid);
+                let cap: u16 = 0x0001 | if ap.wpa2 { 0x0010 } else { 0 };
+                f.extend_from_slice(&cap.to_le_bytes());
+                f.extend_from_slice(&status.to_le_bytes());
+                // The association id has its two top bits set.
+                f.extend_from_slice(&(aid | 0xc000).to_le_bytes());
+                push_ie(&mut f, 1, &[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
+                Some(f)
+            }
+            0xc0 | 0xa0 => {
+                self.sta.remove(&key);
+                None
+            }
+            0x08 | 0x88 if frame[1] & 3 == 1 => {
+                let Some(&Sta::Associated(aid)) = self.sta.get(&key) else {
+                    return None;
+                };
+                // The LLC/SNAP header, then the EtherType.
+                let body = &frame[if frame[0] == 0x88 { 26 } else { 24 }..];
+                if body.len() < 8 || body[..6] != [0xaa, 0xaa, 0x03, 0, 0, 0] {
+                    return None;
+                }
+                let ethertype = u16::from_be_bytes([body[6], body[7]]);
+                let out = wifi_net::answer(ap.bssid, sta, aid, ethertype, &body[8..])?;
+                // From the distribution system: to the destination, from
+                // the access point, sent by the router (the same address).
+                let mut f = vec![0x08, 0x02, 0, 0];
+                f.extend_from_slice(&out.dst);
+                f.extend_from_slice(&ap.bssid);
+                f.extend_from_slice(&ap.bssid);
+                f.extend_from_slice(&[0, 0, 0xaa, 0xaa, 0x03, 0, 0, 0]);
+                f.extend_from_slice(&out.ethertype.to_be_bytes());
+                f.extend_from_slice(&out.payload);
+                Some(f)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A management frame's header from `ap` to `da`.
+fn header(fc: u8, da: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
+    let mut f = vec![fc, 0, 0, 0];
+    f.extend_from_slice(&da);
+    f.extend_from_slice(&bssid);
+    f.extend_from_slice(&bssid);
+    f.extend_from_slice(&[0, 0]);
+    f
 }
 
 /// A beacon (`subtype` 0x80) or probe response (0x50) of `ap` to `da`.

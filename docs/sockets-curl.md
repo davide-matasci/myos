@@ -30,6 +30,21 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    net0 10.0.2.15 255.255.255.0 up,broadcast
    ```
    (`-` for the address and mask until DHCP is done)
+
+   netd also drives the virtual NICs of `/dev/tap` (`docs/wifi.md`: the
+   Wi-Fi link), each one whose link is up, as `tap0` to `tap3` after
+   `net0` in `/net/ifaddrs` (`user/netd/src/nics.rs`; it looks for them
+   once a second). Each NIC has its own smoltcp interface and DHCP lease
+   over the one socket set, and `lo` carries every NIC's address. The
+   default route and `/net/ndb`'s address line are the preferred NIC's:
+   `net0` while it has a lease, else the first other one with a lease; the
+   `dns=` lines are the preferred NIC's servers, then the others'. A new
+   connection takes the address of the NIC whose subnet holds its
+   destination, else the preferred NIC's, and a packet leaves through the
+   NIC its source address is: a third smoltcp patch (`multi-home`) makes
+   an interface send only from its own addresses, leave the other NICs'
+   to `lo`, and gives each DHCP socket the answers to its own NIC. The
+   test is `multihome_smoke` (`user/c/test.sh`).
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}` (and a tcp
    conversation's `peek`); a conversation's
    files are the user's whose process read `clone` (an accepted
@@ -154,6 +169,18 @@ connection, and refuses connections past 30 unauthenticated ones) until
 the server's own timeout: a scanned VPS held forty at a time. No boot
 test leaves a handshake half-open (QEMU's user networking completes it
 itself; issue #480).
+
+netd puts a fresh listener on the port beside each connection it takes
+off one, in whichever slot of smoltcp's socket set is free, and smoltcp
+gives a segment to the first socket that accepts it. A SYN the peer sent
+again (its SYN-ACK slow or lost; QEMU's user networking retransmits on the
+host's clock while the guest stands still) went to that listener when its
+slot came first: a second half-open connection for the same addresses,
+whose SYN-ACK the peer reset, and the first connection with it (a listen
+test's write failed with EPIPE). A fourth smoltcp patch
+(`syn-to-connection`) hands a segment to a socket that is not listening
+before the listeners, as Linux looks up a connection before a listener;
+its test is smoltcp's own (`tests/ipv4.rs`).
 
 `/net/convs` is netd's own table, a line per index in use (`N tcp|udp|icmp
 [STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,

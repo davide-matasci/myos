@@ -1,0 +1,12 @@
+[package]
+name = "iwx"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# Ported from OpenBSD's iwx(4): its notices are in LICENSE (Intel's part
+# is dual BSD/GPLv2; myos takes the BSD one).
+license = "ISC AND BSD-3-Clause"
+description = "Intel Wi-Fi 6 (iwx: AX200/AX201) driver logic for the wifi daemon: firmware, commands, rings (no_std, host-testable)."
+
+[lib]
+test = true

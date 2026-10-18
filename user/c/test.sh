@@ -43,6 +43,32 @@ t -t events epoll /bin/etc/epoll_smoke
 # one outside the mask delivered, EAGAIN, a child's kill ending a read, the
 # mask changed, the fd in a wait set (sigfd_smoke.c).
 t -t events sigfd /bin/etc/sigfd_smoke
+# /dev/pci: a userspace driver for QEMU's edu device: its registers mapped
+# uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
+# copy through a buffer of /dev/pci (pcidev_smoke.c).
+t -t pcidev pcidev /bin/etc/pcidev_smoke
+# /dev/tap: a virtual NIC a program drives: its address and link through
+# ctl, frames both ways whole, none through a link that is down, the NIC
+# gone with its program (tap_smoke.c).
+t -t tap tap /bin/etc/tap_smoke
+# netd's virtual NICs: a program on /dev/tap is a router 10.0.9.1 (DHCP,
+# ARP, UDP echo); netd leases 10.0.9.2 on it beside net0, which keeps the
+# default route, sends a socket connected there from that address, and lets
+# go of the NIC with its program (multihome_smoke.c).
+t -t tap,netfs multihome /bin/etc/multihome_smoke
+# The same after the wall clock went years ahead and back (sbase_date
+# does that): netd's timers run on the monotonic clock, so it still looks
+# for virtual NICs once a second (it used to wait for the wall clock to
+# catch up with the date it had seen).
+multihome_clock() {
+	now=$(/bin/sbase/date +%s) || return 1
+	/bin/sbase/date -u 010203042030 || return 1
+	# netd's idle wait is at most a second: it sees the date.
+	sleep 2
+	/bin/sbase/date -u $(/bin/sbase/date -u -d $((now + 60)) +%m%d%H%M%Y) || return 1
+	/bin/etc/multihome_smoke
+}
+t -t tap,netfs multihome_clock multihome_clock
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
 t -t fs uio /bin/etc/uio_smoke

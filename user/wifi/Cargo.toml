@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 myos-user = { path = "../lib" }
+iwx = { path = "iwx" }
 
 [profile.dev]
 panic = "abort"

@@ -10,6 +10,7 @@
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
+| Userspace PCI drivers → `/dev/pci` | `modules/pcidev` | A function's registers, DMA memory and interrupt for a driver that is a program (below) |
 | Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists |
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
@@ -30,7 +31,7 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`) | vector |
 | aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
@@ -154,8 +155,11 @@ publishes ACPI tables, so the aarch64 boots exercise the agreement check
 
 Handlers run in interrupt context with interrupts masked on CPU 0. On INTx
 the handler must read the device's ISR register so the level line deasserts
-before the GIC/PLIC EOI. `/proc/interrupts` lists counts per registered
-interrupt plus spurious ones.
+before the GIC/PLIC EOI. An INTx line is shared by every slot the swizzle
+puts on it (QEMU `virt` has four for all of them): each driver of a device
+on it registers its handler, and every one runs at each interrupt of the
+line, its device saying whether it was the one. `/proc/interrupts` lists
+counts per registered handler plus spurious interrupts.
 
 virtio-net uses this for its RX queue: `AVAIL_F_NO_INTERRUPT` is cleared on
 the RX ring only, the handler acks the ISR and calls `wake_any`, which ends
@@ -165,6 +169,44 @@ hook, so a frame that lands between the check and the sleep is not missed).
 The NIC's `ctl` says `irq on` when that works; on `irq off` (a poll-mode
 device) `netd` keeps its 2–10 ms timed polling. Reads of `/dev/netN/data`
 stay non-blocking.
+
+## Userspace PCI drivers (`/dev/pci`)
+
+`modules/pcidev` hands a PCI function to a driver that is a program (the
+Wi-Fi driver, issue #495): a directory per endpoint, `/dev/pci/BB:SS.F`.
+Its `info` says what it is (`id VVVV:DDDD`, `class CC:SS:PP`) and who
+drives it (`driver nvme`); its `ctl` is the driver's, one at a time and
+root only (the `dev` label too), and while it is held the others are
+there.
+
+A PCI function has one owner at a time (`kernel/src/pci.rs`, ABI 46): a
+module that binds to it, its `pci_enable`, `pci_bar_map` or
+`pci_irq_enable` from its `module_init` or `module_rescan`, or a claim
+through `KernelApi::pci_claim` until `pci_release`, which is how
+`/dev/pci` holds a function while a program drives it. Opening the `ctl`
+of a function a kernel driver drives is refused: closing it would turn
+the device off under its driver (`cat` of the boot disk's `ctl` did).
+
+| File | What |
+|------|------|
+| `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`) and the DMA buffers (`dmaN PHYS PAGES`); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
+| `config` | the 256 bytes of configuration space, read and written at any offset |
+| `barN` | a memory BAR, for `mmap(MAP_SHARED)`: uncached (x86 PCD\|PWT, aarch64 Device-nGnRE; riscv64 from the platform's attributes for the address), the module's `mmap` hook saying so (`MYOS_MMAP_UNCACHED`, ABI 46), and it stays so through `mprotect` |
+| `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq`, once the driver quietened its device |
+| `dmaN` | the buffer, for `mmap(MAP_SHARED)` (ordinary memory: the PCI devices of the three arches here are cache-coherent) |
+
+Closing `ctl` (the driver's exit too) turns bus mastering and memory
+decoding off, so the device stops reaching memory and raising messages,
+and keeps the DMA buffers for the next driver, zeroed: they are never
+freed, since a mapping of one may outlive its fd. Without an IOMMU the
+program reaches all of memory through the device's DMA, as the kernel
+does (issue #501). The test (`pcidev_smoke`,
+tag `pcidev`) drives QEMU's `edu` device, which every test boot gets
+(`edu,dma_mask=...`: its own mask is 28 bits): a kernel driver's
+function its `ctl` refused, the id, liveness and
+factorial registers, an interrupt it raises, a DMA copy through a buffer
+and back with the interrupt at its end. It takes MSI on x86 (`edu` has no
+MSI-X) and a shared INTx line on aarch64 and riscv64.
 
 ## AML opcode set (custom interpreter — not ACPICA)
 

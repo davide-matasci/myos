@@ -38,7 +38,8 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `alpine`, `python`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
 
 A quick run (`heavy` and `net` skipped) has a budget of 4 minutes (5 with
-the Linux layer) and a stall limit of 3; any other 50 and 10
+the Linux layer; half as much again on riscv64, the slowest under TCG, as
+in CI) and a stall limit of 3; any other 50 and 10
 (`--budget MINUTES` sets the budget). The runner prints what it skipped
 (`TESTS SKIPPED <n>`) after `TESTS DONE`.
 
