@@ -283,6 +283,9 @@ HELLO_OK_ELFS=(
   target/pcidev-x86_64-unknown-none
   target/pcidev-aarch64-unknown-none-softfloat
   target/pcidev-riscv64imac-unknown-none-elf
+  target/tap-x86_64-unknown-none
+  target/tap-aarch64-unknown-none-softfloat
+  target/tap-riscv64imac-unknown-none-elf
   target/virtio_net-x86_64-unknown-none
   target/virtio_net-aarch64-unknown-none-softfloat
   target/virtio_net-riscv64imac-unknown-none-elf

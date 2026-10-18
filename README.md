@@ -19,7 +19,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`, then `run-myos coreutils:ls`)
-- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan` over the test boots' simulated radio, `docs/wifi.md`, issue #495)
+- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open network carrying netd's traffic, over the test boots' simulated radio, `docs/wifi.md`, issue #495)
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 - **Power** — `poweroff`, `reboot` and `halt` stop the processes, unmount the disks and power off or reset the board: ACPI S5 and the reset register on a PC, PSCI on AArch64, the SBI on RISC-V (`docs/power.md`)
@@ -117,10 +117,10 @@ Boot (Limine)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, pcidev, virtio_net, netfs, fat, ext2
+            │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, pcidev, virtio_net, tap, netfs, fat, ext2
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
-                 ├─ /netd (smoltcp over /dev/net0/data; only opener of net0)
+                 ├─ /netd (smoltcp over /dev/net0/data and /dev/tap; only opener of net0)
                  ├─ /etc/rc in the background → /data/etc/rc.local (insmod linux, dropbear :2222)
                  ├─ getty on ttyS0, tty1…ttyN → login → /sh (oksh 7.9 via newlib/libgloss)
                  └─ CI /heap: std / C / sbase / ripgrep / tcc (+ uutils, git: full mode)
@@ -176,6 +176,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
 | `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt (`docs/pci-acpi-smp.md`) |
 | `modules/usb_hid` | USB HID mice and tablets, the console's pointer (`/dev/console/mouse`), and boot keyboards, the console's keyboard (`docs/tty.md`, `docs/usb.md`) |
+| `modules/tap` | Virtual NICs: `/dev/tap/N`, a NIC whose wire is a program (the Wi-Fi daemon's link, `docs/wifi.md`) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
 | `modules/fat` | Writable FAT16/FAT32: `ModuleVfsOps` over the `fatvol` crate (`modules/fat/fatvol`: fstool's FAT driver, with growing by zeros, rename and file times of its own), host-tested against dosfstools and mtools |
 | `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
@@ -186,7 +187,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `user/ok` | Slim always-on boot smoke (alloc/user/fat/proc) |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/ripgrep/tcc/bigalloc; uutils and git in the full mode) |
-| `user/netd` | Userspace smoltcp over `/dev/net0/data` |
+| `user/netd` | Userspace smoltcp over `/dev/net0/data` and the virtual NICs of `/dev/tap` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |
 | `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
@@ -321,7 +322,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), pcidev, virtio_net, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), pcidev, virtio_net, tap, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on. The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
 
 Module exports:
 ```rust

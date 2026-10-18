@@ -43,6 +43,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "usb_hid",
     "pcidev",
     "virtio_net",
+    "tap",
     "netfs",
     "fat",
     "ext2",

@@ -13,6 +13,10 @@
 //!   `disconnected`.
 //! - `wifi disconnect`: leave the network.
 //!
+//! While associated, the link is a virtual NIC of `/dev/tap` for netd
+//! (`tapN` in `/net/ifaddrs`, its address from the network's DHCP): the
+//! daemon carries its Ethernet frames as 802.11 data frames.
+//!
 //! A network is one line: `BSSID CHANNEL RSSI SECURITY SSID`, the strongest
 //! first (`02:00:5e:00:01:01 1 -40 open myos-open`); bytes of the SSID
 //! outside printable ASCII are written `\xHH`.
@@ -26,14 +30,16 @@ extern crate alloc;
 mod frame;
 mod mlme;
 mod radio;
+mod tap;
 mod unix;
 
 use alloc::vec::Vec;
 
 use frame::{Bss, Security};
 use mlme::{Link, Refused};
-use myos_user::{exit_code, heap_init, now_us, poll, write, Heap, PollFd, POLLIN};
+use myos_user::{exit_code, heap_init, monotonic_ns, poll, write, Heap, PollFd, POLLIN};
 use radio::{Radio, Sim};
+use tap::Tap;
 use unix::Conv;
 
 #[global_allocator]
@@ -52,7 +58,7 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
 const CHANNELS: core::ops::RangeInclusive<u8> = 1..=13;
 /// How long a scan listens on each channel after its probe request, in
 /// ms: beacons come every 100 TU (102.4 ms), so one is heard too.
-const DWELL_MS: i64 = 120;
+const DWELL_MS: u64 = 120;
 
 fn usage() -> ! {
     write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID | status | disconnect\n");
@@ -87,18 +93,39 @@ fn daemon(nic: &[u8]) -> ! {
     };
     let mut seen: Vec<Seen> = Vec::new();
     let mut link: Option<Link> = None;
+    // The link's NIC, there while `link` is.
+    let mut tap: Option<Tap> = None;
     let mut frame = [0u8; 2048];
     loop {
-        let mut fds = [
+        let mut fds = Vec::from([
             PollFd { fd: listener.data as i32, events: POLLIN, revents: 0 },
             PollFd { fd: radio.fd() as i32, events: POLLIN, revents: 0 },
-        ];
+        ]);
+        if let Some(t) = &tap {
+            fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
+        }
         poll(&mut fds, -1);
-        // What the radio hears between commands: the access point letting
-        // the station go ends the link.
+        // What the radio hears between commands: data for the link's NIC;
+        // the access point letting the station go ends the link.
         while let Some(rx) = radio.recv(&mut frame) {
-            if link.as_ref().is_some_and(|l| mlme::ends(&radio, l, &frame[..rx.len])) {
+            let Some(l) = link.as_ref() else {
+                continue;
+            };
+            let f = &frame[..rx.len];
+            if let Some(eth) = frame::data_from_ds(f, radio.mac(), l.bss.bssid) {
+                if let Some(t) = &tap {
+                    t.send(&eth);
+                }
+            } else if mlme::ends(&radio, l, f) {
                 link = None;
+            }
+        }
+        // What netd sends on the link.
+        if let (Some(t), Some(l)) = (&tap, &link) {
+            while let Some(n) = t.recv(&mut frame) {
+                if let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n]) {
+                    radio.send(&f);
+                }
             }
         }
         while let Some(conn) = listener.accept() {
@@ -109,6 +136,13 @@ fn daemon(nic: &[u8]) -> ! {
                 Some(i) => (&line[..i], line[i + 1..].trim_ascii()),
                 None => (line, &[][..]),
             };
+            // Another network, or none: netd lets go of the old link's
+            // NIC (and its lease) first.
+            if matches!(cmd, b"connect" | b"disconnect") {
+                if let Some(t) = tap.take() {
+                    t.close();
+                }
+            }
             let reply = match cmd {
                 b"scan" => {
                     seen = scan(&mut radio);
@@ -127,6 +161,20 @@ fn daemon(nic: &[u8]) -> ! {
             };
             conn.write(&reply);
             conn.close();
+            // A scan leaves the radio on the last channel.
+            if let Some(l) = &link {
+                radio.set_channel(l.bss.channel);
+            }
+        }
+        match (&link, tap.is_some()) {
+            (Some(_), false) => {
+                tap = Tap::open(radio.mac());
+                if tap.is_none() {
+                    write(b"wifi: no virtual NIC for the link (/dev/tap)\n");
+                }
+            }
+            (None, true) => tap.take().unwrap().close(),
+            _ => {}
         }
     }
 }
@@ -203,7 +251,7 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
     for ch in CHANNELS {
         radio.set_channel(ch);
         radio.send(&frame::probe_request(radio.mac()));
-        let end = now_us().unwrap_or(0) + DWELL_MS * 1000;
+        let end = monotonic_ns() + DWELL_MS * 1_000_000;
         loop {
             while let Some(rx) = radio.recv(&mut buf) {
                 let Some(bss) = frame::parse_bss(&buf[..rx.len], rx.channel) else {
@@ -214,12 +262,12 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
                     None => seen.push(Seen { bss, rssi: rx.rssi }),
                 }
             }
-            let left = end - now_us().unwrap_or(end);
-            if left <= 0 {
+            let left = end.saturating_sub(monotonic_ns());
+            if left == 0 {
                 break;
             }
             let mut fds = [PollFd { fd: radio.fd() as i32, events: POLLIN, revents: 0 }];
-            poll(&mut fds, (left / 1000).max(1) as i32);
+            poll(&mut fds, (left / 1_000_000).max(1) as i32);
         }
     }
     seen.sort_by(|a, b| b.rssi.cmp(&a.rssi));

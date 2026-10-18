@@ -1,0 +1,230 @@
+smoltcp: several NICs sharing the sockets, each with its own lease
+
+netd drives the virtio NIC and the virtual NICs of /dev/tap (the Wi-Fi
+link) over one socket set, each NIC with a lease of its own. Upstream, an
+interface sends whatever it can route, whatever the source address, so a
+connection made on one link would leave through the other; every DHCP
+reply goes to the first DHCP socket of the set; and a NIC's interface
+would send another NIC's address to the router instead of leaving it to
+the loopback interface.
+
+set_own_source_only() makes an interface send only the packets whose
+source is one of its addresses (or unspecified: a DHCP request), leaving
+the others in their socket for the NIC they belong to (as local-pair
+does); set_elsewhere_addrs() names the other NICs' addresses, which a
+set_local_elsewhere() interface leaves to the loopback one; and
+Dhcpv4Socket::set_owner() ties a DHCP socket to the NIC with that
+hardware address, for its requests and its replies. An ICMP socket's
+source is the interface's own address, so the first NIC to poll it sent
+it: IcmpSocket::set_source() names it, and with it the NIC.
+
+--- a/src/iface/interface/ipv4.rs
++++ b/src/iface/interface/ipv4.rs
+@@ -153,9 +153,12 @@
+                 && matches!(self.caps.medium, Medium::Ethernet)
+             {
+                 let udp_packet = check!(UdpPacket::new_checked(ip_payload));
++                // myos: the socket of this NIC, one of several.
++                let hardware_addr = self.hardware_addr;
+                 if let Some(dhcp_socket) = sockets
+                     .items_mut()
+-                    .find_map(|i| Dhcpv4Socket::downcast_mut(&mut i.socket))
++                    .filter_map(|i| Dhcpv4Socket::downcast_mut(&mut i.socket))
++                    .find(|s| s.owned_by(hardware_addr))
+                 {
+                     // First check for source and dest ports, then do `UdpRepr::parse` if they match.
+                     // This way we avoid validating the UDP checksum twice for all non-DHCP UDP packets (one here, one in `process_udp`)
+--- a/src/iface/interface/mod.rs
++++ b/src/iface/interface/mod.rs
+@@ -114,6 +114,10 @@
+     fragmenter: Fragmenter,
+ }
+ 
++/// myos: how many other NICs' addresses an interface leaves to the
++/// loopback one ([`Interface::set_elsewhere_addrs`]).
++pub const ELSEWHERE_MAX: usize = 4;
++
+ /// The device independent part of an Ethernet network interface.
+ ///
+ /// Separating the device from the data required for processing and dispatching makes
+@@ -144,6 +148,8 @@
+     any_ip: bool,
+     local_only: bool,
+     local_elsewhere: bool,
++    own_source_only: bool,
++    elsewhere: [Option<IpAddress>; ELSEWHERE_MAX],
+     routes: Routes,
+     #[cfg(feature = "multicast")]
+     multicast: multicast::State,
+@@ -251,6 +257,8 @@
+                 any_ip: false,
+                 local_only: false,
+                 local_elsewhere: false,
++                own_source_only: false,
++                elsewhere: [None; ELSEWHERE_MAX],
+                 routes: Routes::new(),
+                 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+                 neighbor_cache: NeighborCache::new(),
+@@ -417,6 +425,29 @@
+         self.inner.local_elsewhere = local_elsewhere;
+     }
+ 
++    /// myos: one of several NICs sharing a socket set: it sends only the
++    /// packets whose source address is one of its own (or unspecified: a
++    /// DHCP request), so a connection leaves through the link its address
++    /// belongs to; another NIC's packet waits in its socket for that NIC,
++    /// as with [`set_local_elsewhere`].
++    ///
++    /// [`set_local_elsewhere`]: Self::set_local_elsewhere
++    pub fn set_own_source_only(&mut self, own_source_only: bool) {
++        self.inner.own_source_only = own_source_only;
++    }
++
++    /// myos: the addresses of the other NICs of the socket set (up to
++    /// [`ELSEWHERE_MAX`]), which, as this one's own with
++    /// [`set_local_elsewhere`], the loopback interface delivers.
++    ///
++    /// [`set_local_elsewhere`]: Self::set_local_elsewhere
++    pub fn set_elsewhere_addrs(&mut self, addrs: &[IpAddress]) {
++        self.inner.elsewhere = [None; ELSEWHERE_MAX];
++        for (slot, a) in self.inner.elsewhere.iter_mut().zip(addrs) {
++            *slot = Some(*a);
++        }
++    }
++
+     /// Get whether AnyIP is enabled.
+     ///
+     /// See [`set_any_ip`](Self::set_any_ip) for details on AnyIP
+@@ -683,8 +714,10 @@
+             // myos: DHCP is the NIC's interface's (a loopback one has no
+             // hardware address to ask with).
+             #[cfg(feature = "socket-dhcpv4")]
+-            if self.inner.local_only && matches!(item.socket, Socket::Dhcpv4(_)) {
+-                continue;
++            if let Socket::Dhcpv4(dhcp) = &item.socket {
++                if self.inner.local_only || !dhcp.owned_by(self.inner.hardware_addr) {
++                    continue;
++                }
+             }
+             if !item
+                 .meta
+@@ -705,7 +738,9 @@
+                     .dispatch_ip(t, meta, response, &mut self.fragmenter)
+                     .map_err(|e| match e {
+                         // myos: the other interface of the pair sends it.
+-                        DispatchError::NoRoute if inner.local_only || inner.local_elsewhere => {
++                        DispatchError::NoRoute
++                            if inner.local_only || inner.local_elsewhere || inner.own_source_only =>
++                        {
+                             EgressError::NoRoute
+                         }
+                         _ => EgressError::Dispatch,
+@@ -992,7 +1027,8 @@
+             #[allow(unreachable_patterns)]
+             _ => false,
+         };
+-        !(self.local_elsewhere && (loopback || self.has_ip_addr(*addr)))
++        let elsewhere = self.elsewhere.iter().any(|a| *a == Some(*addr));
++        !(self.local_elsewhere && (loopback || self.has_ip_addr(*addr) || elsewhere))
+     }
+ 
+     fn route(&self, addr: &IpAddress, timestamp: Instant) -> Option<IpAddress> {
+@@ -1186,10 +1222,15 @@
+         let mut ip_repr = packet.ip_repr();
+         assert!(!ip_repr.dst_addr().is_unspecified());
+ 
+-        // myos: local destinations belong to the loopback interface.
++        // myos: local destinations belong to the loopback interface, and
++        // another NIC's source address to that NIC.
+         if !self.routes_here(&ip_repr.dst_addr()) {
+             return Err(DispatchError::NoRoute);
+         }
++        let src = ip_repr.src_addr();
++        if self.own_source_only && !src.is_unspecified() && !self.has_ip_addr(src) {
++            return Err(DispatchError::NoRoute);
++        }
+ 
+         // Dispatch IEEE802.15.4:
+ 
+--- a/src/socket/dhcpv4.rs
++++ b/src/socket/dhcpv4.rs
+@@ -168,6 +168,10 @@
+     /// Ignore NAKs.
+     ignore_naks: bool,
+ 
++    /// myos: the hardware address of the NIC this socket asks for
++    /// (`set_owner`); `None`: whichever NIC polls it.
++    owner: Option<HardwareAddress>,
++
+     /// Server port config
+     pub(crate) server_port: u16,
+ 
+@@ -213,9 +217,22 @@
+             waker: WakerRegistration::new(),
+             server_port: DHCP_SERVER_PORT,
+             client_port: DHCP_CLIENT_PORT,
++            owner: None,
+         }
+     }
+ 
++    /// myos: tie the socket to the NIC with hardware address `owner`, one
++    /// of several sharing a socket set: only that NIC sends its requests
++    /// and hands it the replies (a reply names the NIC it is for).
++    pub fn set_owner(&mut self, owner: Option<HardwareAddress>) {
++        self.owner = owner;
++    }
++
++    /// myos: whether the NIC with hardware address `addr` drives this socket.
++    pub(crate) fn owned_by(&self, addr: HardwareAddress) -> bool {
++        self.owner.is_none_or(|o| o == addr)
++    }
++
+     /// Set the retry/timeouts configuration.
+     pub fn set_retry_config(&mut self, config: RetryConfig) {
+         self.retry_config = config;
+--- a/src/socket/icmp.rs
++++ b/src/socket/icmp.rs
+@@ -122,6 +122,8 @@
+     endpoint: Endpoint,
+     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
+     hop_limit: Option<u8>,
++    /// myos: the source address of what it sends (`set_source`).
++    source: Option<IpAddress>,
+     #[cfg(feature = "async")]
+     rx_waker: WakerRegistration,
+     #[cfg(feature = "async")]
+@@ -136,6 +138,7 @@
+             tx_buffer,
+             endpoint: Default::default(),
+             hop_limit: None,
++            source: None,
+             #[cfg(feature = "async")]
+             rx_waker: WakerRegistration::new(),
+             #[cfg(feature = "async")]
+@@ -205,6 +208,13 @@
+         self.hop_limit = hop_limit
+     }
+ 
++    /// myos: send from `source` instead of the address the interface
++    /// picks: with several NICs over one socket set, the address names
++    /// the NIC that sends it (`Interface::set_own_source_only`).
++    pub fn set_source(&mut self, source: Option<IpAddress>) {
++        self.source = source;
++    }
++
+     /// Bind the socket to the given endpoint.
+     ///
+     /// This function returns `Err(Error::Illegal)` if the socket was open
+@@ -572,7 +582,11 @@
+             match *remote_endpoint {
+                 #[cfg(feature = "proto-ipv4")]
+                 IpAddress::Ipv4(dst_addr) => {
+-                    let src_addr = match cx.get_source_address_ipv4(&dst_addr) {
++                    let source = match self.source {
++                        Some(IpAddress::Ipv4(a)) => Some(a),
++                        _ => cx.get_source_address_ipv4(&dst_addr),
++                    };
++                    let src_addr = match source {
+                         Some(addr) => addr,
+                         None => {
+                             net_trace!(

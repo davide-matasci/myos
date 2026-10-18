@@ -9,9 +9,11 @@
 //! access point beacons on its channel every 100 TU and answers the probe
 //! requests sent on it, takes open-system authentication and association
 //! (refused for a WPA2 network when the request carries no RSN element)
-//! and lets a station go at its deauthentication or disassociation; the
-//! guest hears only what is on the channel its
-//! radio is tuned to (`user/wifi`, `docs/wifi.md`). They beacon only for
+//! and lets a station go at its deauthentication or disassociation; an
+//! associated station's data frames reach the network behind it
+//! (`src/wifi_net.rs`), whose answers come back as data frames. The guest
+//! hears only what is on the channel its radio is tuned to (`user/wifi`,
+//! `docs/wifi.md`). They beacon only for
 //! [`AWAKE`] after the radio last sent something: a boot that never scans
 //! is not woken thirty times a second for nothing (under TCG on riscv64
 //! that cost the quick tests their budget).
@@ -19,6 +21,8 @@
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
+
+use crate::wifi_net;
 
 /// IEEE 802 local experimental EtherType 1.
 pub const ETHERTYPE: u16 = 0x88b5;
@@ -159,8 +163,10 @@ const STATUS_INVALID_AKMP: u16 = 43;
 
 impl Stations {
     /// What `ap` answers station `sta`'s `frame` with: an authentication
-    /// (subtype 0xb0) or association request (0x00); a deauthentication
-    /// (0xc0) or disassociation (0xa0) takes it off the list.
+    /// (subtype 0xb0) or association request (0x00), or a data frame to
+    /// the distribution system (0x08 or QoS data, 0x88) once associated; a
+    /// deauthentication (0xc0) or disassociation (0xa0) takes it off the
+    /// list.
     fn answer(&mut self, ap: &Ap, sta: [u8; 6], frame: &[u8]) -> Option<Vec<u8>> {
         let key = (ap.bssid, sta);
         let body = &frame[24..];
@@ -206,6 +212,28 @@ impl Stations {
             0xc0 | 0xa0 => {
                 self.sta.remove(&key);
                 None
+            }
+            0x08 | 0x88 if frame[1] & 3 == 1 => {
+                let Some(&Sta::Associated(aid)) = self.sta.get(&key) else {
+                    return None;
+                };
+                // The LLC/SNAP header, then the EtherType.
+                let body = &frame[if frame[0] == 0x88 { 26 } else { 24 }..];
+                if body.len() < 8 || body[..6] != [0xaa, 0xaa, 0x03, 0, 0, 0] {
+                    return None;
+                }
+                let ethertype = u16::from_be_bytes([body[6], body[7]]);
+                let out = wifi_net::answer(ap.bssid, sta, aid, ethertype, &body[8..])?;
+                // From the distribution system: to the destination, from
+                // the access point, sent by the router (the same address).
+                let mut f = vec![0x08, 0x02, 0, 0];
+                f.extend_from_slice(&out.dst);
+                f.extend_from_slice(&ap.bssid);
+                f.extend_from_slice(&ap.bssid);
+                f.extend_from_slice(&[0, 0, 0xaa, 0xaa, 0x03, 0, 0, 0]);
+                f.extend_from_slice(&out.ethertype.to_be_bytes());
+                f.extend_from_slice(&out.payload);
+                Some(f)
             }
             _ => None,
         }

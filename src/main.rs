@@ -18,6 +18,7 @@ mod initramfs;
 mod packages;
 #[allow(dead_code)]
 mod ports;
+mod wifi_net;
 mod wifi_sim;
 mod release;
 
@@ -776,7 +777,8 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     let disk = target.join(format!("boot-test-{name}.img"));
     limine_image::copy_sparse(image, &disk);
     let linux = linux_compat_enabled();
-    let outcome = boot_test::run(spawn(&disk), &mode, linux);
+    let slow = name.starts_with("riscv64");
+    let outcome = boot_test::run(spawn(&disk), &mode, linux, slow);
     let mut ok = outcome.ok;
     let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
     // The installed disk is kept before the next boot makes a new scratch disk.
@@ -786,11 +788,11 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     }
     if ok && ran("boot_upgrade") {
         eprintln!("boot test: the upgraded disk boots again");
-        ok = boot_test::run(spawn(&disk), &Mode::Reboot { app: ran("apps_data") }, linux).ok;
+        ok = boot_test::run(spawn(&disk), &Mode::Reboot { app: ran("apps_data") }, linux, slow).ok;
     }
     if ok && ran("boot_install_local") {
         eprintln!("boot test: the disk get-myos --install made boots");
-        ok = boot_test::run(spawn(&installed), &Mode::Installed, linux).ok;
+        ok = boot_test::run(spawn(&installed), &Mode::Installed, linux, slow).ok;
     }
     exit(if ok { 0 } else { 1 })
 }

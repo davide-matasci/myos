@@ -67,6 +67,7 @@ MODULE_TAGS = {
     "usb_storage": {"usb"},
     "usb_hid": {"usb", "mouse"},
     "pcidev": {"pcidev"},
+    "tap": {"tap", "netfs"},
     "hello": {"modules"},
 }
 # Modules whose change is the whole system's (the ABI, the platform).
