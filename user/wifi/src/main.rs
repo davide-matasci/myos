@@ -1,7 +1,9 @@
 //! `wifi`: the Wi-Fi daemon and its command (issue #495, `docs/wifi.md`).
 //!
-//! - `wifi daemon [NIC]` drives the radio: the simulated one on NIC
-//!   (default `/dev/net1`, the test boots' second NIC, `src/wifi_sim.rs`).
+//! - `wifi daemon [NIC]` drives the radio: the AX201 when `/dev/pci` has
+//!   one and no NIC is named (its firmware from `wifi-firmware fetch`),
+//!   else the simulated one on NIC (default `/dev/net1`, the test boots'
+//!   second NIC, `src/wifi_sim.rs`).
 //!   It listens on the unix socket `wifid` for the commands below, one per
 //!   connection: a line in, the answer out, then the connection ends.
 //! - `wifi scan`: a scan of the 2.4 GHz channels; prints what answered.
@@ -27,12 +29,15 @@
 
 extern crate alloc;
 
+mod ax201;
 mod frame;
 mod mlme;
+mod pci;
 mod radio;
 mod tap;
 mod unix;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use frame::{Bss, Security};
@@ -68,7 +73,7 @@ fn usage() -> ! {
 fn main() -> ! {
     heap_init();
     match myos_user::args::arg(1) {
-        Some(b"daemon") => daemon(myos_user::args::arg(2).unwrap_or(b"/dev/net1")),
+        Some(b"daemon") => daemon(myos_user::args::arg(2)),
         Some(b"scan" | b"list" | b"connect" | b"status" | b"disconnect") => client(),
         _ => usage(),
     }
@@ -80,11 +85,29 @@ struct Seen {
     rssi: i8,
 }
 
-fn daemon(nic: &[u8]) -> ! {
-    let Some(mut radio) = Sim::open(nic) else {
+/// The radio: NIC's simulated one when named, else the AX201 when there
+/// is one, else the simulated one on `/dev/net1`.
+fn open_radio(nic: Option<&[u8]>) -> Option<Box<dyn Radio>> {
+    if nic.is_none()
+        && let Some(dir) = ax201::find()
+    {
+        return match ax201::Ax201::open(&dir) {
+            Ok(r) => Some(Box::new(r)),
+            Err(f) => {
+                write(&ax201::why(&f));
+                None
+            }
+        };
+    }
+    Some(Box::new(Sim::open(nic.unwrap_or(b"/dev/net1"))?))
+}
+
+fn daemon(nic: Option<&[u8]>) -> ! {
+    let Some(mut radio) = open_radio(nic) else {
         write(b"wifi: no radio\n");
         exit_code(1);
     };
+    let radio = &mut *radio;
     let mut cmd = Vec::from(b"announce " as &[u8]);
     cmd.extend_from_slice(unix::NAME);
     let Some(listener) = Conv::new(&cmd) else {
@@ -116,7 +139,7 @@ fn daemon(nic: &[u8]) -> ! {
                 if let Some(t) = &tap {
                     t.send(&eth);
                 }
-            } else if mlme::ends(&radio, l, f) {
+            } else if mlme::ends(radio, l, f) {
                 link = None;
             }
         }
@@ -145,15 +168,15 @@ fn daemon(nic: &[u8]) -> ! {
             }
             let reply = match cmd {
                 b"scan" => {
-                    seen = scan(&mut radio);
+                    seen = scan(radio);
                     listing(&seen)
                 }
                 b"list" => listing(&seen),
-                b"connect" => connect(&mut radio, &mut seen, &mut link, arg),
+                b"connect" => connect(radio, &mut seen, &mut link, arg),
                 b"status" => status(link.as_ref()),
                 b"disconnect" => {
                     if let Some(l) = link.take() {
-                        mlme::leave(&mut radio, &l);
+                        mlme::leave(radio, &l);
                     }
                     status(None)
                 }
@@ -181,9 +204,12 @@ fn daemon(nic: &[u8]) -> ! {
 
 /// `connect SSID`: leave the current network, then join the strongest
 /// SSID heard (scanning first when the last scan did not hear it).
-fn connect(radio: &mut Sim, seen: &mut Vec<Seen>, link: &mut Option<Link>, ssid: &[u8]) -> Vec<u8> {
+fn connect(radio: &mut dyn Radio, seen: &mut Vec<Seen>, link: &mut Option<Link>, ssid: &[u8]) -> Vec<u8> {
     if ssid.is_empty() {
         return Vec::from(b"error: connect SSID\n" as &[u8]);
+    }
+    if !radio.joins() {
+        return Vec::from(b"error: this radio scans only so far (issue #495)\n" as &[u8]);
     }
     if let Some(l) = link.take() {
         mlme::leave(radio, &l);
@@ -244,9 +270,18 @@ fn status(link: Option<&Link>) -> Vec<u8> {
 }
 
 /// Visit every channel: a wildcard probe request, then whatever beacons and
-/// probe responses are heard for [`DWELL_MS`].
+/// probe responses are heard for [`DWELL_MS`]; or the radio's own scan.
 fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
     let mut seen: Vec<Seen> = Vec::new();
+    if let Some(heard) = radio.scan() {
+        for h in heard {
+            if let Some(bss) = frame::parse_bss(&h.frame, h.channel) {
+                hear(&mut seen, bss, h.rssi);
+            }
+        }
+        seen.sort_by(|a, b| b.rssi.cmp(&a.rssi));
+        return seen;
+    }
     let mut buf = [0u8; 2048];
     for ch in CHANNELS {
         radio.set_channel(ch);
@@ -254,12 +289,8 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
         let end = monotonic_ns() + DWELL_MS * 1_000_000;
         loop {
             while let Some(rx) = radio.recv(&mut buf) {
-                let Some(bss) = frame::parse_bss(&buf[..rx.len], rx.channel) else {
-                    continue;
-                };
-                match seen.iter_mut().find(|s| s.bss.bssid == bss.bssid) {
-                    Some(s) => s.rssi = s.rssi.max(rx.rssi),
-                    None => seen.push(Seen { bss, rssi: rx.rssi }),
+                if let Some(bss) = frame::parse_bss(&buf[..rx.len], rx.channel) {
+                    hear(&mut seen, bss, rx.rssi);
                 }
             }
             let left = end.saturating_sub(monotonic_ns());
@@ -272,6 +303,14 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
     }
     seen.sort_by(|a, b| b.rssi.cmp(&a.rssi));
     seen
+}
+
+/// A network heard, at its strongest.
+fn hear(seen: &mut Vec<Seen>, bss: Bss, rssi: i8) {
+    match seen.iter_mut().find(|s| s.bss.bssid == bss.bssid) {
+        Some(s) => s.rssi = s.rssi.max(rssi),
+        None => seen.push(Seen { bss, rssi }),
+    }
 }
 
 fn listing(seen: &[Seen]) -> Vec<u8> {

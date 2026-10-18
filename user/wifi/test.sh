@@ -1,9 +1,10 @@
 # Wi-Fi over the test boots' simulated radio (src/wifi_sim.rs): a scan
 # of the 2.4 GHz channels finds the launcher's three access points, each
 # on its channel with its signal and security, the strongest first, and
-# `wifi list` gives the same afterwards (docs/wifi.md).
+# `wifi list` gives the same afterwards (docs/wifi.md). The daemon is
+# started with no NIC: with no AX201 in /dev/pci it takes /dev/net1's.
 wifi_scan() {
-	/bin/custom/wifi daemon /dev/net1 &
+	/bin/custom/wifi daemon &
 	wifi_pid=$!
 	wifi_rc=1
 	# The daemon's socket is there once it announced it.
