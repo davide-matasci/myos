@@ -1,0 +1,129 @@
+smoltcp: a SYN goes to its connection before a listener
+
+A TCP segment goes to the first socket of the set that accepts it, and a
+listener accepts any SYN to its port. netd re-arms a fresh listener
+beside each connection it takes off one, in whichever slot of the set is
+free, often one before the connection's. A SYN the peer sent again (its
+first SYN-ACK slow or lost; under QEMU, slirp retransmits on the host's
+clock while the guest stands still) then reached that listener, which
+opened a second half-open connection for the same addresses and answered
+a SYN-ACK of its own; the peer's reset to that one reset the first
+connection too, its data unsent (a listen test's write failed with
+EPIPE). Segments now go to a socket that is not listening first, then
+to the listeners, as Linux looks up a connection before a listener. With
+a test (tests/ipv4.rs). Derived from smoltcp, so under smoltcp's license
+(0BSD).
+
+diff --git a/src/iface/interface/tcp.rs b/src/iface/interface/tcp.rs
+--- a/src/iface/interface/tcp.rs
++++ b/src/iface/interface/tcp.rs
+@@ -1,6 +1,6 @@
+ use super::*;
+ 
+-use crate::socket::tcp::Socket;
++use crate::socket::tcp::{Socket, State};
+ 
+ impl InterfaceInner {
+     pub(crate) fn process_tcp<'frame>(
+@@ -18,14 +18,21 @@
+             &self.caps.checksum
+         ));
+ 
+-        for tcp_socket in sockets
+-            .items_mut()
+-            .filter_map(|i| Socket::downcast_mut(&mut i.socket))
+-        {
+-            if tcp_socket.accepts(self, &ip_repr, &tcp_repr) {
+-                return tcp_socket
+-                    .process(self, &ip_repr, &tcp_repr)
+-                    .map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
++        // A connection's own socket first, then the listeners: a SYN its
++        // peer sent again belongs to the connection it opened, whichever
++        // slot a listener on the port has (myos).
++        for listeners in [false, true] {
++            for tcp_socket in sockets
++                .items_mut()
++                .filter_map(|i| Socket::downcast_mut(&mut i.socket))
++            {
++                if (tcp_socket.state() == State::Listen) == listeners
++                    && tcp_socket.accepts(self, &ip_repr, &tcp_repr)
++                {
++                    return tcp_socket
++                        .process(self, &ip_repr, &tcp_repr)
++                        .map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
++                }
+             }
+         }
+ 
+diff --git a/src/iface/interface/tests/ipv4.rs b/src/iface/interface/tests/ipv4.rs
+--- a/src/iface/interface/tests/ipv4.rs
++++ b/src/iface/interface/tests/ipv4.rs
+@@ -1242,3 +1242,68 @@
+     lo.poll(Instant::ZERO, &mut dev, &mut sockets);
+     assert!(dev.tx_queue.is_empty());
+ }
++
++/// myos: a retransmitted SYN belongs to the connection it opened, not to a
++/// listener on the port that comes first in the socket set (a server
++/// re-arms a fresh one beside each connection, in whatever slot is free).
++/// That listener used to take it and answer a second SYN-ACK of its own;
++/// the peer's reset to that one reset the first connection too.
++#[test]
++#[cfg(all(feature = "medium-ip", feature = "socket-tcp"))]
++fn test_tcp_syn_retransmit_not_to_listener() {
++    use crate::socket::tcp;
++
++    let (mut iface, mut sockets, _) = setup(Medium::Ip);
++    let new_socket = || {
++        tcp::Socket::new(
++            tcp::SocketBuffer::new(vec![0; 64]),
++            tcp::SocketBuffer::new(vec![0; 64]),
++        )
++    };
++    let peer = Ipv4Address::new(192, 168, 1, 2);
++    let own = Ipv4Address::new(192, 168, 1, 1);
++    let syn = TcpRepr {
++        src_port: 4242,
++        dst_port: 80,
++        control: TcpControl::Syn,
++        seq_number: TcpSeqNumber(1000),
++        ack_number: None,
++        window_len: 256,
++        window_scale: None,
++        max_seg_size: None,
++        sack_permitted: false,
++        sack_ranges: [None, None, None],
++        timestamp: None,
++        payload: &[],
++    };
++    let mut bytes = vec![0u8; syn.buffer_len()];
++    syn.emit(
++        &mut TcpPacket::new_unchecked(&mut bytes),
++        &peer.into(),
++        &own.into(),
++        &ChecksumCapabilities::default(),
++    );
++    let ip = IpRepr::Ipv4(Ipv4Repr {
++        src_addr: peer,
++        dst_addr: own,
++        next_header: IpProtocol::Tcp,
++        payload_len: syn.buffer_len(),
++        hop_limit: 64,
++    });
++
++    // The connection's socket in the second slot, the first one free.
++    let spare = sockets.add(new_socket());
++    let conn = sockets.add(new_socket());
++    sockets.get_mut::<tcp::Socket>(conn).listen(80).unwrap();
++    iface.inner.process_tcp(&mut sockets, ip.clone(), &bytes);
++    assert_eq!(sockets.get::<tcp::Socket>(conn).state(), tcp::State::SynReceived);
++    sockets.remove(spare);
++    let fresh = sockets.add(new_socket());
++    sockets.get_mut::<tcp::Socket>(fresh).listen(80).unwrap();
++
++    // The same SYN again: the connection takes it (its SYN-ACK goes out
++    // again on its timer), and the fresh listener keeps listening.
++    assert_eq!(iface.inner.process_tcp(&mut sockets, ip, &bytes), None);
++    assert_eq!(sockets.get::<tcp::Socket>(fresh).state(), tcp::State::Listen);
++    assert_eq!(sockets.get::<tcp::Socket>(conn).state(), tcp::State::SynReceived);
++}
