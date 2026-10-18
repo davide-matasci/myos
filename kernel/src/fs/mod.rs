@@ -67,7 +67,7 @@ pub fn anon_file(size: usize) -> Option<Vnode> {
 
 /// The device page at `offset` of `node`, for a shared `mmap` (see
 /// [`vfs::device_frame`]).
-pub fn device_frame(node: &Vnode, offset: usize) -> Option<u64> {
+pub fn device_frame(node: &Vnode, offset: usize) -> Option<vfs::DeviceFrame> {
     vfs::device_frame(node, offset)
 }
 

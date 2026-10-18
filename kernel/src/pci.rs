@@ -4,6 +4,9 @@
 //! drivers themselves (virtio-blk, NVMe, virtio-net) are modules.
 
 use crate::arch::pci as arch_pci;
+use alloc::vec::Vec;
+use myos_abi::PCI_OWNER_MAX;
+use spin::Mutex;
 
 #[derive(Clone, Copy)]
 pub struct Bdf {
@@ -170,4 +173,47 @@ pub fn find_class(class: u8, subclass: u8, nth: u32) -> Option<Bdf> {
         }
     }
     None
+}
+
+/// Who drives a PCI function: the module that bound to it (its
+/// `pci_enable`, `pci_bar_map` or `pci_irq_enable` from its init or
+/// rescan), or a claim made through `pci_claim` (`/dev/pci` while a
+/// program holds the function). One owner at a time, so a program cannot
+/// take a kernel driver's device and its driver.
+struct Claim {
+    bdf: (u8, u8, u8),
+    owner: [u8; PCI_OWNER_MAX],
+    len: usize,
+}
+
+static CLAIMS: Mutex<Vec<Claim>> = Mutex::new(Vec::new());
+
+/// Claim the function for `owner`: true when it is now `owner`'s.
+pub fn claim(bus: u8, slot: u8, func: u8, owner: &[u8]) -> bool {
+    let owner = &owner[..owner.len().min(PCI_OWNER_MAX)];
+    let mut claims = CLAIMS.lock();
+    if let Some(c) = claims.iter().find(|c| c.bdf == (bus, slot, func)) {
+        return &c.owner[..c.len] == owner;
+    }
+    let mut name = [0u8; PCI_OWNER_MAX];
+    name[..owner.len()].copy_from_slice(owner);
+    claims.push(Claim { bdf: (bus, slot, func), owner: name, len: owner.len() });
+    true
+}
+
+/// Give back `owner`'s claim of the function.
+pub fn release(bus: u8, slot: u8, func: u8, owner: &[u8]) {
+    let owner = &owner[..owner.len().min(PCI_OWNER_MAX)];
+    CLAIMS.lock().retain(|c| c.bdf != (bus, slot, func) || &c.owner[..c.len] != owner);
+}
+
+/// The function's owner into `out`: its length, 0 when it is free.
+pub fn owner(bus: u8, slot: u8, func: u8, out: &mut [u8]) -> usize {
+    let claims = CLAIMS.lock();
+    let Some(c) = claims.iter().find(|c| c.bdf == (bus, slot, func)) else {
+        return 0;
+    };
+    let n = c.len.min(out.len());
+    out[..n].copy_from_slice(&c.owner[..n]);
+    n
 }
