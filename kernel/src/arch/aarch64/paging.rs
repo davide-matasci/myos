@@ -25,18 +25,35 @@ struct Table([u64; 512]);
 
 /// The kernel's TTBR0: no mappings (kernel threads touch no user memory).
 static mut L0: Table = Table([0; 512]);
-/// The window's L1 tables: one per 512 GiB of physical addresses, from 0.
+/// The window's L1 tables, each hung off the L0 slot of the first device
+/// in its 512 GiB of physical addresses: static, since the UART and the
+/// GIC are mapped before there is a frame allocator.
 static mut WINDOW_L1: [Table; WINDOW_L1_TABLES] = [const { Table([0; 512]) }; WINDOW_L1_TABLES];
-/// Serializes the window's updates (`map_mmio` from modules on any CPU).
-static WINDOW_LOCK: Mutex<()> = Mutex::new(());
+/// Which 512 GiB each of [`WINDOW_L1`] covers (physical address >> 39),
+/// for the first `used` of them; under the lock (`map_mmio` from modules
+/// on any CPU).
+struct Window {
+    region: [usize; WINDOW_L1_TABLES],
+    used: usize,
+}
+
+static WINDOW: Mutex<Window> = Mutex::new(Window {
+    region: [0; WINDOW_L1_TABLES],
+    used: 0,
+});
 
 /// Where physical address 0 is in the window: L0 slot 256 of TTBR1, the
 /// first above the HHDM's (Limine's HHDM starts at the bottom of the
 /// higher half, `0xffff_0000_0000_0000`, and spans the RAM).
 const DEV_WINDOW: u64 = 0xffff_8000_0000_0000;
-/// Physical addresses the window covers: 1 TiB (QEMU `virt`'s 64-bit PCIe
-/// window is at 512 GiB).
-const WINDOW_L1_TABLES: usize = 2;
+/// The window's L0 slots: 256 up to the kernel's (511), so physical
+/// addresses below 127.5 TiB (an Ampere Altra's PCIe sits near 48 TiB).
+const WINDOW_FIRST_SLOT: usize = (DEV_WINDOW >> 39) as usize & 0x1ff;
+const WINDOW_SLOTS: usize = 511 - WINDOW_FIRST_SLOT;
+/// The 512 GiB regions with devices the window can hold: QEMU `virt` has
+/// two (its 64-bit PCIe window is at 512 GiB), a two-socket server about
+/// a dozen.
+const WINDOW_L1_TABLES: usize = 16;
 
 const TABLE: u64 = 0b11;
 const BLOCK: u64 = 0b01;
@@ -90,26 +107,21 @@ fn higher_half_48() -> bool {
     (tcr >> 16) & 0x3f == 16
 }
 
-/// Hang the window's L1 tables off their L0 slots of TTBR1, which Limine
-/// left empty. Without them (another layout, a slot in use) `map_mmio`
-/// maps nothing and the boot stops at its first device.
+/// Check that the window's L0 slots of TTBR1 are there and empty (Limine
+/// leaves them so); its L1 tables are hung off them as devices are mapped.
+/// Otherwise (another layout, a slot in use) `map_mmio` maps nothing and
+/// the boot stops at its first device.
 fn install_window() {
     if !higher_half_48() {
         return;
     }
-    let first = ((DEV_WINDOW >> 39) & 0x1ff) as usize;
     unsafe {
-        let l0 = &mut *ttbr1_l0();
-        if l0[first..first + WINDOW_L1_TABLES].iter().any(|&e| e != 0) {
+        let l0 = &*ttbr1_l0();
+        if l0[WINDOW_FIRST_SLOT..WINDOW_FIRST_SLOT + WINDOW_SLOTS].iter().any(|&e| e != 0) {
             return;
-        }
-        for i in 0..WINDOW_L1_TABLES {
-            let l1 = &raw mut WINDOW_L1[i];
-            l0[first + i] = limine_boot::kernel_virt_to_phys(l1 as usize) | TABLE;
         }
     }
     WINDOW_READY.store(true, core::sync::atomic::Ordering::SeqCst);
-    tlbi();
 }
 
 /// The window's L1 tables are in TTBR1.
@@ -192,12 +204,29 @@ fn tlbi() {
     }
 }
 
-/// The window's 1 GiB device block for physical `pa`.
-fn map_block_1g(pa: u64) -> Option<()> {
-    let table = (pa >> 39) as usize;
-    if table >= WINDOW_L1_TABLES {
+/// The window's 1 GiB device block for physical `pa`, and the L1 table of
+/// its 512 GiB first if it has none yet.
+fn map_block_1g(w: &mut Window, pa: u64) -> Option<()> {
+    let region = (pa >> 39) as usize;
+    if region >= WINDOW_SLOTS {
         return None;
     }
+    let table = match w.region[..w.used].iter().position(|&r| r == region) {
+        Some(t) => t,
+        None => {
+            let t = w.used;
+            if t == WINDOW_L1_TABLES {
+                return None;
+            }
+            unsafe {
+                let l1 = &raw mut WINDOW_L1[t];
+                (*ttbr1_l0())[WINDOW_FIRST_SLOT + region] = limine_boot::kernel_virt_to_phys(l1 as usize) | TABLE;
+            }
+            w.region[t] = region;
+            w.used += 1;
+            t
+        }
+    };
     let i1 = ((pa >> 30) & 0x1ff) as usize;
     unsafe {
         let l1 = &raw mut WINDOW_L1[table];
@@ -215,10 +244,10 @@ pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
         return None;
     }
     let end = phys.checked_add(size)?;
-    let _guard = WINDOW_LOCK.lock();
+    let mut w = WINDOW.lock();
     let mut pa = phys & !0x3FFF_FFFF;
     while pa < end {
-        map_block_1g(pa)?;
+        map_block_1g(&mut w, pa)?;
         pa = pa.checked_add(0x4000_0000)?;
     }
     // New entries only (nothing to invalidate on any CPU): make the table
