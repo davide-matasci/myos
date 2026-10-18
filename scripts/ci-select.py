@@ -66,6 +66,7 @@ MODULE_TAGS = {
     "usb_hub": {"usb"},
     "usb_storage": {"usb"},
     "usb_hid": {"usb", "mouse"},
+    "pcidev": {"pcidev"},
     "tap": {"tap", "netfs"},
     "hello": {"modules"},
 }

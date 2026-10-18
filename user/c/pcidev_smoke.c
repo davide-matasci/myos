@@ -1,0 +1,238 @@
+/* pcidev-smoke: boot-CI guest test for /dev/pci (modules/pcidev), a
+ * userspace driver for QEMU's `edu` device (vendor 1234, device 11e8; the
+ * launcher adds one to every test boot).
+ *
+ * Finds the device by its `info`, and one a kernel driver drives, whose
+ * `ctl` must not open (its info names the driver); holds the edu device
+ * (a second open is refused), maps BAR 0 uncached and checks the id, the
+ * liveness register (it inverts what is written) and the factorial unit;
+ * routes the interrupt
+ * and has the device raise one (the `irq` read returns it, the status
+ * register names it); allocates a DMA buffer and has the device copy a
+ * pattern from it into its own memory and back to another part of it,
+ * announcing the end with an interrupt. Prints [ OK ] pcidev.
+ */
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* edu's registers (QEMU docs/specs/edu.rst). */
+#define EDU_ID 0x00
+#define EDU_LIVE 0x04
+#define EDU_FACT 0x08
+#define EDU_STATUS 0x20 /* bit 0: computing */
+#define EDU_IRQ_STATUS 0x24
+#define EDU_IRQ_RAISE 0x60
+#define EDU_IRQ_ACK 0x64
+#define EDU_DMA_SRC 0x80
+#define EDU_DMA_DST 0x88
+#define EDU_DMA_COUNT 0x90
+#define EDU_DMA_CMD 0x98 /* bit 0 start, bit 1 edu->RAM, bit 2 interrupt */
+#define EDU_DMA_BUF 0x40000 /* the device's own 4 KiB */
+#define EDU_DMA_IRQ 0x100   /* the status bit of a finished copy */
+
+static char dir[64];
+/* A function a kernel driver drives (`driver ...` in its info). */
+static char driven[64];
+static volatile uint32_t *regs;
+
+static int fail(const char *what) {
+    printf("[ FAIL ] pcidev %s (errno %d)\n", what, errno);
+    return 1;
+}
+
+static void path(char *out, size_t cap, const char *file) {
+    snprintf(out, cap, "/dev/pci/%s/%s", dir, file);
+}
+
+static uint32_t rd(unsigned off) {
+    return regs[off / 4];
+}
+
+static void wr(unsigned off, uint32_t v) {
+    regs[off / 4] = v;
+}
+
+/* The DMA registers take a whole 64-bit store (a 32-bit one sets only
+ * the low half). */
+static void wr64(unsigned off, uint64_t v) {
+    *(volatile uint64_t *)((volatile uint8_t *)regs + off) = v;
+}
+
+/* Wait (up to 5 s) for `bit` of the register at `off` to clear. */
+static int settle(unsigned off, uint32_t bit) {
+    for (int i = 0; i < 5000; i++) {
+        if (!(rd(off) & bit))
+            return 1;
+        usleep(1000);
+    }
+    return 0;
+}
+
+/* The ctl text; 0 when unreadable. */
+static int read_ctl(int fd, char *buf, size_t cap) {
+    ssize_t n = pread(fd, buf, cap - 1, 0);
+    if (n <= 0)
+        return 0;
+    buf[n] = 0;
+    return 1;
+}
+
+/* The value after `key ` in the ctl text, as a number. */
+static int ctl_value(const char *text, const char *key, unsigned long long *out) {
+    const char *p = strstr(text, key);
+    if (!p)
+        return 0;
+    *out = strtoull(p + strlen(key), NULL, 0);
+    return 1;
+}
+
+/* Find the edu function's directory under /dev/pci. */
+static int find_edu(void) {
+    DIR *d = opendir("/dev/pci");
+    if (!d)
+        return 0;
+    struct dirent *e;
+    int found = 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.')
+            continue;
+        char p[128], text[512];
+        snprintf(p, sizeof p, "/dev/pci/%s/info", e->d_name);
+        int fd = open(p, O_RDONLY);
+        if (fd < 0)
+            continue;
+        if (read_ctl(fd, text, sizeof text) && strstr(text, "id 1234:11e8")) {
+            snprintf(dir, sizeof dir, "%s", e->d_name);
+            found = 1;
+        } else if (strstr(text, "driver ") && !driven[0]) {
+            snprintf(driven, sizeof driven, "%s", e->d_name);
+        }
+        close(fd);
+    }
+    closedir(d);
+    return found;
+}
+
+/* Wait for an interrupt on `irq` (up to 5 s); its count, 0 on timeout. */
+static uint64_t wait_irq(int irq) {
+    struct pollfd p = {.fd = irq, .events = POLLIN};
+    if (poll(&p, 1, 5000) != 1)
+        return 0;
+    uint64_t n = 0;
+    if (read(irq, &n, 8) != 8)
+        return 0;
+    return n;
+}
+
+int main(void) {
+    if (!find_edu())
+        return fail("no edu device in /dev/pci");
+    char p[128], text[512];
+    /* The kernel's drivers keep their devices (a virtio NIC or disk, NVMe,
+     * xHCI): their ctl does not open. */
+    if (!driven[0])
+        return fail("no function a kernel driver drives");
+    snprintf(p, sizeof p, "/dev/pci/%s/ctl", driven);
+    if (open(p, O_RDWR) >= 0)
+        return fail("a kernel driver's function opened");
+    path(p, sizeof p, "ctl");
+    int ctl = open(p, O_RDWR);
+    if (ctl < 0)
+        return fail("open ctl");
+    if (open(p, O_RDWR) >= 0)
+        return fail("a second open of ctl was not refused");
+    if (write(ctl, "enable", 6) != 6)
+        return fail("enable");
+
+    path(p, sizeof p, "config");
+    int cfg = open(p, O_RDONLY);
+    uint32_t id = 0;
+    if (cfg < 0 || pread(cfg, &id, 4, 0) != 4 || id != 0x11e81234)
+        return fail("config space id");
+    close(cfg);
+
+    path(p, sizeof p, "bar0");
+    int bar = open(p, O_RDWR);
+    if (bar < 0)
+        return fail("open bar0");
+    regs = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, bar, 0);
+    if (regs == MAP_FAILED)
+        return fail("mmap bar0");
+    if ((rd(EDU_ID) & 0xFFFF) != 0x00ed)
+        return fail("edu id register");
+    wr(EDU_LIVE, 0x12345678);
+    if (rd(EDU_LIVE) != ~0x12345678u)
+        return fail("liveness register");
+    wr(EDU_FACT, 5);
+    if (!settle(EDU_STATUS, 1) || rd(EDU_FACT) != 120)
+        return fail("factorial");
+
+    if (write(ctl, "irq", 3) != 3)
+        return fail("route the interrupt");
+    path(p, sizeof p, "irq");
+    int irq = open(p, O_RDWR);
+    if (irq < 0)
+        return fail("open irq");
+    /* Unmask (an INTx line starts masked), then have the device raise. */
+    if (write(irq, "", 1) != 1)
+        return fail("unmask");
+    wr(EDU_IRQ_RAISE, 0x5a);
+    if (wait_irq(irq) == 0)
+        return fail("no interrupt");
+    if (rd(EDU_IRQ_STATUS) != 0x5a)
+        return fail("interrupt status");
+    wr(EDU_IRQ_ACK, 0x5a);
+    if (write(irq, "", 1) != 1)
+        return fail("unmask after the interrupt");
+
+    if (write(ctl, "dma 1", 5) != 5 || !read_ctl(ctl, text, sizeof text))
+        return fail("dma buffer");
+    unsigned long long phys = 0;
+    if (!ctl_value(text, "dma0 ", &phys) || phys == 0)
+        return fail("dma0 in ctl");
+    path(p, sizeof p, "dma0");
+    int dma = open(p, O_RDWR);
+    if (dma < 0)
+        return fail("open dma0");
+    uint8_t *buf = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, dma, 0);
+    if (buf == MAP_FAILED)
+        return fail("mmap dma0");
+    for (int i = 0; i < 256; i++)
+        buf[i] = (uint8_t)(i * 7 + 3);
+    /* RAM -> the device's buffer, then back into the second half. */
+    wr64(EDU_DMA_SRC, phys);
+    wr64(EDU_DMA_DST, EDU_DMA_BUF);
+    wr64(EDU_DMA_COUNT, 256);
+    wr64(EDU_DMA_CMD, 1);
+    if (!settle(EDU_DMA_CMD, 1))
+        return fail("dma to the device");
+    wr64(EDU_DMA_SRC, EDU_DMA_BUF);
+    wr64(EDU_DMA_DST, phys + 2048);
+    wr64(EDU_DMA_COUNT, 256);
+    wr64(EDU_DMA_CMD, 1 | 2 | 4);
+    if (wait_irq(irq) == 0)
+        return fail("no interrupt for the dma");
+    if (!(rd(EDU_IRQ_STATUS) & EDU_DMA_IRQ))
+        return fail("dma interrupt status");
+    wr(EDU_IRQ_ACK, EDU_DMA_IRQ);
+    for (int i = 0; i < 256; i++) {
+        if (buf[2048 + i] != (uint8_t)(i * 7 + 3))
+            return fail("dma copy");
+    }
+    close(ctl);
+    path(p, sizeof p, "ctl");
+    ctl = open(p, O_RDWR);
+    if (ctl < 0)
+        return fail("ctl after its holder let go");
+    close(ctl);
+    printf("[ OK ] pcidev\n");
+    return 0;
+}

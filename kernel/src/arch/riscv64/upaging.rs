@@ -228,6 +228,13 @@ pub fn map_user_page_prot(aspace: u64, va: u64, pa: u64, w: bool, x: bool) {
     }
 }
 
+/// A device's registers at `pa` (a PCI BAR): an ordinary leaf, never
+/// executable; without Svpbmt the platform's attributes for the address
+/// (an I/O region) make it uncached.
+pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    map_user_page_prot(aspace, va, pa, w, false);
+}
+
 pub fn unmap_user_page(aspace: u64, va: u64) {
     let i0 = ((va >> 12) & 0x1ff) as usize;
     let leaf = ensure_riscv_leaf(aspace, va);

@@ -118,11 +118,12 @@ pub fn timer_resume() {
 /// Route a PCI function's interrupt: MSI-X entry 0 → a LAPIC vector on the
 /// BSP (no IOAPIC / PIRQ routing needed).
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
-    let irq = interrupts::pci_msix_setup(bus, slot, func)?;
-    Some(crate::irq::PciIrq {
-        irq,
-        msix_entry: Some(0),
-    })
+    use crate::irq::{Delivery, PciIrq};
+    if let Some(irq) = interrupts::pci_msix_setup(bus, slot, func) {
+        return Some(PciIrq { irq, delivery: Delivery::MsiX(0) });
+    }
+    let irq = interrupts::pci_msi_setup(bus, slot, func)?;
+    Some(PciIrq { irq, delivery: Delivery::Msi })
 }
 
 /// Brief halt until the next interrupt (idle loop).

@@ -553,7 +553,10 @@ pub fn irq_enable(id: Id, name: &str, handler: myos_abi::IrqHandler, ctx: *mut c
             if api.pci_irq_enable(bus, slot, func, name, handler, ctx, &mut entry) != 0 {
                 return None;
             }
-            Some(if entry == myos_abi::MYOS_IRQ_INTX { IrqRoute::Line } else { IrqRoute::Msix(entry) })
+            // Plain MSI (a function without MSI-X) has no vector to name:
+            // the device signals as on its line, through its ISR.
+            let line = entry == myos_abi::MYOS_IRQ_INTX || entry == myos_abi::MYOS_IRQ_MSI;
+            Some(if line { IrqRoute::Line } else { IrqRoute::Msix(entry) })
         }
         Id::Mmio { irq, .. } => (irq != 0 && api.irq_enable(irq, name, handler, ctx) == 0).then_some(IrqRoute::Line),
     }
