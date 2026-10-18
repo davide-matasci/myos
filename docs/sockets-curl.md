@@ -170,6 +170,18 @@ the server's own timeout: a scanned VPS held forty at a time. No boot
 test leaves a handshake half-open (QEMU's user networking completes it
 itself; issue #480).
 
+netd puts a fresh listener on the port beside each connection it takes
+off one, in whichever slot of smoltcp's socket set is free, and smoltcp
+gives a segment to the first socket that accepts it. A SYN the peer sent
+again (its SYN-ACK slow or lost; QEMU's user networking retransmits on the
+host's clock while the guest stands still) went to that listener when its
+slot came first: a second half-open connection for the same addresses,
+whose SYN-ACK the peer reset, and the first connection with it (a listen
+test's write failed with EPIPE). A fourth smoltcp patch
+(`syn-to-connection`) hands a segment to a socket that is not listening
+before the listeners, as Linux looks up a connection before a listener;
+its test is smoltcp's own (`tests/ipv4.rs`).
+
 `/net/convs` is netd's own table, a line per index in use (`N tcp|udp|icmp
 [STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
 `peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
