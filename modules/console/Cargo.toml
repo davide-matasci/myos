@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Console kernel module: framebuffer text, keyboards (PS/2, virtio-input) and the loadable keymap."
+description = "Console kernel module: framebuffer text, keyboards (PS/2, virtio-input, other modules' through the keyboard service) and the loadable keymap."
 
 [[bin]]
 name = "console"

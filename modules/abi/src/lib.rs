@@ -1879,6 +1879,61 @@ impl PointerOps {
     }
 }
 
+// ---- The keyboards of other modules (docs/tty.md) --------------------------
+//
+// The console module publishes a [`KeyboardOps`] table as the service
+// [`KEYBOARD_SERVICE`]; a keyboard's driver in another module (`usb_hid`)
+// hands it the presses and releases, which go where the console's own
+// keyboard's go: the tty of the screen shown, the screen switch, or
+// `/dev/console/kbd`. The keys do not repeat by themselves: the console
+// repeats a held one. The calls may come from any context but an interrupt
+// handler.
+
+/// The name the console publishes its [`KeyboardOps`] under.
+pub const KEYBOARD_SERVICE: &str = "keyboard";
+/// [`KeyboardOps::version`].
+pub const KEYBOARD_VERSION: u32 = 1;
+/// The lock LEDs ([`KeyboardOps::leds`]), as a HID keyboard's output report
+/// has them.
+pub const LED_NUM_LOCK: u8 = 1 << 0;
+pub const LED_CAPS_LOCK: u8 = 1 << 1;
+pub const LED_SCROLL_LOCK: u8 = 1 << 2;
+
+/// The console's keyboard input, for keyboard drivers (the
+/// [`KEYBOARD_SERVICE`] table).
+#[repr(C)]
+pub struct KeyboardOps {
+    pub version: u32,
+    /// A keyboard is there (before its first key).
+    pub attach: unsafe extern "C" fn(),
+    /// A keyboard is gone; its driver released its held keys first.
+    pub detach: unsafe extern "C" fn(),
+    /// A key (Linux `KEY_*` code) was pressed or released.
+    pub key: unsafe extern "C" fn(code: u16, pressed: bool),
+    /// The lock LEDs to light now (`LED_*`).
+    pub leds: unsafe extern "C" fn() -> u8,
+}
+
+unsafe impl Sync for KeyboardOps {}
+
+impl KeyboardOps {
+    pub fn attach(&self) {
+        unsafe { (self.attach)() }
+    }
+
+    pub fn detach(&self) {
+        unsafe { (self.detach)() }
+    }
+
+    pub fn key(&self, code: u16, pressed: bool) {
+        unsafe { (self.key)(code, pressed) }
+    }
+
+    pub fn leds(&self) -> u8 {
+        unsafe { (self.leds)() }
+    }
+}
+
 /// A memory-mapped device from the device tree (`KernelApi::dt_mmio_find`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]

@@ -97,9 +97,17 @@ acme_issue() {
 	fi
 	[ -f $ACME_T/reloaded ] && [ -s $ACME_T/cert/key.pem ] && [ -s $ACME_T/cert/fullchain.pem ] || { acme_stop; return 1; }
 	# Served: nginx over LibreSSL with the certificate, curl verifying it
-	# against the test CA for the name it was issued to.
+	# against the test CA for the name it was issued to. `-s reload` only
+	# signals the master, which opens 8443 in its own time: until then a
+	# connection is refused.
 	acme_nginx 1 || { acme_stop; return 1; }
-	out=$(curl -s --cacert $ACME_T/ca.crt --resolve acme.test:8443:127.0.0.1 https://acme.test:8443/index.html)
+	i=0
+	while [ $i -lt 30 ]; do
+		out=$(curl -s --cacert $ACME_T/ca.crt --resolve acme.test:8443:127.0.0.1 https://acme.test:8443/index.html)
+		[ "$out" = "hello from acme" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
 	echo "https: $out"
 	[ "$out" = "hello from acme" ] || { curl -v --cacert $ACME_T/ca.crt --resolve acme.test:8443:127.0.0.1 https://acme.test:8443/ 2>&1 | tail -20; acme_stop; return 1; }
 	# Renewed (forced: the certificate is a day old at most): a new
