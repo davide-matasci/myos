@@ -102,7 +102,7 @@ fn main() {
     let test = Selection::parse(&args).map(Mode::Tests);
     let what = args
         .iter()
-        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso" | "packages"))
+        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso" | "packages" | "rpi4"))
         .map(|s| s.as_str())
         .unwrap_or("bios");
 
@@ -119,6 +119,11 @@ fn main() {
             exit(2);
         }
         ("iso", None) => run_iso(),
+        ("rpi4", Some(_)) => {
+            eprintln!("error: the Raspberry Pi 4 image is not boot-tested (no QEMU model runs its firmware)");
+            exit(2);
+        }
+        ("rpi4", None) => println!("{}", build_rpi4_image().display()),
         ("riscv64", Some(mode)) => run_test_riscv64(mode),
         ("riscv64", None) => run_riscv64(),
         ("aarch64", Some(mode)) => run_test_aarch64(mode),
@@ -134,7 +139,7 @@ fn print_usage() {
     eprintln!(
         "\
 Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--tags TAG,...] [--skip TAG,...] [--budget MINUTES]]
-       cargo run -- iso | packages
+       cargo run -- iso | packages | rpi4
 
   bios       Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
   uefi       Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
@@ -146,6 +151,8 @@ Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--tags TAG,...] [--skip T
              `test --skip net,pkg,heavy,install,alpine-disk` (no network, a few minutes), `test-full` is `test`
   iso        Write target/myos-x86_64.iso (Limine BIOS+UEFI hybrid) and exit; needs xorriso
   packages   Write the package tarballs and indexes of the three arches to target/packages/
+  rpi4       Write target/rpi4.img (the AArch64 boot disk for a Raspberry Pi 4 behind its
+             UEFI firmware, docs/raspberry-pi.md) and exit
 
 Environment (the interactive runs, not `test`; see README, A persistent disk):
   MYOS_DISK=PATH       attach PATH as an extra virtio disk, created sparse (8 GiB) if missing
@@ -898,6 +905,25 @@ fn build_aarch64_image() -> PathBuf {
     let initramfs = initramfs::build_initramfs(&manifest, "aarch64", &esp);
     write_slot_image(&image, &kernel_bytes, &initramfs, esp);
     write_fat_data_image(&fat_img_path());
+    image
+}
+
+/// The AArch64 boot disk for a Raspberry Pi 4 behind its UEFI firmware
+/// (`docs/raspberry-pi.md`): the same kernel and initramfs as
+/// `target/aarch64.img`, but without QEMU's device tree, so that Limine
+/// hands on the firmware's, and with `platform=dt`, so that the kernel
+/// reads the board from it even where the firmware has ACPI tables too.
+fn build_rpi4_image() -> PathBuf {
+    let kernel = build_aarch64_kernel();
+    let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let image = manifest.join("target/rpi4.img");
+    let limine = limine_files();
+    let read = |p: PathBuf| std::fs::read(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    let conf = limine_image::limine_conf_cmdline("", "", &["a"], " platform=dt");
+    let esp = limine_esp_files("BOOTAA64.EFI", &read(limine.bootaa64()), None, &conf, &[]);
+    let initramfs = initramfs::build_initramfs(&manifest, "aarch64", &esp);
+    write_slot_image(&image, &kernel_bytes, &initramfs, esp);
     image
 }
 

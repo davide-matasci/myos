@@ -103,6 +103,10 @@ cargo run -- uefi  # x86 UEFI
 cargo run -- aarch64   # serial only for now
 ```
 
+`cargo run -- rpi4` writes `target/rpi4.img`, the AArch64 boot disk for a
+Raspberry Pi 4 behind its UEFI firmware (serial shell, untested on
+hardware; `docs/raspberry-pi.md`).
+
 The boot test types `root` at `login: ` (the password is empty), then `sh /lib/myos-tests/run.sh mini|full` at `$ `.
 
 ---
@@ -216,6 +220,7 @@ Produces:
 - `target/uefi.img` — UEFI-only ESP
 - `target/fat.img` — 20 MiB FAT16 data disk (second virtio-blk)
 - `target/aarch64.img` — AArch64 ESP
+- `target/rpi4.img` — the same for a Raspberry Pi 4 (`cargo run -- rpi4` only)
 - `target/riscv64.img` — RISC-V ESP
 
 ### x86_64 BIOS
