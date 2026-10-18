@@ -188,20 +188,23 @@ the CPU wrote, and before it writes, so that no dirty line is evicted over
 its data later) and back (`DMA_FROM_DEVICE`: before the CPU reads what it
 wrote). `kernel/src/dma.rs` keeps what it knows of each device:
 
-- **What it reaches**: CPU addresses `[cpu, cpu + size)`, addressed from
-  `bus` up, from the device tree's `dma-ranges` (a PCI function's from
-  its host bridge's, then the buses' above; a memory-mapped device's from
-  its buses'). A Raspberry Pi 4's PCIe reaches the low 3 GiB at bus
-  address 0. The pages come from that range (`mm::alloc_contiguous_pages`
-  takes one; the bump cursor only moves up, so a device that reaches low
+- **What it reaches**: windows of CPU addresses `[cpu, cpu + size)`,
+  each addressed from `bus` up, from the device tree's `dma-ranges` (a
+  PCI function's from its host bridge's, then the buses' above; a
+  memory-mapped device's from its buses'), one per entry; a device no
+  `dma-ranges` limit reaches all of memory one-to-one. A Raspberry Pi 4's
+  PCIe reaches the low 3 GiB at bus address 0. The pages come from the
+  first window that has them (`mm::alloc_contiguous_pages` takes the
+  range; the bump cursor only moves up, so a device that reaches low
   memory alone gets it while the cursor is there, at boot).
-- **Whether it sees the caches**: on aarch64 a device the tree does not
-  mark `dma-coherent` is not (QEMU `virt` marks its devices, the Pi 4's
-  PCIe is not marked); `dma_sync` cleans (`dc cvac`) or cleans and
-  invalidates (`dc civac`) the lines then, and `dma_alloc` writes the
-  zeros back. riscv64 (no cache maintenance in riscv64imac) and x86_64
-  are coherent, and a device without a tree reaches all of memory
-  one-to-one, coherently. Either way `dma_sync` is a barrier.
+- **Whether it sees the caches**: on aarch64 a device not known to be
+  coherent is taken for not, as every aarch64 driver did before: one the
+  tree does not mark `dma-coherent` (QEMU `virt` marks its devices, the
+  Pi 4's PCIe is not marked), and one no tree describes (an ACPI-only
+  board); `dma_sync` cleans (`dc cvac`) or cleans and invalidates
+  (`dc civac`) the lines then, and `dma_alloc` writes the zeros back.
+  riscv64 (no cache maintenance in riscv64imac) and x86_64 are coherent.
+  Either way `dma_sync` is a barrier.
 - `dma=noncoherent` on the kernel command line takes every device on
   aarch64 for non-coherent: the maintenance runs on QEMU (which does not
   model the caches, so it shows the paths work, not that they are

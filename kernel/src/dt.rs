@@ -350,50 +350,78 @@ pub fn pci_mmio_window(space: u32) -> Option<PciWindow> {
     None
 }
 
-/// What a device's DMA reaches: CPU addresses `[cpu, cpu + size)`, which
-/// the device addresses from `bus` up; and whether the tree says its DMA
-/// is coherent with the caches (`dma-coherent`, `dma-noncoherent` on the
-/// node or a bus above it), `None` when it says nothing.
+/// How many windows of a device's DMA are kept (`dma-ranges` entries).
+pub const DMA_WINDOWS: usize = 8;
+
+/// A window of a device's DMA: CPU addresses `[cpu, cpu + size)`, which
+/// the device addresses from `bus` up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DmaWindow {
     pub bus: u64,
     pub cpu: u64,
     pub size: u64,
+}
+
+/// All of memory, one-to-one: the DMA of a device no `dma-ranges` limit.
+const DMA_ANYWHERE: DmaWindow = DmaWindow { bus: 0, cpu: 0, size: u64::MAX };
+
+/// What a device's DMA reaches (each `dma-ranges` entry a window, in the
+/// tree's order), and whether the tree says its DMA is coherent with the
+/// caches (`dma-coherent`, `dma-noncoherent` on the node or a bus above
+/// it), `None` when it says nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DmaWindows {
+    pub windows: [Option<DmaWindow>; DMA_WINDOWS],
     pub coherent: Option<bool>,
 }
 
 /// DMA of the functions behind the PCIe host bridge: its `dma-ranges`
 /// (bus addresses of the functions' DMA), then the buses' above it.
-pub fn pci_dma() -> Option<DmaWindow> {
+pub fn pci_dma() -> Option<DmaWindows> {
     let host = pci_host_node(get()?)?;
-    let mut w = DmaWindow { bus: 0, cpu: 0, size: u64::MAX, coherent: None };
-    if let Some(r) = prop(host, "dma-ranges").filter(|r| r.len() > 0) {
-        let child = host.cell_sizes().address_cells;
-        let size = host.cell_sizes().size_cells;
-        let parent = parent_address_cells(host)?;
-        if child != 3 || r.len() < child + parent + size {
-            return None;
+    let mut windows = [None; DMA_WINDOWS];
+    match prop(host, "dma-ranges").filter(|r| r.len() > 0) {
+        None => windows[0] = Some(DMA_ANYWHERE),
+        Some(r) => {
+            let child = host.cell_sizes().address_cells;
+            let size = host.cell_sizes().size_cells;
+            let parent = parent_address_cells(host)?;
+            let entry = child + parent + size;
+            if child != 3 {
+                return None;
+            }
+            for (k, w) in windows.iter_mut().enumerate() {
+                let i = k * entry;
+                if i + entry > r.len() {
+                    break;
+                }
+                *w = Some(DmaWindow {
+                    bus: r.join(i + 1, 2)?,
+                    cpu: r.join(i + child, parent)?,
+                    size: r.join(i + child + parent, size)?,
+                });
+            }
         }
-        w.bus = r.join(1, 2)?;
-        w.cpu = r.join(child, parent)?;
-        w.size = r.join(child + parent, size)?;
     }
-    Some(dma_up(host, w))
+    Some(dma_up(host, windows))
 }
 
 /// DMA of the memory-mapped device whose registers are at `phys`: the
 /// `dma-ranges` of the buses above it.
-pub fn mmio_dma(phys: u64) -> Option<DmaWindow> {
+pub fn mmio_dma(phys: u64) -> Option<DmaWindows> {
     let node = get()?
         .all_nodes()
         .find(|n| enabled(*n) && n.reg().is_some() && node_reg(*n, 0).is_some_and(|(b, _)| b == phys))?;
-    Some(dma_up(node, DmaWindow { bus: 0, cpu: 0, size: u64::MAX, coherent: None }))
+    let mut windows = [None; DMA_WINDOWS];
+    windows[0] = Some(DMA_ANYWHERE);
+    Some(dma_up(node, windows))
 }
 
-/// `w`, the DMA of `node` in its parent's addresses, through the
+/// `windows`, the DMA of `node` in its parent's addresses, through the
 /// `dma-ranges` of each bus above (innermost first; none, or an empty one,
-/// is one-to-one), and the coherence the nearest of them states.
-fn dma_up(node: FdtNode<'_, 'static>, mut w: DmaWindow) -> DmaWindow {
+/// is one-to-one): each window cut to the entries it overlaps, and moved
+/// by them. With the coherence the nearest of them states.
+fn dma_up(node: FdtNode<'_, 'static>, mut windows: [Option<DmaWindow>; DMA_WINDOWS]) -> DmaWindows {
     let said = |n: FdtNode| {
         if n.property("dma-coherent").is_some() {
             Some(true)
@@ -403,19 +431,20 @@ fn dma_up(node: FdtNode<'_, 'static>, mut w: DmaWindow) -> DmaWindow {
             None
         }
     };
-    w.coherent = said(node);
-    let Some(fdt) = get() else {
-        return w;
-    };
-    let mut chain = [None; MAX_DEPTH];
-    let Some(n) = fdt.find_node("/").and_then(|root| ancestors(root, node.name.as_ptr(), 0, &mut chain)) else {
-        return w;
+    let mut coherent = said(node);
+    let chain = get().and_then(|fdt| {
+        let mut chain = [None; MAX_DEPTH];
+        let n = fdt.find_node("/").and_then(|root| ancestors(root, node.name.as_ptr(), 0, &mut chain))?;
+        Some((chain, n))
+    });
+    let Some((chain, n)) = chain else {
+        return DmaWindows { windows, coherent };
     };
     for k in (0..n).rev() {
         let Some(bus) = chain[k] else {
             continue;
         };
-        w.coherent = w.coherent.or_else(|| said(bus));
+        coherent = coherent.or_else(|| said(bus));
         let (Some(up), Some(r)) = (k.checked_sub(1).and_then(|u| chain[u]), prop(bus, "dma-ranges")) else {
             continue;
         };
@@ -426,21 +455,28 @@ fn dma_up(node: FdtNode<'_, 'static>, mut w: DmaWindow) -> DmaWindow {
         if r.len() == 0 || child > 2 || parent > 2 || size > 2 || entry == 0 {
             continue;
         }
-        let mut i = 0;
-        while i + entry <= r.len() {
-            let (Some(c), Some(p), Some(len)) = (r.join(i, child), r.join(i + child, parent), r.join(i + child + parent, size))
-            else {
-                break;
-            };
-            if w.cpu >= c && w.cpu - c < len {
-                w.size = w.size.min(len - (w.cpu - c));
-                w.cpu = w.cpu - c + p;
-                break;
+        let mut moved = [None; DMA_WINDOWS];
+        let mut m = 0;
+        for w in windows.iter().flatten() {
+            let mut i = 0;
+            while i + entry <= r.len() && m < DMA_WINDOWS {
+                let (Some(c), Some(p), Some(len)) =
+                    (r.join(i, child), r.join(i + child, parent), r.join(i + child + parent, size))
+                else {
+                    break;
+                };
+                let start = w.cpu.max(c);
+                let end = w.cpu.saturating_add(w.size).min(c.saturating_add(len));
+                if start < end {
+                    moved[m] = Some(DmaWindow { bus: w.bus + (start - w.cpu), cpu: p + (start - c), size: end - start });
+                    m += 1;
+                }
+                i += entry;
             }
-            i += entry;
         }
+        windows = moved;
     }
-    w
+    DmaWindows { windows, coherent }
 }
 
 /// Interrupt specifier for INTx `pin` (1..=4) of the PCI function
