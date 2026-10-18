@@ -258,7 +258,7 @@ impl Stations {
                     // Message 1: the ANonce.
                     if let Some(hs) = &hs {
                         let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK;
-                        let m1 = eapol::build(info, 16, hs.replay, &hs.anonce, 0, &[], &[0; 16]);
+                        let m1 = eapol::build(info, 16, hs.replay, Some(&hs.anonce), 0, &[], None);
                         out.push(data_frame(ap.bssid, sta, eapol::ETHERTYPE, &m1));
                     }
                     self.sta.insert(key, Sta::Associated(aid, hs));
@@ -339,7 +339,7 @@ impl Stations {
             let ptk = hs.ptk.as_ref()?;
             let info = INFO_VERSION_AES | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED;
             let data = eapol::wrap(&ptk.kek, &gtk_kde(new.0, &new.1));
-            let g1 = eapol::build(info, 0, hs.replay, &[0; 32], 0, &data, &ptk.kck);
+            let g1 = eapol::build(info, 0, hs.replay, None, 0, &data, Some(&ptk.kck));
             sent.push(self.protect(ap, sta, data_frame(ap.bssid, sta, eapol::ETHERTYPE, &g1))?);
         }
         if let Some(o) = out {
@@ -379,7 +379,8 @@ impl Stations {
                 data.extend_from_slice(&gtk_kde(gidx, &gkey));
                 let info =
                     INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK | INFO_MIC | INFO_INSTALL | INFO_SECURE | INFO_ENCRYPTED;
-                let m3 = eapol::build(info, 16, hs.replay, &hs.anonce, gpn, &eapol::wrap(&ptk.kek, &data), &ptk.kck);
+                let data = eapol::wrap(&ptk.kek, &data);
+                let m3 = eapol::build(info, 16, hs.replay, Some(&hs.anonce), gpn, &data, Some(&ptk.kck));
                 hs.ptk = Some(ptk);
                 Some(vec![data_frame(ap.bssid, sta, eapol::ETHERTYPE, &m3)])
             }

@@ -71,9 +71,19 @@ pub fn parse(f: &[u8]) -> Option<Key<'_>> {
     })
 }
 
-/// An EAPOL-Key frame with these fields, its MIC made with `kck` when
-/// `info` asks for one.
-pub fn build(info: u16, key_len: u16, replay: u64, nonce: &[u8; 32], rsc: u64, data: &[u8], kck: &[u8; 16]) -> Vec<u8> {
+/// An EAPOL-Key frame with these fields: its nonce zero when it carries
+/// none (messages 4 and the group key handshake's), its MIC made with
+/// `kck` when it has one (all but message 1; `info` says [`INFO_MIC`]).
+pub fn build(
+    info: u16,
+    key_len: u16,
+    replay: u64,
+    nonce: Option<&[u8; 32]>,
+    rsc: u64,
+    data: &[u8],
+    kck: Option<&[u8; 16]>,
+) -> Vec<u8> {
+    debug_assert_eq!(info & INFO_MIC != 0, kck.is_some());
     let mut f = Vec::with_capacity(HDR + DESC + data.len());
     f.extend_from_slice(&[2, TYPE_KEY]);
     f.extend_from_slice(&((DESC + data.len()) as u16).to_be_bytes());
@@ -81,14 +91,14 @@ pub fn build(info: u16, key_len: u16, replay: u64, nonce: &[u8; 32], rsc: u64, d
     f.extend_from_slice(&info.to_be_bytes());
     f.extend_from_slice(&key_len.to_be_bytes());
     f.extend_from_slice(&replay.to_be_bytes());
-    f.extend_from_slice(nonce);
+    f.extend_from_slice(nonce.unwrap_or(&[0; 32]));
     f.extend_from_slice(&[0; 16]); // IV
     f.extend_from_slice(&rsc.to_le_bytes());
     f.extend_from_slice(&[0; 8]); // reserved
     f.extend_from_slice(&[0; 16]); // MIC, below
     f.extend_from_slice(&(data.len() as u16).to_be_bytes());
     f.extend_from_slice(data);
-    if info & INFO_MIC != 0 {
+    if let Some(kck) = kck {
         let m = mic(kck, &f);
         f[OFF_MIC..OFF_MIC + 16].copy_from_slice(&m);
     }
@@ -251,7 +261,7 @@ impl Supplicant {
             (true, false) => {
                 let ptk = Ptk::derive(&self.pmk, self.aa, self.spa, k.nonce, &self.snonce);
                 let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_MIC;
-                let reply = build(info, 0, k.replay, &self.snonce, 0, &self.own_rsn, &ptk.kck);
+                let reply = build(info, 0, k.replay, Some(&self.snonce), 0, &self.own_rsn, Some(&ptk.kck));
                 self.ptk = Some(ptk);
                 self.replay = Some(k.replay);
                 Ok(Step::Reply(reply))
@@ -274,7 +284,7 @@ impl Supplicant {
                 let (idx, gtk) = gtk(&data).ok_or(Error::KeyData)?;
                 self.replay = Some(k.replay);
                 let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_MIC | INFO_SECURE;
-                let reply = build(info, 0, k.replay, &[0; 32], 0, &[], &ptk.kck);
+                let reply = build(info, 0, k.replay, None, 0, &[], Some(&ptk.kck));
                 self.kck = ptk.kck;
                 self.keys = Some(Keys { tk: ptk.tk, gtk: (idx, gtk, k.rsc) });
                 Ok(Step::Installed(reply))
@@ -291,7 +301,7 @@ impl Supplicant {
                 let (idx, gtk) = gtk(&data).ok_or(Error::KeyData)?;
                 self.replay = Some(k.replay);
                 let info = INFO_VERSION_AES | INFO_MIC | INFO_SECURE;
-                let reply = build(info, 0, k.replay, &[0; 32], 0, &[], &self.kck);
+                let reply = build(info, 0, k.replay, None, 0, &[], Some(&self.kck));
                 if let Some(keys) = self.keys.as_mut() {
                     keys.gtk = (idx, gtk, k.rsc);
                 }
@@ -327,7 +337,8 @@ mod tests {
     #[test]
     fn mic_vector() {
         let kck = [0x5a; 16];
-        let f = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_MIC, 0, 1, &[0x22; 32], 0, &RSN_PSK_CCMP, &kck);
+        let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_MIC;
+        let f = build(info, 0, 1, Some(&[0x22; 32]), 0, &RSN_PSK_CCMP, Some(&kck));
         let want: Vec<u8> = (0..32)
             .step_by(2)
             .map(|i| u8::from_str_radix(&include_str!("../vectors/mic.hex")[i..i + 2], 16).unwrap())
@@ -353,7 +364,7 @@ mod tests {
         let pmk = psk(b"myos-passphrase", b"myos-wpa2").unwrap();
         let mut s = Supplicant::new(pmk, AA, SPA, &RSN_PSK_CCMP, &RSN_PSK_CCMP, [0x22; 32]);
         let anonce = [0x11; 32];
-        let m1 = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK, 16, 1, &anonce, 0, &[], &[0; 16]);
+        let m1 = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK, 16, 1, Some(&anonce), 0, &[], None);
         let Ok(Step::Reply(m2)) = s.input(&m1) else { panic!("no message 2") };
         let k2 = parse(&m2).unwrap();
         let ptk = Ptk::derive(&pmk, AA, SPA, &anonce, k2.nonce);
@@ -365,7 +376,7 @@ mod tests {
         let mut data = RSN_PSK_CCMP.to_vec();
         data.extend_from_slice(&gtk_kde(1, &[0x33; 16]));
         let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK | INFO_MIC | INFO_INSTALL | INFO_SECURE | INFO_ENCRYPTED;
-        let m3 = build(info, 16, 2, &anonce, 7, &wrap(&ptk.kek, &data), &ptk.kck);
+        let m3 = build(info, 16, 2, Some(&anonce), 7, &wrap(&ptk.kek, &data), Some(&ptk.kck));
         let Ok(Step::Installed(m4)) = s.input(&m3) else { panic!("no message 4") };
         assert!(mic_ok(&ptk.kck, &m4));
         assert_eq!(parse(&m4).unwrap().replay, 2);
@@ -374,7 +385,7 @@ mod tests {
         assert_eq!(keys.gtk, (1, [0x33; 16], 7));
 
         let info = INFO_VERSION_AES | INFO_ACK | INFO_MIC | INFO_SECURE | INFO_ENCRYPTED;
-        let g1 = build(info, 0, 3, &[0; 32], 0, &wrap(&ptk.kek, &gtk_kde(2, &[0x44; 16])), &ptk.kck);
+        let g1 = build(info, 0, 3, None, 0, &wrap(&ptk.kek, &gtk_kde(2, &[0x44; 16])), Some(&ptk.kck));
         let Ok(Step::Installed(g2)) = s.input(&g1) else { panic!("no group message 2") };
         assert!(mic_ok(&ptk.kck, &g2));
         assert_eq!(s.keys().unwrap().gtk, (2, [0x44; 16], 0));
@@ -386,10 +397,10 @@ mod tests {
         let pmk = psk(b"not-the-passphrase", b"myos-wpa2").unwrap();
         let mut s = Supplicant::new(pmk, AA, SPA, &RSN_PSK_CCMP, &RSN_PSK_CCMP, [0x22; 32]);
         let ap = Ptk::derive(&psk(b"myos-passphrase", b"myos-wpa2").unwrap(), AA, SPA, &[0x11; 32], &[0x22; 32]);
-        let m1 = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK, 16, 1, &[0x11; 32], 0, &[], &[0; 16]);
+        let m1 = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK, 16, 1, Some(&[0x11; 32]), 0, &[], None);
         assert!(matches!(s.input(&m1), Ok(Step::Reply(_))));
         let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK | INFO_MIC | INFO_INSTALL | INFO_SECURE | INFO_ENCRYPTED;
-        let m3 = build(info, 16, 2, &[0x11; 32], 0, &wrap(&ap.kek, &RSN_PSK_CCMP), &ap.kck);
+        let m3 = build(info, 16, 2, Some(&[0x11; 32]), 0, &wrap(&ap.kek, &RSN_PSK_CCMP), Some(&ap.kck));
         assert_eq!(s.input(&m3).err(), Some(Error::Mic));
         assert!(s.keys().is_none());
     }
@@ -399,7 +410,7 @@ mod tests {
     fn rsn_mismatch() {
         let pmk = psk(b"myos-passphrase", b"myos-wpa2").unwrap();
         let mut s = Supplicant::new(pmk, AA, SPA, &RSN_PSK_CCMP, &RSN_PSK_CCMP, [0x22; 32]);
-        let m1 = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK, 16, 1, &[0x11; 32], 0, &[], &[0; 16]);
+        let m1 = build(INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK, 16, 1, Some(&[0x11; 32]), 0, &[], None);
         assert!(matches!(s.input(&m1), Ok(Step::Reply(_))));
         let ptk = Ptk::derive(&pmk, AA, SPA, &[0x11; 32], &[0x22; 32]);
         let mut rsn = RSN_PSK_CCMP;
@@ -407,7 +418,7 @@ mod tests {
         let mut data = rsn.to_vec();
         data.extend_from_slice(&gtk_kde(1, &[0x33; 16]));
         let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_ACK | INFO_MIC | INFO_INSTALL | INFO_SECURE | INFO_ENCRYPTED;
-        let m3 = build(info, 16, 2, &[0x11; 32], 0, &wrap(&ptk.kek, &data), &ptk.kck);
+        let m3 = build(info, 16, 2, Some(&[0x11; 32]), 0, &wrap(&ptk.kek, &data), Some(&ptk.kck));
         assert_eq!(s.input(&m3).err(), Some(Error::Rsn));
     }
 }

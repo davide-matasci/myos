@@ -131,7 +131,10 @@ mod tests {
     #[test]
     fn vectors() {
         let tk: [u8; 16] = core::array::from_fn(|i| 0xc0 + i as u8);
-        let cases = [("data", include_str!("../vectors/ccmp-data.hex")), ("qos", include_str!("../vectors/ccmp-qos.hex"))];
+        let cases = [
+            ("data", include_str!("../vectors/ccmp-data.hex")),
+            ("qos", include_str!("../vectors/ccmp-qos.hex")),
+        ];
         for (name, want) in cases {
             let mut f = unhex("0801 0000 02005e000106 525400123457 ffffffffffff 3012");
             if name == "qos" {
