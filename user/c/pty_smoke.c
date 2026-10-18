@@ -20,6 +20,13 @@
  * the pair (issue #448: a getty respawned on ttyS0 while a daemon had taken
  * the dead one's pid logged in without a controlling terminal).
  *
+ * `pty_smoke 7 USER PASSWORD`: a pair is its user's (docs/security.md).
+ * The caller's at first, who opened clone for it: a child that enters USER
+ * does not open it. A child that makes it its session's terminal and then
+ * enters USER (as login does) hands it over: USER opens its data, the
+ * caller no longer opens its data or ctl. Once that session ends it is the
+ * caller's again.
+ *
  * `pty_smoke 5`: writers faster than their reader. Children each write
  * eight times what a pair's output ring holds to their slave while the
  * parent drains the masters one after the other: a writer waits for room,
@@ -40,6 +47,7 @@ extern void *memmem(const void *, size_t, const void *, size_t);
 #include <unistd.h>
 
 #include <pty.h>
+#include <sys/myos_extra.h>
 
 static int read_until(int fd, const char *needle, int max_chunks) {
     char buf[256];
@@ -252,8 +260,87 @@ static int reclaim(void) {
     return ok ? 0 : 1;
 }
 
+/* Whether the current process may open `path` for reading and writing. */
+static int opens(const char *path) {
+    int fd = open(path, O_RDWR | O_NOCTTY);
+    if (fd < 0) {
+        return 0;
+    }
+    close(fd);
+    return 1;
+}
+
+static int handover(const char *user, const char *password) {
+    int m = -1, s = -1;
+    char name[32], ctl[48];
+    if (openpty(&m, &s, name, NULL, NULL) != 0) {
+        printf("[ FAIL ] s7 openpty (%s)\n", strerror(errno));
+        return 1;
+    }
+    snprintf(ctl, sizeof ctl, "%.*s/ctl", (int)(strlen(name) - strlen("/data")), name);
+    if (!opens(name) || !opens(ctl)) {
+        printf("[ FAIL ] s7 the opener cannot open %s\n", name);
+        return 1;
+    }
+    int status = 0;
+    pid_t other = fork();
+    if (other == 0) {
+        _exit(myos_setuser(user, password) != 0 ? 2 : opens(name) ? 3 : 0);
+    }
+    if (other < 0 || waitpid(other, &status, 0) != other || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("[ FAIL ] s7 %s and the opener's terminal (status %d)\n", user, status);
+        return 1;
+    }
+    int entered[2], done[2];
+    if (pipe(entered) != 0 || pipe(done) != 0) {
+        printf("[ FAIL ] s7 pipe (%s)\n", strerror(errno));
+        return 1;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(entered[0]);
+        close(done[1]);
+        setsid();
+        if (ioctl(s, TIOCSCTTY, 0) != 0 || myos_setuser(user, password) != 0) {
+            _exit(2);
+        }
+        char c = opens(name) ? 'y' : 'n';
+        if (write(entered[1], &c, 1) != 1) {
+            _exit(1);
+        }
+        (void)read(done[0], &c, 1);
+        _exit(0);
+    }
+    close(entered[1]);
+    close(done[0]);
+    char c = 0;
+    int ok = 1;
+    if (pid < 0 || read(entered[0], &c, 1) != 1 || c != 'y') {
+        printf("[ FAIL ] s7 %s did not get the session's terminal (%c)\n", user, c ? c : '-');
+        ok = 0;
+    } else if (opens(name) || opens(ctl)) {
+        printf("[ FAIL ] s7 LEAK: %s's terminal %s still opens for its opener\n", user, name);
+        ok = 0;
+    }
+    close(done[1]);
+    if (pid > 0) {
+        waitpid(pid, &status, 0);
+    }
+    if (ok && !opens(name)) {
+        printf("[ FAIL ] s7 %s is not the opener's again after the session\n", name);
+        ok = 0;
+    }
+    close(entered[0]);
+    close(s);
+    close(m);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     int stage = (argc > 1) ? atoi(argv[1]) : 0;
+    if (stage == 7 && argc > 3) {
+        return handover(argv[2], argv[3]);
+    }
     if (stage == 6) {
         return reclaim();
     }

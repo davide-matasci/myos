@@ -75,6 +75,10 @@ pub struct Pty {
     /// `ctty`), its leader's pid. `usize::MAX` when unset; a claim lasts
     /// while the leader lives ([`crate::task::session_alive`]).
     session: AtomicUsize,
+    /// The uid of the user whose process opened `clone` for the pair (who
+    /// it belongs to until a session claims it: [`user_of`]); `u32::MAX`
+    /// for the kernel's terminals, nobody's until then.
+    opener: u32,
     /// How many times the pair changed (bytes either way, an end closed):
     /// what an `et` wait set member on either end is reported against
     /// (`crate::evfd`).
@@ -166,6 +170,7 @@ fn new_pty(sink: Sink) -> Pty {
         master_refs: AtomicUsize::new(1),
         slave_refs: AtomicUsize::new(0),
         session: AtomicUsize::new(usize::MAX),
+        opener: u32::MAX,
         changes: AtomicU64::new(0),
     }
 }
@@ -178,6 +183,40 @@ pub fn dir(id: usize) -> alloc::string::String {
         1..TERMS => alloc::format!("/dev/tty{id}"),
         _ => alloc::format!("/dev/pts/{}", id - TERMS),
     }
+}
+
+/// The pair whose directory `path` (canonical) is or is in:
+/// `/dev/pts/N/…`, `/dev/ttyN/…` or `/dev/ttyS0/…` (not `/dev/pts/clone`).
+pub fn id_at(path: &str) -> Option<usize> {
+    let rest = path.strip_prefix("/dev/")?;
+    let (dir, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    match dir {
+        "pts" => {
+            let n = rest.split('/').next()?;
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            pts_id(n.parse().ok()?)
+        }
+        "ttyS0" => Some(SERIAL),
+        _ => {
+            let n = dir.strip_prefix("tty").filter(|n| n.len() == 1)?;
+            n.parse().ok().filter(|&n| (1..TERMS).contains(&n))
+        }
+    }
+}
+
+/// Whose pair `id` is (`docs/security.md`, issue #442): the user of the
+/// leader of the session that claimed it (so a login that enters a user in
+/// its session hands the terminal over), else the user whose process
+/// opened `clone` for it. The kernel's terminals are nobody's until a
+/// session claims them. A uid.
+pub fn user_of(id: usize) -> Option<u32> {
+    if let Some(sess) = session_of(id) {
+        return crate::sec::uid_of(sess);
+    }
+    let opener = pty_at(id)?.opener;
+    (opener != u32::MAX).then_some(opener)
 }
 
 /// The id of `/dev/pts/N`, if that pair exists.
@@ -205,6 +244,7 @@ pub fn alloc() -> Option<usize> {
         master_refs: AtomicUsize::new(1),
         slave_refs: AtomicUsize::new(0),
         session: AtomicUsize::new(usize::MAX),
+        opener: crate::sec::current_uid(),
         changes: AtomicU64::new(0),
     })?;
     let mut ptys = PTYS.lock();

@@ -936,7 +936,7 @@ sec_setup() {
 	echo "user carol domains: app login: app password: sha256:salt:$h" >> /tmp/sec/policy
 	printf '%s\n' 'label /tmp/sec/home/$u/** home($u)' 'label /tmp/sec/home/$u/.ssh/** secret($u)' \
 		'label /tmp/sec/bin/** sys.bin' 'exec /tmp/sec/bin/** -> untrusted' 'domain app:' \
-		'    sys.file {read} sys.bin {read exec} sys.lib {read exec} dev.tty {read write}' \
+		'    sys.file {read} sys.bin {read exec} sys.lib {read exec} dev.tty(self) {read write}' \
 		'    dev.common {read write} proc {read} tmp {read append exec}' >> /tmp/sec/policy
 	printf '#!/bin/custom/sh\n/bin/etc/sec ctx\n' > /tmp/sec/bin/ctx.sh
 	# Only alice may write her secrets, not even root.
@@ -1056,6 +1056,20 @@ sec_net_checks() {
 	! sec_as alice /bin/sbase/cat /dev/console/kbd > /dev/null 2>&1 || { echo "LEAK: alice opened the keyboard"; return 1; }
 	return 0
 }
+# A terminal is its session's user's (issue #442): alice opens neither
+# this session's (root's, ttyS0) nor a getty's (system's, tty1) nor one no
+# session holds (tty9), nor the console, and `ls -l` names a terminal's
+# user. A pty she makes is hers, not bob's, until a session that enters
+# bob claims it (pty_smoke.c).
+sec_tty() {
+	for f in /dev/ttyS0/data /dev/ttyS0/ctl /dev/tty1/data /dev/tty1/ctl /dev/tty9/data /dev/console/data; do
+		! sec_as alice /bin/custom/sh -c ": <> $f" 2> /dev/null || { echo "LEAK: alice opened $f"; return 1; }
+	done
+	l=$(/bin/sbase/ls -l /dev/tty1/data)
+	echo "tty1: $l"
+	case $l in *system*) ;; *) return 1 ;; esac
+	sec_as alice /bin/etc/pty_smoke 7 bob bob-pw
+}
 # Signals: a user's processes, not another user's (init is system's).
 sec_signal() {
 	sec_as alice /bin/custom/sh -c '/bin/sbase/kill -0 $$' || return 1
@@ -1134,7 +1148,7 @@ sec_wildcard() {
 	cat /tmp/sec/policy > /tmp/sec/wpolicy || return 1
 	h=$(printf '%s' "saltprobe-pw" | /bin/sbase/sha256sum | cut -d' ' -f1)
 	printf '%s
-' "user probe groups: dev domains: probe login: probe password: sha256:salt:$h" 		'domain probe:' '    *(self) {read} sys.bin {read exec} sys.lib {read exec} dev.tty {read write} dev.common {read write} proc {read}' 		>> /tmp/sec/wpolicy || return 1
+' "user probe groups: dev domains: probe login: probe password: sha256:salt:$h" 		'domain probe:' '    *(self) {read} sys.bin {read exec} sys.lib {read exec} dev.tty(self) {read write} dev.common {read write} proc {read}' 		>> /tmp/sec/wpolicy || return 1
 	$SEC load /tmp/sec/wpolicy || return 1
 	mkdir -p /tmp/sec/home/probe && echo pf > /tmp/sec/home/probe/pf || return 1
 	# Own file: allowed. Alice's file: must be denied.
@@ -1153,6 +1167,7 @@ t -t sec sec_append sec_append
 t -t sec sec_nologin sec_nologin
 t -t sec sec_mount sec_mount
 t -t sec,netfs sec_net sec_net
+t -t sec sec_tty sec_tty
 t -t sec sec_signal sec_signal
 t -t sec sec_escalate sec_escalate
 t -t sec sec_wildcard sec_wildcard
