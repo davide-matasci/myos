@@ -8,16 +8,18 @@
 //!   connection: a line in, the answer out, then the connection ends.
 //! - `wifi scan`: a scan of the 2.4 GHz channels; prints what answered.
 //! - `wifi list`: what the last scan found.
-//! - `wifi connect SSID`: join the network SSID (the strongest the last
-//!   scan heard, after a scan when it heard none): open networks only for
-//!   now, WPA2 is next (issue #495).
+//! - `wifi connect SSID [PASSPHRASE]`: join the network SSID (the
+//!   strongest the last scan heard, after a scan when it heard none): an
+//!   open one, or a WPA2-PSK one with its passphrase (or the PSK as 64 hex
+//!   digits).
 //! - `wifi status`: `associated BSSID CHANNEL SSID aid N`, or
 //!   `disconnected`.
 //! - `wifi disconnect`: leave the network.
 //!
 //! While associated, the link is a virtual NIC of `/dev/tap` for netd
 //! (`tapN` in `/net/ifaddrs`, its address from the network's DHCP): the
-//! daemon carries its Ethernet frames as 802.11 data frames.
+//! daemon carries its Ethernet frames as 802.11 data frames, encrypted
+//! with CCMP on a WPA2 network.
 //!
 //! A network is one line: `BSSID CHANNEL RSSI SECURITY SSID`, the strongest
 //! first (`02:00:5e:00:01:01 1 -40 open myos-open`); bytes of the SSID
@@ -34,6 +36,7 @@ mod frame;
 mod mlme;
 mod pci;
 mod radio;
+mod rsn;
 mod tap;
 mod unix;
 
@@ -66,7 +69,7 @@ const CHANNELS: core::ops::RangeInclusive<u8> = 1..=13;
 const DWELL_MS: u64 = 120;
 
 fn usage() -> ! {
-    write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID | status | disconnect\n");
+    write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID [PASSPHRASE] | status | disconnect\n");
     exit_code(2);
 }
 
@@ -128,33 +131,63 @@ fn daemon(nic: Option<&[u8]>) -> ! {
             fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
         }
         poll(&mut fds, -1);
-        // What the radio hears between commands: data for the link's NIC;
-        // the access point letting the station go ends the link.
+        // What the radio hears between commands: data for the link's NIC
+        // (decrypted first on a WPA2 network, where the access point may
+        // also start a group key handshake); the access point letting the
+        // station go ends the link.
         while let Some(rx) = radio.recv(&mut frame) {
-            let Some(l) = link.as_ref() else {
+            let Some(l) = link.as_mut() else {
                 continue;
             };
             let f = &frame[..rx.len];
-            if let Some(eth) = frame::data_from_ds(f, radio.mac(), l.bss.bssid) {
-                if let Some(t) = &tap {
-                    t.send(&eth);
-                }
-            } else if mlme::ends(radio, l, f) {
+            if mlme::ends(radio, l, f) {
                 link = None;
+                continue;
+            }
+            let (me, bssid) = (radio.mac(), l.bss.bssid);
+            let clear;
+            let f = match l.rsn.as_mut() {
+                Some(r) => match r.open(f) {
+                    Some(c) => {
+                        clear = c;
+                        &clear[..]
+                    }
+                    None => continue,
+                },
+                None => f,
+            };
+            if let (Some(r), Some(pdu)) = (l.rsn.as_mut(), rsn::eapol_of(f, me, bssid)) {
+                r.eapol(radio, bssid, &pdu);
+            } else if let (Some(eth), Some(t)) = (frame::data_from_ds(f, me, bssid), &tap) {
+                t.send(&eth);
             }
         }
         // What netd sends on the link.
-        if let (Some(t), Some(l)) = (&tap, &link) {
+        if let (Some(t), Some(l)) = (&tap, &mut link) {
             while let Some(n) = t.recv(&mut frame) {
-                if let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n]) {
-                    radio.send(&f);
+                let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n]) else {
+                    continue;
+                };
+                match l.rsn.as_mut() {
+                    Some(r) => {
+                        if let Some(f) = r.seal(&f) {
+                            radio.send(&f);
+                        }
+                    }
+                    None => {
+                        radio.send(&f);
+                    }
                 }
             }
         }
         while let Some(conn) = listener.accept() {
-            let mut buf = [0u8; 128];
+            let mut buf = [0u8; 192];
             let n = conn.read(&mut buf, 2000);
-            let line = buf[..n].trim_ascii();
+            // The command line, then for `connect` the passphrase's line.
+            let (line, passphrase) = match buf[..n].iter().position(|&c| c == b'\n') {
+                Some(i) => (buf[..i].trim_ascii(), buf[i + 1..n].strip_suffix(b"\n").unwrap_or(&buf[i + 1..n])),
+                None => (buf[..n].trim_ascii(), &[][..]),
+            };
             let (cmd, arg) = match line.iter().position(|&c| c == b' ') {
                 Some(i) => (&line[..i], line[i + 1..].trim_ascii()),
                 None => (line, &[][..]),
@@ -172,7 +205,7 @@ fn daemon(nic: Option<&[u8]>) -> ! {
                     listing(&seen)
                 }
                 b"list" => listing(&seen),
-                b"connect" => connect(radio, &mut seen, &mut link, arg),
+                b"connect" => connect(radio, &mut seen, &mut link, arg, passphrase),
                 b"status" => status(link.as_ref()),
                 b"disconnect" => {
                     if let Some(l) = link.take() {
@@ -202,9 +235,16 @@ fn daemon(nic: Option<&[u8]>) -> ! {
     }
 }
 
-/// `connect SSID`: leave the current network, then join the strongest
-/// SSID heard (scanning first when the last scan did not hear it).
-fn connect(radio: &mut dyn Radio, seen: &mut Vec<Seen>, link: &mut Option<Link>, ssid: &[u8]) -> Vec<u8> {
+/// `connect SSID [PASSPHRASE]`: leave the current network, then join the
+/// strongest SSID heard (scanning first when the last scan did not hear
+/// it); a WPA2-PSK one with its passphrase.
+fn connect(
+    radio: &mut dyn Radio,
+    seen: &mut Vec<Seen>,
+    link: &mut Option<Link>,
+    ssid: &[u8],
+    passphrase: &[u8],
+) -> Vec<u8> {
     if ssid.is_empty() {
         return Vec::from(b"error: connect SSID\n" as &[u8]);
     }
@@ -225,14 +265,42 @@ fn connect(radio: &mut dyn Radio, seen: &mut Vec<Seen>, link: &mut Option<Link>,
         e.push(b'\n');
         return e;
     };
-    if bss.security != Security::Open {
-        ssid_text(&mut e, ssid);
-        e.extend_from_slice(b" is ");
-        e.extend_from_slice(bss.security.name());
-        e.extend_from_slice(b": only open networks so far\n");
-        return e;
-    }
-    match mlme::join(radio, bss) {
+    let pmk = match bss.security {
+        Security::Open => None,
+        Security::Wpa2Psk if passphrase.is_empty() => {
+            ssid_text(&mut e, ssid);
+            e.extend_from_slice(b" is wpa2-psk: connect SSID PASSPHRASE\n");
+            return e;
+        }
+        Security::Wpa2Psk => match wpa::psk(passphrase, &bss.ssid) {
+            Some(pmk) => Some(pmk),
+            None => {
+                e.extend_from_slice(b"a passphrase is 8 to 63 printable ASCII characters, or 64 hex digits\n");
+                return e;
+            }
+        },
+        _ => {
+            ssid_text(&mut e, ssid);
+            e.extend_from_slice(b" is ");
+            e.extend_from_slice(bss.security.name());
+            e.extend_from_slice(b": only open and wpa2-psk networks so far\n");
+            return e;
+        }
+    };
+    let rsn = if pmk.is_some() { &wpa::RSN_PSK_CCMP[..] } else { &[][..] };
+    let joined = mlme::join(radio, bss, rsn).and_then(|mut l| {
+        if let Some(pmk) = pmk {
+            match rsn::handshake(radio, &l.bss, pmk) {
+                Ok(r) => l.rsn = Some(r),
+                Err(why) => {
+                    mlme::leave(radio, &l);
+                    return Err(why);
+                }
+            }
+        }
+        Ok(l)
+    });
+    match joined {
         Ok(l) => {
             *link = Some(l);
             return status(link.as_ref());
@@ -246,6 +314,11 @@ fn connect(radio: &mut dyn Radio, seen: &mut Vec<Seen>, link: &mut Option<Link>,
             e.extend_from_slice(step);
             e.extend_from_slice(b" refused, status ");
             dec(&mut e, i64::from(code));
+            e.push(b'\n');
+        }
+        Err(Refused::Handshake(why)) => {
+            e.extend_from_slice(b"4-way handshake: ");
+            e.extend_from_slice(why);
             e.push(b'\n');
         }
     }
@@ -384,14 +457,20 @@ fn client() -> ! {
         write(b"wifi: no daemon (wifi daemon)\n");
         exit_code(1);
     };
-    let mut line = Vec::new();
-    for i in 1..myos_user::args::argc() {
-        if i > 1 {
-            line.push(b' ');
-        }
-        line.extend_from_slice(myos_user::args::arg(i).unwrap_or(b""));
+    // The command and its argument; `connect`'s passphrase on a line of
+    // its own (an SSID may have spaces in it, and so may a passphrase).
+    let arg = |i| myos_user::args::arg(i).unwrap_or(b"");
+    let argc = myos_user::args::argc();
+    let mut line = Vec::from(arg(1));
+    if argc > 2 {
+        line.push(b' ');
+        line.extend_from_slice(arg(2));
     }
     line.push(b'\n');
+    if arg(1) == b"connect" && argc > 3 {
+        line.extend_from_slice(arg(3));
+        line.push(b'\n');
+    }
     if !conn.write(&line) {
         exit_code(1);
     }

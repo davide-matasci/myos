@@ -1,9 +1,11 @@
 //! Joining a network: open-system authentication, then association, each
-//! a request and its answer, sent again when no answer comes; leaving it
-//! with a deauthentication.
+//! a request and its answer, sent again when no answer comes (then, on a
+//! WPA2 network, the 4-way handshake: `rsn.rs`); leaving it with a
+//! deauthentication.
 
 use crate::frame::{self, Bss};
 use crate::radio::Radio;
+use crate::rsn::Rsn;
 use myos_user::{monotonic_ns, poll, PollFd, POLLIN};
 
 /// How long a request waits for its answer, and how often it is sent.
@@ -14,6 +16,8 @@ const TRIES: usize = 3;
 pub struct Link {
     pub bss: Bss,
     pub aid: u16,
+    /// A WPA2 network's keys.
+    pub rsn: Option<Rsn>,
 }
 
 /// Why joining failed.
@@ -22,10 +26,13 @@ pub enum Refused {
     Silent(&'static [u8]),
     /// The access point refused a request with this status code.
     Status(&'static [u8], u16),
+    /// The 4-way handshake failed: why.
+    Handshake(&'static [u8]),
 }
 
-/// Authenticate with and associate to `bss`.
-pub fn join(radio: &mut dyn Radio, bss: Bss) -> Result<Link, Refused> {
+/// Authenticate with and associate to `bss`, offering RSN element `rsn`
+/// (whole; empty for an open network).
+pub fn join(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refused> {
     let me = radio.mac();
     radio.set_channel(bss.channel);
     let auth = frame::auth_request(me, bss.bssid);
@@ -34,13 +41,13 @@ pub fn join(radio: &mut dyn Radio, bss: Bss) -> Result<Link, Refused> {
     if status != frame::STATUS_OK {
         return Err(Refused::Status(b"authentication", status));
     }
-    let assoc = frame::assoc_request(me, bss.bssid, &bss.ssid);
+    let assoc = frame::assoc_request(me, bss.bssid, &bss.ssid, rsn);
     let (status, aid) = exchange(radio, &assoc, bss.bssid, frame::ASSOC_RESP, frame::assoc_status)
         .ok_or(Refused::Silent(b"association"))?;
     if status != frame::STATUS_OK {
         return Err(Refused::Status(b"association", status));
     }
-    Ok(Link { bss, aid })
+    Ok(Link { bss, aid, rsn: None })
 }
 
 /// Leave the network.

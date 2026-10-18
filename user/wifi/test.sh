@@ -27,10 +27,12 @@ wifi_scan() {
 t -t wifi wifi_scan wifi_scan
 
 # Joining the open network: open-system authentication and association
-# with its access point, `status` naming it; a WPA2 network is refused (not
-# supported yet), after the open one was left; joining again takes the next
-# association id (the access point let the station go); `disconnect`
-# leaves it.
+# with its access point, `status` naming it; the WPA2 network refused
+# without a passphrase (after the open one was left) and with a wrong one
+# (message 2's MIC: the access point lets the station go); joining again
+# takes the next association id (the access point let the station go);
+# the WPA2 network joined with its passphrase (src/wifi_sim.rs), then
+# `disconnect` leaves it.
 wifi_connect() {
 	/bin/custom/wifi daemon /dev/net1 &
 	wifi_pid=$!
@@ -43,9 +45,13 @@ wifi_connect() {
 	if [ "$(/bin/custom/wifi connect myos-open)" = "$want" ] &&
 		[ "$(/bin/custom/wifi status)" = "$want" ] &&
 		! /bin/custom/wifi connect myos-wpa2 > /tmp/wifi.err 2>&1 &&
-		grep -q 'myos-wpa2 is wpa2-psk' /tmp/wifi.err &&
+		grep -q 'myos-wpa2 is wpa2-psk: connect SSID PASSPHRASE' /tmp/wifi.err &&
 		[ "$(/bin/custom/wifi status)" = disconnected ] &&
-		[ "$(/bin/custom/wifi connect myos-open)" = "${want%1}2" ] &&
+		! /bin/custom/wifi connect myos-wpa2 not-the-passphrase > /tmp/wifi.err 2>&1 &&
+		grep -q 'wrong passphrase' /tmp/wifi.err &&
+		[ "$(/bin/custom/wifi status)" = disconnected ] &&
+		[ "$(/bin/custom/wifi connect myos-open)" = "${want%1}3" ] &&
+		[ "$(/bin/custom/wifi connect myos-wpa2 myos-passphrase)" = 'associated 02:00:5e:00:01:06 6 myos-wpa2 aid 4' ] &&
 		[ "$(/bin/custom/wifi disconnect)" = disconnected ] &&
 		[ "$(/bin/custom/wifi status)" = disconnected ]; then
 		wifi_rc=0
@@ -58,11 +64,14 @@ wifi_connect() {
 }
 t -t wifi wifi_connect wifi_connect
 
-# The link's data path: associated to `myos-open`, the daemon holds a
-# virtual NIC (/dev/tap) that netd takes, leasing 10.0.8.x from the access
-# point's router (src/wifi_net.rs); a ping to the router crosses the link
-# as 802.11 data frames, net0 keeps the default route, and the NIC goes
-# with the link at `disconnect`.
+# The link's data path: associated to SSID (with PASSPHRASE on a WPA2
+# network), the daemon holds a virtual NIC (/dev/tap) that netd takes,
+# leasing 10.0.8.x from the access point's router (src/wifi_net.rs); a
+# ping to the router crosses the link as 802.11 data frames, net0 keeps
+# the default route, and the NIC goes with the link at `disconnect`. On
+# the WPA2 network every data frame is CCMP's, the router's broadcast
+# DHCP answers under the group key, and the access point rekeys the group
+# at the station's first frame (a group key handshake).
 wifi_data() {
 	/bin/custom/wifi daemon /dev/net1 &
 	wifi_pid=$!
@@ -72,7 +81,7 @@ wifi_data() {
 		sleep 1
 	done
 	leased=0
-	if /bin/custom/wifi connect myos-open > /tmp/wifi.err 2>&1; then
+	if /bin/custom/wifi connect "$@" > /tmp/wifi.err 2>&1; then
 		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 			grep -q '^tap[0-3] 10\.0\.8\.[0-9]* 255\.255\.255\.0 ' /net/ifaddrs && leased=1 && break
 			sleep 1
@@ -101,7 +110,8 @@ wifi_data() {
 	kill $wifi_pid
 	return $wifi_rc
 }
-t -t wifi,tap wifi_data wifi_data
+t -t wifi,tap wifi_data wifi_data myos-open
+t -t wifi,tap wifi_wpa2_data wifi_data myos-wpa2 myos-passphrase
 
 # wifi-firmware: a file whose SHA-256 is not the pinned one is refused and
 # not kept (a mirror directory with the wrong bytes); `list` says it is

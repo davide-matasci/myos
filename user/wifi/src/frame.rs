@@ -1,7 +1,7 @@
 //! 802.11 frames: the probe request a scan sends and what a beacon or a
 //! probe response says about its network; the authentication, association
 //! and deauthentication of a station; the data frames of its link, to and
-//! from Ethernet.
+//! from Ethernet (in the clear: `rsn.rs` encrypts and decrypts them).
 
 use alloc::vec::Vec;
 
@@ -60,6 +60,9 @@ pub struct Bss {
     /// it was heard on.
     pub channel: u8,
     pub security: Security,
+    /// Its RSN element, whole (empty when it has none): the 4-way
+    /// handshake checks message 3's against it.
+    pub rsn: Vec<u8>,
 }
 
 /// A management frame's header: `subtype` from `sa` to `da` of `bssid`.
@@ -94,13 +97,15 @@ pub fn parse_bss(f: &[u8], channel: u8) -> Option<Bss> {
     let ies = &f[HDR + FIXED..];
     let ssid = ie(ies, 0).unwrap_or(&[]);
     let channel = ie(ies, 3).and_then(|ds| ds.first().copied()).unwrap_or(channel);
-    let security = match ie(ies, 48) {
+    let rsn = ie(ies, 48);
+    let security = match rsn {
         Some(rsn) if rsn_psk(rsn) => Security::Wpa2Psk,
         Some(_) => Security::Wpa2Other,
         None if cap & CAP_PRIVACY != 0 => Security::Wep,
         None => Security::Open,
     };
-    Some(Bss { bssid, ssid: ssid.to_vec(), channel, security })
+    let rsn = rsn.map(|b| [&[48, b.len() as u8][..], b].concat()).unwrap_or_default();
+    Some(Bss { bssid, ssid: ssid.to_vec(), channel, security, rsn })
 }
 
 /// Whether an RSN element offers PSK key management (suite 00-0f-ac:2).
@@ -136,8 +141,9 @@ pub fn auth_request(sa: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
     f
 }
 
-/// An association request to `bssid` for network `ssid`.
-pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], ssid: &[u8]) -> Vec<u8> {
+/// An association request to `bssid` for network `ssid`, with RSN element
+/// `rsn` (whole; empty for an open network).
+pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], ssid: &[u8], rsn: &[u8]) -> Vec<u8> {
     let mut f = header(ASSOC_REQ, bssid, sa, bssid);
     f.extend_from_slice(&0x0001u16.to_le_bytes()); // capabilities: ESS
     f.extend_from_slice(&10u16.to_le_bytes()); // listen interval, in beacons
@@ -147,6 +153,7 @@ pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], ssid: &[u8]) -> Vec<u8> {
     f.push(1);
     f.push(RATES.len() as u8);
     f.extend_from_slice(&RATES);
+    f.extend_from_slice(rsn);
     f
 }
 

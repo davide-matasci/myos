@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Wi-Fi: the daemon (scan, later association and WPA2) and its command."
+description = "Wi-Fi: the daemon (scan, association, WPA2-PSK) and its command."
 
 [[bin]]
 name = "wifi"
@@ -16,6 +16,7 @@ bench = false
 [dependencies]
 myos-user = { path = "../lib" }
 iwx = { path = "iwx" }
+wpa = { path = "wpa" }
 
 [profile.dev]
 panic = "abort"
