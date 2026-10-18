@@ -9,17 +9,29 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::platform::{Uart, UartKind};
 
-/// Until `set_uart` runs: QEMU `virt`'s PL011, so that a boot without a
-/// usable description can still say so on the console it most likely has.
-static BASE: AtomicUsize = AtomicUsize::new(0x0900_0000);
+/// The UART's registers (kernel virtual: the device window). Until
+/// `set_uart` runs, QEMU `virt`'s PL011 ([`map_default`]), so that a boot
+/// without a usable description can still say so on the console it most
+/// likely has; 0, no output, if not even that is mapped.
+static BASE: AtomicUsize = AtomicUsize::new(0);
+/// QEMU `virt`'s PL011.
+const DEFAULT_PL011: u64 = 0x0900_0000;
 /// 0: PL011, 1: 16550.
 static KIND: AtomicU8 = AtomicU8::new(0);
 /// 16550: register `n` is at `BASE + (n << SHIFT)`, `WIDTH` bytes wide.
 static SHIFT: AtomicU8 = AtomicU8::new(0);
 static WIDTH: AtomicU8 = AtomicU8::new(1);
 
-pub fn set_uart(uart: Uart) {
-    BASE.store(uart.base as usize, Ordering::SeqCst);
+/// Map QEMU `virt`'s PL011 as the console until the platform names one.
+pub fn map_default() {
+    if let Some(va) = super::paging::map_mmio(DEFAULT_PL011, 0x1000) {
+        BASE.store(va, Ordering::SeqCst);
+    }
+}
+
+/// Take the platform's UART, its registers at `va` (mapped by the caller).
+pub fn set_uart(uart: Uart, va: usize) {
+    BASE.store(va, Ordering::SeqCst);
     SHIFT.store(uart.reg_shift, Ordering::SeqCst);
     WIDTH.store(uart.reg_width.max(1), Ordering::SeqCst);
     KIND.store(matches!(uart.kind, UartKind::Ns16550) as u8, Ordering::SeqCst);
@@ -64,8 +76,9 @@ pub struct SerialPort;
 impl SerialPort {
     pub fn new() -> Self {
         use core::sync::atomic::{AtomicBool, Ordering};
-        if is_16550() {
+        if is_16550() || uart0() == 0 {
             // The firmware programmed the line; the 16550 is used as found.
+            // No UART mapped yet: nothing to program.
             return Self;
         }
         // Program the PL011 once. The console constructs a `SerialPort` per
@@ -113,6 +126,9 @@ impl SerialPort {
     }
 
     fn write_byte_raw(&mut self, byte: u8) {
+        if uart0() == 0 {
+            return;
+        }
         if is_16550() {
             while reg_read(LSR) & LSR_TX_IDLE == 0 {}
             reg_write(THR, u32::from(byte));
@@ -123,6 +139,9 @@ impl SerialPort {
     }
 
     pub fn flush(&mut self) {
+        if uart0() == 0 {
+            return;
+        }
         if is_16550() {
             while reg_read(LSR) & LSR_TX_IDLE == 0 {}
             return;
@@ -136,6 +155,9 @@ impl SerialPort {
 /// interrupts (both clear as the FIFO is read empty).
 pub fn rx_irq_on() {
     SerialPort::new();
+    if uart0() == 0 {
+        return;
+    }
     if is_16550() {
         reg_write(IER, 0x01);
     } else {
@@ -145,6 +167,9 @@ pub fn rx_irq_on() {
 
 /// Non-blocking read. Returns `None` if the RX FIFO is empty.
 pub fn read_byte() -> Option<u8> {
+    if uart0() == 0 {
+        return None;
+    }
     if is_16550() {
         if reg_read(LSR) & LSR_RX_READY == 0 {
             return None;

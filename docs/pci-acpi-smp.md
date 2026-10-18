@@ -329,7 +329,7 @@ All three arches use **Limine `MpRequest`**: the bootloader parks APs until
 | Arch | CPU id | AP init | Timer / IRQ | IPI |
 |------|--------|---------|-------------|-----|
 | x86_64 | TSC_AUX / APIC id | Per-CPU GDT+TSS, GS → syscall state, LAPIC timer (x2APIC MSRs when the CPU has an x2APIC, the xAPIC page otherwise; QEMU's TCG has no x2APIC, so CI runs the xAPIC path) | LVT timer → `schedule` | ICR all-excl-self (vec 33 TLB, 34 resched) |
-| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, TTBR0 device map sync, `VBAR`/`use_spx`, the CPU's GIC bank (v2: banked GICC; v3: its redistributor + `ICC_*`), timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
+| aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | naked `goto_address` entry, the kernel TTBR0 and MAIR device attribute, `VBAR`/`use_spx`, the CPU's GIC bank (v2: banked GICC; v3: its redistributor + `ICC_*`), timers | PPI timer → `schedule` | GICv2 SGI 0 (TLB), SGI 1 (resched) |
 | riscv64 | `tp` / Limine `hartid` | `stvec` / `sie` (STIE+SSIE) / `stimecmp` | S-mode timer → `schedule` | SBI IPI ext → SSIP; soft reason bits in `smp` |
 
 Scheduler: per-CPU run queues + optional `affinity` (AP idle threads are
@@ -386,7 +386,7 @@ Per-CPU ring3↔ring0 state:
   (`kernel_rsp0` + fork callee snapshot). User CS/SS come from the CPU's GDT.
 - **aarch64** — banked `SP_ELx` after `use_spx`; exception frames live on the
   current task's kernel stack. Limine `goto_address` publishes via STLR+DC CVAC;
-  APs take a naked entry (FPEN + progress flag) then sync BSP TTBR0 before GIC.
+  APs take a naked entry (FPEN + progress flag) then install the kernel TTBR0 and the MAIR device attribute before the GIC (the device window is in the shared TTBR1).
 - **riscv64** — `sscratch` holds the current task's kernel stack top (updated on
   every schedule). Per-hart cells are deferred until multi-hart Limine bring-up
   is reliable on QEMU.

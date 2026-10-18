@@ -42,9 +42,11 @@ pub fn serial_rx_irq_on() {
 pub const QEMU_SUCCESS: u32 = 0x10;
 pub const QEMU_FAILURE: u32 = 0x11;
 
-/// Identity-map device MMIO on TTBR0 so UART/GIC still work.
+/// The device window (`paging`), and QEMU `virt`'s UART in it until the
+/// platform description names the board's.
 pub fn early_init() {
     paging::map_devices();
+    serial::map_default();
 }
 
 pub fn init_interrupts() {
@@ -83,20 +85,27 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
     if p.source.is_none() {
         return Err("no ACPI tables and no device tree from the bootloader");
     }
+    // Each device's registers are mapped into the device window first.
+    let map = |phys: u64, size: u64, what: &'static str| paging::map_mmio(phys, size).ok_or(what);
     match p.intc.map(|c| c.value) {
-        Some(Intc::GicV2 { gicd, gicc }) => interrupts::set_gic(gicd as usize, gicc as usize),
-        Some(Intc::GicV3 { gicd, gicr, gicr_size }) if gicr != 0 => {
-            interrupts::set_gicv3(gicd as usize, gicr as usize, gicr_size as usize)
-        }
+        Some(Intc::GicV2 { gicd, gicc }) => interrupts::set_gic(
+            map(gicd, 0x1000, "platform: cannot map the GIC distributor")?,
+            map(gicc, 0x2000, "platform: cannot map the GIC CPU interface")?,
+        ),
+        Some(Intc::GicV3 { gicd, gicr, gicr_size }) if gicr != 0 => interrupts::set_gicv3(
+            map(gicd, 0x1_0000, "platform: cannot map the GIC distributor")?,
+            map(gicr, gicr_size, "platform: cannot map the GIC redistributors")?,
+            gicr_size as usize,
+        ),
         Some(Intc::GicV3 { .. }) => return Err("platform: GICv3 without a redistributor region"),
         _ => return Err("platform: no GIC"),
     }
     match p.uart.map(|c| c.value) {
-        Some(uart) if !uart.io => serial::set_uart(uart),
+        Some(uart) if !uart.io => serial::set_uart(uart, map(uart.base, 0x1000, "platform: cannot map the UART")?),
         _ => return Err("platform: no memory-mapped UART"),
     }
     if let Some(rtc) = p.rtc {
-        clock::set_rtc_base(rtc.value.base as usize);
+        clock::set_rtc_base(map(rtc.value.base, 0x1000, "platform: cannot map the RTC")?);
     }
     let host = p.pci.ok_or("platform: no PCIe host bridge")?.value;
     let (mmio, mmio_size) = p

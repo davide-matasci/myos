@@ -1,7 +1,7 @@
 //! ECAM config access and BAR mapping, with the host bridge's ECAM window,
 //! bus range and 32-bit MMIO window from the device tree (`set_host`; QEMU
 //! `virt` with `highmem-ecam=off`: ECAM 0x3f000000 for 16 buses, MMIO at
-//! 0x10000000, both in the identity-mapped low 1 GiB).
+//! 0x10000000), both mapped into the kernel's device window (`paging`).
 
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
@@ -15,7 +15,10 @@ static MMIO_SIZE: AtomicU64 = AtomicU64::new(0);
 /// The PCIe host bridge from the device tree: ECAM window (mapped here),
 /// last bus, and the MMIO window BARs are assigned from.
 pub fn set_host(ecam_phys: u64, ecam_size: u64, bus_end: u8, mmio_base: u64, mmio_size: u64) {
-    let va = map_mmio(ecam_phys, ecam_size.max(1)).unwrap_or(ecam_phys as usize);
+    // Unmapped (beyond the device window): no bus is scanned.
+    let Some(va) = map_mmio(ecam_phys, ecam_size.max(1)) else {
+        return;
+    };
     ECAM_BASE.store(va, Ordering::SeqCst);
     // One bus takes 1 MiB of ECAM: never read past the window.
     let by_size = (ecam_size >> 20).saturating_sub(1).min(255) as u8;
