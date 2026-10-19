@@ -306,9 +306,9 @@ snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
 `[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
 boot line, and the riscv64 `virt` the RISC-V IOMMU (`-device
 riscv-iommu-pci`, first on the bus as `00:01.0`, Sv39x4 to Sv57x4, MSI
-translation) on every boot whose QEMU has it: the device is QEMU 10.1's,
-which the CI image builds from source (`Dockerfile`); with an older QEMU
-the launcher says so once and boots without, `/proc/iommu` saying `none`.
+translation) on every boot whose QEMU has it: the device is QEMU 9.2's and later
+(CI's image has it, Ubuntu 24.04's 8.2 has not); without it the launcher
+says so once and boots without, `/proc/iommu` saying `none`.
 Its boot line: `[ OK ] iommu: riscv unit at 00:01.0, 256 device ids,
 Sv39x4 second stage`; `-device intel-iommu` is not for the `pc` machine
 (`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. The UEFI boots run

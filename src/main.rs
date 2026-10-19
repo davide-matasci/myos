@@ -1440,16 +1440,16 @@ fn run_test_riscv64(mode: Mode) {
 }
 
 /// Whether this host's `qemu-system-riscv64` has the RISC-V IOMMU
-/// (`riscv-iommu-pci`, QEMU 10.1: the CI image builds it, Ubuntu 24.04's
-/// 8.2 has none). A boot without it has no IOMMU: `/proc/iommu` says
-/// `none`, said once here.
+/// (`riscv-iommu-pci`, QEMU 9.2 and later: CI's image has it, Ubuntu
+/// 24.04's 8.2 has none). A boot without it has no IOMMU: `/proc/iommu`
+/// says `none`, said once here.
 fn riscv64_iommu() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
         let out = Command::new("qemu-system-riscv64").args(["-device", "help"]).output();
         let has = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("riscv-iommu-pci"));
         if !has {
-            eprintln!("note: qemu-system-riscv64 has no riscv-iommu-pci (QEMU 10.1): the boot has no IOMMU");
+            eprintln!("note: qemu-system-riscv64 has no riscv-iommu-pci (QEMU 9.2): the boot has no IOMMU");
         }
         has
     })
