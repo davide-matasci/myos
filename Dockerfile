@@ -6,14 +6,14 @@
 # (rust-toolchain.toml), so each job installs it via dtolnay/rust-toolchain and
 # stays reproducible against that exact toolchain.
 #
-# NOTE on the base image vs the reverted #121:
-#   Base is ubuntu:24.04 (noble), NOT 22.04. The riscv64 boot job needs RISC-V
-#   UEFI firmware, and src/main.rs::riscv64_firmware() hard-requires either
+# NOTE on the base image:
+#   Base is ubuntu:26.04 (resolute). The riscv64 boot job needs RISC-V UEFI
+#   firmware, and src/main.rs::riscv64_firmware() hard-requires either
 #   /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd or /usr/share/edk2/riscv64/
-#   (no download fallback). qemu-efi-riscv64 does not exist on 22.04, so a
-#   jammy container cannot pass the riscv64 boot. 24.04 is also what the
-#   ubuntu-latest runner currently ships, so clang/lld/qemu versions in the
-#   image match the versions the jobs were verified against on the runner.
+#   (no download fallback), which 22.04 lacks (the reverted #121). 26.04 over
+#   24.04 for its QEMU (10.2): the AX201 boot test's device model is a
+#   vfio-user server, and QEMU's vfio-user-pci client is 10.1 and later
+#   (docs/wifi.md).
 #
 # NOTE on riscv64 binutils (differs from #121):
 #   #121 shipped `binutils-riscv64-linux-gnu`. It exists on jammy+noble, but
@@ -22,7 +22,7 @@
 #   `riscv64-unknown-myos`) link with `rust-lld` (targets/*.json set
 #   `linker = "rust-lld"`), and the C ports build riscv object files with clang.
 #   The GNU riscv binutils are therefore dead weight and are dropped.
-FROM --platform=$BUILDPLATFORM ubuntu:24.04
+FROM --platform=$BUILDPLATFORM ubuntu:26.04
 
 ARG TARGETARCH
 ARG TARGETOS=linux
@@ -33,8 +33,9 @@ ENV CI=true \
     TZ=Etc/UTC
 
 # Union of every system package apt-get-installed across ci.yml and iso.yml:
-#   - qemu-system-{x86,arm,misc} + qemu-efi-{aarch64,riscv64}: boot matrix
-#     (bios/uefi/aarch64/riscv64) including the aarch64/riscv64 UEFI firmware.
+#   - qemu-system-{x86,arm,riscv} + qemu-efi-{aarch64,riscv64}: boot matrix
+#     (bios/uefi/aarch64/riscv64) including the aarch64/riscv64 UEFI firmware
+#     (riscv64 has its own package since QEMU 10, no longer qemu-system-misc).
 #   - clang lld binutils-aarch64-linux-gnu: cross link for aarch64 userspace
 #     ELFs (newlib/ports) + kernel/user EE linking.
 #   - gcc g++ make autoconf automake libtool texinfo bison flex pkg-config:
@@ -52,7 +53,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
         qemu-system-arm \
-        qemu-system-misc \
+        qemu-system-riscv \
         qemu-efi-aarch64 \
         qemu-efi-riscv64 \
         clang lld \
@@ -77,7 +78,7 @@ RUN apt-get update \
 # We intentionally do NOT `USER ciuser`: GitHub runs container jobs as root and
 # sets HOME=/github/home, and the repo scripts rely on root-writable workspace
 # + HOME semantics identical to a stock runner.
-# uid/gid 1001: the stock ubuntu:24.04 image already owns uid/gid 1000 with
+# uid/gid 1001: the stock ubuntu image already owns uid/gid 1000 with
 # its built-in `ubuntu` user, and `useradd -u 1000 ciuser` errors out (exit 4)
 # on that collision — so use a free id.
 RUN useradd -m -u 1001 -s /bin/bash ciuser \

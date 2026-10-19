@@ -109,11 +109,12 @@ cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patch
 ## Fast local setup (fresh container, cloud agent)
 
 Building every port from source takes hours; CI's port cache on GHCR gets a
-fresh Ubuntu container to its first boot in about 10 minutes (pull ~1 min,
+fresh Ubuntu 26.04 container (CI's, `Dockerfile`; on 24.04 `qemu-system-misc` has
+riscv64) to its first boot in about 10 minutes (pull ~1 min,
 first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
 
 ```sh
-sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
+sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git libc6-dev rsync \
   patch curl zstd e2fsprogs dosfstools mtools
 export GITHUB_REPOSITORY=davide-matasci/myos
