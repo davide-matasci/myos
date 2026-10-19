@@ -51,7 +51,8 @@ in the order they registered; then the arch's own
 - **PSCI** is called through the conduit the platform description names:
   the device tree's `/psci` `method`, or the FADT's arm boot flags
   (`psci hvc (dt)` in `/proc/platform`); without one, HVC at EL1 and SMC
-  at EL2.
+  at EL2. On a Raspberry Pi 3 that HVC goes to myos's own boot stub, a
+  minimal PSCI (`docs/raspberry-pi.md`).
 
 `exit_qemu`, which the kernel calls on a panic and when the last process
 exits, is not this sequence: it powers off at once (PSCI, SBI) or, on

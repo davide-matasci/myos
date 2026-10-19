@@ -1,6 +1,7 @@
 # Raspberry Pi
 
-myos runs on a **Raspberry Pi 4** behind its community UEFI firmware
+myos runs on a **Raspberry Pi 4** (below) and boots a **Raspberry Pi 3**
+to a serial shell ("Raspberry Pi 3", further down). The Pi 4 runs behind its community UEFI firmware
 ([pftf/RPi4](https://github.com/pftf/RPi4)): the firmware starts Limine
 from a USB stick like any UEFI machine, and the kernel reads the board
 from the firmware's device tree. **Untested on hardware so far**: the
@@ -85,3 +86,76 @@ does not see the CPU's caches: the xHCI driver's DMA memory comes from
 there, whatever the firmware's "Limit RAM to 3 GB" setting, and it
 cleans and invalidates the caches around each hand-over (`dma_sync`,
 `docs/pci-acpi-smp.md` "DMA").
+
+## Raspberry Pi 3
+
+A Raspberry Pi 3 (BCM2837, four Cortex-A53) has no UEFI firmware: its
+GPU firmware starts an ARM stub and a kernel from the SD card, and myos
+uses [U-Boot](https://u-boot.org/) as that kernel, which runs Limine as
+a UEFI application. QEMU models the board (`raspi3b`), so this boot is
+checked there; **untested on hardware so far**.
+
+```sh
+cargo run -- rpi3        # builds the boot files and boots QEMU raspi3b
+```
+
+The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
+`target/rpi3/u-boot.log` (the PL011). What works: the four cores, the
+generic timer, the serial console, the framebuffer the firmware sets up,
+everything that runs from the initramfs, power-off and reboot. What does
+not (yet): USB (the DWC2 controller), so no keyboard, disk or Ethernet;
+the SD card (as a disk: U-Boot reads it); Wi-Fi.
+
+`boot/rpi3/build.sh` (which `cargo run -- rpi3` runs) builds the boot
+files into `target/rpi3`:
+
+- `armstub8-myos.bin` (`boot/rpi3/armstub8.S`, myos's own): every core
+  starts in it at address 0 and leaves at EL1, the level Limine boots a
+  core without VHE at (it refuses EL2 there). Core 0 jumps to U-Boot;
+  the others wait in the device tree's spin table (`cpu-release-addr`),
+  where Limine starts them. It stays at EL2 as a minimal PSCI, for the
+  kernel's power-off and reboot (`docs/power.md`): both reset the board
+  through the power manager's watchdog, power-off with the reset status
+  the firmware reads as "halt".
+- `u-boot.bin`: U-Boot (`UBOOT_VERSION` in `boot/rpi3/versions.env`,
+  `rpi_3_defconfig`), built with GCC's AArch64 cross compiler
+  (`gcc-aarch64-linux-gnu`; a clang build crashes at run time). It finds
+  `EFI/BOOT/BOOTAA64.EFI` on the first disk and starts it with the
+  firmware's device tree.
+- `bcm2710-rpi-3-b.dtb`: the Pi 3's device tree from the firmware
+  release `FIRMWARE_TAG`. QEMU has no GPU firmware, so the launcher does
+  its part: it fills the memory node in a copy (`qemu.dtb`), writes the
+  tree's and U-Boot's addresses into a copy of the stub
+  (`armstub8-qemu.bin`) and loads the three where the firmware would.
+- `myos.img`: the same disk as `target/rpi4.img`, padded to a power of
+  two for QEMU's SD card.
+
+The kernel finds the board in the device tree like the Pi 4's. Its
+interrupt controllers are Broadcom's, not a GIC
+(`kernel/src/arch/aarch64/bcm2836.rs`): the per-core local controller
+(`brcm,bcm2836-l1-intc`: the timers, the mailboxes the IPIs go through,
+the peripherals' interrupt routed to core 0) in front of the BCM2835's
+(`brcm,bcm2836-armctrl-ic`, the peripherals', whose `bank, number`
+specifiers are numbered 32 + n for GPU interrupt n and 96 + n for basic
+interrupt n). The kernel's console is the UART `stdout-path` names, the
+mini UART (`brcm,bcm2835-aux-uart`).
+
+### On a real Pi 3
+
+On a FAT32-formatted SD card: `bootcode.bin`, `start.elf`, `fixup.dat`
+and `bcm2710-rpi-3-b.dtb` from the
+[firmware release](https://github.com/raspberrypi/firmware/tree/master/boot)
+(`FIRMWARE_TAG`), `target/rpi3/armstub8-myos.bin`,
+`target/rpi3/u-boot.bin`, and a `config.txt`:
+
+```
+arm_64bit=1
+enable_uart=1
+kernel=u-boot.bin
+armstub=armstub8-myos.bin
+```
+
+The myos disk goes on a USB stick (`sudo dd if=target/rpi3/myos.img
+of=/dev/sdX bs=4M conv=fsync`), which U-Boot boots when the SD card has
+no `EFI/BOOT` of its own. The console is the mini UART on GPIO 14 and
+15 (the same pins as the Pi 4's above), at 115200 8N1.

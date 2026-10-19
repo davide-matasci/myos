@@ -105,7 +105,11 @@ cargo run -- aarch64   # serial only for now
 
 `cargo run -- rpi4` writes `target/rpi4.img`, the AArch64 boot disk for a
 Raspberry Pi 4 behind its UEFI firmware (serial console, HDMI and USB,
-untested on hardware; `docs/raspberry-pi.md`).
+untested on hardware; `docs/raspberry-pi.md`). `cargo run -- rpi3` boots a
+Raspberry Pi 3 in QEMU (`raspi3b`: U-Boot, then Limine, a serial shell) and
+leaves the boot files for a real one in `target/rpi3`; it also needs
+`gcc-aarch64-linux-gnu`, `bison`, `flex`, `bc`, `libssl-dev`,
+`libgnutls28-dev` (U-Boot's build) and `device-tree-compiler` (`fdtput`).
 
 The boot test types `root` at `login: ` (the password is empty), then `sh /lib/myos-tests/run.sh mini|full` at `$ `.
 
