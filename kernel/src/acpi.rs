@@ -2,7 +2,8 @@
 //! description on x86_64 and on aarch64 firmware that has one (EDK2). Only
 //! the tables that name the platform are read, and no AML: MADT (the CPUs
 //! and the interrupt controller), MCFG (PCIe ECAM), SPCR (the console
-//! UART), GTDT (the arm timers), the FADT's arm boot flags (PSCI).
+//! UART), GTDT (the arm timers), the FADT's arm boot flags (PSCI), DMAR
+//! (the VT-d units, x86_64).
 //! `modules/acpi` keeps `/proc/acpi` and the ACPI power methods (`_S5`
 //! power-off, the reset register: `docs/power.md`). Everything here runs before the heap exists, so nothing
 //! allocates; tables are read in place through the HHDM.
@@ -29,6 +30,12 @@ impl Table {
 
     fn u8(&self, off: usize) -> Option<u8> {
         self.bytes.get(off).copied()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn u16(&self, off: usize) -> Option<u16> {
+        let b = self.bytes.get(off..off + 2)?;
+        Some(u16::from_le_bytes([b[0], b[1]]))
     }
 
     fn u32(&self, off: usize) -> Option<u32> {
@@ -289,4 +296,91 @@ pub fn fadt_psci_hvc() -> Option<bool> {
     let t = find(b"FACP")?;
     let flags = t.u8(129)?;
     (flags & 1 != 0).then_some(flags & 2 != 0)
+}
+
+/// The DMAR table: the DMA remapping units of an Intel platform (VT-d),
+/// `kernel/src/iommu/vtd.rs`.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct Dmar {
+    t: Table,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn dmar() -> Option<Dmar> {
+    let t = find(b"DMAR")?;
+    (t.len() >= 48).then_some(Dmar { t })
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Dmar {
+    /// Each DMA remapping hardware unit (DRHD): its registers, whether it
+    /// translates for every function no other unit's scope names
+    /// (`INCLUDE_PCI_ALL`), and its scopes.
+    pub fn units(&self) -> impl Iterator<Item = Drhd> + '_ {
+        let mut off = 48;
+        core::iter::from_fn(move || loop {
+            let typ = self.t.u16(off)?;
+            let len = self.t.u16(off + 2)? as usize;
+            if len < 4 || off + len > self.t.len() {
+                return None;
+            }
+            let here = off;
+            off += len;
+            if typ == 0 && len >= 16 {
+                return Some(Drhd {
+                    base: self.t.u64(here + 8)?,
+                    include_all: self.t.u8(here + 4)? & 1 != 0,
+                    scopes: &self.t.bytes[here + 16..here + len],
+                });
+            }
+        })
+    }
+}
+
+/// A DMA remapping unit.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct Drhd {
+    /// Its registers' physical address.
+    pub base: u64,
+    pub include_all: bool,
+    scopes: &'static [u8],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drhd {
+    /// The functions it translates for: endpoints (`kind` 1) and bridges
+    /// (2, every function behind one), each a start bus and a path of
+    /// (device, function) pairs from it.
+    pub fn scopes(&self) -> impl Iterator<Item = DeviceScope> + '_ {
+        let mut off = 0;
+        core::iter::from_fn(move || {
+            if off + 6 > self.scopes.len() {
+                return None;
+            }
+            let len = self.scopes[off + 1] as usize;
+            if len < 6 || off + len > self.scopes.len() {
+                return None;
+            }
+            let s = DeviceScope { kind: self.scopes[off], start_bus: self.scopes[off + 5], path: &self.scopes[off + 6..off + len] };
+            off += len;
+            Some(s)
+        })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct DeviceScope {
+    pub kind: u8,
+    pub start_bus: u8,
+    path: &'static [u8],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl DeviceScope {
+    pub fn path(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        self.path.chunks_exact(2).map(|p| (p[0], p[1]))
+    }
 }
