@@ -61,6 +61,10 @@ pub(super) struct Process {
     pub has_ctty: bool,
     /// Ignored signals bitmask (SIGKILL cannot be ignored). See `signal`.
     pub sig_ignored: u32,
+    /// The signal it gets when its parent ends (Linux's
+    /// `PR_SET_PDEATHSIG`, `task::set_pdeath_signal`); 0: none. Kept across
+    /// exec; a forked child starts without one.
+    pub pdeath_sig: u8,
     /// What the process can name (`None`: the whole tree). Inherited on
     /// fork, kept across exec; `cwd` is a path in it.
     pub ns: Option<Box<super::ns::Namespace>>,
@@ -104,6 +108,7 @@ static EMPTY_PROC: Process = Process {
     execd: false,
     has_ctty: false,
     sig_ignored: 0,
+    pdeath_sig: 0,
     ns: None,
     ctx: crate::sec::Ctx::BOOT,
     ended_cpu_ns: 0,
@@ -144,6 +149,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     b.exec_name = [0; 32];
     b.exec_name_len = 0;
     b.execd = false;
+    b.pdeath_sig = 0;
     b.ended_cpu_ns = 0;
     b.child_cpu_ns = 0;
     b

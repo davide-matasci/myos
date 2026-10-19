@@ -1,8 +1,10 @@
 //! The device: its memory shared with the firmware, the firmware's load, the
-//! interrupt, commands and notifications, the bring-up up to a scan (from
-//! OpenBSD's if_iwx.c: iwx_ctxt_info_init, iwx_init_fw_sec, iwx_start_fw,
-//! iwx_intr, iwx_intr_msix, iwx_notif_intr, iwx_send_cmd,
-//! iwx_run_init_mvm_ucode, iwx_init_hw; notices in LICENSE).
+//! interrupt, commands and notifications, the bring-up up to a scan, then
+//! joining a network and sending frames (from OpenBSD's if_iwx.c:
+//! iwx_ctxt_info_init, iwx_init_fw_sec, iwx_start_fw, iwx_intr,
+//! iwx_intr_msix, iwx_notif_intr, iwx_send_cmd, iwx_run_init_mvm_ucode,
+//! iwx_init_hw, iwx_auth, iwx_run, iwx_run_stop, iwx_deauth, iwx_tx,
+//! iwx_rx_tx_cmd; notices in LICENSE).
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -13,11 +15,12 @@ use crate::hw::{Bus, Hw, HwError};
 use crate::msg::{self, Channel, NvmInfo};
 use crate::reg::*;
 use crate::ring::{self, CmdId, CtxtAddrs, Packet};
+use crate::sta::{self, Action, Assoc, Beacon};
 
 /// What the driver needs of the platform beyond the registers.
 pub trait Device: Bus {
     /// A zeroed, physically contiguous buffer the device reaches by DMA,
-    /// `len` a multiple of 4 KB (the driver asks for at most 9).
+    /// `len` a multiple of 4 KB (the driver asks for at most 11).
     fn dma(&mut self, len: usize) -> Option<Dma>;
     /// Wait up to `timeout_us` for the device's interrupt: whether it came
     /// (since the last wait).
@@ -111,6 +114,9 @@ pub enum Error {
     /// The firmware or the hardware stopped; the firmware's error id from
     /// its log when it could be read.
     Fatal { hw: bool, error_id: Option<u32> },
+    /// No network joined to send to, or too many frames on their way.
+    NotJoined,
+    QueueFull,
 }
 
 impl From<HwError> for Error {
@@ -136,6 +142,53 @@ pub struct Info {
     /// allows ("ZZ" and the NVM's without location-aware regulatory).
     pub alpha2: [u8; 2],
     pub channels: Vec<Channel>,
+    /// The antennas to send and receive with (the firmware's and the
+    /// NVM's).
+    pub tx_chains: u32,
+    pub rx_chains: u32,
+}
+
+/// The access point being joined, as its beacons and the scan told.
+#[derive(Clone, Copy, Debug)]
+pub struct Peer {
+    pub bssid: [u8; 6],
+    pub channel: Channel,
+    pub beacon: Beacon,
+}
+
+/// The station's transmit queue (DQA's first data queue): 256 descriptors
+/// with the byte count table after them in one buffer, the frames (their
+/// TX command and header, then the body) in another, [`TX_SLOTS`] of them
+/// on their way at most.
+struct TxQueue {
+    ring: Dma,
+    frames: Dma,
+    /// The firmware's number for it (1), once added.
+    qid: Option<u8>,
+    cur: usize,
+    /// The first index not yet done.
+    tail: usize,
+    failed: u32,
+}
+
+const TXQ_BYTE_COUNTS: usize = ring::CMD_RING * ring::TFD_LEN;
+const TXQ_RING_LEN: usize = TXQ_BYTE_COUNTS + 4096;
+const TX_SLOTS: usize = 64;
+const TX_SLOT: usize = 4096;
+/// Where a slot's body starts: after the TX command and header (at most
+/// 4 + 20 + 32 + 3 bytes).
+const TX_BODY: usize = 64;
+
+/// What the firmware has of the network joined, so that leaving undoes
+/// just that.
+#[derive(Default)]
+struct Joined {
+    phy: bool,
+    mac: bool,
+    binding: bool,
+    sta: bool,
+    protected: bool,
+    assoc: bool,
 }
 
 // The control buffer: the context information, the ICT, the receive
@@ -221,6 +274,8 @@ pub struct Dev<D: Device> {
     fatal: Option<Error>,
     lmac_error_table: u32,
     buf: Vec<u8>,
+    txq: Option<TxQueue>,
+    joined: Joined,
 }
 
 impl<D: Device> Dev<D> {
@@ -262,6 +317,8 @@ impl<D: Device> Dev<D> {
             fatal: None,
             lmac_error_table: 0,
             buf: alloc::vec![0; ring::RX_BUF],
+            txq: None,
+            joined: Joined::default(),
         };
         d.stock_rx();
         Ok(d)
@@ -374,7 +431,176 @@ impl<D: Device> Dev<D> {
             (alpha2, channels) = msg::mcc_response(&r, nvm.band_5ghz).ok_or(Error::Response(msg::MCC_UPDATE))?;
         }
         self.cmd(msg::SCAN_CFG, &msg::scan_cfg(tx, rx))?;
-        Ok(Info { mac, nvm, alpha2, channels })
+        Ok(Info { mac, nvm, alpha2, channels, tx_chains: tx, rx_chains: rx })
+    }
+
+    /// Get ready to authenticate with `peer`: the PHY context on its
+    /// channel, the MAC context, their binding, the access point as the
+    /// station with its queue, and the firmware kept on the channel while
+    /// the daemon authenticates and associates (iwx_auth). Undone on an
+    /// error.
+    pub fn join(&mut self, info: &Info, peer: &Peer) -> Result<(), Error> {
+        self.leave(info, peer);
+        let r = self.join_steps(info, peer);
+        if r.is_err() {
+            self.leave(info, peer);
+        }
+        r
+    }
+
+    fn join_steps(&mut self, info: &Info, peer: &Peer) -> Result<(), Error> {
+        self.cmd(sta::PHY_CONTEXT, &sta::phy_context(Action::Add, peer.channel))?;
+        self.joined.phy = true;
+        self.cmd(sta::RLC_CONFIG, &sta::rlc_config(info.rx_chains))?;
+        self.cmd(sta::MAC_CONTEXT, &sta::mac_context(Action::Add, info.mac, peer.bssid, peer.channel.ghz5, None))?;
+        self.joined.mac = true;
+        self.cmd_status(sta::BINDING_CONTEXT, &sta::binding(Action::Add), |s| s == 0)?;
+        self.joined.binding = true;
+        self.cmd_status(sta::ADD_STA, &sta::add_sta(Some(peer.bssid)), |s| s & 0xff == 1)?;
+        self.joined.sta = true;
+        self.add_queue()?;
+        let duration = sta::join_protection_tu(peer.beacon.interval);
+        self.cmd(sta::SESSION_PROTECTION, &sta::session_protection(true, duration))?;
+        self.joined.protected = true;
+        Ok(())
+    }
+
+    /// The station's queue: its buffers the first time, then
+    /// SCD_QUEUE_CONFIG adding it from index 0.
+    fn add_queue(&mut self) -> Result<(), Error> {
+        if self.txq.is_none() {
+            let ring = self.hw.bus.dma(TXQ_RING_LEN).ok_or(Error::Dma)?;
+            let frames = self.hw.bus.dma(TX_SLOTS * TX_SLOT).ok_or(Error::Dma)?;
+            self.txq = Some(TxQueue { ring, frames, qid: None, cur: 0, tail: 0, failed: 0 });
+        }
+        let q = self.txq.as_mut().unwrap();
+        q.ring.write(0, &alloc::vec![0; TXQ_RING_LEN]);
+        let (tfds, bc) = (q.ring.phys(), q.ring.phys() + TXQ_BYTE_COUNTS as u64);
+        let r = self.cmd(sta::SCD_QUEUE_CONFIG, &sta::queue_add(tfds, bc))?;
+        let qid = sta::queue_added(&r).ok_or(Error::Response(sta::SCD_QUEUE_CONFIG))?;
+        let q = self.txq.as_mut().unwrap();
+        (q.qid, q.cur, q.tail) = (Some(qid as u8), 0, 0);
+        Ok(())
+    }
+
+    /// Associated with `peer` as `aid`: the station and MAC context told,
+    /// the smart FIFO on, group frames up, the device awake, the
+    /// firmware's rate scaling started (iwx_run).
+    pub fn associated(&mut self, info: &Info, peer: &Peer, aid: u16) -> Result<(), Error> {
+        self.cmd_status(sta::ADD_STA, &sta::add_sta(None), |s| s & 0xff == 1)?;
+        let assoc = Some(Assoc { aid, beacon: peer.beacon });
+        self.cmd(sta::MAC_CONTEXT, &sta::mac_context(Action::Modify, info.mac, peer.bssid, peer.channel.ghz5, assoc))?;
+        self.joined.assoc = true;
+        self.cmd(sta::SF_CFG, &sta::sf_config(true))?;
+        self.cmd(sta::MCAST_FILTER, &sta::mcast_filter(peer.bssid))?;
+        self.cmd(sta::MAC_PM_POWER_TABLE, &sta::mac_power())?;
+        // Its rates as the beacon said, the band's when it said none.
+        let band: u16 = if peer.channel.ghz5 { 0xff0 } else { 0xfff };
+        let rates = match peer.beacon.rates & band {
+            0 => band,
+            r => r,
+        };
+        self.cmd(sta::TLC_MNG_CONFIG, &sta::tlc_config(rates))?;
+        Ok(())
+    }
+
+    /// Leave the network joined, as far as it was (iwx_run_stop, then
+    /// iwx_deauth): what was sent dropped, the contexts removed. Errors
+    /// are not stopped at: the next join starts clean anyway.
+    pub fn leave(&mut self, info: &Info, peer: &Peer) {
+        let j = core::mem::take(&mut self.joined);
+        let queued = self.txq.as_ref().is_some_and(|q| q.qid.is_some());
+        if j.sta {
+            let _ = self.cmd_status(sta::ADD_STA, &sta::drain_sta(true), |s| s & 0xff == 1);
+            let _ = self.cmd(sta::TXPATH_FLUSH, &sta::txpath_flush());
+            let _ = self.cmd_status(sta::ADD_STA, &sta::drain_sta(false), |s| s & 0xff == 1);
+        }
+        if j.assoc {
+            let _ = self.cmd(sta::SF_CFG, &sta::sf_config(false));
+            let mac = sta::mac_context(Action::Modify, info.mac, peer.bssid, peer.channel.ghz5, None);
+            let _ = self.cmd(sta::MAC_CONTEXT, &mac);
+        }
+        if j.protected {
+            let _ = self.cmd(sta::SESSION_PROTECTION, &sta::session_protection(false, 0));
+        }
+        if queued {
+            let _ = self.cmd(sta::SCD_QUEUE_CONFIG, &sta::queue_remove());
+            if let Some(q) = self.txq.as_mut() {
+                q.qid = None;
+            }
+        }
+        if j.sta {
+            let _ = self.cmd(sta::REMOVE_STA, &sta::remove_sta());
+        }
+        if j.binding {
+            let _ = self.cmd_status(sta::BINDING_CONTEXT, &sta::binding(Action::Remove), |s| s == 0);
+        }
+        if j.mac {
+            let _ = self.cmd(sta::MAC_CONTEXT, &sta::mac_context(Action::Remove, info.mac, peer.bssid, false, None));
+        }
+        if j.phy {
+            let _ = self.cmd(sta::PHY_CONTEXT, &sta::phy_context(Action::Remove, peer.channel));
+        }
+    }
+
+    /// Send 802.11 frame `f` (already encrypted, when it is) on the
+    /// station's queue: lowest rate for management and group frames,
+    /// `ofdm` on 5 GHz (iwx_tx).
+    pub fn send(&mut self, f: &[u8], ofdm: bool) -> Result<(), Error> {
+        if let Some(e) = self.fatal {
+            return Err(e);
+        }
+        let q = self.txq.as_mut().ok_or(Error::NotJoined)?;
+        let qid = q.qid.ok_or(Error::NotJoined)?;
+        if (q.cur + ring::CMD_RING - q.tail) % ring::CMD_RING >= TX_SLOTS - 1 {
+            return Err(Error::QueueFull);
+        }
+        let idx = q.cur;
+        let slot = (idx % TX_SLOTS) * TX_SLOT;
+        let mut c = [0u8; TX_BODY];
+        let n = sta::tx_cmd(&mut c, qid, idx as u8, f, ofdm).ok_or(Error::Response(CmdId::legacy(sta::TX_CMD)))?;
+        let hdr = msg::header_len(f).min(f.len());
+        let body = &f[hdr..];
+        if TX_BODY + body.len() > TX_SLOT {
+            return Err(Error::Response(CmdId::legacy(sta::TX_CMD)));
+        }
+        q.frames.write(slot, &c[..n]);
+        q.frames.write(slot + TX_BODY, body);
+        let at = q.frames.phys() + slot as u64;
+        let mut tbs = alloc::vec![(at, 20), (at + 20, n - 20)];
+        if !body.is_empty() {
+            tbs.push((at + TX_BODY as u64, body.len()));
+        }
+        let mut tfd = [0u8; ring::TFD_LEN];
+        ring::encode_tfd_tbs(&mut tfd, &tbs);
+        q.ring.write(idx * ring::TFD_LEN, &tfd);
+        q.ring.write(TXQ_BYTE_COUNTS + 2 * idx, &sta::byte_count(f.len(), tbs.len()).to_le_bytes());
+        q.cur = (idx + 1) % ring::CMD_RING;
+        let cur = q.cur as u32;
+        self.hw.write(HBUS_TARG_WRPTR, u32::from(qid) << 16 | cur);
+        Ok(())
+    }
+
+    /// Wait up to `timeout_us` for the frames sent to be done (a
+    /// deauthentication, before leaving flushes the queue).
+    pub fn drain(&mut self, timeout_us: u64) {
+        let done = |d: &mut Self| d.txq.as_ref().is_none_or(|q| q.qid.is_none() || q.tail == q.cur).then_some(());
+        let _ = self.wait(timeout_us, done);
+    }
+
+    /// Frames the firmware could not deliver (no acknowledgement) so far.
+    pub fn tx_failed(&self) -> u32 {
+        self.txq.as_ref().map_or(0, |q| q.failed)
+    }
+
+    /// A command answered with a status word that `ok` accepts
+    /// (iwx_send_cmd_pdu_status).
+    fn cmd_status(&mut self, id: CmdId, payload: &[u8], ok: impl Fn(u32) -> bool) -> Result<(), Error> {
+        let r = self.cmd(id, payload)?;
+        if r.len() < 4 {
+            return Err(Error::Response(id));
+        }
+        if ok(ring::le32(&r, 0)) { Ok(()) } else { Err(Error::Failed(id)) }
     }
 
     /// Start a passive scan of `channels`; its frames and its end come as
@@ -396,6 +622,21 @@ impl<D: Device> Dev<D> {
             Err(Error::Timeout(_)) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The next notification without waiting: an interrupt that came is
+    /// serviced first.
+    pub fn poll(&mut self) -> Option<Notif> {
+        if self.queue.is_empty() && self.fatal.is_none() && self.hw.bus.wait_irq(0) {
+            self.service();
+        }
+        self.queue.pop_front()
+    }
+
+    /// Whether notifications are waiting (the interrupt that brought them
+    /// already serviced).
+    pub fn pending(&self) -> bool {
+        !self.queue.is_empty()
     }
 
     /// The first queued notification `code`, the others left.
@@ -584,6 +825,16 @@ impl<D: Device> Dev<D> {
             if p.qid == CMD_QID && self.waiting == Some(p.idx) {
                 self.answer = Some((p.flags, p.data.to_vec()));
             }
+            // A frame sent: the ones before the index it names are done
+            // (iwx_rx_tx_cmd).
+            if let Some(q) = self.txq.as_mut().filter(|q| q.qid == Some(p.qid) && code == u16::from(sta::TX_CMD)) {
+                if let Some((ok, ssn)) = sta::tx_done(p.data) {
+                    q.failed += u32::from(!ok);
+                    if (ssn as usize) < ring::CMD_RING {
+                        q.tail = ssn as usize;
+                    }
+                }
+            }
             return;
         }
         if self.queue.len() < MAX_QUEUED {
@@ -771,6 +1022,120 @@ mod tests {
         assert_ne!(entry(2, fw.paging.len() - 1), 0);
         let first = unsafe { core::slice::from_raw_parts(bufs[7].0, 16) };
         assert_eq!(first, &fw.lmac[0].data[..16]);
+    }
+
+    /// A firmware that answers every command (ADD_STA and the binding
+    /// with success, SCD_QUEUE_CONFIG with queue 1) and every frame sent
+    /// (done, the first `failing` of them not acknowledged), noting the
+    /// commands' {group, opcode} in `log`.
+    fn answering(log: Rc<RefCell<Vec<(u8, u8)>>>, failing: usize) -> Fake {
+        let mut f = fake();
+        let mut rx = 0;
+        let mut kicks = 0;
+        let mut sent = 0;
+        f.irq = Some(Box::new(move |bufs, writes| {
+            // The queue kicks not answered yet: the next one.
+            let Some(&(_, w)) = writes.iter().filter(|(r, _)| *r == HBUS_TARG_WRPTR).nth(kicks) else {
+                return false;
+            };
+            kicks += 1;
+            let (qid, cur) = ((w >> 16) as u8, (w & 0xff) as usize);
+            let idx = (cur + ring::CMD_RING - 1) % ring::CMD_RING;
+            let mut answer = vec![0u8; 0];
+            let (code, group);
+            if qid == 0 {
+                // SAFETY: the fake's leaked buffers.
+                let c = unsafe { core::slice::from_raw_parts(bufs[2].0.add(idx * ring::CMD_SLOT), 8) };
+                (code, group) = (c[0], c[1]);
+                log.borrow_mut().push((group, code));
+                answer = match (group, code) {
+                    (1, 0x18) => vec![1, 0, 0, 0],
+                    (1, 0x2b) => vec![0; 4],
+                    (5, 0x17) => vec![1, 0, 0, 0, 0, 0, 0, 0],
+                    _ => vec![],
+                };
+            } else {
+                (code, group) = (sta::TX_CMD, 0);
+                answer = vec![0u8; 48];
+                answer[0] = 1;
+                put16(&mut answer, 40, if sent < failing { 0x83 } else { 1 });
+                put32(&mut answer, 44, cur as u32);
+                sent += 1;
+            }
+            deliver(bufs, rx, &[(code, group, idx as u8, qid, &answer)]);
+            rx = (rx + 1) % ring::RX_RING;
+            true
+        }));
+        f
+    }
+
+    fn peer() -> Peer {
+        let beacon = Beacon { tsf: 1, gp2: 2, interval: 100, dtim_period: 1, dtim_count: 0, rates: 0x15f };
+        Peer { bssid: [2, 0, 0, 0, 0, 1], channel: Channel { number: 6, ghz5: false, passive: false }, beacon }
+    }
+
+    fn info() -> Info {
+        let nvm = msg::NvmInfo {
+            nvm_version: 0,
+            band_24ghz: true,
+            band_5ghz: true,
+            tx_chains: 3,
+            rx_chains: 3,
+            lar_enabled: true,
+            channels: vec![],
+        };
+        Info { mac: [2, 0, 0, 0, 0, 9], nvm, alpha2: *b"ZZ", channels: vec![], tx_chains: 3, rx_chains: 3 }
+    }
+
+    #[test]
+    fn join_send_leave() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut d = Dev::new(answering(log.clone(), 1), false).unwrap();
+        d.hw.intmask = INT_INI_SET;
+        let (info, peer) = (info(), peer());
+        assert_eq!(d.send(&[0x08; 30], false), Err(Error::NotJoined));
+        d.join(&info, &peer).unwrap();
+        // PHY, RLC, MAC, binding, station, queue, session protection.
+        assert_eq!(*log.borrow(), [(1, 0x08), (5, 0x08), (1, 0x28), (1, 0x2b), (1, 0x18), (5, 0x17), (3, 0x05)]);
+        // Control, TFDs, commands, 4 receive buffers, then the queue's 2.
+        assert_eq!(d.hw.bus.bufs.borrow().len(), 9);
+
+        // An authentication frame: three transfer buffers, its byte count,
+        // the queue's write pointer; its completion frees the slot.
+        let mut auth = vec![0xb0, 0, 0, 0, 2, 0, 0, 0, 0, 1];
+        auth.resize(30, 0);
+        d.send(&auth, false).unwrap();
+        assert_eq!(d.hw.bus.writes.last(), Some(&(HBUS_TARG_WRPTR, 1 << 16 | 1)));
+        let bufs = d.hw.bus.bufs.borrow().clone();
+        let tfd = unsafe { core::slice::from_raw_parts(bufs[7].0, 40) };
+        assert_eq!((ring::le16(tfd, 0), ring::le16(tfd, 2), ring::le16(tfd, 12), ring::le16(tfd, 22)), (3, 20, 28, 6));
+        assert_eq!(ring::le64(tfd, 24), 0x9000_0000 + TX_BODY as u64);
+        let bc = unsafe { core::slice::from_raw_parts(bufs[7].0.add(TXQ_BYTE_COUNTS), 2) };
+        assert_eq!(ring::le16(bc, 0), 8);
+        let body = unsafe { core::slice::from_raw_parts(bufs[8].0.add(TX_BODY), 6) };
+        assert_eq!(body, &auth[24..]);
+        d.drain(1000);
+        let q = d.txq.as_ref().unwrap();
+        assert_eq!((q.cur, q.tail, d.tx_failed()), (1, 1, 1));
+
+        log.borrow_mut().clear();
+        d.associated(&info, &peer, 1).unwrap();
+        assert_eq!(*log.borrow(), [(1, 0x18), (1, 0x28), (1, 0xd1), (1, 0xd0), (1, 0xa9), (5, 0x0f)]);
+        log.borrow_mut().clear();
+        d.leave(&info, &peer);
+        assert_eq!(
+            *log.borrow(),
+            [
+                (1, 0x18), (1, 0x1e), (1, 0x18), // drain, flush, undrain
+                (1, 0xd1), (1, 0x28), (3, 0x05), // SF off, not associated, protection off
+                (5, 0x17), (1, 0x19), (1, 0x2b), (1, 0x28), (1, 0x08),
+            ]
+        );
+        assert_eq!(d.send(&auth, false), Err(Error::NotJoined));
+        // Nothing joined: leaving again sends nothing.
+        log.borrow_mut().clear();
+        d.leave(&info, &peer);
+        assert!(log.borrow().is_empty());
     }
 
     #[test]
