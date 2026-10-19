@@ -522,6 +522,14 @@ pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
     None
 }
 
+/// The tree describes a Raspberry Pi 3's interrupt controllers (BCM2836
+/// local, BCM2835 peripherals): its two-cell interrupt specifiers are
+/// theirs.
+pub fn has_bcm2836_intc() -> bool {
+    static HAS: Once<bool> = Once::new();
+    *HAS.call_once(|| get().is_some_and(|fdt| find_enabled(fdt, &["brcm,bcm2836-armctrl-ic"]).is_some()))
+}
+
 /// `timebase-frequency` of the CPUs (riscv64: the `time` CSR rate).
 pub fn timebase_frequency() -> Option<u64> {
     let cpus = get()?.find_node("/cpus")?;
@@ -603,6 +611,10 @@ pub fn fill(p: &mut Platform) {
         offer_intc(p, Intc::GicV3 { gicd, gicr, gicr_size }, from);
     } else if let Some((base, _)) = reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0) {
         offer_intc(p, Intc::Plic { base }, from);
+    } else if let (Some((local, _)), Some((armctrl, _))) =
+        (reg(&["brcm,bcm2836-l1-intc"], 0), reg(&["brcm,bcm2836-armctrl-ic"], 0))
+    {
+        offer_intc(p, Intc::Bcm2836 { local, armctrl }, from);
     }
     if let Some(uart) = console_uart(fdt) {
         offer_uart(p, uart, from);

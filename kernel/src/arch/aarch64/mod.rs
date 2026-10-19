@@ -1,5 +1,6 @@
 //! AArch64: Limine on QEMU `virt` (UEFI). MMU is already on.
 
+mod bcm2836;
 mod interrupts;
 pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod paging;
@@ -107,6 +108,10 @@ fn apply(p: &crate::platform::Platform) -> Result<(), &'static str> {
             gicr_size as usize,
         ),
         Some(Intc::GicV3 { .. }) => return Err("platform: GICv3 without a redistributor region"),
+        Some(Intc::Bcm2836 { local, armctrl }) => bcm2836::set(
+            map(local, 0x100, "platform: cannot map the local interrupt controller")?,
+            map(armctrl, 0x200, "platform: cannot map the interrupt controller")?,
+        ),
         _ => return Err("platform: no GIC"),
     }
     match p.uart.map(|c| c.value) {
@@ -133,6 +138,8 @@ pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
     match cells {
         [0, n, _] if *n < 988 => Some(32 + n),
         [1, n, _] if *n < 16 => Some(16 + n),
+        // A Raspberry Pi 3's BCM2835 controller: `bank, number`.
+        [bank, n] if crate::dt::has_bcm2836_intc() => bcm2836::irq_from_dt(*bank, *n),
         _ => None,
     }
 }
