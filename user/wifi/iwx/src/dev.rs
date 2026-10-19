@@ -26,6 +26,9 @@ pub trait Device: Bus {
     /// (since the last wait).
     fn wait_irq(&mut self, timeout_us: u64) -> bool;
     fn now_us(&mut self) -> u64;
+    /// The interrupt was serviced: an INTx line, masked by the platform
+    /// from its interrupt on, may be unmasked (the device is quiet).
+    fn irq_done(&mut self) {}
 }
 
 /// A DMA buffer: mapped at `ptr` for the driver, at `phys` for the device.
@@ -691,13 +694,15 @@ impl<D: Device> Dev<D> {
         Ok(data)
     }
 
-    /// The interrupt: its causes, then what came (iwx_intr, iwx_intr_msix).
+    /// The interrupt: its causes, then what came (iwx_intr, iwx_intr_msix;
+    /// an INTx line as MSI).
     pub fn service(&mut self) {
         if self.hw.msix {
             self.service_msix();
         } else {
             self.service_msi();
         }
+        self.hw.bus.irq_done();
     }
 
     fn service_msi(&mut self) {
