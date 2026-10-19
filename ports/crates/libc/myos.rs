@@ -132,8 +132,13 @@ pub const DT_REG: c_uchar = 8;
 pub const DT_DIR: c_uchar = 4;
 pub const DT_LNK: c_uchar = 10;
 
-pub const CLOCK_REALTIME: clockid_t = 0;
-pub const CLOCK_MONOTONIC: clockid_t = 1;
+/// newlib's clock ids (libgloss's `time.c`): the monotonic clock is the
+/// kernel's time since boot, the CPU-time clocks are not kept.
+pub const CLOCK_REALTIME: clockid_t = 1;
+pub const CLOCK_PROCESS_CPUTIME_ID: clockid_t = 2;
+pub const CLOCK_THREAD_CPUTIME_ID: clockid_t = 3;
+pub const CLOCK_MONOTONIC: clockid_t = 4;
+pub const CLOCK_BOOTTIME: clockid_t = 7;
 
 mod syscalls {
     use super::*;
@@ -147,6 +152,8 @@ mod syscalls {
     /// `dupfd` flag: the copy is the fd asked for itself (`dup2`).
     const DUP_EXACT: usize = 2;
     const SYS_GETTIMEOFDAY: usize = 33;
+    /// Nanoseconds since boot, which `settimeofday` does not move.
+    const SYS_CLOCK_MONOTONIC: usize = 91;
     const SYS_KILL: usize = 34;
     const SYS_SIGACTION: usize = 50;
     const SYS_WAITPID: usize = 46;
@@ -422,6 +429,10 @@ mod syscalls {
         } else {
             0
         }
+    }
+
+    pub unsafe fn sys_clock_monotonic() -> u64 {
+        raw_syscall(SYS_CLOCK_MONOTONIC, 0, 0, 0) as u64
     }
 
     pub unsafe fn sys_kill(pid: pid_t, sig: c_int) -> c_int {
@@ -1146,14 +1157,48 @@ pub unsafe extern "C" fn gettimeofday(tv: *mut timeval, _tz: *mut c_void) -> c_i
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn clock_gettime(_clk: clockid_t, tp: *mut timespec) -> c_int {
+pub unsafe extern "C" fn clock_gettime(clk: clockid_t, tp: *mut timespec) -> c_int {
     if tp.is_null() {
         syscalls::set_errno(EINVAL);
         return -1;
     }
+    let ns = match clk {
+        CLOCK_MONOTONIC | CLOCK_BOOTTIME => unsafe { syscalls::sys_clock_monotonic() },
+        CLOCK_REALTIME => {
+            let mut tv = timeval { tv_sec: 0, tv_usec: 0 };
+            if unsafe { syscalls::sys_gettimeofday(&mut tv) } != 0 {
+                return -1;
+            }
+            tv.tv_sec as u64 * 1_000_000_000 + tv.tv_usec as u64 * 1000
+        }
+        _ => {
+            syscalls::set_errno(EINVAL);
+            return -1;
+        }
+    };
     unsafe {
-        (*tp).tv_sec = 0;
-        (*tp).tv_nsec = 0;
+        (*tp).tv_sec = (ns / 1_000_000_000) as time_t;
+        (*tp).tv_nsec = (ns % 1_000_000_000) as c_long;
+    }
+    0
+}
+
+/// The monotonic clocks count nanoseconds, the wall clock microseconds.
+#[no_mangle]
+pub unsafe extern "C" fn clock_getres(clk: clockid_t, tp: *mut timespec) -> c_int {
+    let ns = match clk {
+        CLOCK_MONOTONIC | CLOCK_BOOTTIME => 1,
+        CLOCK_REALTIME => 1000,
+        _ => {
+            syscalls::set_errno(EINVAL);
+            return -1;
+        }
+    };
+    if !tp.is_null() {
+        unsafe {
+            (*tp).tv_sec = 0;
+            (*tp).tv_nsec = ns;
+        }
     }
     0
 }

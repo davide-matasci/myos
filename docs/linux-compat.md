@@ -331,12 +331,18 @@ sender's pid as `SCM_CREDENTIALS`, `/net/unix`'s `from`,
 `docs/sockets-unix.md`; anything else accepted, ignored); `read`/`write`, `poll`, `fstat` and `ioctl(FIONBIO)` work on them
 too. See Sockets below.
 
-Time and misc: `clock_gettime` (the time of day for every clock but the
-process's and the thread's CPU-time clocks, which are their CPU time),
-`clock_getres`, `gettimeofday`, `time`, `getrusage` (the process's, the
+Time and misc: `clock_gettime` (`CLOCK_REALTIME`, its `_COARSE` and
+`_ALARM` and `CLOCK_TAI` the time of day; `CLOCK_MONOTONIC`, its `_RAW` and
+`_COARSE` and `CLOCK_BOOTTIME` the kernel's time since boot, which
+setting the date does not move; the process's and the thread's CPU-time
+clocks their CPU time; `EINVAL` for another id), `clock_getres` (a
+microsecond for the time of day, a nanosecond for the others),
+`gettimeofday`, `time`, `getrusage` (the process's, the
 thread's or the reaped children's CPU time, all as user time; the other
 fields 0),
-`nanosleep`, `clock_nanosleep`, `getrandom`; `memfd_create` (a file of `/dev/shm`
+`nanosleep`, `clock_nanosleep` (an absolute time on its clock, the time of
+day or the time since boot, as are `FUTEX_WAIT_BITSET`'s, with
+`FUTEX_CLOCK_REALTIME` the time of day), `getrandom`; `memfd_create` (a file of `/dev/shm`
 created and unlinked at once, as libgloss's; `F_ADD_SEALS` and
 `F_GET_SEALS` keep and report a memfd's seals, from any fd naming it, and
 do not enforce them; the last 256 sealed memfds are remembered); `poll` and `select` (x86_64), `ppoll` and `pselect6` (the same
@@ -549,9 +555,9 @@ three, the kernel crate itself an hour. Known gaps:
   `EPOLLET` reports a readiness once, and again only
   once the fd's object changed (`docs/events.md`); `EPOLLPRI`,
   `EPOLLRDHUP`, `EPOLLEXCLUSIVE` and the signal mask of `epoll_pwait` are
-  ignored. Every Linux
-  clock is the one clock here, so a `TFD_TIMER_ABSTIME` value is taken
-  relative to it, whatever the clock the timerfd was created on.
+  ignored. A `TFD_TIMER_ABSTIME` value is on the clock the timerfd was
+  created on: the layer remembers the timers made on the wall clock and
+  arms them with `realtime`.
 - `listen` and `accept` serve `AF_UNIX` sockets only: a TCP socket's
   `listen` is `EOPNOTSUPP` (issue #415).
 - `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and

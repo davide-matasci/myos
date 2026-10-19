@@ -17,8 +17,8 @@ accept accept4 AF_APPLETALK AF_ASH AF_ATMPVC AF_ATMSVC AF_AX25 AF_BLUETOOTH AF_B
 AF_CAN AF_DECnet AF_ECONET AF_IEEE802154 AF_INET AF_INET6 AF_IPX AF_IRDA AF_ISDN AF_IUCV
 AF_KEY AF_LLC AF_NETBEUI AF_NETLINK AF_NETROM AF_PACKET AF_PHONET AF_PPPOX AF_RDS AF_ROSE
 AF_RXRPC AF_SECURITY AF_SNA AF_TIPC AF_UNIX AF_UNSPEC AF_WANPIPE AF_X25 AT_EACCESS
-AT_REMOVEDIR AT_SYMLINK_FOLLOW AT_SYMLINK_NOFOLLOW bind chroot clock_getres
-CLOCK_PROCESS_CPUTIME_ID clock_settime CLOCK_THREAD_CPUTIME_ID closedir connect dirfd
+AT_REMOVEDIR AT_SYMLINK_FOLLOW AT_SYMLINK_NOFOLLOW bind chroot
+clock_settime closedir connect dirfd
 dlsym dup3 E2BIG EADDRINUSE EADDRNOTAVAIL EADV EAFNOSUPPORT EAGAIN EALREADY EBADE EBADFD
 EBADMSG EBADR EBADRQC EBADSLT EBFONT EBUSY ECANCELED ECHRNG ECOMM ECONNABORTED ECONNREFUSED
 ECONNRESET EDEADLK EDEADLOCK EDESTADDRREQ EDOM EDOTDOT EDQUOT EFBIG EHOSTDOWN EHOSTUNREACH
@@ -373,7 +373,6 @@ def fn_sig(name: str) -> tuple[str, str]:
         "accept4": ("fd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t, flags: c_int", "c_int"),
         "bind": ("fd: c_int, addr: *const sockaddr, len: socklen_t", "c_int"),
         "chroot": ("path: *const c_char", "c_int"),
-        "clock_getres": ("clk: clockid_t, tp: *mut timespec", "c_int"),
         "clock_settime": ("clk: clockid_t, tp: *const timespec", "c_int"),
         "closedir": ("dirp: *mut DIR", "c_int"),
         "connect": ("fd: c_int, addr: *const sockaddr, len: socklen_t", "c_int"),

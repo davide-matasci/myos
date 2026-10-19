@@ -5,9 +5,12 @@
  * termios and netinet constants the headers now carry; the long double
  * conversions;
  * the interval timer and alarm (SIGALRM on time, a blocking read cut short,
- * the default action).
+ * the default action); the clocks (CLOCK_MONOTONIC and CLOCK_BOOTTIME
+ * since boot, not moved by setting the wall clock, clock_getres, an unknown
+ * clock refused).
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
+#define _GNU_SOURCE /* CLOCK_BOOTTIME */
 #include <errno.h>
 #include <fcntl.h>
 #include <float.h>
@@ -352,9 +355,68 @@ static int check_timers(void) {
     return 0;
 }
 
+static long long ns_of(const struct timespec *ts) {
+    return (long long)ts->tv_sec * 1000000000LL + ts->tv_nsec;
+}
+
+static int check_clocks(void) {
+    struct timespec wall, mono0, mono1, boot, res, back;
+
+    if (clock_gettime(CLOCK_REALTIME, &wall) != 0 || clock_gettime(CLOCK_MONOTONIC, &mono0) != 0) {
+        return fail("clock_gettime");
+    }
+    /* Since boot, not since 1970: the wall clock is years ahead. */
+    if (mono0.tv_nsec < 0 || mono0.tv_nsec >= 1000000000L || mono0.tv_sec >= wall.tv_sec / 2) {
+        return fail("CLOCK_MONOTONIC counts from boot");
+    }
+    /* The wall clock a day back: the monotonic clock goes on, a day
+     * ahead of the wall clock's step. */
+    back = wall;
+    back.tv_sec -= 86400;
+    if (clock_settime(CLOCK_REALTIME, &back) != 0) {
+        return fail("clock_settime");
+    }
+    usleep(20000);
+    if (clock_gettime(CLOCK_MONOTONIC, &mono1) != 0 || clock_gettime(CLOCK_BOOTTIME, &boot) != 0) {
+        return fail("clock_gettime after clock_settime");
+    }
+    /* Put the wall clock back, plus the time spent here. */
+    wall.tv_sec += mono1.tv_sec - mono0.tv_sec;
+    wall.tv_nsec += mono1.tv_nsec - mono0.tv_nsec;
+    if (wall.tv_nsec < 0) {
+        wall.tv_sec--;
+        wall.tv_nsec += 1000000000L;
+    } else if (wall.tv_nsec >= 1000000000L) {
+        wall.tv_sec++;
+        wall.tv_nsec -= 1000000000L;
+    }
+    if (clock_settime(CLOCK_REALTIME, &wall) != 0) {
+        return fail("clock_settime back");
+    }
+    if (ns_of(&mono1) - ns_of(&mono0) < 20000000LL || ns_of(&mono1) - ns_of(&mono0) > 60000000000LL) {
+        return fail("CLOCK_MONOTONIC moved with the wall clock");
+    }
+    if (ns_of(&boot) < ns_of(&mono1) || ns_of(&boot) - ns_of(&mono1) > 60000000000LL) {
+        return fail("CLOCK_BOOTTIME is not CLOCK_MONOTONIC's time");
+    }
+    if (clock_getres(CLOCK_MONOTONIC, &res) != 0 || res.tv_sec != 0 || res.tv_nsec != 1
+        || clock_getres(CLOCK_REALTIME, &res) != 0 || res.tv_sec != 0 || res.tv_nsec != 1000) {
+        return fail("clock_getres");
+    }
+    errno = 0;
+    if (clock_gettime((clockid_t)1234, &res) != -1 || errno != EINVAL) {
+        return fail("an unknown clock");
+    }
+    errno = 0;
+    if (clock_settime(CLOCK_MONOTONIC, &mono1) != -1 || errno != EINVAL) {
+        return fail("CLOCK_MONOTONIC set");
+    }
+    return 0;
+}
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
-        || check_termios() || check_double() || check_long_double() || check_timers()) {
+        || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()) {
         return 1;
     }
     printf("[ OK ] libc\n");

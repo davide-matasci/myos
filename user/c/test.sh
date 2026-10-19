@@ -102,7 +102,9 @@ t -t sched child /bin/etc/child_smoke
 # a lookup, a name no server knows failing in bounded time), and the soft
 # float's double arithmetic, compares, conversions and printf, the long
 # double conversions (issue #374); setitimer and alarm (SIGALRM on time, a
-# blocking read cut short, the default action) (libc_smoke.c).
+# blocking read cut short, the default action); CLOCK_MONOTONIC and
+# CLOCK_BOOTTIME since boot, going on when the wall clock is set back
+# (issue #317), clock_getres (libc_smoke.c).
 t -t smoke libc /bin/etc/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a

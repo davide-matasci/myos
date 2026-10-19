@@ -226,8 +226,6 @@ pub const CLD_EXITED: c_int = 1;
 pub const CLD_KILLED: c_int = 2;
 pub const CLD_STOPPED: c_int = 5;
 pub const CLD_TRAPPED: c_int = 4;
-pub const CLOCK_PROCESS_CPUTIME_ID: crate::clockid_t = 3;
-pub const CLOCK_THREAD_CPUTIME_ID: crate::clockid_t = 4;
 pub const DT_BLK: u8 = 6;
 pub const E2BIG: c_int = 7;
 pub const EADDRINUSE: c_int = 248;
@@ -629,7 +627,6 @@ enosys! {
     pub unsafe fn accept4(fd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t, flags: c_int) -> c_int;
     pub unsafe fn bind(fd: c_int, addr: *const sockaddr, len: socklen_t) -> c_int;
     pub unsafe fn chroot(path: *const c_char) -> c_int;
-    pub unsafe fn clock_getres(clk: clockid_t, tp: *mut timespec) -> c_int;
     pub unsafe fn clock_settime(clk: clockid_t, tp: *const timespec) -> c_int;
     pub unsafe fn closedir(dirp: *mut DIR) -> c_int;
     pub unsafe fn connect(fd: c_int, addr: *const sockaddr, len: socklen_t) -> c_int;

@@ -5,6 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use myos_abi::Lock as Mutex;
 
 use super::abi::*;
 use super::files;
@@ -724,19 +725,29 @@ pub fn eventfd2(init: usize, flags: usize) -> R {
     Ok(fd)
 }
 
-/// `timerfd_create(clockid, flags)`: an fd on a kernel timer. Every Linux
-/// clock is the one clock here (`timespec_deadline`), so the clock is not
-/// kept.
+/// The timers (their directories) created on the wall clock, whose
+/// absolute times `timerfd_settime` takes as times of day; the others are
+/// on the monotonic clock.
+static WALL_TIMERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// `timerfd_create(clockid, flags)`: an fd on a kernel timer, on the wall
+/// or the monotonic clock (kept for `TFD_TIMER_ABSTIME`).
 pub fn timerfd_create(clockid: usize, flags: usize) -> R {
-    const CLOCK_REALTIME: usize = 0;
-    const CLOCK_MONOTONIC: usize = 1;
-    const CLOCK_BOOTTIME: usize = 7;
-    if !matches!(clockid, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME)
-        || flags & !(O_CLOEXEC | O_NONBLOCK) != 0
-    {
+    let wall = match clock(clockid) {
+        Ok(Clock::Wall) => true,
+        Ok(Clock::Monotonic) => false,
+        _ => return Err(EINVAL),
+    };
+    if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
         return Err(EINVAL);
     }
-    Ok(evfd_open("timer", flags)?.0)
+    let (fd, dir) = evfd_open("timer", flags)?;
+    let mut walls = WALL_TIMERS.lock();
+    walls.retain(|d| *d != dir);
+    if wall {
+        walls.push(dir);
+    }
+    Ok(fd)
 }
 
 /// The `struct timespec` at `ts` in nanoseconds; `EINVAL` for one Linux
@@ -778,8 +789,8 @@ fn put_itimerspec(ptr: usize, (left, interval): (u64, u64)) -> R2<()> {
 }
 
 /// `timerfd_settime(fd, flags, new, old)`: an `arm` or `disarm` on the
-/// timer's `ctl`. An absolute value (`TFD_TIMER_ABSTIME`) is on the one
-/// Linux clock, and goes to the kernel relative to now.
+/// timer's `ctl`. An absolute value (`TFD_TIMER_ABSTIME`) is on the timer's
+/// clock (`abs`, and `realtime` for the wall clock).
 pub fn timerfd_settime(fd: usize, flags: usize, new: usize, old: usize) -> R {
     const TFD_TIMER_ABSTIME: usize = 1;
     if flags & !TFD_TIMER_ABSTIME != 0 {
@@ -793,13 +804,12 @@ pub fn timerfd_settime(fd: usize, flags: usize, new: usize, old: usize) -> R {
     }
     let cmd = if value == 0 {
         String::from("disarm")
+    } else if flags & TFD_TIMER_ABSTIME == 0 {
+        alloc::format!("arm {value} {interval}")
+    } else if WALL_TIMERS.lock().contains(&dir) {
+        alloc::format!("arm {value} {interval} abs realtime")
     } else {
-        let first = if flags & TFD_TIMER_ABSTIME != 0 {
-            value.saturating_sub(now_us().saturating_mul(1000)).max(1)
-        } else {
-            value
-        };
-        alloc::format!("arm {first} {interval}")
+        alloc::format!("arm {value} {interval} abs")
     };
     fs::write(&alloc::format!("{dir}/ctl"), 0, cmd.as_bytes()).ok_or(EINVAL)?;
     Ok(0)
@@ -1610,20 +1620,49 @@ pub fn reboot(magic: usize, magic2: usize, cmd: usize) -> R {
 
 // ---- time -----------------------------------------------------------------
 
-/// The `struct timespec` at `ts` as a deadline in [`now_us`] time: as is
-/// when `absolute`, else from now. Every Linux clock reads that one clock.
-pub(super) fn timespec_deadline(ts: usize, absolute: bool) -> R2<u64> {
-    let sec = get_u64(ts)?;
-    let nsec = get_u64(ts + 8)?;
-    let t = sec.saturating_mul(1_000_000).saturating_add(nsec / 1000);
-    Ok(if absolute { t } else { now_us().saturating_add(t) })
+/// What a Linux clock id reads.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Clock {
+    /// The time of day, which `settimeofday` sets.
+    Wall,
+    /// The kernel's time since boot, which nothing sets.
+    Monotonic,
+    /// The process's or the thread's CPU time.
+    Process,
+    Thread,
 }
 
-/// The monotonic-ns deadline (for `block_until`) of `deadline_us`.
-pub(super) fn monotonic_deadline(deadline_us: u64) -> u64 {
-    crate::k::time::monotonic_ns()
-        .saturating_add(deadline_us.saturating_sub(now_us()).saturating_mul(1000))
-        .max(1)
+/// `CLOCK_MONOTONIC`: what the plain `nanosleep` sleeps on.
+pub(super) const CLOCK_MONOTONIC: usize = 1;
+
+/// Linux clock id `id`: `CLOCK_REALTIME` (and its `_COARSE` and `_ALARM`,
+/// `CLOCK_TAI`) the time of day; `CLOCK_MONOTONIC` (and `_RAW`, `_COARSE`,
+/// `CLOCK_BOOTTIME`, `_ALARM`: myos neither slews the clock nor suspends)
+/// the time since boot; `EINVAL` for an id no clock has.
+pub(super) fn clock(id: usize) -> R2<Clock> {
+    Ok(match id {
+        0 | 5 | 8 | 11 => Clock::Wall,
+        1 | 4 | 6 | 7 | 9 => Clock::Monotonic,
+        2 => Clock::Process,
+        3 => Clock::Thread,
+        _ => return Err(EINVAL),
+    })
+}
+
+/// The `struct timespec` at `ts` as a monotonic-ns deadline (for
+/// `block_until`): from now, or with `abs` a time on that clock (one of
+/// the wall clock as far from now as from the time of day).
+pub(super) fn timespec_deadline(ts: usize, abs: Option<Clock>) -> R2<u64> {
+    let sec = get_u64(ts)?;
+    let nsec = get_u64(ts + 8)?;
+    let t = sec.saturating_mul(1_000_000_000).saturating_add(nsec);
+    let now = crate::k::time::monotonic_ns();
+    let deadline = match abs {
+        None => now.saturating_add(t),
+        Some(Clock::Wall) => now.saturating_add(t.saturating_sub(now_us().saturating_mul(1000))),
+        Some(_) => t,
+    };
+    Ok(deadline.max(1))
 }
 
 pub(super) fn now_us() -> u64 {
@@ -1633,16 +1672,14 @@ pub(super) fn now_us() -> u64 {
     }
 }
 
-/// `clock_gettime(clock, ts)`: the process's and the thread's CPU-time
-/// clocks are their CPU time (the kernel's accounting); every other clock
-/// is the time of day.
-pub fn clock_gettime(clock: usize, ts: usize) -> R {
-    const CLOCK_PROCESS_CPUTIME_ID: usize = 2;
-    const CLOCK_THREAD_CPUTIME_ID: usize = 3;
-    let ns = match clock {
-        CLOCK_PROCESS_CPUTIME_ID => crate::k::api().cpu_time(myos_abi::MYOS_CPU_PROCESS),
-        CLOCK_THREAD_CPUTIME_ID => crate::k::api().cpu_time(myos_abi::MYOS_CPU_THREAD),
-        _ => now_us() * 1000,
+/// `clock_gettime(clock, ts)`: the time of day, the time since boot, or
+/// the process's or the thread's CPU time (the kernel's accounting).
+pub fn clock_gettime(id: usize, ts: usize) -> R {
+    let ns = match clock(id)? {
+        Clock::Wall => now_us() * 1000,
+        Clock::Monotonic => crate::k::time::monotonic_ns(),
+        Clock::Process => crate::k::api().cpu_time(myos_abi::MYOS_CPU_PROCESS),
+        Clock::Thread => crate::k::api().cpu_time(myos_abi::MYOS_CPU_THREAD),
     };
     let mut b = [0u8; 16];
     b[..8].copy_from_slice(&(ns / 1_000_000_000).to_le_bytes());
@@ -1712,12 +1749,14 @@ pub fn membarrier(cmd: usize, flags: usize) -> R {
     }
 }
 
-/// `clock_getres(clock, res)`: the one clock's resolution, a microsecond
-/// (`now_us`). A null `res` only checks the clock.
-pub fn clock_getres(res: usize) -> R {
+/// `clock_getres(clock, res)`: a microsecond for the time of day
+/// (`now_us`), a nanosecond for the others. A null `res` only checks the
+/// clock.
+pub fn clock_getres(id: usize, res: usize) -> R {
+    let ns: u64 = if clock(id)? == Clock::Wall { 1000 } else { 1 };
     if res != 0 {
         let mut b = [0u8; 16];
-        b[8..].copy_from_slice(&1000u64.to_le_bytes());
+        b[8..].copy_from_slice(&ns.to_le_bytes());
         put(res, &b)?;
     }
     Ok(0)
@@ -1732,19 +1771,23 @@ pub fn time(t: usize) -> R {
     Ok(s)
 }
 
-/// Sleep for the timespec at `req` (or until that absolute time).
-pub fn nanosleep(req: usize, absolute: bool) -> R {
-    let deadline = timespec_deadline(req, absolute)?;
-    // Really sleep (Blocked, CPU halts) until the monotonic equivalent.
-    let mono = monotonic_deadline(deadline);
+/// Sleep for the timespec at `req` (or until that absolute time on clock
+/// `id`; not on a CPU-time clock).
+pub fn nanosleep(id: usize, req: usize, absolute: bool) -> R {
+    let c = clock(id)?;
+    if matches!(c, Clock::Process | Clock::Thread) {
+        return Err(EINVAL);
+    }
+    let deadline = timespec_deadline(req, absolute.then_some(c))?;
+    // Really sleep (Blocked, CPU halts) until then.
     loop {
-        if now_us() >= deadline {
+        if crate::k::time::monotonic_ns() >= deadline {
             return Ok(0);
         }
         if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
-        task::sleep_until(mono, false);
+        task::sleep_until(deadline, false);
     }
 }
 
@@ -1812,23 +1855,18 @@ fn fd_revents(fd: usize, events: u16) -> u16 {
 /// timeout) passes or a signal comes, sleep until something happens
 /// (pipe, tty, socket or device traffic, an exit) and scan again.
 fn wait_ready(timeout_us: Option<u64>, mut scan: impl FnMut() -> R) -> R {
-    let deadline = timeout_us.map(|t| now_us().saturating_add(t));
+    let now = crate::k::time::monotonic_ns;
+    let deadline = timeout_us.map(|t| now().saturating_add(t.saturating_mul(1000)).max(1));
     loop {
         let seq = task::wait_seq();
         let ready = scan()?;
-        if ready > 0 || deadline.is_some_and(|d| now_us() >= d) {
+        if ready > 0 || deadline.is_some_and(|d| now() >= d) {
             return Ok(ready);
         }
         if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
-        let mono = match deadline {
-            Some(d) => crate::k::time::monotonic_ns()
-                .saturating_add(d.saturating_sub(now_us()).saturating_mul(1000))
-                .max(1),
-            None => 0,
-        };
-        task::block_until(task::WAIT_ANY, seq, mono);
+        task::block_until(task::WAIT_ANY, seq, deadline.unwrap_or(0));
     }
 }
 

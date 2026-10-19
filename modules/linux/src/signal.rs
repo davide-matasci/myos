@@ -234,8 +234,7 @@ pub fn rt_sigtimedwait(set: usize, info: usize, timeout: usize) -> R {
     let id = task::current_id();
     let want = mask_from_linux(get_u64(set)?);
     let deadline = if timeout != 0 {
-        let us = get_u64(timeout)?.saturating_mul(1_000_000) + get_u64(timeout + 8)? / 1000;
-        Some(super::sys::now_us().saturating_add(us))
+        Some(super::sys::timespec_deadline(timeout, None)?)
     } else {
         None
     };
@@ -247,7 +246,7 @@ pub fn rt_sigtimedwait(set: usize, info: usize, timeout: usize) -> R {
             }
             return Ok(sig);
         }
-        if deadline.is_some_and(|d| super::sys::now_us() >= d) {
+        if deadline.is_some_and(|d| crate::k::time::monotonic_ns() >= d) {
             return Err(EAGAIN);
         }
         if crate::k::signal::interrupt_wait() {
