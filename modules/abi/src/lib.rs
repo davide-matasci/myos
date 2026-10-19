@@ -73,7 +73,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// [`KernelApi::dma_alloc`] gives memory the device reaches and the address
 /// it uses for it, [`KernelApi::dma_sync`] keeps a device without coherent
 /// DMA and the caches in step.
-pub const ABI_VERSION: u32 = 47;
+/// 48: the IOMMU confines a function a program drives
+/// ([`KernelApi::iommu_attach`], `iommu_map`, `iommu_detach`).
+pub const ABI_VERSION: u32 = 48;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1029,6 +1031,16 @@ pub struct KernelApi {
     /// The holder of the function's claim into `out`: its length, 0 when
     /// the function is free.
     pub pci_owner: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, out: *mut u8, cap: usize) -> usize,
+    // --- ABI 48 ---
+    /// Confine the PCI function's DMA to a domain of its own, empty until
+    /// `iommu_map`: the domain, or -1 when no IOMMU translates for the
+    /// function (its DMA reaches all of memory, as a kernel driver's).
+    pub iommu_attach: unsafe extern "C" fn(bus: u8, slot: u8, func: u8) -> i32,
+    /// Let the domain's devices reach `[phys, phys + len)` (whole pages),
+    /// at that address: 0, or -1 (no such domain, no memory).
+    pub iommu_map: unsafe extern "C" fn(domain: i32, phys: u64, len: usize) -> i32,
+    /// The function back in passthrough, its domain and mappings gone.
+    pub iommu_detach: unsafe extern "C" fn(bus: u8, slot: u8, func: u8),
 }
 
 /// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
@@ -1567,6 +1579,20 @@ impl KernelApi {
     pub fn pci_owner<'a>(&self, bus: u8, slot: u8, func: u8, out: &'a mut [u8; PCI_OWNER_MAX]) -> &'a [u8] {
         let n = unsafe { (self.pci_owner)(bus, slot, func, out.as_mut_ptr(), out.len()) };
         &out[..n.min(PCI_OWNER_MAX)]
+    }
+
+    /// The function's own IOMMU domain, or `None` without an IOMMU for it.
+    pub fn iommu_attach(&self, bus: u8, slot: u8, func: u8) -> Option<i32> {
+        let d = unsafe { (self.iommu_attach)(bus, slot, func) };
+        (d >= 0).then_some(d)
+    }
+
+    pub fn iommu_map(&self, domain: i32, phys: u64, len: usize) -> bool {
+        unsafe { (self.iommu_map)(domain, phys, len) == 0 }
+    }
+
+    pub fn iommu_detach(&self, bus: u8, slot: u8, func: u8) {
+        unsafe { (self.iommu_detach)(bus, slot, func) }
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {
