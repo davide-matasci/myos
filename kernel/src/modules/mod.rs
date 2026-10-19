@@ -68,6 +68,8 @@ static API: KernelApi = KernelApi {
     current_ppid: api_current_ppid,
     task_is_live_user: api_task_is_live_user,
     task_has_root: api_task_has_root,
+    task_pdeath_signal: api_task_pdeath_signal,
+    task_set_pdeath_signal: api_task_set_pdeath_signal,
     path_resolve: api_path_resolve,
     vfs_stat: api_vfs_stat,
     vfs_listdir: api_vfs_listdir,
@@ -898,6 +900,14 @@ unsafe extern "C" fn api_task_is_live_user(id: usize) -> i32 {
 
 unsafe extern "C" fn api_task_has_root() -> i32 {
     i32::from(crate::task::has_ns())
+}
+
+unsafe extern "C" fn api_task_pdeath_signal() -> u32 {
+    crate::task::pdeath_signal()
+}
+
+unsafe extern "C" fn api_task_set_pdeath_signal(sig: u32) {
+    crate::task::set_pdeath_signal(sig);
 }
 
 unsafe extern "C" fn api_path_resolve(path: StrRef, mode: u32, out: *mut u8, cap: usize) -> i32 {

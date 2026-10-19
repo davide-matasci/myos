@@ -284,9 +284,12 @@ the kernel's way: `exec` on the script and its `exec` rule apply,
 (uid and gid 0 whoever runs the program: what it may do is the security
 policy's, `docs/security.md`), `getpriority` (nice 0) and `setpriority`
 (accepted; the core schedules), `prctl` (`PR_SET_NAME` and `PR_SET_VMA`
-accepted and not kept, `PR_GET_DUMPABLE` set, `PR_SET_PDEATHSIG` and
-`PR_SET_NO_NEW_PRIVS` accepted and not done; any other option, seccomp
-included, `EINVAL`), `sched_yield`. No namespaces: `unshare` of anything
+accepted and not kept, `PR_GET_DUMPABLE` set, `PR_SET_NO_NEW_PRIVS`
+accepted and not done; `PR_SET_PDEATHSIG` is the process's, not the
+parent thread's as on Linux: the core sends it when the parent process
+ends, however it ends, and keeps it across exec, not across fork; a
+real-time signal is `EINVAL`; any other option, seccomp included,
+`EINVAL`), `sched_yield`. No namespaces: `unshare` of anything
 and `clone` with a `CLONE_NEW*` flag are `EINVAL` (bubblewrap says so and
 glycin, WebKitGTK's image loader, runs its loaders without a sandbox);
 `capget` reports no capabilities and `capset` grants none;
