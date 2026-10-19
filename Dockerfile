@@ -22,6 +22,31 @@
 #   `riscv64-unknown-myos`) link with `rust-lld` (targets/*.json set
 #   `linker = "rust-lld"`), and the C ports build riscv object files with clang.
 #   The GNU riscv binutils are therefore dead weight and are dropped.
+# QEMU 10.1 for riscv64: the RISC-V IOMMU (`-device riscv-iommu-pci`,
+# `kernel/src/iommu/riscv.rs`, `docs/pci-acpi-smp.md`) is QEMU 10.1's; noble's
+# 8.2 has none, so every riscv64 boot would run without one. Built from the
+# release tarball here (one target, slirp for the user network the boots
+# use, the system libfdt) and copied into the image below, ahead of
+# qemu-system-misc's binary on the PATH through /usr/local/bin.
+FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS qemu-riscv64
+ARG QEMU_VERSION=10.1.0
+ARG QEMU_SHA256=e0517349b50ca73ebec2fa85b06050d5c463ca65c738833bd8fc1f15f180be51
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential ninja-build python3 python3-venv pkg-config \
+        libglib2.0-dev libpixman-1-dev libslirp-dev libfdt-dev zlib1g-dev \
+        curl ca-certificates xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/qemu.tar.xz "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" \
+    && echo "${QEMU_SHA256}  /tmp/qemu.tar.xz" | sha256sum -c - \
+    && mkdir /tmp/qemu && tar -xJf /tmp/qemu.tar.xz -C /tmp/qemu --strip-components=1 \
+    && cd /tmp/qemu \
+    && ./configure --target-list=riscv64-softmmu --prefix=/opt/qemu-riscv64 \
+        --enable-slirp --enable-fdt=system \
+        --disable-docs --disable-gtk --disable-sdl --disable-vnc --disable-werror \
+    && make -j"$(nproc)" && make install \
+    && rm -rf /tmp/qemu /tmp/qemu.tar.xz
+
 FROM --platform=$BUILDPLATFORM ubuntu:24.04
 
 ARG TARGETARCH
@@ -48,6 +73,8 @@ ENV CI=true \
 #   - e2fsprogs: the ext2 host tests and the boots' scratch-disk e2fsck.
 #   - dosfstools, mtools: the FAT host tests (fatvol) and the boots'
 #     fsck.fat of the FAT test disk.
+#   - libslirp0, libfdt1 (libglib2.0-0, libpixman-1-0 and zlib come with
+#     qemu-system-*): what the QEMU 10.1 riscv64 binary below links.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
@@ -71,7 +98,13 @@ RUN apt-get update \
         ca-certificates \
         python3 \
         xz-utils \
+        libslirp0 libfdt1 \
     && rm -rf /var/lib/apt/lists/*
+
+# QEMU 10.1's qemu-system-riscv64 (the stage above) ahead of 8.2's on the
+# PATH: the riscv64 boots get the RISC-V IOMMU.
+COPY --from=qemu-riscv64 /opt/qemu-riscv64 /opt/qemu-riscv64
+RUN ln -s /opt/qemu-riscv64/bin/qemu-system-riscv64 /usr/local/bin/qemu-system-riscv64
 
 # Non-root CI user with passwordless sudo (available for interactive debugging).
 # We intentionally do NOT `USER ciuser`: GitHub runs container jobs as root and

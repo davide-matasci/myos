@@ -118,6 +118,8 @@ sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
   patch curl zstd e2fsprogs dosfstools mtools
 export GITHUB_REPOSITORY=davide-matasci/myos
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
+# Optional: QEMU 10.1 for the riscv64 IOMMU (Ubuntu's 8.2 boots without one; the
+# launcher says so): build it as the Dockerfile's qemu-riscv64 stage does.
 # What CI's build job runs next: each port's build script, which skips a
 # current port but still installs what it stages (libtcc1.a into newlib).
 ./scripts/ports.sh --build-list all | while read -r _ s; do "./$s"; done

@@ -30,7 +30,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 ## Prerequisites
 
 - [rustup](https://rustup.rs/) — `rust-toolchain.toml` pins **nightly-2026-07-26** and installs components automatically
-- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-misc` for riscv64, `qemu-efi-aarch64`, `qemu-efi-riscv64`)
+- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-misc` for riscv64, `qemu-efi-aarch64`, `qemu-efi-riscv64`); the riscv64 boot has its IOMMU only with QEMU 10.1 or later (`-device riscv-iommu-pci`; CI's image builds it, `Dockerfile`), an older one boots without (the launcher says so once)
 - `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`)
 - `make` — newlib build
 - `git` — fetching upstream port sources

@@ -1355,6 +1355,22 @@ fn run_test_riscv64(mode: Mode) {
     });
 }
 
+/// Whether this host's `qemu-system-riscv64` has the RISC-V IOMMU
+/// (`riscv-iommu-pci`, QEMU 10.1: the CI image builds it, Ubuntu 24.04's
+/// 8.2 has none). A boot without it has no IOMMU: `/proc/iommu` says
+/// `none`, said once here.
+fn riscv64_iommu() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let out = Command::new("qemu-system-riscv64").args(["-device", "help"]).output();
+        let has = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("riscv-iommu-pci"));
+        if !has {
+            eprintln!("note: qemu-system-riscv64 has no riscv-iommu-pci (QEMU 10.1): the boot has no IOMMU");
+        }
+        has
+    })
+}
+
 fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     let (code, vars) = riscv64_firmware();
     let mut cmd = Command::new("qemu-system-riscv64");
@@ -1362,8 +1378,14 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
-        .arg("virt")
-        .arg("-cpu")
+        .arg("virt");
+    // The IOMMU in front of the PCI host, first on the bus (00:01.0), the
+    // kernel's `iommu/riscv.rs` on every boot that has it (`/dev/pci`'s
+    // devices confined).
+    if riscv64_iommu() {
+        cmd.arg("-device").arg("riscv-iommu-pci");
+    }
+    cmd.arg("-cpu")
         .arg("rv64")
         .arg("-m")
         .arg(if ci { "4096" } else { "2048" })
