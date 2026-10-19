@@ -297,14 +297,20 @@ stays listed in issue #501).
 |---|---|---|
 | x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the registers (whole: the context cache and the IOTLB), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
 | aarch64 | Arm SMMUv3 (`iommu/smmuv3.rs`): a linear stream table, one entry per requester id, *bypass* for every function (no table walked) and a *stage-2* entry (VMSAv8, 4 KiB granule, a VMID per domain) for one a program holds; the command queue for invalidations and syncs, the event queue (its interrupt, which the SMMU pulses, taken edge-triggered) for the refused DMAs; the tables and queues written back for a unit that does not snoop (`IDR0.COHACC` clear) | the IORT's SMMUv3 node (registers, the event and global error GSIVs) and the root complex node's ID mapping to it, or the tree's `arm,smmu-v3` node and the PCIe host's `iommu-map`: a `platform::Iommu` component, `/proc/platform`'s `iommu smmuv3 ...` line |
-| riscv64 | none yet: `/proc/iommu` says `none`, `/dev/pci` is unconfined | |
+| riscv64 | the RISC-V IOMMU (`iommu/riscv.rs`, specification 1.0): a three-level device directory, one 64-byte context per device id (32 bytes for a unit without MSI translation), *bare* for every function of a populated bus (no table walked) and a *second-stage* context (a G-stage table in the CPU's Sv39x4 or Sv48x4 format, a GSCID per domain) for one a program holds; the command queue for invalidations and fences, the fault queue for the refused DMAs, read when `/proc/iommu` is (the PCI unit signals it by MSI only, which the riscv64 kernel does not take) | a PCI function of class 08.06 (system peripheral, IOMMU), its registers in BAR 0, claimed by the kernel so `/dev/pci` cannot hand it out; nothing from the tree |
 
 QEMU's `q35` carries the unit (`-device intel-iommu`, 39-bit, 3-level,
 both superpage sizes, snooping walks), every x86 boot of the launcher and
-of CI, and QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
+of CI, QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
 snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
 `[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
-boot line; `-device intel-iommu` is not for the `pc` machine
+boot line, and the riscv64 `virt` the RISC-V IOMMU (`-device
+riscv-iommu-pci`, first on the bus as `00:01.0`, Sv39x4 to Sv57x4, MSI
+translation) on every boot whose QEMU has it: the device is QEMU 10.1's,
+which the CI image builds from source (`Dockerfile`); with an older QEMU
+the launcher says so once and boots without, `/proc/iommu` saying `none`.
+Its boot line: `[ OK ] iommu: riscv unit at 00:01.0, 256 device ids,
+Sv39x4 second stage`; `-device intel-iommu` is not for the `pc` machine
 (`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. The UEFI boots run
 OVMF from edk2-stable202505 (the launcher's `OVMF` constant): the
 edk2-stable202605 build raises an invalid-opcode exception inside the
