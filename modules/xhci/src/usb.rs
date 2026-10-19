@@ -487,12 +487,10 @@ pub fn attach(c: &Controller, parent: Option<(u32, u8)>, root_port: u8, speed: u
     if slot == 0 {
         return Err(USB_EIO);
     }
+    // Zeroed and written back by `dma::page`: the output context is the
+    // controller's to write from here on, and must not be dirtied again.
     let (input_phys, input) = dma::page(c.dma).ok_or(USB_EIO)?;
     let (out_phys, out) = dma::page(c.dma).ok_or(USB_EIO)?;
-    unsafe {
-        core::ptr::write_bytes(input, 0, 4096);
-        core::ptr::write_bytes(out, 0, 4096);
-    }
     let mut dev = Device {
         slot,
         info: UsbDeviceInfo {
