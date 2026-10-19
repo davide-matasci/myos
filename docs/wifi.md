@@ -2,9 +2,9 @@
 
 Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
 (`user/wifi`). Through the test boots' simulated radio it scans, joins
-an open network and carries netd's traffic over it; on a laptop with
-Intel's AX201 it brings the radio up and scans (below, "The AX201").
-WPA2, and joining through the AX201, come next.
+an open or WPA2-PSK network and carries netd's traffic over it; on a
+laptop with Intel's AX201 it brings the radio up and scans (below, "The
+AX201"). Joining through the AX201 comes next.
 
 ## `wifi`
 
@@ -13,12 +13,13 @@ WPA2, and joining through the AX201, come next.
 | `wifi daemon [NIC]` | drives the radio: the AX201 when `/dev/pci` has one and no `NIC` is named, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
 | `wifi scan` | a scan (the simulated radio's 2.4 GHz channels, every channel the AX201's regulatory domain allows); prints the networks that answered |
 | `wifi list` | what the last scan found |
-| `wifi connect SSID` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none); open networks only for now |
+| `wifi connect SSID [PASSPHRASE]` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none): an open one, or a WPA2-PSK one with its passphrase (8 to 63 printable ASCII characters, or the PSK itself as 64 hex digits) |
 | `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
 | `wifi disconnect` | leave the network |
 
-A command is one line over one connection to `wifid`; the daemon answers
-and ends the connection. A network is a line `BSSID CHANNEL RSSI SECURITY
+A command is one line over one connection to `wifid` (`connect`'s
+passphrase on a second line); the daemon answers and ends the
+connection. The passphrase is an argument for now, so `ps` shows it. A network is a line `BSSID CHANNEL RSSI SECURITY
 SSID`, the strongest first:
 
 ```
@@ -46,6 +47,30 @@ no answer comes. A refusal names the step and the status code the access
 point gave (`error: association refused, status 43`). `connect` first
 leaves the network it is on (a deauthentication), and an access point's
 deauthentication or disassociation ends the link.
+
+On a WPA2-PSK network (`rsn.rs`, the `wpa` crate in `user/wifi/wpa`)
+the association request carries an RSN element (CCMP, PSK), and the
+4-way handshake follows (IEEE 802.11-2020 12.7.6): the pairwise master
+key is PBKDF2-HMAC-SHA1 of the passphrase and SSID; message 1 brings the
+access point's nonce and the station answers with its own (from
+`/dev/urandom`) and its RSN element, under a MIC made with the pairwise
+key both now derive; message 3 proves the access point has that key and
+brings the group key (AES key wrap), its RSN element checked against the
+beacon's; message 4 ends it, and the keys are in. Three seconds cover the
+whole handshake. A wrong passphrase shows as the access point letting
+the station go after message 2 (`error: 4-way handshake: the access
+point refused the key: wrong passphrase?`) or as message 3's MIC being
+wrong. From then on every data frame is CCMP's (AES-CCM, an 8-byte MIC;
+12.5.3): sent with the pairwise key, received with it or with a group key
+by the index the frame names (up to three are kept, so a rekey does not
+drop the frames still under the old one), a frame whose packet number
+is not past the last one's dropped as a replay. A group key handshake
+(the access point rekeying the group) is answered while the link is up.
+The cryptography is RustCrypto's (`THIRD_PARTY_NOTICES.md`); `cargo test
+-p wpa` checks the keys, the EAPOL-Key frames and CCMP against IEEE
+802.11's PSK vectors, RFC 3394's key wrap and vectors another
+implementation made (Python's `hmac` and `cryptography`). WPA3 (SAE), 802.1X, TKIP and management
+frame protection are not supported.
 
 While associated, the daemon holds a virtual NIC (`/dev/tap`, below; its
 address the radio's) with its link up, so netd takes it as `tapN` and
@@ -118,7 +143,8 @@ channel (110 ms each), every beacon and probe response passed up; the
 daemon reads the networks from them as from the simulated radio's. The
 radio does not send yet, so `wifi connect` answers `error: this radio
 scans only so far`: transmit, association and the data path through the
-AX201 are what is left of issue #495. No test boot has the device: the
+AX201 are what is left of issue #495 (WPA2 then runs over it unchanged,
+CCMP in software). No test boot has the device: the
 driver's encodings are what CI tests, the rest needs the laptop.
 
 ## The simulated radio
@@ -144,7 +170,13 @@ the probe requests on them (for their SSID or the wildcard), take
 open-system authentication and association (a WPA2 one refuses an
 association request without an RSN element: status 43), give each
 association the next association id, and let a station go at its
-deauthentication. An associated station's data frames reach a router
+deauthentication. A WPA2 one, passphrase `myos-passphrase`, is the
+authenticator of the 4-way handshake (a deauthentication, reason 15,
+when message 2's MIC is wrong), encrypts and decrypts the data frames
+with CCMP, and starts a group key handshake (a new group key) at a
+station's first data frame after the handshake, as an access point
+rekeying does; its next group frames still go out under the old key
+until the station confirms. An associated station's data frames reach a router
 behind each one (`src/wifi_net.rs`): 10.0.8.1/24, the access point's
 address, leasing the station 10.0.8.(1 + its association id) by DHCP,
 answering ARP for 10.0.8.1 and the pings sent to it. They beacon
@@ -160,11 +192,14 @@ scans is not woken thirty times a second for nothing.
 The tests (`user/wifi/test.sh`, tag `wifi`) start the daemon. `wifi_scan`
 scans and expects those three lines, from `scan` and `list` alike.
 `wifi_connect` joins `myos-open` (`status` names it, aid 1), is refused
-`myos-wpa2` (not supported yet, the open network left meanwhile), joins
-again (aid 2) and disconnects. `wifi_data` (tags `wifi,tap`) joins
-`myos-open`, waits for netd's lease on the link's NIC, pings 10.0.8.1
-across it, checks that `net0` keeps the default route, and that the NIC
-goes at `disconnect`.
+`myos-wpa2` without a passphrase (the open network left meanwhile) and
+with a wrong one (aid 2, let go), joins `myos-open` again (aid 3), then
+`myos-wpa2` with its passphrase (aid 4), and disconnects. `wifi_data`
+(tags `wifi,tap`) joins `myos-open`, waits for netd's lease on the
+link's NIC, pings 10.0.8.1 across it, checks that `net0` keeps the
+default route, and that the NIC goes at `disconnect`; `wifi_wpa2_data`
+does the same over `myos-wpa2`, so the lease comes under both group
+keys and the ping under the pairwise one.
 
 ## Virtual NICs (`/dev/tap`)
 

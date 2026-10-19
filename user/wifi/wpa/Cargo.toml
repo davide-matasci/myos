@@ -1,0 +1,19 @@
+[package]
+name = "wpa"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "WPA2-PSK for the wifi daemon: the keys, the EAPOL-Key handshakes, CCMP (no_std, host-testable)."
+
+[lib]
+test = true
+
+# RustCrypto (MIT OR Apache-2.0), pinned as the user crates pin theirs.
+[dependencies]
+aes = { version = "=0.8.4", default-features = false }
+aes-kw = { version = "=0.2.1", default-features = false }
+ccm = { version = "=0.5.0", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
+pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
+sha1 = { version = "=0.10.6", default-features = false, features = ["force-soft"] }

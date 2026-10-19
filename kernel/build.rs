@@ -248,6 +248,11 @@ fn nested_elf(
             "-C panic=abort -C relocation-model=pic -C link-arg=-pie -C link-arg=-z -C link-arg=notext",
         );
     }
+    // The wifi daemon's AES (user/wifi/wpa): x86_64-unknown-none has no
+    // SSE, which the aes crate's AES-NI code needs; its portable code then.
+    if bin == "wifi" && target.contains("x86_64") {
+        rustflags.push_str(" --cfg aes_force_soft");
+    }
     // Belt-and-suspenders with user/ping/build.rs. Prefer split link-arg form
     // (equals form alone previously left CI at 0x200000/0x10000).
     if need_image_base {

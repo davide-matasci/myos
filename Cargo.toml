@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "modules/abi", "modules/console/ps2-scancode", "modules/ext2/ext2fs", "modules/fat/fatvol", "user/wifi/iwx"]
+members = ["kernel", "modules/abi", "modules/console/ps2-scancode", "modules/ext2/ext2fs", "modules/fat/fatvol", "user/wifi/iwx", "user/wifi/wpa"]
 default-members = ["."]
 # Crates fetched and patched into target/ (user/net/smoltcp) are their own.
 exclude = ["target"]
@@ -19,6 +19,8 @@ ovmf-prebuilt = "0.2.9"
 # launcher and build.rs alike.
 fatvol = { path = "modules/fat/fatvol" }
 ext2fs = { path = "modules/ext2/ext2fs" }
+# The simulated access points' WPA2 (src/wifi_sim.rs): the daemon's crate.
+wpa = { path = "user/wifi/wpa" }
 
 # What the image carries is not a feature set: every port whose directory is
 # under ports/ (and the user/ programs) is built and packed; a directory under
