@@ -398,6 +398,24 @@ pty_clone() {
 }
 t -t tty pty_clone pty_clone
 
+# Opening a directory's clone makes a new object and is its data
+# (docs/events.md, docs/sockets-unix.md), as /dev/pts/clone is a new pair's
+# master: the fd's link names it, its status is beside it, and it goes
+# with its last fd, so none is left behind that nobody holds.
+clone_open() {
+	for c in /dev/event/clone /dev/timer/clone /dev/wait/clone /dev/sig/clone /net/unix/clone; do
+		exec 7<> $c || { echo "open $c"; return 1; }
+		d=$(readlink /proc/self/fd/7)
+		echo "$c: $d"
+		case $d in ${c%/clone}/*/data) ;; *) return 1 ;; esac
+		d=${d%/data}
+		[ -n "$(cat $d/status)" ] || return 1
+		exec 7>&-
+		! [ -e $d/status ] || { echo "$d outlived its fd"; return 1; }
+	done
+}
+t -t events,netfs clone_open clone_open
+
 # The console's keyboard map is a line of its ctl (docs/keymap.md): init
 # loaded the Swiss one; `keymap PATH` loads another; a missing file is
 # refused and leaves the loaded map; a pty has no keymap.
@@ -1053,14 +1071,40 @@ sec_net() {
 	return $rc
 }
 sec_net_checks() {
-	n=$(sec_as alice /bin/sbase/cat /net/tcp/clone) || return 1
-	sec_as alice /bin/sbase/cat /net/tcp/$n/status > /dev/null || return 1
-	! sec_as bob /bin/sbase/cat /net/tcp/$n/status 2> /dev/null || { echo "LEAK: bob read alice's tcp $n"; return 1; }
-	! sec_as bob /bin/sbase/cat /net/tcp/$n/data 2> /dev/null || { echo "LEAK: bob read alice's tcp $n data"; return 1; }
-	u=$(sec_as alice /bin/sbase/cat /net/unix/clone) || return 1
-	[ "$(sec_as alice /bin/sbase/cat /net/unix/$u/status)" = open ] || return 1
-	! sec_as bob /bin/sbase/cat /net/unix/$u/status 2> /dev/null || { echo "LEAK: bob read alice's unix $u"; return 1; }
-	! sec_as bob /bin/sbase/cat /net/unix/$u/data 2> /dev/null || { echo "LEAK: bob read alice's unix $u data"; return 1; }
+	# A conversation lives while an fd holds it: a shell of alice's opens
+	# one of each, names them in /tmp/sec-net, and holds them until that
+	# file goes.
+	rm -f /tmp/sec-net /tmp/sec-net.new
+	sec_as alice /bin/custom/sh -c 'exec 3<> /net/tcp/clone 4<> /net/unix/clone || exit 1
+		{ /bin/sbase/readlink /proc/self/fd/3; /bin/sbase/readlink /proc/self/fd/4; } > /tmp/sec-net.new
+		/bin/sbase/mv /tmp/sec-net.new /tmp/sec-net
+		while [ -e /tmp/sec-net ]; do /bin/sbase/sleep 1; done' &
+	holder=$!
+	i=0
+	while [ ! -s /tmp/sec-net ] && [ $i -lt 30 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	sec_net_peek
+	rc=$?
+	rm -f /tmp/sec-net
+	wait $holder
+	return $rc
+}
+sec_net_peek() {
+	t=$(sed -n 1p /tmp/sec-net)
+	u=$(sed -n 2p /tmp/sec-net)
+	echo "alice's: $t $u"
+	t=${t%/data}
+	u=${u%/data}
+	case $t in /net/tcp/*) ;; *) return 1 ;; esac
+	case $u in /net/unix/*) ;; *) return 1 ;; esac
+	sec_as alice /bin/sbase/cat $t/status > /dev/null || return 1
+	! sec_as bob /bin/sbase/cat $t/status 2> /dev/null || { echo "LEAK: bob read alice's $t"; return 1; }
+	! sec_as bob /bin/sbase/cat $t/data 2> /dev/null || { echo "LEAK: bob read alice's $t data"; return 1; }
+	[ "$(sec_as alice /bin/sbase/cat $u/status)" = open ] || return 1
+	! sec_as bob /bin/sbase/cat $u/status 2> /dev/null || { echo "LEAK: bob read alice's $u"; return 1; }
+	! sec_as bob /bin/sbase/cat $u/data 2> /dev/null || { echo "LEAK: bob read alice's $u data"; return 1; }
 	! sec_as alice /bin/sbase/cat /dev/console/kbd > /dev/null 2>&1 || { echo "LEAK: alice opened the keyboard"; return 1; }
 	return 0
 }

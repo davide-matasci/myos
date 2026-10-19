@@ -1,10 +1,10 @@
 //! Event counters, timers, wait sets and signal fds: `/dev/event/N`,
 //! `/dev/timer/N`, `/dev/wait/N` and `/dev/sig/N` (`docs/events.md`). An
-//! object comes from reading the directory's `clone`, which allocates it
-//! and answers its number; `N/data` opened is the fd a program holds (an
-//! event, timer, wait or signal fd in [`crate::task`], whose reads and
-//! writes come here), `N/ctl` takes its commands as text and `N/status`
-//! describes it.
+//! object comes from opening the directory's `clone`, which allocates it
+//! and is its `N/data`: the fd a program holds (an event, timer, wait or
+//! signal fd in [`crate::task`], whose reads and writes come here), whose
+//! `/proc/self/fd` link names the object; `N/ctl` takes its commands as
+//! text and `N/status` describes it.
 //!
 //! An event counter is a `u64` a write adds to and a read takes: the whole
 //! count (zeroed) or, as a semaphore, one at a time. A timer counts its
@@ -33,9 +33,7 @@ use crate::task::FdEntry;
 const COUNT_MAX: u64 = u64::MAX - 1;
 
 /// The objects of one kind by id, as many as are open (each live one holds
-/// an fd, so the fd limits bound them). A freed id is reused first. One
-/// read from `clone` with its `data` never opened stays, as a `/net`
-/// conversation does.
+/// an fd, so the fd limits bound them). A freed id is reused first.
 struct Table<T>(Mutex<Vec<Option<Box<T>>>>);
 
 /// What every object has: the user whose process made it (only that

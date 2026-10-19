@@ -373,7 +373,8 @@ Anything else returns `ENOSYS`.
 A Linux socket is a conversation of the native `/net` (`docs/sockets-curl.md`;
 `modules/linux/src/net.rs`), whose fd is the conversation's `data` file:
 reads, writes, `dup`, `fork` and `close` are ordinary fd operations, and the
-last close hangs the conversation up. `socket` reads `/net/{tcp,udp}/clone`,
+last close hangs the conversation up. `socket` opens `/net/{tcp,udp}/clone`
+(the fd is the new conversation's `data`, its link names it),
 `connect` writes `connect a.b.c.d!port` to its `ctl`, and readiness comes from
 its `status` and the bytes waiting in `data`. The `/net` files never block,
 so a blocking read or connect sleeps until netd's next reply wakes the

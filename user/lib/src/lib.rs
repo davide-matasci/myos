@@ -341,6 +341,59 @@ pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     if n == usize::MAX { None } else { Some(n) }
 }
 
+/// A new conversation of `dir` (`/net/udp`): opening its `clone` makes it,
+/// and the fd is on its `data`, which holds it (its last close hangs it
+/// up). The fd and the conversation's number, which the fd's
+/// `/proc/self/fd` link names (`dir/N/data`).
+pub fn clone_conv(dir: &[u8]) -> Option<(usize, u16)> {
+    let mut path = [0u8; 48];
+    let tail = b"/clone";
+    if dir.len() + tail.len() > path.len() {
+        return None;
+    }
+    path[..dir.len()].copy_from_slice(dir);
+    path[dir.len()..dir.len() + tail.len()].copy_from_slice(tail);
+    let fd = open_flags(&path[..dir.len() + tail.len()], O_RDWR)?;
+    let id = fd_conv(fd, dir);
+    if id.is_none() {
+        close(fd);
+    }
+    Some((fd, id?))
+}
+
+/// The number of the conversation of `dir` whose `data` `fd` is open on.
+fn fd_conv(fd: usize, dir: &[u8]) -> Option<u16> {
+    let mut link = *b"/proc/self/fd/\0\0\0\0\0";
+    let mut digits = [0u8; 5];
+    let mut i = digits.len();
+    let mut v = fd;
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 || i == 0 {
+            break;
+        }
+    }
+    let n = digits.len() - i;
+    link[14..14 + n].copy_from_slice(&digits[i..]);
+    let mut buf = [0u8; 64];
+    let len = readlink(&link[..14 + n], &mut buf)?;
+    let rest = buf[..len.min(buf.len())].strip_prefix(dir)?.strip_prefix(b"/")?;
+    let rest = rest.strip_suffix(b"/data")?;
+    let mut id: u16 = 0;
+    if rest.is_empty() {
+        return None;
+    }
+    for &b in rest {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        id = id.checked_mul(10)?.checked_add(u16::from(b - b'0'))?;
+    }
+    Some(id)
+}
+
 /// Load the kernel module ELF at `path` (`SYS_INSMOD` = 58), e.g.
 /// `/lib/modules/hello`. The kernel prints the reason on failure.
 pub fn insmod(path: &[u8]) -> bool {

@@ -51,7 +51,7 @@ unsafe extern "C" fn kbd_read(path: *const u8, len: usize, _pos: usize, buf: *mu
     kbd::raw_read(out) as i32
 }
 
-unsafe extern "C" fn kbd_open(path: *const u8, len: usize) -> i32 {
+unsafe extern "C" fn kbd_open(path: *const u8, len: usize, _out: *mut u8, _out_cap: usize) -> i32 {
     if root(path, len) && kbd::grab() { 0 } else { -1 }
 }
 

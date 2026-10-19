@@ -47,7 +47,7 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    test is `multihome_smoke` (`user/c/test.sh`).
 3. Apps: dial `/net/tcp|udp|icmp/{clone,ctl,data,status}` (and a tcp
    conversation's `peek`); a conversation's
-   files are the user's whose process read `clone` (an accepted
+   files are the user's whose process opened `clone` (an accepted
    connection: the listener's), no other user's (`docs/security.md`)
 
 This feature adds a **libgloss userspace shim** that implements a trimmed BSD
@@ -57,7 +57,7 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 
 | BSD call | `/net` action |
 |----------|----------------|
-| `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`, read conv id, open `ctl` + `data`; return **data fd** |
+| `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`: the fd is the new conversation's `data` (its `/proc/self/fd` link names `N`); open `ctl`; return the **data fd** |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
 | `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. 127.0.0.0/8, the host's own address and 0.0.0.0 go over `lo`: a port nobody listens on is refused at once (**ECONNREFUSED**) |
 | `recv(MSG_PEEK)` (TCP) | a read of the conversation's `peek`, which gives what a read of `data` would and leaves it there; it waits (or says `EAGAIN`) as an empty read of `data` does (UDP: issue #454) |

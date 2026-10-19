@@ -264,8 +264,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
         if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
             return Err(EPROTOTYPE);
         }
-        let id = conv_id(&format!("{}/clone", net_dir("unix")?))?;
-        return open_conv("unix", &id, ty, UNIX_SOCK);
+        return new_conv("unix", ty, UNIX_SOCK);
     }
     if domain != AF_INET {
         return Err(EAFNOSUPPORT);
@@ -276,10 +275,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
         _ => return Err(EPROTOTYPE),
     };
     let proto = if stream { "tcp" } else { "udp" };
-    // Reading `clone` allocates a conversation and names it.
-    let dir = net_dir(proto)?;
-    let id = conv_id(&format!("{dir}/clone"))?;
-    open_conv(proto, &id, ty, Sock { stream, nonblock: false, peer: None, unix: None, passcred: false })
+    new_conv(proto, ty, Sock { stream, nonblock: false, peer: None, unix: None, passcred: false })
 }
 
 /// `/net/{proto}`'s VFS path. `/net` is the system's, also inside a
@@ -288,7 +284,7 @@ fn net_dir(proto: &str) -> Result<String, usize> {
     user::resolve_copied_path(&format!("/net/{proto}")).ok_or(EAFNOSUPPORT)
 }
 
-/// The conversation number read from `file` (`clone` or `listen`).
+/// The conversation number read from `file` (a `listen`).
 fn conv_id(file: &str) -> Result<String, usize> {
     let mut b = [0u8; 8];
     let n = fs::read(file, 0, &mut b).unwrap_or(0);
@@ -299,15 +295,41 @@ fn conv_id(file: &str) -> Result<String, usize> {
 /// A new unix socket's state.
 const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, peer: None, unix: Some(UNNAMED), passcred: false };
 
-/// Conversation `id` of `/net/{proto}` as socket `sock`, non-blocking and
-/// close-on-exec as `ty`'s flags say: its `data` open.
-fn open_conv(proto: &str, id: &str, ty: usize, sock: Sock) -> R {
-    let conv = format!("{}/{id}", net_dir(proto)?);
-    let fd = user::open_path(&format!("/net/{proto}/{id}/data"), 2);
+/// A new conversation of `/net/{proto}` as socket `sock`: opening `clone`
+/// makes it, and the fd is on its `data` (whose link names it), until
+/// whose last close it lives.
+fn new_conv(proto: &str, ty: usize, sock: Sock) -> R {
+    let fd = user::open_path(&format!("/net/{proto}/clone"), 2);
     if fd >= signal::SYSERR_LOWEST {
-        let _ = fs::write(&format!("{conv}/ctl"), 0, b"hangup");
         return Err(EMFILE);
     }
+    let prefix = format!("/net/{proto}/");
+    let id = task::fd_path(fd).and_then(|path| {
+        let path = core::str::from_utf8(&path).ok()?;
+        Some(String::from(path.strip_prefix(prefix.as_str())?.strip_suffix("/data")?))
+    });
+    let Some(id) = id else {
+        super::sys::close(fd).ok();
+        return Err(EMFILE);
+    };
+    as_sock(fd, proto, &id, ty, sock)
+}
+
+/// Conversation `id` of `/net/{proto}` (one a `listen` handed out) as
+/// socket `sock`: its `data` open.
+fn open_conv(proto: &str, id: &str, ty: usize, sock: Sock) -> R {
+    let fd = user::open_path(&format!("/net/{proto}/{id}/data"), 2);
+    if fd >= signal::SYSERR_LOWEST {
+        let _ = fs::write(&format!("{}/{id}/ctl", net_dir(proto)?), 0, b"hangup");
+        return Err(EMFILE);
+    }
+    as_sock(fd, proto, id, ty, sock)
+}
+
+/// `fd`, open on conversation `id`'s `data`, as socket `sock`, non-blocking
+/// and close-on-exec as `ty`'s flags say.
+fn as_sock(fd: usize, proto: &str, id: &str, ty: usize, sock: Sock) -> R {
+    let conv = format!("{}/{id}", net_dir(proto)?);
     files::set_sock(fd, conv, Sock { nonblock: ty & SOCK_NONBLOCK != 0, ..sock });
     files::set_cloexec(fd, ty & SOCK_CLOEXEC != 0);
     Ok(fd)
@@ -856,10 +878,8 @@ pub fn socketpair(domain: usize, ty: usize, sv: usize) -> R {
     if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
         return Err(EPROTOTYPE);
     }
-    let dir = net_dir("unix")?;
-    let id = conv_id(&format!("{dir}/clone"))?;
-    let conv = format!("{dir}/{id}");
-    let a = open_conv("unix", &id, ty, UNIX_SOCK)?;
+    let a = new_conv("unix", ty, UNIX_SOCK)?;
+    let (conv, _) = sock(a)?;
     let b = fs::write(&format!("{conv}/ctl"), 0, b"pair")
         .ok_or(EMFILE)
         .and_then(|_| conv_id(&format!("{conv}/listen")))
