@@ -127,6 +127,14 @@ pub fn signal_send(id: usize, sig: u32) {
     kick_cpus_mask(kicks);
 }
 
+/// `sig` to `id` for a caller that holds `TASKS` with interrupts off and
+/// may wait for the handler tables (the order `with_sig` takes them in):
+/// the CPUs to kick once `TASKS` is dropped.
+pub(super) fn signal_send_held(tasks: &mut TaskTable, id: usize, sig: u32) -> u64 {
+    let mut tabs = SIG_TABLES.lock();
+    send_locked(tasks, &mut tabs, id, sig)
+}
+
 /// `sig` to `id` for a caller that holds `TASKS` (the timer interrupt's
 /// `SIGALRM`): `None` when the handler tables are busy, to retry later;
 /// otherwise the CPUs to kick.

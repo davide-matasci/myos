@@ -357,9 +357,9 @@ pub fn getresid(r: usize, e: usize, s: usize) -> R {
 
 /// `prctl`: a thread's name and an anonymous mapping's (`PR_SET_VMA`) are
 /// accepted and not kept; dumpable reads as set. The parent-death signal
-/// is accepted and not sent (a child whose parent dies goes on: its
-/// parent, such as an image loader's, waits for it or kills it) and reads
-/// as none. No-new-privileges is
+/// is the process's (Linux ties it to the parent thread): sent when its
+/// parent process ends, kept across exec, not inherited by a fork; a
+/// signal the core has not (a real-time one) is `EINVAL`. No-new-privileges is
 /// always so: nothing on myos gains privileges by exec (no setuid
 /// programs), so setting it is accepted and it reads as set. Any other
 /// option is `EINVAL`, a kernel's answer for one it does not have
@@ -374,8 +374,19 @@ pub fn prctl(option: usize, arg: usize) -> R {
     const PR_GET_NO_NEW_PRIVS: usize = 39;
     const PR_SET_VMA: usize = 0x5356_4d41;
     match option {
-        PR_SET_NAME | PR_SET_VMA | PR_SET_DUMPABLE | PR_SET_NO_NEW_PRIVS | PR_SET_PDEATHSIG => Ok(0),
-        PR_GET_PDEATHSIG => put(arg, &0u32.to_le_bytes()).map(|_| 0),
+        PR_SET_NAME | PR_SET_VMA | PR_SET_DUMPABLE | PR_SET_NO_NEW_PRIVS => Ok(0),
+        PR_SET_PDEATHSIG => {
+            let sig = if arg == 0 { 0 } else { sig_from_linux(arg) };
+            if sig == 0 && arg != 0 {
+                return Err(EINVAL);
+            }
+            task::set_pdeath_signal(sig);
+            Ok(0)
+        }
+        PR_GET_PDEATHSIG => {
+            let sig = sig_to_linux(task::pdeath_signal()) as u32;
+            put(arg, &sig.to_le_bytes()).map(|_| 0)
+        }
         PR_GET_DUMPABLE | PR_GET_NO_NEW_PRIVS => Ok(1),
         _ => Err(EINVAL),
     }
