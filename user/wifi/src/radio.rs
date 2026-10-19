@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 
+use crate::frame::Bss;
 use myos_user::{close, open_flags, read, write_fd, O_RDONLY, O_RDWR};
 
 /// A frame heard: its length in the buffer, the channel, the signal.
@@ -23,10 +24,23 @@ pub trait Radio {
     fn recv(&mut self, buf: &mut [u8]) -> Option<Rx>;
     /// The fd a `poll` for [`Radio::recv`] waits on.
     fn fd(&self) -> usize;
-    /// Whether it can join a network (send frames).
-    fn joins(&self) -> bool {
+    /// Frames are waiting that a `poll` of [`Radio::fd`] would not show
+    /// (a driver that queued them while it waited for something else).
+    fn pending(&self) -> bool {
+        false
+    }
+    /// Before authenticating with `bss`: a radio whose firmware keeps the
+    /// network's state sets it up and stays on its channel; whether it
+    /// could.
+    fn joining(&mut self, _bss: &Bss) -> bool {
         true
     }
+    /// Associated with the network being joined, as `aid`.
+    fn associated(&mut self, _aid: u16) -> bool {
+        true
+    }
+    /// The network left, or joining it given up.
+    fn left(&mut self) {}
     /// A scan the radio does by itself (its firmware's): what it heard;
     /// `None` when the daemon visits the channels itself.
     fn scan(&mut self) -> Option<Vec<Heard>> {

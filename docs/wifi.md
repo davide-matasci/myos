@@ -1,10 +1,9 @@
 # Wi-Fi
 
 Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
-(`user/wifi`). Through the test boots' simulated radio it scans, joins
-an open or WPA2-PSK network and carries netd's traffic over it; on a
-laptop with Intel's AX201 it brings the radio up and scans (below, "The
-AX201"). Joining through the AX201 comes next.
+(`user/wifi`). It scans, joins an open or WPA2-PSK network and carries
+netd's traffic over it, through the test boots' simulated radio or a
+laptop's Intel AX201 (below, "The AX201"; not yet tried on the hardware).
 
 ## `wifi`
 
@@ -122,7 +121,8 @@ tested on the host (`cargo test -p iwx`):
 | `reg.rs`, `hw.rs` | registers; the NIC lock, the periphery window, preparing, resetting and starting the hardware, interrupt masks, the MAC address |
 | `ring.rs` | the context information the firmware loads itself from, the command queue's descriptors and commands, the packets of a receive buffer |
 | `msg.rs` | the commands up to a scan and the answers and notifications read (ALIVE, the NVM, the regulatory domain, the scan, a received frame) |
-| `dev.rs` | the bring-up: memory shared with the firmware, its load up to ALIVE, the interrupt (ICT or MSI-X causes), commands and their answers, the configuration |
+| `sta.rs` | joining as a station: the PHY, MAC and binding contexts, the station and its transmit queue, the session protection, the TX command and its response, the beacon timing the firmware needs |
+| `dev.rs` | the bring-up: memory shared with the firmware, its load up to ALIVE, the interrupt (ICT or MSI-X causes), commands and their answers, the configuration; joining, sending, leaving |
 
 Bring-up is one pass, as the 22000 family's unified firmware wants: the
 hardware prepared and started, the firmware's sections copied into DMA
@@ -132,20 +132,52 @@ SKU's bands, the antennas, the channels), the antennas, Bluetooth
 coexistence off, the SoC's crystal latency, the device kept awake, the
 regulatory domain asked of the firmware's location-aware regulatory
 (world `ZZ` to start; its answer replaces the NVM's channels), and the
-scan configuration. The DMA memory is nine buffers of `/dev/pci`'s
+scan configuration. The DMA memory is eleven buffers of `/dev/pci`'s
 sixteen: control (context information, ICT, receive descriptors and
 status), the command queue's descriptors, its commands, the 512 receive
-buffers in four, and the firmware's two images (the paging one stays the
-device's while it runs).
+buffers in four, the firmware's two images (the paging one stays the
+device's while it runs), and at the first join the station's transmit
+queue: its 256 descriptors with the byte count table, and 64 slots of
+4 KB for the frames on their way.
 
 `wifi scan` on the AX201 is the firmware's passive scan of every allowed
 channel (110 ms each), every beacon and probe response passed up; the
-daemon reads the networks from them as from the simulated radio's. The
-radio does not send yet, so `wifi connect` answers `error: this radio
-scans only so far`: transmit, association and the data path through the
-AX201 are what is left of issue #495 (WPA2 then runs over it unchanged,
-CCMP in software). No test boot has the device: the
-driver's encodings are what CI tests, the rest needs the laptop.
+daemon reads the networks from them as from the simulated radio's, and
+keeps each access point's beacon timing (interval, DTIM, timestamp) and
+rates for the firmware.
+
+Joining is the daemon's, as with the simulated radio (`mlme.rs`,
+`rsn.rs`), and the radio is told each step (`Radio::joining`,
+`associated`, `left`). Before authentication the firmware gets the
+network (iwx_auth): a PHY context on its channel (20 MHz) and its
+receive chains, a MAC context (a BSS station of the BSSID, beacons and
+group frames up), their binding, the access point as station 0, its
+transmit queue (SCD_QUEUE_CONFIG, queue 1, the management TID), and a
+session protection that keeps it on the channel for the authentication
+and association (at least 2000 TU). The daemon's frames then go out on
+that queue, each a TX command with its 802.11 header (padded to 4 bytes)
+and the body in a transfer buffer of its own: management and group
+frames at the lowest rate (1 Mb/s, 6 on 5 GHz), and EAPOL ahead of the
+rest; its response frees the slot and says whether the frame was
+acknowledged. Once associated (iwx_run): the station and the MAC
+context updated (associated, its id, the DTIM timing from the beacon),
+the smart FIFO on, every group frame passed up, the device kept awake,
+and the firmware's rate scaling over the access point's non-HT rates.
+Leaving (iwx_run_stop, iwx_deauth) drains and flushes what was queued,
+then removes the queue, the station, the binding and the contexts.
+
+It is a non-HT station: legacy rates up to 54 Mb/s, no QoS (the
+association request asks for none, so the access point sends plain data
+frames), no aggregation. On a WPA2 network the daemon encrypts and
+decrypts as it does over the simulated radio (CCMP in software): no key
+is given to the firmware, every frame is sent with its encryption off
+(TX_FLAGS_ENCRYPT_DIS, as OpenBSD sends the frames it encrypts itself),
+and the protected frames it receives come up as they were sent; the two
+bytes of padding the firmware puts after a frame's header (after its
+CCMP header when it reports the frame as CCMP's) are taken out. No test
+boot has the device: CI tests the driver's encodings and its command
+sequences against a fake firmware (`cargo test -p iwx`); the rest needs
+the laptop.
 
 ## The simulated radio
 
