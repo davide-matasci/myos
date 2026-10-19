@@ -120,9 +120,18 @@ fn with_cfg<R>(bus: u8, slot: u8, func: u8, offset: u8, access: impl FnOnce(usiz
         (0, 0, 0) => Some(access(base + offset)),
         (0 | 1, 1.., _) | (0, _, 1..) => None,
         _ => {
-            let _shown = BCM_CFG.lock();
+            // Held with interrupts off: interrupt handlers read and write
+            // configuration space too (pcidev masks a user driver's INTx
+            // line in its command register), and must not spin on a lock
+            // the code they interrupted holds.
+            let flags = crate::arch::irq_save();
+            crate::arch::irq_off();
+            let shown = BCM_CFG.lock();
             write32(base + BCM_CFG_INDEX, (bus as u32) << 20 | (slot as u32) << 15 | (func as u32) << 12);
-            Some(access(base + BCM_CFG_DATA + offset))
+            let r = access(base + BCM_CFG_DATA + offset);
+            drop(shown);
+            crate::arch::irq_restore(flags);
+            Some(r)
         }
     }
 }
