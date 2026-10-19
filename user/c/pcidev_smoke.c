@@ -10,7 +10,10 @@
  * and has the device raise one (the `irq` read returns it, the status
  * register names it); allocates a DMA buffer and has the device copy a
  * pattern from it into its own memory and back to another part of it,
- * announcing the end with an interrupt. Prints [ OK ] pcidev.
+ * announcing the end with an interrupt. Where the board has an IOMMU
+ * (`iommu N` in ctl), a copy to an address outside the buffer is refused:
+ * /proc/iommu counts the fault and the memory there stays untouched.
+ * Prints [ OK ] pcidev.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -121,6 +124,20 @@ static int find_edu(void) {
     return found;
 }
 
+/* The `faults N` count of /proc/iommu; -1 without the file. */
+static long long iommu_faults(void) {
+    char text[4096];
+    int fd = open("/proc/iommu", O_RDONLY);
+    if (fd < 0)
+        return -1;
+    int ok = read_ctl(fd, text, sizeof text);
+    close(fd);
+    unsigned long long n;
+    if (!ok || !ctl_value(text, "faults ", &n))
+        return -1;
+    return (long long)n;
+}
+
 /* Wait for an interrupt on `irq` (up to 5 s); its count, 0 on timeout. */
 static uint64_t wait_irq(int irq) {
     struct pollfd p = {.fd = irq, .events = POLLIN};
@@ -226,6 +243,44 @@ int main(void) {
     for (int i = 0; i < 256; i++) {
         if (buf[2048 + i] != (uint8_t)(i * 7 + 3))
             return fail("dma copy");
+    }
+    /* Confined: the page after the buffer is not the device's. A copy from
+     * the device's memory there is refused by the IOMMU (counted in
+     * /proc/iommu); the buffer, which it would have reached one page
+     * further without one, is untouched. */
+    unsigned long long domain = 0;
+    if (!read_ctl(ctl, text, sizeof text))
+        return fail("ctl text");
+    if (ctl_value(text, "iommu ", &domain)) {
+        long long before = iommu_faults();
+        if (before < 0)
+            return fail("/proc/iommu");
+        memset(buf, 0, 4096);
+        wr64(EDU_DMA_SRC, EDU_DMA_BUF);
+        wr64(EDU_DMA_DST, phys + 4096);
+        wr64(EDU_DMA_COUNT, 256);
+        wr64(EDU_DMA_CMD, 1 | 2);
+        if (!settle(EDU_DMA_CMD, 1))
+            return fail("dma outside the buffer did not end");
+        /* The unit's fault event is an interrupt on another CPU, maybe:
+         * give it a moment. */
+        long long after = before;
+        for (int i = 0; i < 300 && after <= before; i++) {
+            usleep(10000);
+            after = iommu_faults();
+        }
+        if (after <= before) {
+            printf("[ FAIL ] pcidev no iommu fault for a dma outside the buffer (faults %lld)\n", after);
+            return 1;
+        }
+        for (int i = 0; i < 4096; i++)
+            if (buf[i]) {
+                printf("[ FAIL ] pcidev the refused dma landed in the buffer\n");
+                return 1;
+            }
+        printf("iommu domain %llu refused the dma: faults %lld -> %lld\n", domain, before, after);
+    } else {
+        printf("no iommu: the dma is unconfined\n");
     }
     close(ctl);
     path(p, sizeof p, "ctl");
