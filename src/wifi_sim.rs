@@ -98,19 +98,17 @@ impl WifiSim {
 }
 
 fn run(sock: UdpSocket) {
-    let start = Instant::now();
-    let mut next_beacon = start;
+    let mut air = Air::new();
+    let mut next_beacon = Instant::now();
     let mut heard: Option<Instant> = None;
-    let mut stations = Stations::default();
     let mut buf = [0u8; 2048];
+    let send = |h: Heard| {
+        let _ = sock.send(&wrap(SimHeader { channel: h.channel, rssi: h.rssi }, &h.frame));
+    };
     loop {
         let awake = heard.is_some_and(|t| t.elapsed() < AWAKE);
         if awake && Instant::now() >= next_beacon {
-            let ts = start.elapsed().as_micros() as u64;
-            for ap in &APS {
-                let frame = mgmt(ap, 0x80, [0xff; 6], ts);
-                let _ = sock.send(&wrap(SimHeader { channel: ap.channel, rssi: ap.rssi }, &frame));
-            }
+            air.beacons().into_iter().for_each(send);
             next_beacon = Instant::now() + Duration::from_micros(u64::from(BEACON_TU) * 1024);
         }
         // A send to a QEMU not up yet fails (connection refused): the next
@@ -122,31 +120,61 @@ fn run(sock: UdpSocket) {
             continue;
         };
         heard = Some(Instant::now());
+        air.hear(hdr.channel, frame).into_iter().for_each(send);
+    }
+}
+
+/// A frame of an access point: the channel it is sent on, the signal it
+/// arrives with.
+pub struct Heard {
+    pub channel: u8,
+    pub rssi: i8,
+    pub frame: Vec<u8>,
+}
+
+/// The access points and their stations, whichever radio reaches them:
+/// the simulated one's UDP datagrams, or the simulated AX201
+/// (`src/ax201_sim.rs`).
+pub struct Air {
+    start: Instant,
+    stations: Stations,
+}
+
+impl Air {
+    pub fn new() -> Self {
+        Air { start: Instant::now(), stations: Stations::default() }
+    }
+
+    /// Every access point's beacon, now.
+    pub fn beacons(&self) -> Vec<Heard> {
+        let ts = self.start.elapsed().as_micros() as u64;
+        APS.iter().map(|ap| Heard { channel: ap.channel, rssi: ap.rssi, frame: mgmt(ap, 0x80, [0xff; 6], ts) }).collect()
+    }
+
+    /// What the access points on `channel` answer `frame` (sent on it)
+    /// with.
+    pub fn hear(&mut self, channel: u8, frame: &[u8]) -> Vec<Heard> {
         if frame.len() < 24 {
-            continue;
+            return Vec::new();
         }
         let ta: [u8; 6] = frame[10..16].try_into().unwrap();
         if frame[0] != 0x40 {
             // Addressed to one access point, on its channel.
             let ra: [u8; 6] = frame[4..10].try_into().unwrap();
-            if let Some(ap) = APS.iter().find(|ap| ap.bssid == ra && ap.channel == hdr.channel) {
-                for resp in stations.answer(ap, ta, frame) {
-                    let _ = sock.send(&wrap(SimHeader { channel: ap.channel, rssi: ap.rssi }, &resp));
-                }
-            }
-            continue;
+            let Some(ap) = APS.iter().find(|ap| ap.bssid == ra && ap.channel == channel) else {
+                return Vec::new();
+            };
+            let out = self.stations.answer(ap, ta, frame);
+            return out.into_iter().map(|frame| Heard { channel: ap.channel, rssi: ap.rssi, frame }).collect();
         }
         // A probe request (management, subtype 4): each access point on
         // the channel answers one for its SSID or the wildcard.
         let wanted = ie(&frame[24..], 0);
-        let ts = start.elapsed().as_micros() as u64;
-        for ap in APS.iter().filter(|ap| ap.channel == hdr.channel) {
-            if wanted.is_some_and(|s| !s.is_empty() && s != ap.ssid) {
-                continue;
-            }
-            let resp = mgmt(ap, 0x50, ta, ts);
-            let _ = sock.send(&wrap(SimHeader { channel: ap.channel, rssi: ap.rssi }, &resp));
-        }
+        let ts = self.start.elapsed().as_micros() as u64;
+        APS.iter()
+            .filter(|ap| ap.channel == channel && !wanted.is_some_and(|s| !s.is_empty() && s != ap.ssid))
+            .map(|ap| Heard { channel: ap.channel, rssi: ap.rssi, frame: mgmt(ap, 0x50, ta, ts) })
+            .collect()
     }
 }
 
