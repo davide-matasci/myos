@@ -9,14 +9,22 @@
 //! Each module links its own copy of this crate: the tables below are per
 //! module, which is also how the kernel hands out the devices (a PCI
 //! function is only ever opened by the module of its device type).
+//!
+//! DMA is per device in the module ABI (`KernelApi::dma_attach`), but the
+//! crate's `Hal` names no device: the pages and bounce slots are the DMA
+//! memory of the device opened last ([`DEV_DMA`]), and a module's devices
+//! are taken to share what their DMA reaches and its coherence (one kind
+//! of virtual device, on one board). The crate keeps its rings in step with
+//! no maintenance of its own: the devices are coherent (QEMU's are), the
+//! buffers [`MyosHal::share`]s are synced.
 
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::ptr::NonNull;
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{AtomicI32, Ordering};
 
-use myos_abi::{ApiCell, KernelApi, Lock, MmioDevice};
+use myos_abi::{ApiCell, DMA_FROM_DEVICE, DMA_TO_DEVICE, DmaDevice, KernelApi, Lock, MmioDevice};
 pub use virtio_drivers;
 use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
 use virtio_drivers::transport::pci::bus::{ConfigurationAccess, DeviceFunction, PciRoot};
@@ -90,12 +98,30 @@ impl core::fmt::Display for Id {
 
 // ---- memory ---------------------------------------------------------------
 
-/// A run of memory the device may be given: physical and virtual address.
+/// A run of memory the device may be given: the address the device uses
+/// for it (a BAR's: its bus address) and the virtual one.
 #[derive(Clone, Copy)]
 struct Region {
     phys: u64,
     va: usize,
     len: usize,
+}
+
+/// The DMA handle of the device opened last (`dma_attach`), the one
+/// [`dma_pages`] allocates for.
+static DEV_DMA: AtomicI32 = AtomicI32::new(-1);
+
+/// Take `dev`'s DMA handle for what is allocated from now on.
+fn attach(dev: Id) {
+    let d = match dev {
+        Id::Pci { bus, slot, func } => DmaDevice::pci(bus, slot, func),
+        Id::Mmio { phys, .. } => DmaDevice::mmio(phys),
+    };
+    DEV_DMA.store(api().dma_attach(&d), Ordering::SeqCst);
+}
+
+fn dev_dma() -> i32 {
+    DEV_DMA.load(Ordering::SeqCst)
 }
 
 impl Region {
@@ -123,43 +149,29 @@ fn remember(table: &Lock<[Option<Region>; DMA_REGIONS]>, r: Region) {
     }
 }
 
-/// `n` zeroed, physically contiguous pages for a device: physical address
-/// and pointer. Never freed: the kernel does not take DMA pages back, and
-/// a device keeps its until the system goes down.
+/// `n` zeroed, contiguous pages for the device opened last: the address
+/// it uses for them and the pointer. Never freed: the kernel does not take
+/// DMA pages back, and a device keeps its until the system goes down.
 pub fn dma_pages(n: usize) -> Option<(u64, NonNull<u8>)> {
     let mut phys = 0u64;
-    let va = api().dma_alloc(n, &mut phys);
+    let va = api().dma_alloc(dev_dma(), n, &mut phys);
     let va = NonNull::new(va)?;
     if phys == 0 {
         return None;
     }
-    unsafe { core::ptr::write_bytes(va.as_ptr(), 0, n * PAGE_SIZE) };
     remember(&DMA, Region { phys, va: va.as_ptr() as usize, len: n * PAGE_SIZE });
     Some((phys, va))
 }
 
-/// The physical address of `[va, va+len)` when it lies in DMA pages.
+/// The device's address of `[va, va+len)` when it lies in DMA pages.
 fn dma_phys(va: usize, len: usize) -> Option<u64> {
     DMA.lock().iter().flatten().find(|r| r.holds(va, len)).map(|r| r.phys + (va - r.va) as u64)
 }
 
-/// Make `[va, va+len)` consistent between the CPU and the device. The
-/// AArch64 `virt` board's DMA memory is cacheable: clean and invalidate
-/// its lines around every device access; the other arches are coherent
-/// and need no more than the compiler not reordering around it.
-pub fn dma_sync(va: usize, len: usize) {
-    compiler_fence(Ordering::SeqCst);
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let mut addr = va & !63;
-        while addr < va + len {
-            core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
-            addr += 64;
-        }
-        core::arch::asm!("dsb sy", options(nostack));
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    let _ = (va, len);
+/// Hand `[va, va+len)` over to the device (`DMA_TO_DEVICE`, also before it
+/// writes there) or back (`DMA_FROM_DEVICE`).
+fn dma_sync(va: usize, len: usize, dir: u32) {
+    api().dma_sync(dev_dma(), va as *const u8, len, dir);
 }
 
 /// Buffers the crate shares that are not DMA memory (a request header on
@@ -167,7 +179,7 @@ pub fn dma_sync(va: usize, len: usize) {
 /// slot for a header or a status byte, a large one for data. A request
 /// is at most [`MAX_SHARE`] bytes; the drivers cut theirs to that.
 mod bounce {
-    use super::{BufferDirection, Lock, NonNull, PAGE_SIZE, PhysAddr, Region, dma_pages, dma_sync};
+    use super::{BufferDirection, DMA_FROM_DEVICE, DMA_TO_DEVICE, Lock, NonNull, PAGE_SIZE, PhysAddr, Region, dma_pages, dma_sync};
 
     const SMALL: usize = 512;
     const SMALLS: usize = 32;
@@ -250,7 +262,7 @@ mod bounce {
         if dir != BufferDirection::DeviceToDriver {
             unsafe { core::ptr::copy_nonoverlapping(buffer.as_ptr() as *const u8, slot.va as *mut u8, len) };
         }
-        dma_sync(slot.va, len);
+        dma_sync(slot.va, len, DMA_TO_DEVICE);
         slot.phys
     }
 
@@ -271,7 +283,7 @@ mod bounce {
             return;
         };
         let len = buffer.len().min(mem.len);
-        dma_sync(mem.va, len);
+        dma_sync(mem.va, len, DMA_FROM_DEVICE);
         if dir != BufferDirection::DriverToDevice {
             unsafe { core::ptr::copy_nonoverlapping(mem.va as *const u8, buffer.as_ptr() as *mut u8, len) };
         }
@@ -325,7 +337,7 @@ unsafe impl Hal for MyosHal {
         let va = buffer.as_ptr() as *const u8 as usize;
         match dma_phys(va, buffer.len()) {
             Some(phys) => {
-                dma_sync(va, buffer.len());
+                dma_sync(va, buffer.len(), DMA_TO_DEVICE);
                 phys
             }
             None => unsafe { bounce::take(buffer, direction) },
@@ -336,7 +348,7 @@ unsafe impl Hal for MyosHal {
         if bounce::is_slot(paddr) {
             unsafe { bounce::give_back(paddr, buffer, direction) };
         } else {
-            dma_sync(buffer.as_ptr() as *const u8 as usize, buffer.len());
+            dma_sync(buffer.as_ptr() as *const u8 as usize, buffer.len(), DMA_FROM_DEVICE);
         }
     }
 }
@@ -426,6 +438,7 @@ pub fn probe_pci(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &mu
                 continue;
             }
             api.pci_enable(bus, slot, func);
+            attach(dev);
             let mut root = root();
             let df = df_of(bus, slot, func);
             map_bars(&mut root, df);
@@ -473,6 +486,7 @@ pub fn probe_mmio(kind: DeviceType, known: &mut dyn FnMut(Id) -> bool, found: &m
         let Some(header) = NonNull::new(node.base as *mut VirtIOHeader) else {
             continue;
         };
+        attach(dev);
         // SAFETY: the kernel mapped `size` bytes of the node's registers at `base`.
         match unsafe { MmioTransport::new(header, node.size) } {
             Ok(t) if t.device_type() == kind => found(dev, SomeTransport::Mmio(t)),

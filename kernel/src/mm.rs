@@ -27,7 +27,7 @@ use spin::Mutex;
 
 use crate::limine_boot;
 
-const PAGE: u64 = 4096;
+pub const PAGE: u64 = 4096;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Intrusive freelist head (physical address), or 0. Each free page stores the
@@ -198,16 +198,21 @@ pub fn alloc_contiguous_frames(n: usize) -> Option<u64> {
     }
     let hhdm = limine_boot::hhdm_offset();
     let need = (n as u64).saturating_mul(PAGE);
-    let phys = with_frames(|| bump_run(n, need))?;
+    let phys = with_frames(|| bump_run(n, need, ANYWHERE))?;
     unsafe {
         core::ptr::write_bytes((phys + hhdm) as *mut u8, 0, need as usize);
     }
     Some(phys)
 }
 
+/// Physical addresses a run may come from, `[start, end)`.
+pub type Range = (u64, u64);
+pub const ANYWHERE: Range = (0, u64::MAX);
+
 /// The bump cursor's next run of `n` frames (`need` bytes) clear of the
-/// kernel image, cursor moved past it. Caller holds [`FRAMES`].
-fn bump_run(n: usize, need: u64) -> Option<u64> {
+/// kernel image and inside `range`, cursor moved past it. Caller holds
+/// [`FRAMES`].
+fn bump_run(n: usize, need: u64, range: Range) -> Option<u64> {
     let entries = limine_boot::MEMMAP
         .response()
         .expect("Limine memmap")
@@ -223,8 +228,8 @@ fn bump_run(n: usize, need: u64) -> Option<u64> {
         if e.type_ != memmap::MEMMAP_USABLE {
             continue;
         }
-        let region_end = e.base + e.length;
-        let mut phys = e.base.max(next);
+        let region_end = (e.base + e.length).min(range.1);
+        let mut phys = e.base.max(next).max(range.0);
         phys = (phys + 0xfff) & !0xfff;
         while phys.saturating_add(need) <= region_end {
             // Skip runs that overlap the kernel image.
@@ -315,7 +320,7 @@ fn user_reserve() -> u64 {
 /// caches when both are dry. `None` only when no frame is left anywhere.
 fn raw_alloc() -> Option<u64> {
     // Prefer reclaimed user frames (process exit / abandoned exec).
-    let take = || with_frames(|| pop_free().or_else(|| bump_run(1, PAGE)));
+    let take = || with_frames(|| pop_free().or_else(|| bump_run(1, PAGE, ANYWHERE)));
     let reclaimed = || crate::blk::release_cache() + crate::fs::pagecache::release_unmapped() > 0;
     let phys = take().or_else(|| reclaimed().then(take).flatten())?;
     unsafe {
@@ -416,26 +421,42 @@ pub fn table(phys: u64) -> *mut [u64; 512] {
 }
 
 /// Allocate `n` consecutive 4 KiB frames for DMA (a module's
-/// `dma_alloc`: queues, bounce buffers, rings): `(phys, hhdm va)`, zeroed.
-/// One frame may come from the freelist; a run of them comes from the bump
-/// cursor in one step under the allocator's lock ([`alloc_contiguous_frames`]):
-/// frames popped one by one are adjacent only by luck (the freelist is in
-/// the order processes freed them, and another CPU may allocate in
-/// between), and a virtio bounce pool left without its pages hands the
-/// device physical address 0. `None` once no run of `n` is left.
-pub fn alloc_contiguous_pages(n: usize) -> Option<(u64, *mut u8)> {
+/// `dma_alloc`: queues, bounce buffers, rings) inside `range`, the physical
+/// addresses the device reaches: `(phys, hhdm va)`, zeroed. One frame may
+/// come from the freelist; a run of them comes from the bump cursor in one
+/// step under the allocator's lock: frames popped one by one are adjacent
+/// only by luck (the freelist is in the order processes freed them, and
+/// another CPU may allocate in between), and a virtio bounce pool left
+/// without its pages hands the device physical address 0. `None` once no
+/// run of `n` is left in `range` (the cursor only moves up: a device that
+/// reaches the low memory alone gets it while the cursor is there, at boot).
+pub fn alloc_contiguous_pages(n: usize, range: Range) -> Option<(u64, *mut u8)> {
+    let inside = |phys: u64| phys >= range.0 && phys.saturating_add(n as u64 * PAGE) <= range.1;
     let first = match n {
         0 => return None,
-        // Counted by `raw_alloc`.
-        1 => raw_alloc()?,
-        _ => {
-            let first = alloc_contiguous_frames(n)?;
-            FRAME_ALLOC_COUNT.fetch_add(n as u64, Ordering::Relaxed);
-            first
-        }
+        // Counted by `raw_alloc` (and `free_frame`), `bump_dma`.
+        1 => match raw_alloc()? {
+            phys if inside(phys) => phys,
+            elsewhere => {
+                free_frame(elsewhere);
+                bump_dma(1, range)?
+            }
+        },
+        _ => bump_dma(n, range)?,
     };
     FRAME_SITE_COUNTS[0].fetch_add(n as u64, Ordering::Relaxed);
     Some((first, hhdm(first)))
+}
+
+/// `n` zeroed frames inside `range` from the bump cursor.
+fn bump_dma(n: usize, range: Range) -> Option<u64> {
+    let need = n as u64 * PAGE;
+    let phys = with_frames(|| bump_run(n, need, range))?;
+    unsafe {
+        core::ptr::write_bytes(hhdm(phys), 0, need as usize);
+    }
+    FRAME_ALLOC_COUNT.fetch_add(n as u64, Ordering::Relaxed);
+    Some(phys)
 }
 
 /// Boot self-check of [`alloc_contiguous_pages`]: with the freelist holding
@@ -449,7 +470,7 @@ pub fn dma_pages_smoke() -> bool {
         free_frame(f);
     }
     const N: usize = 3;
-    let Some((phys, va)) = alloc_contiguous_pages(N) else {
+    let Some((phys, va)) = alloc_contiguous_pages(N, ANYWHERE) else {
         return false;
     };
     let zeroed = unsafe { core::slice::from_raw_parts(va, N * PAGE as usize) }.iter().all(|&b| b == 0);

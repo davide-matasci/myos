@@ -42,7 +42,8 @@ fn enable_mem_master(bdf: Bdf) {
     write32(bdf, 4, v);
 }
 
-/// Decode BAR `index` as MMIO. Handles 64-bit BARs. Returns (phys, size).
+/// Decode BAR `index` as MMIO. Handles 64-bit BARs. Returns (bus address,
+/// size): the CPU's is `arch_pci::bus_to_cpu`'s.
 pub fn bar_mmio(bdf: Bdf, index: u8) -> Option<(u64, u64)> {
     if index > 5 {
         return None;
@@ -111,8 +112,8 @@ pub fn enable(bus: u8, slot: u8, func: u8) {
 /// Map BAR `bar` as MMIO. Returns (VA, size).
 pub fn bar_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u64)> {
     let bdf = Bdf { bus, slot, func };
-    let (phys, size) = bar_mmio(bdf, bar)?;
-    let va = arch_pci::map_mmio(phys, size)?;
+    let (addr, size) = bar_mmio(bdf, bar)?;
+    let va = arch_pci::map_mmio(arch_pci::bus_to_cpu(addr), size)?;
     Some((va, size))
 }
 

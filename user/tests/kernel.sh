@@ -422,7 +422,9 @@ t -t console keymap keymap_ctl
 # too, except on a PC, whose arch does not need them described (QEMU's
 # `pc` has no SPCR and no MCFG); an arm board names its PSCI conduit
 # (power-off, reboot); no component reads differently from the two
-# sources.
+# sources. The devices the drivers attached for DMA have a line each
+# (none on a board without such a device), all coherent on QEMU's boards,
+# none with `dma=noncoherent` (aarch64).
 platform() {
 	cat /proc/platform
 	grep -q '^source [a-z+]*$' /proc/platform || return 1
@@ -434,6 +436,12 @@ platform() {
 	fi
 	if grep -q '^intc gic' /proc/platform; then
 		grep -q '^psci [hs][vm]c ([a-z]*)$' /proc/platform || return 1
+	fi
+	! grep '^dma ' /proc/platform | grep -Evq '^dma (pci [0-9a-f:.]*|mmio 0x[0-9a-f]*)( 0x[0-9a-f]* 0x[0-9a-f]*( bus 0x[0-9a-f]*)?)* (non)?coherent$' || return 1
+	if grep -q 'dma=noncoherent' /proc/cmdline; then
+		! grep -q '^dma .* coherent$' /proc/platform || return 1
+	else
+		! grep -q '^dma .* noncoherent$' /proc/platform || return 1
 	fi
 	! grep -q 'differs' /proc/platform
 }

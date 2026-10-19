@@ -12,7 +12,9 @@
 use core::fmt::Write;
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::{ABI_VERSION, ApiCell, DiskInfo, KernelApi, Lock, ModuleBlkOps, status_ok};
+use myos_abi::{
+    ABI_VERSION, ApiCell, DMA_FROM_DEVICE, DMA_TO_DEVICE, DiskInfo, DmaDevice, KernelApi, Lock, ModuleBlkOps, status_ok,
+};
 
 const SECTOR: usize = 512;
 /// The DMA buffer: one page, what a command's PRP1 covers.
@@ -47,15 +49,18 @@ const CNS_CTRL: u32 = 1;
 
 struct Ctrl {
     bar: usize,
+    /// The controller's DMA handle.
+    dma: i32,
     dstrd: u32,
     admin_sq: *mut u8,
     admin_cq: *mut u8,
     io_sq: *mut u8,
     io_cq: *mut u8,
-    io_sq_phys: u64,
-    io_cq_phys: u64,
+    io_sq_bus: u64,
+    io_cq_bus: u64,
+    /// The data page every command moves through.
     dma_va: *mut u8,
-    dma_phys: u64,
+    dma_bus: u64,
     admin_sq_tail: u16,
     admin_cq_head: u16,
     admin_cq_phase: u16,
@@ -91,10 +96,16 @@ fn api() -> &'static KernelApi {
     API.get()
 }
 
-fn dma_page() -> Option<(u64, *mut u8)> {
-    let mut phys = 0u64;
-    let va = api().dma_alloc(1, &mut phys);
-    if va.is_null() { None } else { Some((phys, va)) }
+/// One DMA page for controller `dma`: `(bus address, va)`.
+fn dma_page(dma: i32) -> Option<(u64, *mut u8)> {
+    let mut bus = 0u64;
+    let va = api().dma_alloc(dma, 1, &mut bus);
+    if va.is_null() { None } else { Some((bus, va)) }
+}
+
+/// `len` bytes at `va` over to controller `dma` (`DMA_TO_DEVICE`) or back.
+fn sync(dma: i32, va: *mut u8, len: usize, dir: u32) {
+    api().dma_sync(dma, va, len, dir);
 }
 
 /// Run `f` on the controller in slot `i` with its lock held; `None` for
@@ -144,23 +155,6 @@ fn dma_rmb() {
     }
 }
 
-fn dcache_civac(va: *mut u8, len: usize) {
-    let _ = (va, len);
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        if len == 0 {
-            return;
-        }
-        let mut addr = va as usize & !63;
-        let end = va as usize + len;
-        while addr < end {
-            core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
-            addr += 64;
-        }
-        core::arch::asm!("dsb sy", options(nostack));
-    }
-}
-
 fn doorbell_sq(bar: usize, qid: u16, dstrd: u32, tail: u16) {
     let off = 0x1000 + (2 * qid as u32) * (4 << dstrd);
     w32(bar, off, u32::from(tail));
@@ -193,6 +187,7 @@ unsafe fn write_sqe(sq: *mut u8, slot: u16, words: &[u32; 16]) {
 }
 
 fn poll_cq(
+    dma: i32,
     bar: usize,
     dstrd: u32,
     cq: *mut u8,
@@ -203,7 +198,7 @@ fn poll_cq(
 ) -> Result<u32, ()> {
     for _ in 0..50_000_000u32 {
         dma_rmb();
-        dcache_civac(cq, qd as usize * CQE_SIZE);
+        sync(dma, cq, qd as usize * CQE_SIZE, DMA_FROM_DEVICE);
         let off = *head as usize * CQE_SIZE;
         let dw3 = unsafe { core::ptr::read_volatile(cq.add(off + 12) as *const u32) };
         if ((dw3 >> 16) & 1) == u32::from(*phase) {
@@ -226,6 +221,7 @@ fn poll_cq(
 }
 
 fn submit(
+    dma: i32,
     bar: usize,
     dstrd: u32,
     sq: *mut u8,
@@ -241,11 +237,10 @@ fn submit(
     unsafe {
         write_sqe(sq, slot, words);
     }
-    dcache_civac(unsafe { sq.add(slot as usize * SQE_SIZE) }, SQE_SIZE);
-    dma_wmb();
+    sync(dma, unsafe { sq.add(slot as usize * SQE_SIZE) }, SQE_SIZE, DMA_TO_DEVICE);
     *sq_tail = (*sq_tail + 1) % qd;
     doorbell_sq(bar, qid, dstrd, *sq_tail);
-    poll_cq(bar, dstrd, cq, cq_head, cq_phase, qd, qid)
+    poll_cq(dma, bar, dstrd, cq, cq_head, cq_phase, qd, qid)
 }
 
 fn cid(c: &mut Ctrl) -> u16 {
@@ -260,6 +255,7 @@ fn cid(c: &mut Ctrl) -> u16 {
 fn admin(c: &mut Ctrl, mut words: [u32; 16]) -> Result<u32, ()> {
     words[0] |= u32::from(cid(c)) << 16;
     submit(
+        c.dma,
         c.bar,
         c.dstrd,
         c.admin_sq,
@@ -276,6 +272,7 @@ fn admin(c: &mut Ctrl, mut words: [u32; 16]) -> Result<u32, ()> {
 fn io(c: &mut Ctrl, mut words: [u32; 16]) -> Result<u32, ()> {
     words[0] |= u32::from(cid(c)) << 16;
     submit(
+        c.dma,
         c.bar,
         c.dstrd,
         c.io_sq,
@@ -295,7 +292,7 @@ fn disable(bar: usize) -> bool {
     wait_csts(bar, false)
 }
 
-fn setup(bar: usize) -> Option<Ctrl> {
+fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
     w32(bar, REG_INTMS, 0xFFFF_FFFF);
     if !disable(bar) {
         return None;
@@ -312,19 +309,19 @@ fn setup(bar: usize) -> Option<Ctrl> {
         return None;
     }
 
-    let (admin_sq_phys, admin_sq) = dma_page()?;
-    let (admin_cq_phys, admin_cq) = dma_page()?;
-    let (io_sq_phys, io_sq) = dma_page()?;
-    let (io_cq_phys, io_cq) = dma_page()?;
-    let (dma_phys, dma_va) = dma_page()?;
+    let (admin_sq_bus, admin_sq) = dma_page(dma)?;
+    let (admin_cq_bus, admin_cq) = dma_page(dma)?;
+    let (io_sq_bus, io_sq) = dma_page(dma)?;
+    let (io_cq_bus, io_cq) = dma_page(dma)?;
+    let (dma_bus, dma_va) = dma_page(dma)?;
 
     w32(
         bar,
         REG_AQA,
         u32::from(ADMIN_QD - 1) | (u32::from(ADMIN_QD - 1) << 16),
     );
-    w64(bar, REG_ASQ, admin_sq_phys);
-    w64(bar, REG_ACQ, admin_cq_phys);
+    w64(bar, REG_ASQ, admin_sq_bus);
+    w64(bar, REG_ACQ, admin_cq_bus);
 
     dma_wmb();
     w32(bar, REG_CC, CC_EN | CC_IOSQES | CC_IOCQES);
@@ -335,15 +332,16 @@ fn setup(bar: usize) -> Option<Ctrl> {
 
     let mut c = Ctrl {
         bar,
+        dma,
         dstrd,
         admin_sq,
         admin_cq,
         io_sq,
         io_cq,
-        io_sq_phys,
-        io_cq_phys,
+        io_sq_bus,
+        io_cq_bus,
         dma_va,
-        dma_phys,
+        dma_bus,
         admin_sq_tail: 0,
         admin_cq_head: 0,
         admin_cq_phase: 1,
@@ -358,12 +356,12 @@ fn setup(bar: usize) -> Option<Ctrl> {
 
     let mut id = [0u32; 16];
     id[0] = u32::from(OPC_IDENTIFY);
-    id[6] = c.dma_phys as u32;
-    id[7] = (c.dma_phys >> 32) as u32;
+    id[6] = c.dma_bus as u32;
+    id[7] = (c.dma_bus >> 32) as u32;
     id[10] = CNS_CTRL;
-    dcache_civac(c.dma_va, 4096);
+    sync(c.dma, c.dma_va, 4096, DMA_TO_DEVICE);
     admin(&mut c, id).ok()?;
-    dcache_civac(c.dma_va, 4096);
+    sync(c.dma, c.dma_va, 4096, DMA_FROM_DEVICE);
     // SAFETY: the DMA page holds the controller's identify data now.
     let ident = unsafe { core::slice::from_raw_parts(c.dma_va, 64) };
     c.serial.copy_from_slice(&ident[4..24]);
@@ -372,12 +370,12 @@ fn setup(bar: usize) -> Option<Ctrl> {
     let mut idn = [0u32; 16];
     idn[0] = u32::from(OPC_IDENTIFY);
     idn[1] = 1;
-    idn[6] = c.dma_phys as u32;
-    idn[7] = (c.dma_phys >> 32) as u32;
+    idn[6] = c.dma_bus as u32;
+    idn[7] = (c.dma_bus >> 32) as u32;
     idn[10] = CNS_NS;
-    dcache_civac(c.dma_va, 4096);
+    sync(c.dma, c.dma_va, 4096, DMA_TO_DEVICE);
     admin(&mut c, idn).ok()?;
-    dcache_civac(c.dma_va, 4096);
+    sync(c.dma, c.dma_va, 4096, DMA_FROM_DEVICE);
     let nsze = unsafe { core::ptr::read_unaligned(c.dma_va as *const u64) };
     if nsze == 0 {
         return None;
@@ -394,16 +392,16 @@ fn setup(bar: usize) -> Option<Ctrl> {
 
     let mut ccq = [0u32; 16];
     ccq[0] = u32::from(OPC_CREATE_CQ);
-    ccq[6] = c.io_cq_phys as u32;
-    ccq[7] = (c.io_cq_phys >> 32) as u32;
+    ccq[6] = c.io_cq_bus as u32;
+    ccq[7] = (c.io_cq_bus >> 32) as u32;
     ccq[10] = 1 | (u32::from(IO_QD - 1) << 16);
     ccq[11] = 1;
     admin(&mut c, ccq).ok()?;
 
     let mut csq = [0u32; 16];
     csq[0] = u32::from(OPC_CREATE_SQ);
-    csq[6] = c.io_sq_phys as u32;
-    csq[7] = (c.io_sq_phys >> 32) as u32;
+    csq[6] = c.io_sq_bus as u32;
+    csq[7] = (c.io_sq_bus >> 32) as u32;
     csq[10] = 1 | (u32::from(IO_QD - 1) << 16);
     csq[11] = 1 | (1 << 16);
     admin(&mut c, csq).ok()?;
@@ -420,11 +418,11 @@ fn known(bar_va: usize) -> bool {
 
 /// Bring up the controller at `bar_va` into a free slot; its index, or
 /// `None` when it is already attached, fails to come up or the table is full.
-fn attach(bar_va: usize) -> Option<usize> {
-    if known(bar_va) {
+fn attach(bar_va: usize, dma: i32) -> Option<usize> {
+    if known(bar_va) || dma < 0 {
         return None;
     }
-    let c = setup(bar_va)?;
+    let c = setup(bar_va, dma)?;
     let (slot, mut free) = CTRLS.iter().enumerate().find_map(|(i, s)| {
         let s = s.lock();
         s.is_none().then_some((i, s))
@@ -448,7 +446,7 @@ fn probe(api: &KernelApi) -> usize {
         if api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size) != 0 {
             continue;
         }
-        let Some(n) = attach(va) else {
+        let Some(n) = attach(va, api.dma_attach(&DmaDevice::pci(bus, slot, func))) else {
             continue;
         };
         let mut info = DiskInfo::new();
@@ -476,19 +474,19 @@ fn xfer(c: &mut Ctrl, lba: u64, buf: &mut [u8], is_write: bool) -> Result<(), ()
             core::ptr::copy_nonoverlapping(buf.as_ptr(), c.dma_va, n);
         }
     }
-    dcache_civac(c.dma_va, n);
+    sync(c.dma, c.dma_va, n, DMA_TO_DEVICE);
     let opc = if is_write { OPC_IO_WRITE } else { OPC_IO_READ };
     let mut cmd = [0u32; 16];
     cmd[0] = u32::from(opc);
     cmd[1] = 1;
-    cmd[6] = c.dma_phys as u32;
-    cmd[7] = (c.dma_phys >> 32) as u32;
+    cmd[6] = c.dma_bus as u32;
+    cmd[7] = (c.dma_bus >> 32) as u32;
     cmd[10] = lba as u32;
     cmd[11] = (lba >> 32) as u32;
     cmd[12] = (n / SECTOR - 1) as u32; // 0-based block count
     io(c, cmd)?;
     if !is_write {
-        dcache_civac(c.dma_va, n);
+        sync(c.dma, c.dma_va, n, DMA_FROM_DEVICE);
         unsafe {
             core::ptr::copy_nonoverlapping(c.dma_va, buf.as_mut_ptr(), n);
         }

@@ -116,14 +116,13 @@ fn apply(p: &crate::platform::Platform) -> Result<(), &'static str> {
     if let Some(rtc) = p.rtc {
         clock::set_rtc_base(map(rtc.value.base, 0x1000, "platform: cannot map the RTC")?);
     }
-    // A board without a generic (ECAM) host bridge has no PCI here: a
-    // Raspberry Pi 4's is the BCM2711's own controller.
+    // A board without a PCIe host bridge the kernel drives has no PCI.
     if let Some(host) = p.pci.map(|c| c.value) {
-        let (mmio, mmio_size) = p
+        let mmio = p
             .pci_windows
             .and_then(|w| w.value.mmio32)
             .ok_or("platform: PCIe host bridge has no 32-bit MMIO range")?;
-        pci::set_host(host.ecam, host.ecam_size, host.bus_end, mmio, mmio_size);
+        pci::set_host(host, mmio);
     }
     Ok(())
 }

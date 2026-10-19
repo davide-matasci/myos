@@ -10,13 +10,12 @@ them, disabled decoy nodes, `stdout-path` through an alias), but no QEMU
 model runs the Pi's firmware, so no CI boot covers it. The Pi 5 is
 not supported yet.
 
-What works: the four cores, the GIC-400, the generic timer, the serial
-console, the HDMI framebuffer the firmware sets up (`docs/fb.md`), and
-everything that runs from the initramfs. What does not (yet): USB (the
-Pi 4's VL805 xHCI sits behind Broadcom's own PCIe host bridge, which is
-not ECAM), so no keyboard and no USB disks once booted; the SD card;
-Ethernet (GENET); Wi-Fi; the RTC (the Pi has none). The shell is on the
-serial console.
+What should work: the four cores, the GIC-400, the generic timer, the
+serial console, the HDMI framebuffer the firmware sets up (`docs/fb.md`),
+everything that runs from the initramfs, and USB (`docs/usb.md`): a
+keyboard on the HDMI console, a mouse, memory sticks, hubs, through the
+VL805 xHCI controller behind the BCM2711's PCIe bridge. What does not
+(yet): the SD card; Ethernet (GENET); Wi-Fi; the RTC (the Pi has none).
 
 ## Building the image
 
@@ -64,3 +63,25 @@ Pi's peripherals are at bus address `0x7e00_0000`, CPU address
 (`kernel/src/arch/aarch64/paging.rs`), so the Pi's devices near 4 GiB
 do not collide with user space. A board without a PCIe host bridge the
 kernel can drive boots without PCI.
+
+## PCIe and USB
+
+The BCM2711's PCIe bridge (`brcm,bcm2711-pcie`) is not ECAM: its
+registers show the root port's configuration space at offset 0, and one
+other function's at a time through a window at 0x8000, chosen by writing
+`bus << 20 | slot << 15 | func << 12` at 0x9000
+(`kernel/src/arch/aarch64/pci.rs`; the register layout as FreeBSD's
+`bcm2838_pci.c` documents it). The kernel uses the bridge as the UEFI
+firmware left it, which brought it up for its own USB boot: the link
+trained (bits 4 and 5 of the state register at 0x4068), the windows set,
+the root port's bus numbers assigned, and the VL805's firmware loaded.
+It scans the buses the root port's subordinate number covers, slot 0
+only on buses 0 and 1 (addressing another slot on bus 0 hangs the
+memory controller). The 32-bit window is at CPU `0x6_0000_0000`, bus
+`0xc0000000`: BARs hold bus addresses, mapped at their CPU address.
+
+The VL805 reaches the low 3 GiB (the bridge's `dma-ranges`), and its DMA
+does not see the CPU's caches: the xHCI driver's DMA memory comes from
+there, whatever the firmware's "Limit RAM to 3 GB" setting, and it
+cleans and invalidates the caches around each hand-over (`dma_sync`,
+`docs/pci-acpi-smp.md` "DMA").

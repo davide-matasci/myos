@@ -84,8 +84,9 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | the one `/chosen` `stdout-path` names (through `/aliases`), else the first `arm,pl011`, else the first `ns16550a` / `ns16550` / `snps,dw-apb-uart` / `brcm,bcm2835-aux-uart` (the Pi's mini UART); + `interrupts` |
 | RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: no RTC, no wall clock) |
 | Timers | GTDT: EL1 physical and virtual timer INTIDs | `/cpus` `timebase-frequency` (riscv64 `time` CSR rate) |
-| PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg`, `bus-range` |
-| PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64), `interrupt-map` / `interrupt-map-mask` |
+| PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg` (the ECAM window), `bus-range`; `brcm,bcm2711-pcie` (aarch64, the Raspberry Pi 4's): `reg` (its registers, below) |
+| PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64; CPU and bus address, which may differ), `interrupt-map` / `interrupt-map-mask` |
+| DMA (`kernel/src/dma.rs`, below) | — (devices coherent, all of memory) | the host bridge's `dma-ranges`, a node's buses' `dma-ranges`; `dma-coherent` / `dma-noncoherent` on the node or a bus above |
 | virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
 | PSCI (aarch64 power-off and reset, `docs/power.md`) | FADT arm boot flags: PSCI compliant, HVC or SMC | `arm,psci-1.0` / `arm,psci-0.2` / `arm,psci`: `method` |
 
@@ -94,8 +95,7 @@ distributor and the CPU interface; v3: the distributor and the
 redistributor region, below), a PL011 or a 16550 (with its register stride
 and access width: the tree's `reg-shift` / `reg-io-width`, the SPCR's
 access size), and a PCIe host bridge, when it has one, with a 32-bit MMIO
-window (one the kernel cannot drive, like the Pi 4's `brcm,bcm2711-pcie`,
-leaves the board without PCI); riscv64 a PLIC, a
+window (one the kernel cannot drive leaves the board without PCI); riscv64 a PLIC, a
 16550, the timebase and a host bridge with a 64-bit window; x86_64
 takes the MCFG's ECAM window for PCI configuration space when the
 description has one (QEMU `q35`, every PCIe PC; `arch/x86/pci.rs` maps a
@@ -123,7 +123,14 @@ rtc pl031 0x9010000 (dt)
 timer irq 30 27 (acpi)
 pci ecam 0x3f000000 0x1000000 bus 0-15 (acpi)
 pci mmio32 0x10000000 0x2eff0000 (dt)
+dma mmio 0xa003e00 coherent
+dma pci 00:02.0 coherent
 ```
+
+A window whose CPU and bus addresses differ says both (`pci mmio32
+0x600000000 0x40000000 bus 0xc0000000`, a Raspberry Pi 4's), and so does a
+device whose DMA reaches part of memory only (`dma pci 01:00.0 0x0
+0xc0000000 noncoherent`, its USB controller: the low 3 GiB, not coherent).
 
 The kernel command line (`cmdline:` in `limine.conf`) forces one source
 when a board's firmware gets the other wrong: `platform=acpi` ignores the
@@ -170,6 +177,44 @@ The NIC's `ctl` says `irq on` when that works; on `irq off` (a poll-mode
 device) `netd` keeps its 2–10 ms timed polling. Reads of `/dev/netN/data`
 stay non-blocking.
 
+## DMA
+
+A driver attaches each device it drives (`KernelApi::dma_attach`, a PCI
+function or a memory-mapped device by its registers' physical address,
+ABI 47) and gets a handle; `dma_alloc` gives that device zeroed,
+contiguous pages it reaches and the address it uses for them, and
+`dma_sync` hands memory over to it (`DMA_TO_DEVICE`: before it reads what
+the CPU wrote, and before it writes, so that no dirty line is evicted over
+its data later) and back (`DMA_FROM_DEVICE`: before the CPU reads what it
+wrote). `kernel/src/dma.rs` keeps what it knows of each device:
+
+- **What it reaches**: windows of CPU addresses `[cpu, cpu + size)`,
+  each addressed from `bus` up, from the device tree's `dma-ranges` (a
+  PCI function's from its host bridge's, then the buses' above; a
+  memory-mapped device's from its buses'), one per entry; a device no
+  `dma-ranges` limit reaches all of memory one-to-one. A Raspberry Pi 4's
+  PCIe reaches the low 3 GiB at bus address 0. The pages come from the
+  first window that has them (`mm::alloc_contiguous_pages` takes the
+  range; the bump cursor only moves up, so a device that reaches low
+  memory alone gets it while the cursor is there, at boot).
+- **Whether it sees the caches**: on aarch64 a device not known to be
+  coherent is taken for not, as every aarch64 driver did before: one the
+  tree does not mark `dma-coherent` (QEMU `virt` marks its devices, the
+  Pi 4's PCIe is not marked), and one no tree describes (an ACPI-only
+  board); `dma_sync` cleans (`dc cvac`) or cleans and invalidates
+  (`dc civac`) the lines then, and `dma_alloc` writes the zeros back.
+  riscv64 (no cache maintenance in riscv64imac) and x86_64 are coherent.
+  Either way `dma_sync` is a barrier.
+- `dma=noncoherent` on the kernel command line takes every device on
+  aarch64 for non-coherent: the maintenance runs on QEMU (which does not
+  model the caches, so it shows the paths work, not that they are
+  needed).
+
+`/proc/platform` has a `dma` line per device attached. The virtio modules'
+library (`modules/virtio`) cannot tell `virtio_drivers` calls apart by
+device: its pages are the last-attached device's, and a module's devices
+are taken to share their DMA (QEMU's, coherent).
+
 ## Userspace PCI drivers (`/dev/pci`)
 
 `modules/pcidev` hands a PCI function to a driver that is a program (the
@@ -189,11 +234,11 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 
 | File | What |
 |------|------|
-| `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`) and the DMA buffers (`dmaN PHYS PAGES`); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
+| `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
 | `config` | the 256 bytes of configuration space, read and written at any offset |
 | `barN` | a memory BAR, for `mmap(MAP_SHARED)`: uncached (x86 PCD\|PWT, aarch64 Device-nGnRE; riscv64 from the platform's attributes for the address), the module's `mmap` hook saying so (`MYOS_MMAP_UNCACHED`, ABI 46), and it stays so through `mprotect` |
 | `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq`, once the driver quietened its device |
-| `dmaN` | the buffer, for `mmap(MAP_SHARED)` (ordinary memory: the PCI devices of the three arches here are cache-coherent) |
+| `dmaN` | the buffer, for `mmap(MAP_SHARED)` (ordinary memory: a device whose DMA is not coherent, or a board whose PCI window moves BAR addresses, is not for `/dev/pci` yet, issue #513) |
 
 Closing `ctl` (the driver's exit too) turns bus mastering and memory
 decoding off, so the device stops reaching memory and raising messages,

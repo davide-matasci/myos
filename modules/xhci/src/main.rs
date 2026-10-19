@@ -403,7 +403,7 @@ fn probe(api: &KernelApi) -> usize {
         if CONTROLLERS.iter().filter_map(sync::Once::get).any(|c| c.mmio() == va) {
             continue;
         }
-        match hc::init(va, index as u8) {
+        match hc::init(va, index as u8, api.dma_attach(&myos_abi::DmaDevice::pci(bus, slot, func))) {
             Ok(c) => {
                 // In the table before the interrupt is on: the controller
                 // raises one as soon as it runs (the ports with devices),

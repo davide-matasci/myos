@@ -40,7 +40,9 @@ static API: KernelApi = KernelApi {
     pci_enable: api_pci_enable,
     pci_find: api_pci_find,
     pci_bar_map: api_pci_bar_map,
+    dma_attach: api_dma_attach,
     dma_alloc: api_dma_alloc,
+    dma_sync: api_dma_sync,
     dev_register: api_dev_register,
     copy_to_user: api_copy_to_user,
     proc_register: api_proc_register,
@@ -565,19 +567,30 @@ unsafe extern "C" fn api_pci_bar_map(
     }
 }
 
-unsafe extern "C" fn api_dma_alloc(n_pages: usize, phys: *mut u64) -> *mut u8 {
-    if phys.is_null() {
+unsafe extern "C" fn api_dma_attach(dev: *const myos_abi::DmaDevice) -> i32 {
+    if dev.is_null() {
+        return -1;
+    }
+    crate::dma::attach(unsafe { *dev })
+}
+
+unsafe extern "C" fn api_dma_alloc(dma: i32, n_pages: usize, bus: *mut u64) -> *mut u8 {
+    if bus.is_null() {
         return core::ptr::null_mut();
     }
-    match crate::mm::alloc_contiguous_pages(n_pages) {
-        Some((p, va)) => {
+    match crate::dma::alloc(dma, n_pages) {
+        Some((addr, va)) => {
             unsafe {
-                *phys = p;
+                *bus = addr;
             }
             va
         }
         None => core::ptr::null_mut(),
     }
+}
+
+unsafe extern "C" fn api_dma_sync(dma: i32, va: *const u8, len: usize, dir: u32) {
+    crate::dma::sync(dma, va, len, dir);
 }
 
 unsafe extern "C" fn api_dev_register(

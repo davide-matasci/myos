@@ -9,6 +9,7 @@ mod acpi;
 mod arch;
 mod blk;
 mod console;
+mod dma;
 // Its accessors are used by the aarch64 / riscv64 arch code only.
 #[allow(dead_code)]
 mod dt;

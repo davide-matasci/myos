@@ -8,22 +8,25 @@
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use super::paging;
+use crate::platform::{PciHost, PciWindow};
 
 static ECAM_BASE: AtomicUsize = AtomicUsize::new(0);
 static BUS_END: AtomicU8 = AtomicU8::new(0);
-static MMIO_BASE: AtomicU64 = AtomicU64::new(0);
+static MMIO_CPU: AtomicU64 = AtomicU64::new(0);
+static MMIO_PCI: AtomicU64 = AtomicU64::new(0);
 static MMIO_SIZE: AtomicU64 = AtomicU64::new(0);
 
 /// The PCIe host bridge from the device tree: ECAM window (mapped here),
 /// last bus, and the MMIO window BARs are assigned from.
-pub fn set_host(ecam_phys: u64, ecam_size: u64, bus_end: u8, mmio_base: u64, mmio_size: u64) {
-    let va = map_mmio(ecam_phys, ecam_size.max(1)).unwrap_or(ecam_phys as usize);
+pub fn set_host(host: PciHost, mmio: PciWindow) {
+    let va = map_mmio(host.base, host.size.max(1)).unwrap_or(host.base as usize);
     ECAM_BASE.store(va, Ordering::SeqCst);
     // One bus takes 1 MiB of ECAM: never read past the window.
-    let by_size = (ecam_size >> 20).saturating_sub(1).min(255) as u8;
-    BUS_END.store(bus_end.min(by_size), Ordering::SeqCst);
-    MMIO_BASE.store(mmio_base, Ordering::SeqCst);
-    MMIO_SIZE.store(mmio_size, Ordering::SeqCst);
+    let by_size = (host.size >> 20).saturating_sub(1).min(255) as u8;
+    BUS_END.store(host.bus_end.min(by_size), Ordering::SeqCst);
+    MMIO_CPU.store(mmio.cpu, Ordering::SeqCst);
+    MMIO_PCI.store(mmio.pci, Ordering::SeqCst);
+    MMIO_SIZE.store(mmio.size, Ordering::SeqCst);
 }
 
 /// Last bus the ECAM window covers.
@@ -31,9 +34,17 @@ pub fn max_bus() -> u8 {
     BUS_END.load(Ordering::Relaxed)
 }
 
-/// Where BARs are assigned (the 64-bit MMIO window).
+/// Where BARs are assigned (the 64-bit MMIO window), as a bus address.
 pub fn mmio_assign() -> u64 {
-    MMIO_BASE.load(Ordering::Relaxed)
+    MMIO_PCI.load(Ordering::Relaxed)
+}
+
+/// The CPU address of bus address `addr` (a BAR's): moved by the MMIO
+/// window it is in, one-to-one outside it.
+pub fn bus_to_cpu(addr: u64) -> u64 {
+    let (cpu, pci, size) =
+        (MMIO_CPU.load(Ordering::Relaxed), MMIO_PCI.load(Ordering::Relaxed), MMIO_SIZE.load(Ordering::Relaxed));
+    if addr >= pci && addr - pci < size { addr - pci + cpu } else { addr }
 }
 
 fn ecam(bus: u8, slot: u8, func: u8, offset: u8) -> usize {

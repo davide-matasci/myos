@@ -83,22 +83,28 @@ pub struct Rtc {
     pub base: u64,
 }
 
-/// The PCIe host bridge's configuration space.
+/// The PCIe host bridge's configuration space: its ECAM window, or the
+/// registers of a bridge that shows one function's at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PciHost {
-    pub ecam: u64,
-    pub ecam_size: u64,
+    pub kind: PciHostKind,
+    pub base: u64,
+    pub size: u64,
     pub bus_start: u8,
     pub bus_end: u8,
 }
 
-/// Where the host bridge maps BARs: the 32-bit and the 64-bit MMIO window
-/// (`base, size`), from the tree's `ranges`; ACPI keeps them in AML.
+pub use crate::dt::PciHostKind;
+
+/// Where the host bridge maps BARs: the 32-bit and the 64-bit MMIO window,
+/// from the tree's `ranges`; ACPI keeps them in AML.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PciWindows {
-    pub mmio32: Option<(u64, u64)>,
-    pub mmio64: Option<(u64, u64)>,
+    pub mmio32: Option<PciWindow>,
+    pub mmio64: Option<PciWindow>,
 }
+
+pub use crate::dt::PciWindow;
 
 /// aarch64: how the PSCI firmware is called.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -264,8 +270,9 @@ fn fill_acpi(p: &mut Platform) {
     }
     if let Some(m) = acpi::mcfg() {
         let host = PciHost {
-            ecam: m.base,
-            ecam_size: (u64::from(m.bus_end) - u64::from(m.bus_start) + 1) << 20,
+            kind: PciHostKind::Ecam,
+            base: m.base,
+            size: (u64::from(m.bus_end) - u64::from(m.bus_start) + 1) << 20,
             bus_start: m.bus_start,
             bus_end: m.bus_end,
         };
@@ -424,17 +431,24 @@ pub fn text() -> alloc::vec::Vec<u8> {
     }
     if let Some(c) = p.pci {
         let h = c.value;
+        let kind = match h.kind {
+            PciHostKind::Ecam => "ecam",
+            PciHostKind::Bcm2711 => "bcm2711",
+        };
         s += &format!(
-            "pci ecam 0x{:x} 0x{:x} bus {}-{} {}\n",
-            h.ecam, h.ecam_size, h.bus_start, h.bus_end, tag(c.from, DIFFERS_PCI)
+            "pci {kind} 0x{:x} 0x{:x} bus {}-{} {}\n",
+            h.base, h.size, h.bus_start, h.bus_end, tag(c.from, DIFFERS_PCI)
         );
     }
     if let Some(c) = p.pci_windows {
-        if let Some((base, size)) = c.value.mmio32 {
-            s += &format!("pci mmio32 0x{base:x} 0x{size:x} ({})\n", c.from.name());
-        }
-        if let Some((base, size)) = c.value.mmio64 {
-            s += &format!("pci mmio64 0x{base:x} 0x{size:x} ({})\n", c.from.name());
+        for (name, w) in [("mmio32", c.value.mmio32), ("mmio64", c.value.mmio64)] {
+            if let Some(w) = w {
+                s += &format!("pci {name} 0x{:x} 0x{:x}", w.cpu, w.size);
+                if w.pci != w.cpu {
+                    s += &format!(" bus 0x{:x}", w.pci);
+                }
+                s += &format!(" ({})\n", c.from.name());
+            }
         }
     }
     if let Some(c) = p.psci {
@@ -444,6 +458,7 @@ pub fn text() -> alloc::vec::Vec<u8> {
         };
         s += &format!("psci {conduit} ({})\n", c.from.name());
     }
+    s += &crate::dma::text();
     s.into_bytes()
 }
 

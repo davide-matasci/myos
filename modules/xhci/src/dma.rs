@@ -1,57 +1,63 @@
 //! DMA pages: from the kernel (`dma_alloc`, never returned) through a pool
-//! this module recycles, since devices come and go. The cache maintenance
-//! the arches without coherent DMA need (aarch64), as the NVMe module does it.
+//! this module recycles, since devices come and go; each controller's own
+//! (its DMA handle, `dma_attach`: what it reaches, whether it sees the
+//! caches). [`clean`] and [`invalidate`] keep a controller without coherent
+//! DMA and the caches in step (`dma_sync`).
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
-use myos_abi::Lock;
+use myos_abi::{DMA_FROM_DEVICE, DMA_TO_DEVICE, Lock};
 
 use crate::api;
 
 const POOL: usize = 128;
 
-/// The pages given back, `(phys, va)`, the last freed first.
+/// The pages given back, `(dma handle, bus address, va)`, the last freed
+/// first.
 struct Pool {
-    free: [(u64, usize); POOL],
+    free: [(i32, u64, usize); POOL],
     n: usize,
 }
 
-static FREE: Lock<Pool> = Lock::new(Pool { free: [(0, 0); POOL], n: 0 });
+static FREE: Lock<Pool> = Lock::new(Pool { free: [(-1, 0, 0); POOL], n: 0 });
 
-/// One zeroed page: `(phys, va)`.
-pub fn page() -> Option<(u64, *mut u8)> {
+/// One zeroed page of controller `dma`: `(bus address, va)`.
+pub fn page(dma: i32) -> Option<(u64, *mut u8)> {
     let recycled = {
         let mut pool = FREE.lock();
-        if pool.n > 0 {
-            pool.n -= 1;
-            Some(pool.free[pool.n])
-        } else {
-            None
-        }
+        let n = pool.n;
+        let hit = pool.free[..n].iter().rposition(|&(d, _, _)| d == dma);
+        hit.map(|i| {
+            let page = pool.free[i];
+            pool.free[i] = pool.free[n - 1];
+            pool.n = n - 1;
+            page
+        })
     };
-    if let Some((phys, va)) = recycled {
+    if let Some((_, bus, va)) = recycled {
         let va = va as *mut u8;
         unsafe {
             core::ptr::write_bytes(va, 0, 4096);
         }
-        return Some((phys, va));
+        clean(dma, va, 4096);
+        return Some((bus, va));
     }
-    pages(1)
+    pages(dma, 1)
 }
 
-/// `n` contiguous pages from the kernel.
-pub fn pages(n: usize) -> Option<(u64, *mut u8)> {
-    let mut phys = 0u64;
-    let va = api().dma_alloc(n, &mut phys);
-    if va.is_null() { None } else { Some((phys, va)) }
+/// `n` contiguous zeroed pages of controller `dma` from the kernel.
+pub fn pages(dma: i32, n: usize) -> Option<(u64, *mut u8)> {
+    let mut bus = 0u64;
+    let va = api().dma_alloc(dma, n, &mut bus);
+    if va.is_null() { None } else { Some((bus, va)) }
 }
 
 /// A page back to the pool (dropped when the pool is full).
-pub fn free(phys: u64, va: *mut u8) {
+pub fn free(dma: i32, bus: u64, va: *mut u8) {
     let mut pool = FREE.lock();
     if pool.n < POOL {
         let n = pool.n;
-        pool.free[n] = (phys, va as usize);
+        pool.free[n] = (dma, bus, va as usize);
         pool.n = n + 1;
     }
 }
@@ -69,28 +75,15 @@ pub fn wmb() {
     }
 }
 
-/// Make `len` bytes at `va` visible to the device (clean the data cache).
-pub fn clean(va: *mut u8, len: usize) {
-    let _ = (va, len);
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        if len == 0 {
-            return;
-        }
-        let mut addr = va as usize & !63;
-        let end = va as usize + len;
-        while addr < end {
-            core::arch::asm!("dc civac, {x}", x = in(reg) addr, options(nostack));
-            addr += 64;
-        }
-        core::arch::asm!("dsb sy", options(nostack));
-    }
-    wmb();
+/// Hand `len` bytes at `va` over to controller `dma`: what the CPU wrote
+/// reaches it, and nothing cached is written over what it is to write.
+pub fn clean(dma: i32, va: *mut u8, len: usize) {
+    api().dma_sync(dma, va, len, DMA_TO_DEVICE);
 }
 
-/// Read what the device wrote at `va` (invalidate the data cache).
-pub fn invalidate(va: *mut u8, len: usize) {
-    clean(va, len);
+/// Read what controller `dma` wrote at `va`.
+pub fn invalidate(dma: i32, va: *mut u8, len: usize) {
+    api().dma_sync(dma, va, len, DMA_FROM_DEVICE);
     compiler_fence(Ordering::SeqCst);
 }
 
