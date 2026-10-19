@@ -1,15 +1,18 @@
 //! The AX201's radio (Intel Wi-Fi 6, 8086:06f0, issue #495): the `iwx`
 //! crate's driver over `/dev/pci`, its firmware from `wifi-firmware`. The
-//! firmware scans by itself (Radio::scan); sending frames, and so joining
-//! a network, is not there yet (issue #495).
+//! firmware scans by itself (Radio::scan) and keeps the network joined
+//! (Radio::joining, associated, left); the daemon's frames go out as they
+//! are, encrypted by the daemon on a WPA2 network.
 
 use alloc::vec::Vec;
 
-use iwx::dev::{Dev, Error, Info};
+use iwx::dev::{Dev, Error, Info, Peer};
 use iwx::fw::Firmware;
-use iwx::msg;
+use iwx::msg::{self, Channel};
+use iwx::sta::{self, Beacon};
 use myos_user::{close, open_flags, read, O_RDONLY};
 
+use crate::frame::Bss;
 use crate::pci::{self, Pci};
 use crate::radio::{Heard, Radio, Rx};
 
@@ -27,6 +30,11 @@ pub struct Ax201 {
     fw: Firmware<'static>,
     info: Info,
     irq: usize,
+    /// The last beacon timing heard from each access point: the firmware
+    /// needs it of the one joined.
+    beacons: Vec<([u8; 6], Beacon)>,
+    /// The network being joined, or joined.
+    peer: Option<Peer>,
 }
 
 /// Why the radio did not come up, for the daemon to say.
@@ -51,7 +59,19 @@ impl Ax201 {
         let mut dev = Dev::new(pci, msix).map_err(Failed::Driver)?;
         dev.load(&fw).map_err(Failed::Driver)?;
         let info = dev.init(&fw).map_err(Failed::Driver)?;
-        Ok(Ax201 { dev, fw, info, irq })
+        Ok(Ax201 { dev, fw, info, irq, beacons: Vec::new(), peer: None })
+    }
+
+    /// Frame `m` heard: kept as its access point's latest beacon when it
+    /// is one.
+    fn heard(&mut self, m: &msg::Mpdu) {
+        let Some((bssid, b)) = sta::beacon(&m.frame, m.gp2) else {
+            return;
+        };
+        match self.beacons.iter_mut().find(|(a, _)| *a == bssid) {
+            Some(e) => e.1 = b,
+            None => self.beacons.push((bssid, b)),
+        }
     }
 }
 
@@ -84,21 +104,26 @@ impl Radio for Ax201 {
         self.info.mac
     }
 
-    /// The firmware tunes itself (for its scans so far).
+    /// The firmware tunes itself: to scan, and to the network joined.
     fn set_channel(&mut self, _channel: u8) {}
 
-    fn send(&mut self, _frame: &[u8]) -> bool {
-        false
+    /// On the network being joined only: the firmware sends nothing else.
+    fn send(&mut self, frame: &[u8]) -> bool {
+        let Some(p) = self.peer else {
+            return false;
+        };
+        self.dev.send(frame, p.channel.ghz5).is_ok()
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Option<Rx> {
-        while let Ok(Some(n)) = self.dev.next(0) {
+        while let Some(n) = self.dev.poll() {
             if n.code != msg::REPLY_RX_MPDU {
                 continue;
             }
             let Some(m) = msg::mpdu(&n.data) else {
                 continue;
             };
+            self.heard(&m);
             let len = m.frame.len().min(buf.len());
             buf[..len].copy_from_slice(&m.frame[..len]);
             return Some(Rx { len, channel: m.channel, rssi: m.dbm.clamp(-128, 0) as i8 });
@@ -110,15 +135,57 @@ impl Radio for Ax201 {
         self.irq
     }
 
-    fn joins(&self) -> bool {
-        false
+    fn pending(&self) -> bool {
+        self.dev.pending()
+    }
+
+    /// The firmware set up for `bss` (its channel as the regulatory
+    /// domain has it, its beacon timing from the scan) and kept on its
+    /// channel while the daemon authenticates and associates.
+    fn joining(&mut self, bss: &Bss) -> bool {
+        self.left();
+        let channel = self.info.channels.iter().copied().find(|c| c.number == bss.channel).unwrap_or(Channel {
+            number: bss.channel,
+            ghz5: bss.channel > 14,
+            passive: false,
+        });
+        let beacon = self.beacons.iter().find(|(a, _)| *a == bss.bssid).map_or(
+            Beacon { tsf: 0, gp2: 0, interval: 100, dtim_period: 0, dtim_count: 0, rates: 0 },
+            |e| e.1,
+        );
+        let peer = Peer { bssid: bss.bssid, channel, beacon };
+        if self.dev.join(&self.info, &peer).is_err() {
+            return false;
+        }
+        self.peer = Some(peer);
+        true
+    }
+
+    fn associated(&mut self, aid: u16) -> bool {
+        let Some(mut p) = self.peer else {
+            return false;
+        };
+        // The latest beacon, for the DTIM timing.
+        if let Some(e) = self.beacons.iter().find(|(a, _)| *a == p.bssid) {
+            p.beacon = e.1;
+        }
+        self.dev.associated(&self.info, &p, aid).is_ok()
+    }
+
+    /// What was sent goes first (the deauthentication), then the firmware
+    /// lets the network go.
+    fn left(&mut self) {
+        if let Some(p) = self.peer.take() {
+            self.dev.drain(200_000);
+            self.dev.leave(&self.info, &p);
+        }
     }
 
     /// The firmware's passive scan of every channel the regulatory domain
     /// allows: the frames heard until it says it is done.
     fn scan(&mut self) -> Option<Vec<Heard>> {
         // What came since the last scan is stale.
-        while let Ok(Some(_)) = self.dev.next(0) {}
+        while self.dev.poll().is_some() {}
         if self.dev.scan(&self.fw, &self.info).is_err() {
             return Some(Vec::new());
         }
@@ -132,6 +199,7 @@ impl Radio for Ax201 {
             match n.code {
                 msg::REPLY_RX_MPDU => {
                     if let Some(m) = msg::mpdu(&n.data) {
+                        self.heard(&m);
                         heard.push(Heard { frame: m.frame, channel: m.channel, rssi: m.dbm.clamp(-128, 0) as i8 });
                     }
                 }

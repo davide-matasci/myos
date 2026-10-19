@@ -88,6 +88,8 @@ Files in this repository that carry notices from upstream (kept as required):
 | zlib (linked into `get-alpine`) | see above | zlib | the `ports/zlib` build |
 | LLVM compiler-rt builtins (soft-float helpers, riscv64 / `libtf.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `ports/curl/build-softfloat-riscv64.sh` (linked into curl and, on riscv64, every port built with `myos_write_cross_cc`: the X packages) and `linux-compat/build.sh` |
 | EDK2 / OVMF firmware (used on the host only to boot QEMU) | via `ovmf-prebuilt` 0.2.9 (MIT OR Apache-2.0) | BSD-2-Clause-Patent | not part of any image |
+| U-Boot (`cargo run -- rpi3`: the Raspberry Pi 3's boot loader, `boot/rpi3`) | `UBOOT_VERSION` in `boot/rpi3/versions.env` | **GPL-2.0-or-later** (`licenses/GPL-2.0.txt`) | built on the host from the pinned release tarball into `target/rpi3`, used unmodified; not part of any image |
+| The Raspberry Pi 3's device tree (`bcm2710-rpi-3-b.dtb`, from the Raspberry Pi firmware) | `FIRMWARE_TAG` in `boot/rpi3/versions.env` | **GPL-2.0** (the Raspberry Pi Linux kernel's device tree sources) | downloaded on the host by `boot/rpi3/build.sh`, SHA-256 pinned; not part of any image |
 | Alpine Linux packages | n/a | per package | downloaded **at run time** by `get-alpine` on the user's machine; nothing from Alpine is in the image |
 | Intel Wi-Fi firmware (`iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX201's) | linux-firmware `a2dcb924` | Intel's redistributable licence (`LICENCE.iwlwifi_firmware` in linux-firmware: binary only, unmodified, no reverse engineering) | downloaded **at run time** by `wifi-firmware fetch` on the user's machine, SHA-256 pinned; not in the image |
 

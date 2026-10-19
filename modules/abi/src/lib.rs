@@ -73,9 +73,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// [`KernelApi::dma_alloc`] gives memory the device reaches and the address
 /// it uses for it, [`KernelApi::dma_sync`] keeps a device without coherent
 /// DMA and the caches in step.
-/// 48: the IOMMU confines a function a program drives
+/// 48: a process may ask for a signal when its parent ends
+/// ([`KernelApi::task_set_pdeath_signal`], `task_pdeath_signal`).
+/// 49: the IOMMU confines a function a program drives
 /// ([`KernelApi::iommu_attach`], `iommu_map`, `iommu_detach`).
-pub const ABI_VERSION: u32 = 48;
+pub const ABI_VERSION: u32 = 49;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -818,6 +820,11 @@ pub struct KernelApi {
     pub task_is_live_user: unsafe extern "C" fn(id: usize) -> i32,
     /// The current process is chrooted.
     pub task_has_root: unsafe extern "C" fn() -> i32,
+    /// The signal (native number; 0: none) the current process gets when
+    /// its parent ends, and setting it (Linux's `PR_SET_PDEATHSIG`): kept
+    /// across exec, not inherited by a forked child.
+    pub task_pdeath_signal: unsafe extern "C" fn() -> u32,
+    pub task_set_pdeath_signal: unsafe extern "C" fn(sig: u32),
     /// Resolve `path` for the current task (`MYOS_PATH_*`) into `out`: the
     /// length, or negative.
     pub path_resolve: unsafe extern "C" fn(path: StrRef, mode: u32, out: *mut u8, cap: usize) -> i32,
@@ -1031,7 +1038,7 @@ pub struct KernelApi {
     /// The holder of the function's claim into `out`: its length, 0 when
     /// the function is free.
     pub pci_owner: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, out: *mut u8, cap: usize) -> usize,
-    // --- ABI 48 ---
+    // --- ABI 49 ---
     /// Confine the PCI function's DMA to a domain of its own, empty until
     /// `iommu_map`: the domain, or -1 when no IOMMU translates for the
     /// function (its DMA reaches all of memory, as a kernel driver's).
@@ -1320,6 +1327,14 @@ impl KernelApi {
 
     pub fn task_has_root(&self) -> bool {
         unsafe { (self.task_has_root)() != 0 }
+    }
+
+    pub fn task_pdeath_signal(&self) -> u32 {
+        unsafe { (self.task_pdeath_signal)() }
+    }
+
+    pub fn task_set_pdeath_signal(&self, sig: u32) {
+        unsafe { (self.task_set_pdeath_signal)(sig) }
     }
 
     pub fn path_resolve(&self, path: &str, mode: u32, out: &mut [u8]) -> i32 {

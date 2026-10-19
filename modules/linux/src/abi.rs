@@ -90,8 +90,12 @@ pub fn sig_from_linux(sig: usize) -> u32 {
     MAP.get(sig).copied().unwrap_or(0)
 }
 
-/// Native signal number -> Linux.
+/// Native signal number -> Linux; 0 (none) stays 0, not the first Linux
+/// signal the core has not (`STKFLT`).
 pub fn sig_to_linux(sig: u32) -> usize {
+    if sig == 0 {
+        return 0;
+    }
     (1..32).find(|&l| sig_from_linux(l) == sig).unwrap_or(0)
 }
 

@@ -130,7 +130,7 @@ fn daemon(nic: Option<&[u8]>) -> ! {
         if let Some(t) = &tap {
             fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
         }
-        poll(&mut fds, -1);
+        poll(&mut fds, if radio.pending() { 0 } else { -1 });
         // What the radio hears between commands: data for the link's NIC
         // (decrypted first on a WPA2 network, where the access point may
         // also start a group key handshake); the access point letting the
@@ -142,6 +142,7 @@ fn daemon(nic: Option<&[u8]>) -> ! {
             let f = &frame[..rx.len];
             if mlme::ends(radio, l, f) {
                 link = None;
+                radio.left();
                 continue;
             }
             let (me, bssid) = (radio.mac(), l.bss.bssid);
@@ -248,9 +249,6 @@ fn connect(
     if ssid.is_empty() {
         return Vec::from(b"error: connect SSID\n" as &[u8]);
     }
-    if !radio.joins() {
-        return Vec::from(b"error: this radio scans only so far (issue #495)\n" as &[u8]);
-    }
     if let Some(l) = link.take() {
         mlme::leave(radio, &l);
     }
@@ -319,6 +317,11 @@ fn connect(
         Err(Refused::Handshake(why)) => {
             e.extend_from_slice(b"4-way handshake: ");
             e.extend_from_slice(why);
+            e.push(b'\n');
+        }
+        Err(Refused::Radio(step)) => {
+            e.extend_from_slice(b"the radio failed to set up the ");
+            e.extend_from_slice(step);
             e.push(b'\n');
         }
     }

@@ -113,7 +113,7 @@ fn main() {
     let test = Selection::parse(&args).map(Mode::Tests);
     let what = args
         .iter()
-        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso" | "packages" | "rpi4"))
+        .find(|a| matches!(a.as_str(), "uefi" | "bios" | "aarch64" | "riscv64" | "iso" | "packages" | "rpi4" | "rpi3"))
         .map(|s| s.as_str())
         .unwrap_or("bios");
 
@@ -135,6 +135,11 @@ fn main() {
             exit(2);
         }
         ("rpi4", None) => println!("{}", build_rpi4_image().display()),
+        ("rpi3", Some(_)) => {
+            eprintln!("error: the Raspberry Pi 3 boot is not a test boot (no disks, no network: docs/raspberry-pi.md)");
+            exit(2);
+        }
+        ("rpi3", None) => run_rpi3(),
         ("riscv64", Some(mode)) => run_test_riscv64(mode),
         ("riscv64", None) => run_riscv64(),
         ("aarch64", Some(mode)) => run_test_aarch64(mode),
@@ -150,7 +155,7 @@ fn print_usage() {
     eprintln!(
         "\
 Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--tags TAG,...] [--skip TAG,...] [--budget MINUTES]]
-       cargo run -- iso | packages | rpi4
+       cargo run -- iso | packages | rpi4 | rpi3
 
   bios       Boot the x86_64 Limine BIOS disk image in QEMU (default, graphical)
   uefi       Boot the x86_64 Limine UEFI disk image in QEMU (fetches OVMF on first run)
@@ -164,6 +169,8 @@ Usage: cargo run -- [bios|uefi|aarch64|riscv64] [test [--tags TAG,...] [--skip T
   packages   Write the package tarballs and indexes of the three arches to target/packages/
   rpi4       Write target/rpi4.img (the AArch64 boot disk for a Raspberry Pi 4 behind its
              UEFI firmware, docs/raspberry-pi.md) and exit
+  rpi3       Boot a Raspberry Pi 3 in QEMU (raspi3b: U-Boot, Limine, serial on stdio); the
+             files for a real one are left in target/rpi3 (docs/raspberry-pi.md)
 
 Environment (the interactive runs, not `test`; see README, A persistent disk):
   MYOS_DISK=PATH       attach PATH as an extra virtio disk, created sparse (8 GiB) if missing
@@ -947,17 +954,94 @@ fn build_aarch64_image() -> PathBuf {
 /// hands on the firmware's, and with `platform=dt`, so that the kernel
 /// reads the board from it even where the firmware has ACPI tables too.
 fn build_rpi4_image() -> PathBuf {
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/rpi4.img");
+    build_rpi_image(&image);
+    image
+}
+
+/// The AArch64 boot disk for a Raspberry Pi, at `image`: the kernel and
+/// initramfs of `target/aarch64.img`, without QEMU's device tree, so that
+/// Limine hands on the firmware's, and with `platform=dt`, so that the
+/// kernel reads the board from it even where the firmware has ACPI tables
+/// too.
+fn build_rpi_image(image: &Path) {
     let kernel = build_aarch64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let image = manifest.join("target/rpi4.img");
     let limine = limine_files();
     let read = |p: PathBuf| std::fs::read(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     let conf = limine_image::limine_conf_cmdline("", "", &["a"], " platform=dt");
     let esp = limine_esp_files("BOOTAA64.EFI", &read(limine.bootaa64()), None, &conf, &[]);
     let initramfs = initramfs::build_initramfs(&manifest, "aarch64", &esp);
-    write_slot_image(&image, &kernel_bytes, &initramfs, esp);
-    image
+    write_slot_image(image, &kernel_bytes, &initramfs, esp);
+}
+
+/// A Raspberry Pi 3 in QEMU (`raspi3b`, docs/raspberry-pi.md): every core
+/// starts at 0 in myos's armstub (`boot/rpi3`), which drops to EL1 and
+/// starts U-Boot; U-Boot starts Limine from the SD card, which holds the
+/// Raspberry Pi boot disk. Memory is laid out as the Pi's firmware leaves
+/// it: the device tree at 0x2000000, with its memory node filled in, and
+/// its address and U-Boot's in the stub. The kernel's console is the mini
+/// UART (the tree's `stdout-path`), on stdio; U-Boot's, the PL011, goes to
+/// `target/rpi3/u-boot.log`. The boot files for a real Pi 3 stay in
+/// `target/rpi3`.
+fn run_rpi3() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out = manifest.join("target/rpi3");
+    let status = Command::new(manifest.join("boot/rpi3/build.sh")).status().expect("run boot/rpi3/build.sh");
+    if !status.success() {
+        eprintln!("error: boot/rpi3/build.sh failed");
+        exit(1);
+    }
+    // The SD card: QEMU wants a power of two.
+    let disk = out.join("myos.img");
+    build_rpi_image(&disk);
+    let len = std::fs::metadata(&disk).expect("rpi3 disk").len();
+    let f = std::fs::OpenOptions::new().write(true).open(&disk).expect("open rpi3 disk");
+    f.set_len(len.next_power_of_two()).expect("pad rpi3 disk");
+
+    const DTB_AT: u32 = 0x0200_0000;
+    const UBOOT_AT: u32 = 0x8_0000;
+    let dtb = out.join("qemu.dtb");
+    std::fs::copy(out.join("bcm2710-rpi-3-b.dtb"), &dtb).expect("copy the Pi 3 device tree");
+    // 960 MiB of the 1 GiB for the ARM (the rest is the GPU's), as the
+    // firmware writes it.
+    let status = Command::new("fdtput")
+        .args(["-t", "x"])
+        .arg(&dtb)
+        .args(["/memory@0", "reg", "0", "3c000000"])
+        .status()
+        .expect("run fdtput (device-tree-compiler)");
+    if !status.success() {
+        eprintln!("error: fdtput could not fill the memory node of {}", dtb.display());
+        exit(1);
+    }
+    let mut stub = std::fs::read(out.join("armstub8-myos.bin")).expect("read the armstub");
+    stub[0xf8..0xfc].copy_from_slice(&DTB_AT.to_le_bytes());
+    stub[0xfc..0x100].copy_from_slice(&UBOOT_AT.to_le_bytes());
+    let stub_path = out.join("armstub8-qemu.bin");
+    std::fs::write(&stub_path, stub).expect("write the armstub for QEMU");
+
+    let loader = |file: &Path, at: u32| format!("loader,file={},addr={at:#x},force-raw=on", file.display());
+    let mut cmd = Command::new("qemu-system-aarch64");
+    // The screen (the firmware's framebuffer, `/dev/fb`) where there is a
+    // desktop to show it on.
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        cmd.args(["-display", "none"]);
+    }
+    let status = cmd
+        .args(["-M", "raspi3b"])
+        .args(["-device", &loader(&stub_path, 0)])
+        .args(["-device", &loader(&out.join("u-boot.bin"), UBOOT_AT)])
+        .args(["-device", &loader(&dtb, DTB_AT)])
+        .arg("-drive")
+        .arg(format!("if=sd,format=raw,file={}", disk.display()))
+        .arg("-serial")
+        .arg(format!("file:{}", out.join("u-boot.log").display()))
+        .args(["-serial", "mon:stdio"])
+        .status()
+        .expect("failed to start qemu-system-aarch64");
+    exit(status.code().unwrap_or(1));
 }
 
 /// The Limine release's files (`target/limine-v<version>`, which build.rs

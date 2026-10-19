@@ -137,6 +137,18 @@ pub fn encode_tfd(tfd: &mut [u8; TFD_LEN], phys: u64, len: usize) {
     }
 }
 
+/// A descriptor of up to 25 transfer buffers {address, length} (a data
+/// queue's frame: the TX command's first 20 bytes, its rest with the
+/// 802.11 header, the body).
+pub fn encode_tfd_tbs(tfd: &mut [u8; TFD_LEN], tbs: &[(u64, usize)]) {
+    tfd.fill(0);
+    put16(&mut tfd[..], 0, tbs.len() as u16);
+    for (i, &(phys, len)) in tbs.iter().take(25).enumerate() {
+        put16(&mut tfd[..], 2 + 10 * i, len as u16);
+        put64(&mut tfd[..], 4 + 10 * i, phys);
+    }
+}
+
 /// A free receive buffer descriptor: the buffer's address (4 KB aligned)
 /// with its index in the low 12 bits.
 pub fn rbd(phys: u64, idx: usize) -> u64 {
@@ -227,7 +239,6 @@ pub(crate) fn le32(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
-#[cfg(test)]
 pub(crate) fn le64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
 }

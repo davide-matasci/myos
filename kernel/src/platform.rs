@@ -48,6 +48,10 @@ pub enum Intc {
     GicV3 { gicd: u64, gicr: u64, gicr_size: u64 },
     /// riscv64: the PLIC.
     Plic { base: u64 },
+    /// aarch64, a Raspberry Pi 3 (BCM2836/2837): the per-core local
+    /// interrupt controller (timers, mailboxes) and the BCM2835 one of the
+    /// peripherals behind it.
+    Bcm2836 { local: u64, armctrl: u64 },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -454,6 +458,7 @@ pub fn text() -> alloc::vec::Vec<u8> {
                 format!("gicv3 0x{gicd:x} 0x{gicr:x} 0x{gicr_size:x}")
             }
             Intc::Plic { base } => format!("plic 0x{base:x}"),
+            Intc::Bcm2836 { local, armctrl } => format!("bcm2836 0x{local:x} 0x{armctrl:x}"),
         };
         s += &format!("intc {what} {}\n", tag(c.from, DIFFERS_INTC));
     }

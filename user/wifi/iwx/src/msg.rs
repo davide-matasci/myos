@@ -321,12 +321,28 @@ pub struct Mpdu {
     pub frame: Vec<u8>,
     pub channel: u8,
     pub dbm: i16,
+    /// The device's clock (GP2, µs) when it began: a beacon's, for the
+    /// association's DTIM timing.
+    pub gp2: u32,
 }
 
 const MPDU_DESC_LEN: usize = 48;
 const MPDU_PAD: u8 = 0x20;
 const MPDU_CRC_OK: u32 = 1 << 0;
 const MPDU_OVERRUN_OK: u32 = 1 << 1;
+const MPDU_SEC_MASK: u32 = 7 << 8;
+const MPDU_SEC_CCM: u32 = 2 << 8;
+
+/// An 802.11 frame's header length (ieee80211_get_hdrlen): 24, with the
+/// fourth address, the QoS control and the HT control as present.
+pub fn header_len(f: &[u8]) -> usize {
+    let (fc0, fc1) = (f[0], f.get(1).copied().unwrap_or(0));
+    if fc0 & 0x0c != 0x08 {
+        return 24;
+    }
+    let qos = fc0 & 0x80 != 0;
+    24 + if fc1 & 3 == 3 { 6 } else { 0 } + if qos { 2 } else { 0 } + if qos && fc1 & 0x80 != 0 { 4 } else { 0 }
+}
 
 pub fn mpdu(data: &[u8]) -> Option<Mpdu> {
     if data.len() < MPDU_DESC_LEN {
@@ -343,15 +359,23 @@ pub fn mpdu(data: &[u8]) -> Option<Mpdu> {
     }
     let mut frame = body.to_vec();
     if data[3] & MPDU_PAD != 0 {
-        // Two bytes follow the header; only management frames are taken
-        // so far, whose header is 24 bytes.
-        if frame[0] & 0x0c != 0 {
+        // Two bytes follow the header; after the CCMP header when the
+        // firmware says the frame is CCMP's (iwx_rx_mpdu_mq). Control
+        // frames are not taken.
+        if frame[0] & 0x0c == 0x04 {
             return None;
         }
-        frame.drain(24..26.min(frame.len()));
+        let mut at = header_len(&frame);
+        if status & MPDU_SEC_MASK == MPDU_SEC_CCM && frame[1] & 0x40 != 0 {
+            at += 8;
+        }
+        if frame.len() < at + 2 {
+            return None;
+        }
+        frame.drain(at..at + 2);
     }
     let energy = |e: u8| if e == 0 { -256 } else { -(e as i16) };
-    Some(Mpdu { frame, channel: data[34], dbm: energy(data[32]).max(energy(data[33])) })
+    Some(Mpdu { frame, channel: data[34], dbm: energy(data[32]).max(energy(data[33])), gp2: le32(data, 36) })
 }
 
 #[cfg(test)]
@@ -460,11 +484,25 @@ mod tests {
         d[3] = MPDU_PAD;
         let m = mpdu(&d).unwrap();
         assert_eq!((m.frame.len(), m.frame[24]), (28, 0xaa));
+        // A QoS data frame's header is 26 bytes; a CCMP frame's pad
+        // follows its CCMP header.
+        d[48] = 0x88;
+        d[48 + 28] = 0xbb;
+        assert_eq!(mpdu(&d).unwrap().frame[26], 0xbb);
+        d.resize(MPDU_DESC_LEN + 40, 0);
+        put16(&mut d, 0, 40);
+        put32(&mut d, 12, MPDU_CRC_OK | MPDU_OVERRUN_OK | MPDU_SEC_CCM);
+        d[49] = 0x40;
+        d[48 + 36] = 0xcc;
+        assert_eq!(mpdu(&d).unwrap().frame[34], 0xcc);
+        put32(&mut d, 36, 0x1234_5678);
+        assert_eq!(mpdu(&d).unwrap().gp2, 0x1234_5678);
+        (d[48], d[49]) = (0x80, 0);
         // A bad CRC, a short frame are dropped.
         put32(&mut d, 12, MPDU_OVERRUN_OK);
         assert!(mpdu(&d).is_none());
         put32(&mut d, 12, MPDU_CRC_OK | MPDU_OVERRUN_OK);
-        put16(&mut d, 0, 40);
+        put16(&mut d, 0, 50);
         assert!(mpdu(&d).is_none());
     }
 }

@@ -1,7 +1,8 @@
 //! Joining a network: open-system authentication, then association, each
 //! a request and its answer, sent again when no answer comes (then, on a
 //! WPA2 network, the 4-way handshake: `rsn.rs`); leaving it with a
-//! deauthentication.
+//! deauthentication. The radio is told each step (its firmware, the
+//! AX201's, keeps the network's state).
 
 use crate::frame::{self, Bss};
 use crate::radio::Radio;
@@ -28,13 +29,26 @@ pub enum Refused {
     Status(&'static [u8], u16),
     /// The 4-way handshake failed: why.
     Handshake(&'static [u8]),
+    /// The radio could not take the step.
+    Radio(&'static [u8]),
 }
 
 /// Authenticate with and associate to `bss`, offering RSN element `rsn`
 /// (whole; empty for an open network).
 pub fn join(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refused> {
+    let r = join_steps(radio, bss, rsn);
+    if r.is_err() {
+        radio.left();
+    }
+    r
+}
+
+fn join_steps(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refused> {
     let me = radio.mac();
     radio.set_channel(bss.channel);
+    if !radio.joining(&bss) {
+        return Err(Refused::Radio(b"authentication"));
+    }
     let auth = frame::auth_request(me, bss.bssid);
     let status = exchange(radio, &auth, bss.bssid, frame::AUTH, frame::auth_status)
         .ok_or(Refused::Silent(b"authentication"))?;
@@ -47,12 +61,16 @@ pub fn join(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refused
     if status != frame::STATUS_OK {
         return Err(Refused::Status(b"association", status));
     }
+    if !radio.associated(aid) {
+        return Err(Refused::Radio(b"association"));
+    }
     Ok(Link { bss, aid, rsn: None })
 }
 
 /// Leave the network.
 pub fn leave(radio: &mut dyn Radio, link: &Link) {
     radio.send(&frame::deauth(radio.mac(), link.bss.bssid, frame::REASON_LEAVING));
+    radio.left();
 }
 
 /// Whether `f` ends the link: the access point's deauthentication or
