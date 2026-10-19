@@ -23,8 +23,10 @@ pub enum FdEntry {
     /// writes feed slave input, reads drain slave output. Refcounted like
     /// pipes.
     PtyMaster(usize),
-    /// PTY slave end (`/dev/pts/N/data`): the session-side tty.
-    PtySlave(usize),
+    /// PTY slave end (`/dev/pts/N/data`): the session-side tty, and the
+    /// pair's hang-ups when it was opened (`crate::pty::hangups`: dead
+    /// once its kernel terminal hangs up again).
+    PtySlave(usize, u32),
     /// An event counter (`/dev/event/N/data`, `crate::evfd`): reads take
     /// the count, writes add to it. Refcounted like pipes.
     Event(usize),
@@ -236,9 +238,9 @@ pub(super) fn fd_clone(entry: FdEntry) -> FdEntry {
             crate::pty::master_ref(id);
             FdEntry::PtyMaster(id)
         }
-        FdEntry::PtySlave(id) => {
+        FdEntry::PtySlave(id, hangups) => {
             crate::pty::slave_ref(id);
-            FdEntry::PtySlave(id)
+            FdEntry::PtySlave(id, hangups)
         }
         FdEntry::Event(id) => {
             crate::evfd::event_ref(id);
@@ -271,7 +273,7 @@ pub(super) fn fd_drop(entry: FdEntry) {
         FdEntry::PipeRead(id) => pipe::drop_reader(id),
         FdEntry::PipeWrite(id) => pipe::drop_writer(id),
         FdEntry::PtyMaster(id) => crate::pty::drop_master(id),
-        FdEntry::PtySlave(id) => crate::pty::drop_slave(id),
+        FdEntry::PtySlave(id, _) => crate::pty::drop_slave(id),
         FdEntry::Event(id) => crate::evfd::event_drop(id),
         FdEntry::Timer(id) => crate::evfd::timer_drop(id),
         FdEntry::Wait(id) => crate::evfd::wait_drop(id),
@@ -580,10 +582,13 @@ pub fn entry_poll_changes(entry: FdEntry) -> (u16, bool, u64) {
             };
             (bits, false, changes)
         }
-        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id) => {
+        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id, _) => {
             let changes = crate::pty::changes(id);
-            let master = matches!(entry, FdEntry::PtyMaster(_));
-            let (readable, writable, hup) = crate::pty::poll_state(id, master);
+            let (master, hangups) = match entry {
+                FdEntry::PtySlave(_, hangups) => (false, hangups),
+                _ => (true, 0),
+            };
+            let (readable, writable, hup) = crate::pty::poll_state(id, master, hangups);
             let mut bits = 0;
             if readable {
                 bits |= POLLIN;
@@ -663,7 +668,7 @@ pub fn fd_open_pty_slave(id: usize) -> Option<usize> {
     let out = with_process_mut(|t| {
         for i in 0..MAX_FDS {
             if t.fds[i] == FdEntry::Empty {
-                t.fds[i] = FdEntry::PtySlave(id);
+                t.fds[i] = FdEntry::PtySlave(id, crate::pty::hangups(id));
                 return Some(i);
             }
         }
@@ -925,10 +930,10 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 }
                 return n;
             }
-            FdEntry::PtySlave(id) => {
+            FdEntry::PtySlave(id, hangups) => {
                 let mut tmp = [0u8; 128];
                 let want = len.min(tmp.len());
-                let n = crate::pty::slave_read(id, &mut tmp[..want]);
+                let n = crate::pty::slave_read(id, hangups, &mut tmp[..want]);
                 if n == usize::MAX {
                     return SYSERR_EIO;
                 }
@@ -1144,9 +1149,9 @@ pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                     total += n;
                     break;
                 }
-                FdEntry::PtySlave(id) => {
+                FdEntry::PtySlave(id, hangups) => {
                     // Slave write → output processing → master-readable ring.
-                    let n = crate::pty::slave_write(id, &tmp[..chunk]);
+                    let n = crate::pty::slave_write(id, hangups, &tmp[..chunk]);
                     if n == usize::MAX {
                         return if total == 0 { SYSERR_EIO } else { total };
                     }
@@ -1231,7 +1236,7 @@ pub fn fd_kind(fd: usize) -> Option<FdKind> {
     let entry = with_process_mut(|t| t.fds.get(fd).copied())?;
     Some(match entry {
         FdEntry::Empty => return None,
-        FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(_) => {
+        FdEntry::Stdin | FdEntry::Console | FdEntry::PtyMaster(_) | FdEntry::PtySlave(..) => {
             FdKind::Tty
         }
         FdEntry::PipeRead(_)
@@ -1262,7 +1267,7 @@ pub fn fd_path(fd: usize) -> Option<alloc::string::String> {
         FdEntry::File(id) => crate::fs::vfs::vnode_path(&open_file_node(id)?),
         FdEntry::PipeRead(id) | FdEntry::PipeWrite(id) => format!("pipe:[{id}]"),
         FdEntry::PtyMaster(id) => format!("{}/master", crate::pty::dir(id)),
-        FdEntry::PtySlave(id) => format!("{}/data", crate::pty::dir(id)),
+        FdEntry::PtySlave(id, _) => format!("{}/data", crate::pty::dir(id)),
         FdEntry::Event(id) => format!("/dev/event/{id}/data"),
         FdEntry::Timer(id) => format!("/dev/timer/{id}/data"),
         FdEntry::Wait(id) => format!("/dev/wait/{id}/data"),
@@ -1441,7 +1446,7 @@ fn fd_terminal(fd: usize) -> Option<Terminal> {
     match entry {
         FdEntry::Stdin | FdEntry::Console => Some(Terminal::Console),
         FdEntry::File(_) if fd_is_console_tty(entry) => Some(Terminal::Console),
-        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id) => Some(Terminal::Pty(id)),
+        FdEntry::PtyMaster(id) | FdEntry::PtySlave(id, _) => Some(Terminal::Pty(id)),
         _ => None,
     }
 }

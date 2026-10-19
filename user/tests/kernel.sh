@@ -1060,7 +1060,9 @@ sec_net_checks() {
 # this session's (root's, ttyS0) nor a getty's (system's, tty1) nor one no
 # session holds (tty9), nor the console, and `ls -l` names a terminal's
 # user. A pty she makes is hers, not bob's, until a session that enters
-# bob claims it (pty_smoke.c).
+# bob claims it. A kernel terminal hangs up when it changes hands: what
+# alice leaves running on tty8 after her session ends no longer reaches
+# it (pty_smoke.c).
 sec_tty() {
 	for f in /dev/ttyS0/data /dev/ttyS0/ctl /dev/tty1/data /dev/tty1/ctl /dev/tty9/data /dev/console/data; do
 		! sec_as alice /bin/custom/sh -c ": <> $f" 2> /dev/null || { echo "LEAK: alice opened $f"; return 1; }
@@ -1068,7 +1070,8 @@ sec_tty() {
 	l=$(/bin/sbase/ls -l /dev/tty1/data)
 	echo "tty1: $l"
 	case $l in *system*) ;; *) return 1 ;; esac
-	sec_as alice /bin/etc/pty_smoke 7 bob bob-pw
+	sec_as alice /bin/etc/pty_smoke 7 bob bob-pw || return 1
+	/bin/etc/pty_smoke 8 /dev/tty8/data alice alice-pw
 }
 # Signals: a user's processes, not another user's (init is system's).
 sec_signal() {

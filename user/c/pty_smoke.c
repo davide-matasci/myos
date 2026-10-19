@@ -27,6 +27,12 @@
  * caller no longer opens its data or ctl. Once that session ends it is the
  * caller's again.
  *
+ * `pty_smoke 8 TTY USER PASSWORD`: a kernel terminal hangs up when it
+ * changes hands (issue #514). An fd on TTY opened before a session claims
+ * it is dead after the claim. The session enters USER, who opens TTY's
+ * data and ctl and leaves a process holding them when the session ends:
+ * that process neither writes to the terminal nor changes its ctl.
+ *
  * `pty_smoke 5`: writers faster than their reader. Children each write
  * eight times what a pair's output ring holds to their slave while the
  * parent drains the masters one after the other: a writer waits for room,
@@ -336,8 +342,89 @@ static int handover(const char *user, const char *password) {
     return ok ? 0 : 1;
 }
 
+/* Whether a write of `text` to `fd` fails, within a moment (the session's
+ * end reaches the terminal as its leader exits, around its reaping). */
+static int dead_fd(int fd, const char *text) {
+    for (int i = 0; i < 100; i++) {
+        if (write(fd, text, strlen(text)) < 0) {
+            return 1;
+        }
+        usleep(10000);
+    }
+    return 0;
+}
+
+static int hangup(const char *tty, const char *user, const char *password) {
+    char ctl[48];
+    snprintf(ctl, sizeof ctl, "%.*s/ctl", (int)(strlen(tty) - strlen("/data")), tty);
+    int before = open(tty, O_RDWR | O_NOCTTY);
+    int ready[2], go[2], result[2];
+    if (before < 0 || pipe(ready) != 0 || pipe(go) != 0 || pipe(result) != 0) {
+        printf("[ FAIL ] s8 setup (%s)\n", strerror(errno));
+        return 1;
+    }
+    pid_t leader = fork();
+    if (leader == 0) {
+        /* The session: claims the terminal, enters the user, who opens its
+         * files and leaves them to a process outliving the session. */
+        setsid();
+        int t = open(tty, O_RDWR);
+        if (t < 0 || ioctl(t, TIOCSCTTY, 0) != 0 || myos_setuser(user, password) != 0) {
+            _exit(2);
+        }
+        int d = open(tty, O_RDWR | O_NOCTTY), c = open(ctl, O_WRONLY);
+        if (d < 0 || c < 0) {
+            _exit(3);
+        }
+        if (fork() == 0) {
+            char g;
+            (void)read(go[0], &g, 1);
+            char ok = dead_fd(d, "x") && dead_fd(c, "flush\n") ? 'y' : 'n';
+            (void)write(result[1], &ok, 1);
+            _exit(0);
+        }
+        (void)write(ready[1], "r", 1);
+        _exit(0);
+    }
+    close(ready[1]);
+    close(go[0]);
+    close(result[1]);
+    char c = 0;
+    int status = 0, ok = 1;
+    if (leader < 0 || read(ready[0], &c, 1) != 1) {
+        printf("[ FAIL ] s8 the session on %s did not start\n", tty);
+        ok = 0;
+    } else if (!dead_fd(before, "x")) {
+        printf("[ FAIL ] s8 LEAK: an fd from before the claim still writes to %s\n", tty);
+        ok = 0;
+    }
+    if (leader > 0 && (waitpid(leader, &status, 0) != leader || !WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
+        printf("[ FAIL ] s8 the session's leader (status %d)\n", status);
+        ok = 0;
+    }
+    (void)write(go[1], "g", 1);
+    close(go[1]);
+    if (read(result[0], &c, 1) != 1 || c != 'y') {
+        printf("[ FAIL ] s8 LEAK: %s's fds on %s outlived the session (%c)\n", user, tty, c ? c : '-');
+        ok = 0;
+    }
+    int again = open(tty, O_RDWR | O_NOCTTY);
+    if (again < 0 || write(again, "", 0) < 0) {
+        printf("[ FAIL ] s8 %s does not open again\n", tty);
+        ok = 0;
+    }
+    close(again);
+    close(before);
+    close(ready[0]);
+    close(result[0]);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     int stage = (argc > 1) ? atoi(argv[1]) : 0;
+    if (stage == 8 && argc > 4) {
+        return hangup(argv[2], argv[3], argv[4]);
+    }
     if (stage == 7 && argc > 3) {
         return handover(argv[2], argv[3]);
     }

@@ -192,7 +192,15 @@ starts, is one, so it cannot be typed at the console.
   session holds (where a program waiting for the next login would read
   its password), nor the console. The system's domains (`init`, `login`,
   `rc`, `smoke`) and `admin` have `dev.tty(*)`, every terminal; `netd`
-  and `mount` write the console and the ttys no session holds. The
+  and `mount` write the console and the ttys no session holds. A kernel
+  tty also hangs up when it changes hands, as Linux's `vhangup` makes it:
+  when a session claims it and when that session ends, the fds opened on
+  its `data` before are dead (they read and write `EIO`), and its `ctl`
+  is checked at every write, not only at the open. So a program left
+  running after its user's session neither reads the next login's input
+  nor writes to its screen (getty claims the tty, then opens it again). A
+  pty does not hang up: its master's holder sees all of it anyway, and a
+  pair is not used again while an fd holds it. The
   console keyboard and pointer themselves (`/dev/console/kbd`,
   `/dev/console/mouse`) are `dev`: the administrator's, not every terminal
   user's.
@@ -256,11 +264,9 @@ sec ns /bin:read,exec /lib:read /dev/sda/data:read,write -- B
   and domain by name across it.
 - Per-user `/tmp` is a namespace away (bind `/tmp/USER` at `/tmp`); login
   does not set one up yet.
-- A terminal is its user's for opening only: an fd opened while it was
-  someone else's (a program left running after its user's session ended)
-  keeps working, as any fd does (issue #514). A terminal's user is the session leader's
-  user, so a process another user starts in that session (`sec as`) reaches
-  the terminal through the fds it inherits and `/dev/tty`, not by name.
+- A terminal's user is the session leader's user, so a process another
+  user starts in that session (`sec as`) reaches the terminal through the
+  fds it inherits and `/dev/tty`, not by name.
 - A rename of a directory walks its tree to check every name (the labels
   beneath the new name may differ): a large tree takes a moment, and one
   whose directory listing exceeds 256 KiB is refused.
