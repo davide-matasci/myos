@@ -1429,7 +1429,7 @@ unsafe extern "C" fn api_dt_mmio_find(compatible: StrRef, index: usize, out: *mu
     let Some(base) = crate::arch::pci::map_mmio(dev.base, dev.size.max(1)) else {
         return -1;
     };
-    let irq = dev.irq.and_then(|s| crate::arch::irq_from_dt(s.cells())).unwrap_or(0);
+    let irq = dev.irq.and_then(|s| crate::irqchip::xlate(&s)).unwrap_or(0);
     unsafe {
         *out = myos_abi::MmioDevice {
             base,

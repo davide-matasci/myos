@@ -1,7 +1,7 @@
-//! Exception vectors, the GIC (v2: memory-mapped distributor and CPU
-//! interface; v3: distributor with affinity routing, one redistributor per
-//! CPU found by MPIDR, the CPU interface through the `ICC_*` system
-//! registers) and the generic timers.
+//! Exception vectors, the interrupt entry and the generic timers. The
+//! interrupt controller is `irqchip::root()` (`gic`, `bcm2836`): every one
+//! numbers its interrupts as the GIC does, which the entry reads (SGI 0
+//! and 1 the IPIs, PPI 27 and 30 the timers, 32 and up the devices).
 //!
 //! Limine (base rev 6) enters with PSTATE.SP=0 (SP_EL0), either at EL1 or at
 //! EL2 with VHE (`HCR_EL2.{E2H,TGE}`). IRQs taken with SPSel=0 use the
@@ -11,85 +11,12 @@
 //! nightly-2026-07-26 rejects `cnthv_*_el2`, so stay on EL0 timer registers.
 
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-/// The GIC, from the platform description (`set_gic` / `set_gicv3`): the
-/// distributor, and either the GICv2 CPU interface or the GICv3
-/// redistributor region (`GICR_SIZE` bytes of frames, one per CPU).
-static GICD_BASE: AtomicUsize = AtomicUsize::new(0);
-static GICC_BASE: AtomicUsize = AtomicUsize::new(0);
-static GICR_BASE: AtomicUsize = AtomicUsize::new(0);
-static GICR_SIZE: AtomicUsize = AtomicUsize::new(0);
-static GIC_V3: AtomicBool = AtomicBool::new(false);
-static GICD_V3_DONE: AtomicBool = AtomicBool::new(false);
-/// The BSP's affinity, where SPIs are routed (GICv3 `GICD_IROUTER`).
-static BSP_AFFINITY: AtomicU64 = AtomicU64::new(0);
-
-/// The GICv2's distributor and CPU interface, mapped (device window).
-pub fn set_gic(gicd: usize, gicc: usize) {
-    GICD_BASE.store(gicd, Ordering::SeqCst);
-    GICC_BASE.store(gicc, Ordering::SeqCst);
-    GIC_V3.store(false, Ordering::SeqCst);
-}
-
-/// The GICv3's distributor and redistributor range, mapped (device window).
-pub fn set_gicv3(gicd: usize, gicr: usize, gicr_size: usize) {
-    GICD_BASE.store(gicd, Ordering::SeqCst);
-    GICR_BASE.store(gicr, Ordering::SeqCst);
-    GICR_SIZE.store(gicr_size, Ordering::SeqCst);
-    GIC_V3.store(true, Ordering::SeqCst);
-}
-
-fn gicd() -> usize {
-    GICD_BASE.load(Ordering::Relaxed)
-}
-
-fn gicc() -> usize {
-    GICC_BASE.load(Ordering::Relaxed)
-}
-
-fn gic_v3() -> bool {
-    GIC_V3.load(Ordering::Relaxed)
-}
-
-/// The interrupt controller, for the boot log.
-pub fn gic_name() -> &'static str {
-    if super::bcm2836::active() {
-        "bcm2836"
-    } else if gic_v3() {
-        "gicv3"
-    } else {
-        "gicv2"
-    }
-}
-
-// GICv3 distributor registers (with affinity routing).
-const GICD_CTLR: usize = 0x0000;
-const GICD_TYPER: usize = 0x0004;
-const GICD_IGROUPR: usize = 0x0080;
-const GICD_ISENABLER: usize = 0x0100;
-const GICD_ICENABLER: usize = 0x0180;
-const GICD_IPRIORITYR: usize = 0x0400;
-const GICD_ICFGR: usize = 0x0C00;
-const GICD_IROUTER: usize = 0x6000;
-const GICD_CTLR_RWP: u32 = 1 << 31;
-// Redistributor: the RD frame, then the SGI frame 64 KiB further.
-const GICR_CTLR: usize = 0x0000;
-const GICR_TYPER: usize = 0x0008;
-const GICR_WAKER: usize = 0x0014;
-const GICR_SGI_FRAME: usize = 0x1_0000;
-const GICR_IGROUPR0: usize = 0x0080;
-const GICR_ISENABLER0: usize = 0x0100;
-const GICR_ICENABLER0: usize = 0x0180;
-const GICR_IPRIORITYR: usize = 0x0400;
-const GICR_TYPER_VLPIS: u64 = 1 << 1;
-const GICR_TYPER_LAST: u64 = 1 << 4;
-const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
-const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
 pub(super) const PPI_EL1_VIRT: u32 = 27; // CNTV
 pub(super) const PPI_EL1_PHYS: u32 = 30; // CNTP
-const SGI_TLB: u32 = 0;
-const SGI_RESCHED: u32 = 1;
+pub(super) const SGI_TLB: u32 = 0;
+pub(super) const SGI_RESCHED: u32 = 1;
 
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
@@ -381,8 +308,8 @@ pub fn init() {
         }
         asm!("msr tpidr_el1, xzr", options(nostack));
     }
-    crate::console::status_info(gic_name());
-    init_gic();
+    crate::console::status_info(crate::irqchip::root().name());
+    crate::irqchip::root().init_cpu();
     init_timer();
     unsafe {
         asm!("dsb sy", options(nostack));
@@ -390,7 +317,8 @@ pub fn init() {
     }
 }
 
-/// Secondary CPU: vectors already set globally; enable gicc() + timers.
+/// Secondary CPU: vectors already set globally; this CPU's interrupt
+/// controller side and timers.
 pub fn ap_init(logical: usize) {
     // Match BSP TTBR0 (device MMIO) before any GIC/UART access.
     super::paging::apply_bsp_device_map();
@@ -410,14 +338,9 @@ pub fn ap_init(logical: usize) {
         cpacr |= 3 << 20;
         asm!("msr cpacr_el1, {c}", "isb", c = in(reg) cpacr, options(nostack));
     }
-    // GICv2 CPU interface is banked per-CPU: run the full GIC init on this
-    // CPU's own bank, including ISENABLER0 (SGI 0/1 + timer PPIs) and per-ID
-    // priorities. With only the interface enabled the AP's distributor bank
-    // stays reset-disabled: no timer PPI, so an idle AP sleeps in WFI forever
-    // (sched counts frozen), never soft-ACKs TLB shootdown epochs, and every
-    // shootdown burns the full 2M-spin bound — under `-smp 4` interactive
-    // stages crawl (curl timeout, ostest crawl; PR #164 root cause).
-    init_gic();
+    // This CPU's side of the interrupt controller (a GICv2's banked
+    // registers, a GICv3's redistributor, ...): its IPIs and timers.
+    crate::irqchip::root().init_cpu();
     init_timer();
     // Leave DAIF masked until ap_idle_loop installs CURRENT / ONLINE.
     unsafe {
@@ -431,191 +354,6 @@ pub fn wait_for_interrupt_proof() {
             asm!("wfi", options(nostack, preserves_flags));
         }
     }
-}
-
-/// The interrupts every CPU takes: the two SGIs (IPIs) and the timer PPIs.
-const PER_CPU_INTS: u32 =
-    (1 << SGI_TLB) | (1 << SGI_RESCHED) | (1 << PPI_EL1_VIRT) | (1 << PPI_EL1_PHYS);
-
-/// Bring this CPU's interrupt delivery up: on a GICv2 the banked distributor
-/// registers and the CPU interface, on a GICv3 the distributor once (the
-/// BSP) then this CPU's redistributor and system-register interface.
-fn init_gic() {
-    if super::bcm2836::active() {
-        super::bcm2836::init_cpu();
-        return;
-    }
-    if gic_v3() {
-        // The BSP's `init` runs before any AP starts.
-        if !GICD_V3_DONE.swap(true, Ordering::SeqCst) {
-            init_gicd_v3();
-        }
-        init_gicv3_cpu();
-        return;
-    }
-    write32(gicd(), 3); // GICD_CTLR enable group 0+1
-    write32(gicc(), 3); // GICC_CTLR enable group 0+1
-    write32(gicc() + 0x004, 0xFF); // PMR: accept all
-    // Enable SGIs 0/1 (IPI) + timer PPIs.
-    write32(gicd() + 0x100, PER_CPU_INTS);
-    for id in [SGI_TLB, SGI_RESCHED, PPI_EL1_VIRT, PPI_EL1_PHYS] {
-        unsafe {
-            core::ptr::write_volatile((gicd() + 0x400 + id as usize) as *mut u8, 0x80);
-        }
-    }
-}
-
-/// This CPU's MPIDR affinity fields packed as the GIC uses them:
-/// `Aff3:Aff2:Aff1:Aff0` in 32 bits (`GICR_TYPER`), and as a routing value
-/// (`GICD_IROUTER`: Aff3 at bit 32).
-fn affinity() -> (u32, u64) {
-    let mpidr: u64;
-    unsafe {
-        asm!("mrs {m}, mpidr_el1", m = out(reg) mpidr, options(nomem, nostack, preserves_flags));
-    }
-    let aff3 = (mpidr >> 32) & 0xFF;
-    let low = mpidr & 0x00FF_FFFF;
-    (((aff3 << 24) | low) as u32, (aff3 << 32) | low)
-}
-
-/// Wait for a distributor or redistributor register write to land
-/// (`CTLR.RWP`).
-fn wait_rwp(ctlr: usize) {
-    while read32(ctlr) & GICD_CTLR_RWP != 0 {
-        core::hint::spin_loop();
-    }
-}
-
-/// GICv3 distributor, once: affinity routing on, every SPI in group 1,
-/// disabled, routed to the BSP when enabled (`gic_enable_spi`).
-fn init_gicd_v3() {
-    BSP_AFFINITY.store(affinity().1, Ordering::SeqCst);
-    let lines = ((read32(gicd() + GICD_TYPER) & 0x1F) as usize + 1) * 32;
-    for i in 1..lines / 32 {
-        write32(gicd() + GICD_ICENABLER + i * 4, 0xFFFF_FFFF);
-        write32(gicd() + GICD_IGROUPR + i * 4, 0xFFFF_FFFF);
-    }
-    wait_rwp(gicd() + GICD_CTLR);
-    // ARE_NS, EnableGrp1NS, EnableGrp1 (the view differs with GICD_CTLR.DS;
-    // these bits are right under both).
-    write32(gicd() + GICD_CTLR, 0x13);
-    wait_rwp(gicd() + GICD_CTLR);
-}
-
-/// This CPU's redistributor frame: the one whose `GICR_TYPER` names this
-/// CPU's affinity. Frames are 128 KiB (256 KiB with the GICv4 VLPI frames),
-/// up to the one marked `Last`.
-fn this_redistributor() -> Option<usize> {
-    let (aff, _) = affinity();
-    let base = GICR_BASE.load(Ordering::Relaxed);
-    let end = base + GICR_SIZE.load(Ordering::Relaxed);
-    let mut frame = base;
-    while frame + GICR_SGI_FRAME * 2 <= end {
-        let typer = read64(frame + GICR_TYPER);
-        if (typer >> 32) as u32 == aff {
-            return Some(frame);
-        }
-        if typer & GICR_TYPER_LAST != 0 {
-            break;
-        }
-        frame += if typer & GICR_TYPER_VLPIS != 0 { GICR_SGI_FRAME * 4 } else { GICR_SGI_FRAME * 2 };
-    }
-    None
-}
-
-/// GICv3, this CPU: wake its redistributor, enable the SGIs and timer PPIs
-/// there (group 1, priority 0x80), then the system-register CPU interface:
-/// `ICC_SRE` (at EL2 as well when running there), the priority mask, group
-/// 1 delivery.
-fn init_gicv3_cpu() {
-    let rd = this_redistributor().expect("gicv3: no redistributor for this CPU");
-    let waker = read32(rd + GICR_WAKER) & !GICR_WAKER_PROCESSOR_SLEEP;
-    write32(rd + GICR_WAKER, waker);
-    while read32(rd + GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0 {
-        core::hint::spin_loop();
-    }
-    let sgi = rd + GICR_SGI_FRAME;
-    write32(sgi + GICR_ICENABLER0, 0xFFFF_FFFF);
-    wait_rwp(rd + GICR_CTLR);
-    write32(sgi + GICR_IGROUPR0, 0xFFFF_FFFF);
-    for id in [SGI_TLB, SGI_RESCHED, PPI_EL1_VIRT, PPI_EL1_PHYS] {
-        unsafe {
-            core::ptr::write_volatile((sgi + GICR_IPRIORITYR + id as usize) as *mut u8, 0x80);
-        }
-    }
-    write32(sgi + GICR_ISENABLER0, PER_CPU_INTS);
-    unsafe {
-        // ICC_SRE_EL1: SRE, DFB, DIB.
-        asm!("msr S3_0_C12_C12_5, {v}", "isb", v = in(reg) 0x7u64, options(nostack));
-        if current_el() >= 2 {
-            // ICC_SRE_EL2: SRE, DFB, DIB, Enable (EL1 may use its own).
-            asm!("msr S3_4_C12_C9_5, {v}", "isb", v = in(reg) 0xFu64, options(nostack));
-        }
-        // ICC_PMR_EL1: accept every priority.
-        asm!("msr S3_0_C4_C6_0, {v}", v = in(reg) 0xFFu64, options(nostack));
-        // ICC_BPR1_EL1: no preemption sub-groups.
-        asm!("msr S3_0_C12_C12_3, {v}", v = in(reg) 0u64, options(nostack));
-        // ICC_IGRPEN1_EL1: group 1 on.
-        asm!("msr S3_0_C12_C12_7, {v}", "isb", v = in(reg) 1u64, options(nostack));
-    }
-}
-
-/// Enable SPI `id` in the distributor, level-triggered, priority 0x80,
-/// delivered to the BSP (GICv2: CPU interface 0; GICv3: the BSP's affinity).
-pub fn gic_enable_spi(id: u32) {
-    if super::bcm2836::active() {
-        super::bcm2836::enable(id);
-        return;
-    }
-    if !(32..1020).contains(&id) {
-        return;
-    }
-    unsafe {
-        // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive.
-        let cfg = gicd() + GICD_ICFGR + (id as usize / 16) * 4;
-        let shift = (id % 16) * 2;
-        write32(cfg, read32(cfg) & !(0b11 << shift));
-        core::ptr::write_volatile((gicd() + GICD_IPRIORITYR + id as usize) as *mut u8, 0x80);
-        if gic_v3() {
-            let group = gicd() + GICD_IGROUPR + (id as usize / 32) * 4;
-            write32(group, read32(group) | (1 << (id % 32)));
-            write64(gicd() + GICD_IROUTER + id as usize * 8, BSP_AFFINITY.load(Ordering::Relaxed));
-        } else {
-            core::ptr::write_volatile((gicd() + 0x800 + id as usize) as *mut u8, 0x01);
-        }
-        write32(gicd() + GICD_ISENABLER + (id as usize / 32) * 4, 1 << (id % 32));
-        asm!("dsb sy", options(nostack));
-    }
-}
-
-/// Acknowledge the pending interrupt: its INTID (1020.. special).
-fn ack() -> u32 {
-    if super::bcm2836::active() {
-        return super::bcm2836::ack();
-    }
-    if gic_v3() {
-        let iar: u64;
-        unsafe {
-            asm!("mrs {i}, S3_0_C12_C12_0", i = out(reg) iar, options(nomem, nostack)); // ICC_IAR1_EL1
-        }
-        return (iar & 0xFF_FFFF) as u32;
-    }
-    read32(gicc() + 0x0C) & 0x3FF
-}
-
-fn eoi(id: u32) {
-    // The Raspberry Pi 3's controllers have no end of interrupt: a source
-    // stays pending until serviced.
-    if super::bcm2836::active() {
-        return;
-    }
-    if gic_v3() {
-        unsafe {
-            asm!("msr S3_0_C12_C12_1, {i}", i = in(reg) u64::from(id), options(nostack)); // ICC_EOIR1_EL1
-        }
-        return;
-    }
-    write32(gicc() + 0x10, id);
 }
 
 fn cnt_freq() -> u64 {
@@ -729,7 +467,10 @@ fn rearm_timers() {
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_irq_handler(spsr: u64) {
-    let id = ack();
+    let chip = crate::irqchip::root();
+    let Some(id) = chip.claim() else {
+        return;
+    };
     let timer = id == PPI_EL1_VIRT || id == PPI_EL1_PHYS;
     let tlb = id == SGI_TLB;
     let resched = id == SGI_RESCHED;
@@ -750,12 +491,10 @@ extern "C" fn aarch64_irq_handler(spsr: u64) {
     }
     // Shared peripheral interrupts (PCI INTx lines and the like): second-level
     // dispatch before EOI so a level-triggered line is deasserted first.
-    if id >= 32 && id < 1020 {
+    if id >= 32 {
         crate::irq::dispatch(id);
     }
-    if id < 1020 {
-        eoi(id);
-    }
+    chip.complete(id);
     if timer || resched {
         crate::task::schedule();
         // SPSR.M = EL0t: the interrupt came from user mode.
@@ -776,72 +515,6 @@ fn flush_tlb_local() {
         }
         asm!("dsb ish; isb", options(nostack));
     }
-}
-
-fn send_sgi(id: u32) {
-    if super::bcm2836::active() {
-        super::bcm2836::send_others(id);
-        return;
-    }
-    if gic_v3() {
-        // ICC_SGI1R_EL1: IRM = all except self.
-        sgi1r((1 << 40) | (u64::from(id & 0xf) << 24));
-        return;
-    }
-    // GICD_SGIR: target filter = all except self (bits 25:24 = 01).
-    write32(gicd() + 0xF00, (0b01 << 24) | (id & 0xf));
-}
-
-fn sgi1r(value: u64) {
-    unsafe {
-        asm!("dsb ishst", "msr S3_0_C12_C11_5, {v}", "isb", v = in(reg) value, options(nostack));
-    }
-}
-
-pub fn ipi_tlb_shootdown() {
-    send_sgi(SGI_TLB);
-}
-
-pub fn ipi_reschedule() {
-    send_sgi(SGI_RESCHED);
-}
-
-/// Reschedule SGI to one logical CPU. GICv3: the target's affinity in
-/// `ICC_SGI1R_EL1` (Aff0 as a target list bit). GICv2: CPU interface `n` is
-/// the CPU with MPIDR Aff0 = `n` on QEMU virt (CPUTargetList bit `n`).
-pub fn ipi_reschedule_cpu(cpu: usize) {
-    if !crate::smp::cpu_online(cpu) {
-        return;
-    }
-    let mpidr = crate::smp::cpu_hw_id(cpu);
-    if super::bcm2836::active() {
-        super::bcm2836::send((mpidr & 0xff) as usize, SGI_RESCHED);
-        return;
-    }
-    if gic_v3() {
-        let aff0 = mpidr & 0xff;
-        if aff0 >= 16 {
-            send_sgi(SGI_RESCHED);
-            return;
-        }
-        sgi1r(
-            (u64::from(SGI_RESCHED) << 24)
-                | (1 << aff0)
-                | (((mpidr >> 8) & 0xff) << 16)
-                | (((mpidr >> 16) & 0xff) << 32)
-                | (((mpidr >> 32) & 0xff) << 48),
-        );
-        return;
-    }
-    let target = (mpidr & 0xff) as u32;
-    if target >= 8 {
-        send_sgi(SGI_RESCHED);
-        return;
-    }
-    unsafe {
-        asm!("dsb ishst", options(nostack));
-    }
-    write32(gicd() + 0xF00, (1 << (16 + target)) | (SGI_RESCHED & 0xf));
 }
 
 #[unsafe(no_mangle)]
@@ -977,20 +650,4 @@ extern "C" fn aarch64_unhandled_exception(frame: *const u64) -> ! {
     let (esr, elr, far) = read_esr_elr_far();
     let lr_sp = kernel_frame_lr_sp(frame);
     super::exception::aarch64_sync_abort("unhandled exception", esr, elr, far, None, Some(lr_sp));
-}
-
-fn read32(addr: usize) -> u32 {
-    unsafe { core::ptr::read_volatile(addr as *const u32) }
-}
-
-fn read64(addr: usize) -> u64 {
-    unsafe { core::ptr::read_volatile(addr as *const u64) }
-}
-
-fn write64(addr: usize, value: u64) {
-    unsafe { core::ptr::write_volatile(addr as *mut u64, value) }
-}
-
-fn write32(addr: usize, val: u32) {
-    unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
 }

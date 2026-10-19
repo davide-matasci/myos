@@ -1,9 +1,10 @@
 //! RISC-V64: Limine on QEMU `virt` (UEFI). Sv39 MMU is already on.
 
 mod interrupts;
-pub use interrupts::{enable_ipi, ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
+pub use interrupts::enable_ipi;
 pub mod paging;
 pub mod pci;
+mod plic;
 mod power;
 pub use power::POWER_METHODS;
 mod serial;
@@ -65,19 +66,23 @@ pub fn ap_init(logical: usize) {
 /// the PLIC in the MADT) are younger than the firmware that runs here.
 pub const PREFER_ACPI: bool = false;
 
-/// Take the board's device bases from the platform description: the PLIC,
+/// The interrupt controllers the kernel drives (`irqchip`).
+pub static IRQCHIPS: &[&crate::irqchip::Driver] = &[&plic::DRIVER];
+
+/// A riscv64 board's interrupt controller is always described.
+pub const IRQCHIP_DEFAULT: Option<&crate::irqchip::Driver> = None;
+
+/// Take the board's device bases from the platform description: the
+/// interrupt controller (`IRQCHIPS`: the PLIC),
 /// the 16550 console, the goldfish RTC, the `time` CSR rate and the PCIe
 /// host bridge (ECAM, bus range, 64-bit MMIO window). Required: a board
 /// the description does not cover does not boot.
 pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
-    use crate::platform::{Intc, UartKind};
+    use crate::platform::UartKind;
     if p.source.is_none() {
         return Err("no device tree from the bootloader");
     }
-    match p.intc.map(|c| c.value) {
-        Some(Intc::Plic { base }) => interrupts::plic::set_base(base as usize),
-        _ => return Err("platform: no PLIC"),
-    }
+    crate::irqchip::start(p)?;
     match p.uart.map(|c| c.value) {
         Some(uart) if uart.kind == UartKind::Ns16550 && !uart.io => {
             serial::set_base(uart.base as usize)
@@ -103,25 +108,6 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
     Ok(())
 }
 
-/// A PLIC interrupt specifier: the source number.
-pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
-    match cells {
-        [src] if *src != 0 && *src < 1024 => Some(*src),
-        _ => None,
-    }
-}
-
-/// A device's interrupt, a PLIC source, is its own `irq::dispatch` number;
-/// it stays disabled until [`irq_unmask`].
-pub fn irq_route(irq: u32) -> Option<u32> {
-    (1..1024).contains(&irq).then_some(irq)
-}
-
-/// Enable PLIC source `irq`, delivered to the BSP.
-pub fn irq_unmask(irq: u32) {
-    interrupts::plic::enable(irq);
-}
-
 /// Program this hart's timer for a sleep deadline sooner than its next tick.
 pub fn timer_deadline(deadline_ns: u64) {
     interrupts::timer_deadline(deadline_ns);
@@ -139,22 +125,10 @@ pub fn timer_resume() {
     interrupts::timer_resume();
 }
 
-/// Route a PCI function's INTx line as the device tree's PCIe
-/// `interrupt-map` says (QEMU `virt`: PLIC sources 32..35 with the
-/// standard slot swizzle); enable that source for the boot hart. Legacy
-/// INTx: the handler must read the device ISR to deassert the line.
+/// A PCI function's INTx line, as the device tree's PCIe `interrupt-map`
+/// says (QEMU `virt`: PLIC sources 32..35 with the standard slot swizzle).
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
-    let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
-    if pin == 0 || pin > 4 {
-        return None;
-    }
-    let spec = crate::dt::pci_intx(bus, slot, func, pin as u8)?;
-    let src = irq_from_dt(spec.cells())?;
-    interrupts::plic::enable(src);
-    Some(crate::irq::PciIrq {
-        irq: src,
-        delivery: crate::irq::Delivery::IntX,
-    })
+    crate::irq::pci_intx_setup(bus, slot, func)
 }
 
 pub fn wait_interrupt() {

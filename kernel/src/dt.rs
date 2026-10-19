@@ -12,8 +12,9 @@
 //! through the `ranges` of the buses above the node (a Raspberry Pi 4's
 //! peripherals sit at bus address 0x7e000000, CPU address 0xfe000000).
 //! Interrupt specifiers are returned
-//! raw (cells per the interrupt parent's `#interrupt-cells`) and decoded by
-//! `arch::irq_from_dt`, since their meaning depends on the controller.
+//! raw (cells per the interrupt parent's `#interrupt-cells`, with the
+//! parent's phandle) and decoded by `irqchip::xlate`, by the driver of the
+//! controller that parent is, since their meaning depends on it.
 //! Everything here runs before the heap exists, so nothing allocates.
 
 use fdt::Fdt;
@@ -199,39 +200,50 @@ pub fn reg(compat: &[&str], index: usize) -> Option<(u64, u64)> {
     node_reg(find_enabled(get()?, compat)?, index)
 }
 
-/// An interrupt specifier: `cells()`, per the interrupt parent.
+/// An interrupt specifier: `cells()`, per the interrupt parent, whose
+/// phandle is `parent()`.
 #[derive(Clone, Copy)]
 pub struct IrqSpec {
     cells: [u32; 4],
     n: usize,
+    parent: u32,
 }
 
 impl IrqSpec {
     pub fn cells(&self) -> &[u32] {
         &self.cells[..self.n]
     }
+
+    pub fn parent(&self) -> u32 {
+        self.parent
+    }
 }
 
-/// The interrupt parent of `node`: its own `interrupt-parent`, else the
-/// root's (the usual single-controller board).
-fn interrupt_parent<'b>(
-    fdt: &'b Fdt<'static>,
-    node: FdtNode<'b, 'static>,
-) -> Option<FdtNode<'b, 'static>> {
+/// The node with phandle `phandle` is compatible with one of `compat`.
+pub fn phandle_compatible(phandle: u32, compat: &[&str]) -> bool {
+    get()
+        .and_then(|fdt| fdt.find_phandle(phandle))
+        .is_some_and(|n| compat.iter().any(|c| has_compatible(n, c)))
+}
+
+/// The phandle of `node`'s interrupt parent: its own `interrupt-parent`,
+/// else the root's (the usual single-controller board).
+fn interrupt_parent(fdt: &Fdt<'static>, node: FdtNode<'_, 'static>) -> Option<u32> {
     let phandle = node
         .property("interrupt-parent")
         .or_else(|| fdt.root().property("interrupt-parent"))?;
-    fdt.find_phandle(Cells(phandle.value).get(0)?)
+    Cells(phandle.value).get(0)
 }
 
 /// First `interrupts` specifier of `node`.
 fn interrupt_spec(fdt: &Fdt<'static>, node: FdtNode<'_, 'static>) -> Option<IrqSpec> {
-    let n = interrupt_parent(fdt, node)?.interrupt_cells()?;
+    let parent = interrupt_parent(fdt, node)?;
+    let n = fdt.find_phandle(parent)?.interrupt_cells()?;
     if n == 0 || n > 4 {
         return None;
     }
     let ints = prop(node, "interrupts")?;
-    let mut spec = IrqSpec { cells: [0; 4], n };
+    let mut spec = IrqSpec { cells: [0; 4], n, parent };
     for i in 0..n {
         spec.cells[i] = ints.get(i)?;
     }
@@ -498,7 +510,8 @@ pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
     // Entry: child address, child interrupt, parent phandle, parent unit
     // address (parent `#address-cells`), parent interrupt specifier.
     while i + addr_cells + 2 <= map.len() {
-        let parent = fdt.find_phandle(map.get(i + addr_cells + 1)?)?;
+        let phandle = map.get(i + addr_cells + 1)?;
+        let parent = fdt.find_phandle(phandle)?;
         let pa = prop(parent, "#address-cells").and_then(|c| c.get(0)).unwrap_or(0) as usize;
         let pi = parent.interrupt_cells()?;
         let spec_at = i + addr_cells + 2 + pa;
@@ -511,7 +524,7 @@ pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
         }
         matches &= map.get(i + addr_cells)? == want_pin;
         if matches {
-            let mut spec = IrqSpec { cells: [0; 4], n: pi };
+            let mut spec = IrqSpec { cells: [0; 4], n: pi, parent: phandle };
             for k in 0..pi {
                 spec.cells[k] = map.get(spec_at + k)?;
             }
@@ -522,22 +535,11 @@ pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
     None
 }
 
-/// The tree describes a Raspberry Pi 3's interrupt controllers (BCM2836
-/// local, BCM2835 peripherals): its two-cell interrupt specifiers are
-/// theirs.
-pub fn has_bcm2836_intc() -> bool {
-    static HAS: Once<bool> = Once::new();
-    *HAS.call_once(|| get().is_some_and(|fdt| find_enabled(fdt, &["brcm,bcm2836-armctrl-ic"]).is_some()))
-}
-
 /// `timebase-frequency` of the CPUs (riscv64: the `time` CSR rate).
 pub fn timebase_frequency() -> Option<u64> {
     let cpus = get()?.find_node("/cpus")?;
     cpus.property("timebase-frequency")?.as_usize().map(|v| v as u64)
 }
-
-/// GICv2 `compatible` strings (QEMU `virt`: `arm,cortex-a15-gic`).
-const GICV2_COMPAT: &[&str] = &["arm,cortex-a15-gic", "arm,gic-400", "arm,cortex-a9-gic"];
 
 /// UARTs the console can drive: PL011s, and 16550s (most SoCs; the
 /// Raspberry Pi's mini UART, a 16550 at a 4-byte stride).
@@ -556,7 +558,7 @@ fn uart_of(fdt: &Fdt<'static>, node: FdtNode<'_, 'static>) -> Option<Uart> {
         return None;
     };
     let (base, _) = node_reg(node, 0)?;
-    let irq = interrupt_spec(fdt, node).and_then(|s| crate::arch::irq_from_dt(s.cells()));
+    let irq = interrupt_spec(fdt, node).and_then(|s| crate::irqchip::xlate(&s));
     let mini = has_compatible(node, "brcm,bcm2835-aux-uart");
     let cell = |name: &str, default: u32| match kind {
         UartKind::Ns16550 => prop(node, name).and_then(|c| c.get(0)).unwrap_or(default),
@@ -588,8 +590,26 @@ fn console_uart(fdt: &Fdt<'static>) -> Option<Uart> {
         .or_else(|| uart_of(fdt, find_enabled(fdt, NS16550_COMPAT)?))
 }
 
+/// `driver`'s description from the tree: every node it is made of, enabled,
+/// with the `reg` entries it takes.
+fn intc_of(fdt: &Fdt<'static>, driver: &crate::irqchip::Driver) -> Option<crate::platform::Intc> {
+    use crate::platform::{Intc, Reg};
+    let mut regs = [Reg { base: 0, size: 0 }; 4];
+    let mut n = 0;
+    for dt_node in driver.dt {
+        let node = find_enabled(fdt, dt_node.compatible)?;
+        for i in 0..dt_node.regs {
+            let (base, size) = node_reg(node, i)?;
+            *regs.get_mut(n)? = Reg { base, size };
+            n += 1;
+        }
+    }
+    (n != 0).then(|| Intc::new(driver.name, &regs[..n]))
+}
+
 /// Describe the board from the tree (`crate::platform::init`): the model,
-/// the CPUs, the interrupt controller (a GICv2, a GICv3 or a PLIC), the
+/// the CPUs, the interrupt controller (the first of the arch's drivers,
+/// `arch::IRQCHIPS`, whose nodes the tree has), the
 /// console UART (`console_uart`: a PL011 or a 16550), the RTC (a PL031 or a goldfish), the
 /// `time` CSR rate and the PCIe host bridge with its MMIO windows.
 pub fn fill(p: &mut Platform) {
@@ -603,18 +623,8 @@ pub fn fill(p: &mut Platform) {
     if cpus != 0 {
         offer_cpus(p, cpus, from);
     }
-    if let (Some((gicd, _)), Some((gicc, _))) = (reg(GICV2_COMPAT, 0), reg(GICV2_COMPAT, 1)) {
-        offer_intc(p, Intc::GicV2 { gicd, gicc }, from);
-    } else if let (Some((gicd, _)), Some((gicr, gicr_size))) =
-        (reg(&["arm,gic-v3"], 0), reg(&["arm,gic-v3"], 1))
-    {
-        offer_intc(p, Intc::GicV3 { gicd, gicr, gicr_size }, from);
-    } else if let Some((base, _)) = reg(&["sifive,plic-1.0.0", "riscv,plic0"], 0) {
-        offer_intc(p, Intc::Plic { base }, from);
-    } else if let (Some((local, _)), Some((armctrl, _))) =
-        (reg(&["brcm,bcm2836-l1-intc"], 0), reg(&["brcm,bcm2836-armctrl-ic"], 0))
-    {
-        offer_intc(p, Intc::Bcm2836 { local, armctrl }, from);
+    if let Some(intc) = crate::arch::IRQCHIPS.iter().find_map(|d| intc_of(fdt, d)) {
+        offer_intc(p, intc, from);
     }
     if let Some(uart) = console_uart(fdt) {
         offer_uart(p, uart, from);

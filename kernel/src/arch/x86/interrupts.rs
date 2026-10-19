@@ -160,6 +160,21 @@ fn enable_lapic() {
     }
 }
 
+/// This CPU's local APIC on (`apic`, the interrupt controller): enabled,
+/// every priority accepted, the spurious vector set, LINT0/1 masked.
+pub(super) fn lapic_init_cpu() {
+    enable_lapic();
+    lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
+    lapic_w(TPR, 0);
+    lapic_w(LVT_LINT0, 1 << 16);
+    lapic_w(LVT_LINT1, 1 << 16);
+}
+
+/// The end of the interrupt this CPU is handling.
+pub(super) fn lapic_eoi() {
+    lapic_w(EOI, 0);
+}
+
 pub fn init() {
     super::gdt::init();
 
@@ -210,17 +225,11 @@ pub fn init() {
     super::user::load_percpu_gs(0);
 
     X2APIC.store(super::cpu::has_x2apic(), Ordering::SeqCst);
-    enable_lapic();
-    crate::console::status_info(if X2APIC.load(Ordering::Relaxed) {
-        "lapic: x2apic"
-    } else {
-        "lapic: xapic"
-    });
+    let chip = crate::irqchip::root();
+    chip.init_cpu();
+    let mode = if X2APIC.load(Ordering::Relaxed) { "x2apic" } else { "xapic" };
+    crate::console::status_info(&alloc::format!("{}: {mode}", chip.name()));
 
-    lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
-    lapic_w(TPR, 0);
-    lapic_w(LVT_LINT0, 1 << 16);
-    lapic_w(LVT_LINT1, 1 << 16);
     lapic_w(DIV, 0xB);
     // Measure first: the calibration reprograms LVT_TIMER (masked one-shot).
     let count = timer_init_count();
@@ -364,11 +373,7 @@ pub fn ap_init(logical: usize) {
     wrmsr(IA32_TSC_AUX, logical as u64);
     super::user::load_percpu_gs(logical);
 
-    enable_lapic();
-    lapic_w(SVR, 0x100 | u32::from(SPURIOUS_VECTOR));
-    lapic_w(TPR, 0);
-    lapic_w(LVT_LINT0, 1 << 16);
-    lapic_w(LVT_LINT1, 1 << 16);
+    crate::irqchip::root().init_cpu();
     lapic_w(DIV, 0xB);
     let count = timer_init_count();
     lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
@@ -401,8 +406,9 @@ pub fn alloc_vector() -> Option<u8> {
 macro_rules! dev_stub {
     ($name:ident, $n:expr) => {
         extern "x86-interrupt" fn $name(_frame: InterruptStackFrame) {
-            crate::irq::dispatch(u32::from(DEVICE_VECTOR_BASE) + $n);
-            lapic_w(EOI, 0);
+            let vector = u32::from(DEVICE_VECTOR_BASE) + $n;
+            crate::irq::dispatch(vector);
+            crate::irqchip::root().complete(vector);
         }
     };
 }
@@ -667,18 +673,17 @@ fn send_ipi_others(vector: u8) {
     }
 }
 
-pub fn ipi_tlb_shootdown() {
-    send_ipi_others(IPI_TLB_VECTOR);
-}
-
-pub fn ipi_reschedule() {
-    send_ipi_others(IPI_RESCHED_VECTOR);
-}
-
-/// Reschedule IPI to one logical CPU (wakes it from `hlt`).
-pub fn ipi_reschedule_cpu(cpu: usize) {
-    if crate::smp::cpu_online(cpu) {
-        send_ipi_apic(crate::smp::cpu_hw_id(cpu) as u32, IPI_RESCHED_VECTOR);
+/// An IPI (`apic`): one vector each, to one logical CPU (a reschedule
+/// wakes it from `hlt`) or to every other.
+pub(super) fn send_ipi(to: crate::irqchip::Target, ipi: crate::irqchip::Ipi) {
+    use crate::irqchip::{Ipi, Target};
+    let vector = match ipi {
+        Ipi::Tlb => IPI_TLB_VECTOR,
+        Ipi::Resched => IPI_RESCHED_VECTOR,
+    };
+    match to {
+        Target::Cpu(cpu) => send_ipi_apic(crate::smp::cpu_hw_id(cpu) as u32, vector),
+        Target::Others => send_ipi_others(vector),
     }
 }
 

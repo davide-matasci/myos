@@ -38,20 +38,58 @@ pub struct Component<T: Copy> {
     pub from: Source,
 }
 
+/// A register range: `size` 0 where the source gives none (the MADT's
+/// GIC distributor and CPU interface).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Intc {
-    /// x86_64: the local APIC's physical address.
-    Apic { lapic: u64 },
-    /// aarch64: the GICv2 distributor and CPU interface.
-    GicV2 { gicd: u64, gicc: u64 },
-    /// aarch64: the GICv3 distributor and the redistributor range.
-    GicV3 { gicd: u64, gicr: u64, gicr_size: u64 },
-    /// riscv64: the PLIC.
-    Plic { base: u64 },
-    /// aarch64, a Raspberry Pi 3 (BCM2836/2837): the per-core local
-    /// interrupt controller (timers, mailboxes) and the BCM2835 one of the
-    /// peripherals behind it.
-    Bcm2836 { local: u64, armctrl: u64 },
+pub struct Reg {
+    pub base: u64,
+    pub size: u64,
+}
+
+/// The register ranges an interrupt controller's description holds.
+const INTC_REGS: usize = 4;
+
+/// The interrupt controller: the driver that runs it
+/// (`irqchip::Driver::name`: `apic`, `gicv2`, `gicv3`, `bcm2836`, `plic`)
+/// and its register ranges, in the order that driver reads them (the
+/// device tree nodes' `reg` entries, `irqchip::DtNode`; the MADT's GIC
+/// entries).
+#[derive(Clone, Copy)]
+pub struct Intc {
+    pub driver: &'static str,
+    regs: [Reg; INTC_REGS],
+    count: usize,
+}
+
+impl Intc {
+    /// The first [`INTC_REGS`] of `regs`.
+    pub fn new(driver: &'static str, regs: &[Reg]) -> Intc {
+        let mut intc = Intc { driver, regs: [Reg { base: 0, size: 0 }; INTC_REGS], count: regs.len().min(INTC_REGS) };
+        intc.regs[..intc.count].copy_from_slice(&regs[..intc.count]);
+        intc
+    }
+
+    pub fn regs(&self) -> &[Reg] {
+        &self.regs[..self.count]
+    }
+
+    /// Unused on x86_64, whose controller needs none of its registers.
+    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+    pub fn reg(&self, i: usize) -> Option<Reg> {
+        self.regs().get(i).copied()
+    }
+}
+
+/// The same controller: the same driver at the same bases, and the same
+/// sizes where both sources give one.
+impl PartialEq for Intc {
+    fn eq(&self, other: &Intc) -> bool {
+        self.driver == other.driver
+            && self.count == other.count
+            && self.regs().iter().zip(other.regs()).all(|(a, b)| {
+                a.base == b.base && (a.size == 0 || b.size == 0 || a.size == b.size)
+            })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -229,17 +267,17 @@ fn fill_acpi(p: &mut Platform) {
         if m.cpus != 0 {
             offer(&mut p.cpus, m.cpus, from, &mut p.differs, DIFFERS_CPUS);
         }
+        let reg = |base: u64, size: u64| Reg { base, size };
         let intc = match (m.gicd, m.gicc, m.gicr) {
             // A GICD entry names the version; an unknown one with
             // redistributors is a v3.
             (Some((gicd, v)), _, Some((gicr, gicr_size))) if v >= 3 || v == 0 => {
-                Some(Intc::GicV3 { gicd, gicr, gicr_size })
+                Some(Intc::new("gicv3", &[reg(gicd, 0), reg(gicr, gicr_size)]))
             }
-            (Some((gicd, _)), Some(gicc), _) => Some(Intc::GicV2 { gicd, gicc }),
-            (Some((gicd, v)), None, None) if v >= 3 => {
-                Some(Intc::GicV3 { gicd, gicr: 0, gicr_size: 0 })
-            }
-            (None, _, _) if m.lapic != 0 => Some(Intc::Apic { lapic: m.lapic }),
+            (Some((gicd, _)), Some(gicc), _) => Some(Intc::new("gicv2", &[reg(gicd, 0), reg(gicc, 0)])),
+            // No redistributor region: the driver refuses it.
+            (Some((gicd, v)), None, None) if v >= 3 => Some(Intc::new("gicv3", &[reg(gicd, 0)])),
+            (None, _, _) if m.lapic != 0 => Some(Intc::new("apic", &[reg(m.lapic, 0)])),
             _ => None,
         };
         if let Some(intc) = intc {
@@ -395,16 +433,11 @@ pub fn text() -> alloc::vec::Vec<u8> {
         s += &format!("cpus {} {}\n", c.value, tag(c.from, DIFFERS_CPUS));
     }
     if let Some(c) = p.intc {
-        let what = match c.value {
-            Intc::Apic { lapic } => format!("apic 0x{lapic:x}"),
-            Intc::GicV2 { gicd, gicc } => format!("gicv2 0x{gicd:x} 0x{gicc:x}"),
-            Intc::GicV3 { gicd, gicr, gicr_size } => {
-                format!("gicv3 0x{gicd:x} 0x{gicr:x} 0x{gicr_size:x}")
-            }
-            Intc::Plic { base } => format!("plic 0x{base:x}"),
-            Intc::Bcm2836 { local, armctrl } => format!("bcm2836 0x{local:x} 0x{armctrl:x}"),
-        };
-        s += &format!("intc {what} {}\n", tag(c.from, DIFFERS_INTC));
+        s += &format!("intc {}", c.value.driver);
+        for r in c.value.regs() {
+            s += &format!(" 0x{:x}", r.base);
+        }
+        s += &format!(" {}\n", tag(c.from, DIFFERS_INTC));
     }
     if let Some(c) = p.uart {
         let u = c.value;

@@ -1,8 +1,8 @@
 //! AArch64: Limine on QEMU `virt` (UEFI). MMU is already on.
 
 mod bcm2836;
+mod gic;
 mod interrupts;
-pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod paging;
 pub mod pci;
 mod power;
@@ -75,11 +75,18 @@ pub fn ap_init(logical: usize) {
 /// the device tree fills in the rest.
 pub const PREFER_ACPI: bool = true;
 
-/// Take the board's device bases from the platform description: the GIC
-/// (v2: distributor and CPU interface; v3: distributor and redistributors),
-/// the console (a PL011 or a 16550), the PL031 RTC and the PCIe host bridge
-/// (ECAM, bus range, 32-bit MMIO window). The GIC and the console are
-/// required: a board the description does not cover there does not boot.
+/// The interrupt controllers the kernel drives (`irqchip`), in the order
+/// the device tree is searched for them.
+pub static IRQCHIPS: &[&crate::irqchip::Driver] = &[&gic::GICV2, &gic::GICV3, &bcm2836::DRIVER];
+
+/// An aarch64 board's interrupt controller is always described.
+pub const IRQCHIP_DEFAULT: Option<&crate::irqchip::Driver> = None;
+
+/// Take the board's device bases from the platform description: the
+/// interrupt controller (`IRQCHIPS`), the console (a PL011 or a 16550), the
+/// PL031 RTC and the PCIe host bridge (ECAM, bus range, 32-bit MMIO
+/// window). The interrupt controller and the console are required: a board
+/// the description does not cover there does not boot.
 pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
     let applied = apply(p);
     if applied.is_err() {
@@ -91,29 +98,12 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
 }
 
 fn apply(p: &crate::platform::Platform) -> Result<(), &'static str> {
-    use crate::platform::Intc;
     if p.source.is_none() {
         return Err("no ACPI tables and no device tree from the bootloader");
     }
     // Each device's registers are mapped into the device window first.
     let map = |phys: u64, size: u64, what: &'static str| paging::map_mmio(phys, size).ok_or(what);
-    match p.intc.map(|c| c.value) {
-        Some(Intc::GicV2 { gicd, gicc }) => interrupts::set_gic(
-            map(gicd, 0x1000, "platform: cannot map the GIC distributor")?,
-            map(gicc, 0x2000, "platform: cannot map the GIC CPU interface")?,
-        ),
-        Some(Intc::GicV3 { gicd, gicr, gicr_size }) if gicr != 0 => interrupts::set_gicv3(
-            map(gicd, 0x1_0000, "platform: cannot map the GIC distributor")?,
-            map(gicr, gicr_size, "platform: cannot map the GIC redistributors")?,
-            gicr_size as usize,
-        ),
-        Some(Intc::GicV3 { .. }) => return Err("platform: GICv3 without a redistributor region"),
-        Some(Intc::Bcm2836 { local, armctrl }) => bcm2836::set(
-            map(local, 0x100, "platform: cannot map the local interrupt controller")?,
-            map(armctrl, 0x200, "platform: cannot map the interrupt controller")?,
-        ),
-        _ => return Err("platform: no GIC"),
-    }
+    crate::irqchip::start(p)?;
     match p.uart.map(|c| c.value) {
         Some(uart) if !uart.io => serial::set_uart(uart, map(uart.base, 0x1000, "platform: cannot map the UART")?),
         _ => return Err("platform: no memory-mapped UART"),
@@ -130,29 +120,6 @@ fn apply(p: &crate::platform::Platform) -> Result<(), &'static str> {
         pci::set_host(host, mmio);
     }
     Ok(())
-}
-
-/// A GICv2 interrupt specifier (`type, number, flags`): SPI `n` is INTID
-/// 32 + n, PPI `n` is 16 + n.
-pub fn irq_from_dt(cells: &[u32]) -> Option<u32> {
-    match cells {
-        [0, n, _] if *n < 988 => Some(32 + n),
-        [1, n, _] if *n < 16 => Some(16 + n),
-        // A Raspberry Pi 3's BCM2835 controller: `bank, number`.
-        [bank, n] if crate::dt::has_bcm2836_intc() => bcm2836::irq_from_dt(*bank, *n),
-        _ => None,
-    }
-}
-
-/// A device's interrupt, a GIC SPI, is its own `irq::dispatch` number;
-/// it stays disabled until [`irq_unmask`].
-pub fn irq_route(irq: u32) -> Option<u32> {
-    (32..1020).contains(&irq).then_some(irq)
-}
-
-/// Enable GIC SPI `irq`, delivered to the BSP.
-pub fn irq_unmask(irq: u32) {
-    interrupts::gic_enable_spi(irq);
 }
 
 /// Program this CPU's timer for a sleep deadline sooner than its next tick.
@@ -172,22 +139,10 @@ pub fn timer_resume() {
     interrupts::timer_resume();
 }
 
-/// Route a PCI function's INTx line as the device tree's PCIe
-/// `interrupt-map` says (QEMU `virt`: GIC SPIs 3..6 with the standard slot
-/// swizzle); enable that SPI on CPU 0. Legacy INTx: the handler must read
-/// the device ISR to deassert the line.
+/// A PCI function's INTx line, as the device tree's PCIe `interrupt-map`
+/// says (QEMU `virt`: GIC SPIs 3..6 with the standard slot swizzle).
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
-    let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
-    if pin == 0 || pin > 4 {
-        return None;
-    }
-    let spec = crate::dt::pci_intx(bus, slot, func, pin as u8)?;
-    let intid = irq_from_dt(spec.cells())?;
-    interrupts::gic_enable_spi(intid);
-    Some(crate::irq::PciIrq {
-        irq: intid,
-        delivery: crate::irq::Delivery::IntX,
-    })
+    crate::irq::pci_intx_setup(bus, slot, func)
 }
 
 pub fn wait_interrupt() {
