@@ -126,14 +126,22 @@ mod tests {
     }
 
     /// A data frame to the distribution system and a QoS one, against
-    /// Python's `cryptography` AES-CCM with the nonce and AAD built by
-    /// `vectors.py` (an independent implementation of 12.5.3.3).
+    /// Python's `cryptography` AES-CCM with the nonce and AAD built
+    /// separately from 12.5.3.3.
     #[test]
     fn vectors() {
         let tk: [u8; 16] = core::array::from_fn(|i| 0xc0 + i as u8);
         let cases = [
-            ("data", include_str!("../vectors/ccmp-data.hex")),
-            ("qos", include_str!("../vectors/ccmp-qos.hex")),
+            (
+                "data",
+                "0841000002005e000106525400123457ffffffffffff30120605002004030201
+                 e554fda5602de28cfdfd8941b10d0c4c8ee341fe20a421ffba085d",
+            ),
+            (
+                "qos",
+                "8849000002005e000106525400123457ffffffffffff301205000605002004030201
+                 a6246c471690652237a04b916f8218de84728b6575b6e45e73a92a",
+            ),
         ];
         for (name, want) in cases {
             let mut f = unhex("0801 0000 02005e000106 525400123457 ffffffffffff 3012");

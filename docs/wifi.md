@@ -69,8 +69,7 @@ is not past the last one's dropped as a replay. A group key handshake
 The cryptography is RustCrypto's (`THIRD_PARTY_NOTICES.md`); `cargo test
 -p wpa` checks the keys, the EAPOL-Key frames and CCMP against IEEE
 802.11's PSK vectors, RFC 3394's key wrap and vectors another
-implementation made (`user/wifi/wpa/vectors/vectors.py`: Python's
-`hmac` and `cryptography`). WPA3 (SAE), 802.1X, TKIP and management
+implementation made (Python's `hmac` and `cryptography`). WPA3 (SAE), 802.1X, TKIP and management
 frame protection are not supported.
 
 While associated, the daemon holds a virtual NIC (`/dev/tap`, below; its

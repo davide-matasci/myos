@@ -333,16 +333,14 @@ mod tests {
         assert!(unwrap(&kek, &bad).is_none());
     }
 
-    /// A message 2's MIC against Python's hmac (`vectors.py`).
+    /// A message 2's MIC against Python's hmac.
     #[test]
     fn mic_vector() {
         let kck = [0x5a; 16];
         let info = INFO_VERSION_AES | INFO_PAIRWISE | INFO_MIC;
         let f = build(info, 0, 1, Some(&[0x22; 32]), 0, &RSN_PSK_CCMP, Some(&kck));
-        let want: Vec<u8> = (0..32)
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&include_str!("../vectors/mic.hex")[i..i + 2], 16).unwrap())
-            .collect();
+        let want = "2227d1a9c1e7ac8958da12748cd4cb72";
+        let want: Vec<u8> = (0..32).step_by(2).map(|i| u8::from_str_radix(&want[i..i + 2], 16).unwrap()).collect();
         assert_eq!(f[OFF_MIC..OFF_MIC + 16], want[..]);
         assert!(mic_ok(&kck, &f));
         assert!(!mic_ok(&[0; 16], &f));

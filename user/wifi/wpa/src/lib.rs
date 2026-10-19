@@ -117,7 +117,7 @@ mod tests {
     }
 
     /// The PRF and the PTK, against Python's hmac (an independent
-    /// implementation): `vectors.py`.
+    /// implementation).
     #[test]
     fn ptk_vector() {
         let pmk: [u8; 32] = psk(b"password", b"IEEE").unwrap();
@@ -133,6 +133,8 @@ mod tests {
         all.extend_from_slice(&ptk.kck);
         all.extend_from_slice(&ptk.kek);
         all.extend_from_slice(&ptk.tk);
-        assert_eq!(all, unhex(include_str!("../vectors/ptk.hex")));
+        let want = "fa3095876a03b68d392bd0b425daf37ca95ead865bca158389eab3f1732d28d3
+                    e468eeff37fa3494a36ac74c4a11ec59";
+        assert_eq!(all, unhex(want));
     }
 }
