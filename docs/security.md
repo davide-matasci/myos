@@ -176,7 +176,31 @@ starts, is one, so it cannot be typed at the console.
   its files. The event counters, timers, wait sets and signal fds
   (`/dev/event/N`, `/dev/timer/N`, `/dev/wait/N`, `/dev/sig/N`:
   `docs/events.md`) are `dev.common`, every user's to make, and belong the
-  same way to the user whose process read `clone`. The
+  same way to the user whose process read `clone`.
+- The terminals (`/dev/ttyN`, `/dev/ttyS0`, `/dev/pts/N`: `docs/tty.md`)
+  are `dev.tty`, and each takes its user as the label's owner,
+  `dev.tty(alice)`: the user of the leader of the session that claimed it
+  (`ctty`), else, for a pty, the user whose process opened
+  `/dev/pts/clone` for it (`dev.common`, every user's). The kernel's ttys
+  are nobody's until a session claims them, and the console is nobody's.
+  Since `login` enters the user in the session's leader (getty's process),
+  a login hands its terminal over to the user it enters, and a terminal
+  whose session ended is nobody's (a pty its opener's) again. `/dev/tty`,
+  the caller's controlling terminal, is the caller's own while its session
+  has one. `shell` and `untrusted` have `dev.tty(self)`: a user opens their
+  own terminals' `data` and `ctl`, not another session's, nor one no
+  session holds (where a program waiting for the next login would read
+  its password), nor the console. The system's domains (`init`, `login`,
+  `rc`, `smoke`) and `admin` have `dev.tty(*)`, every terminal; `netd`
+  and `mount` write the console and the ttys no session holds. A kernel
+  tty also hangs up when it changes hands, as Linux's `vhangup` makes it:
+  when a session claims it and when that session ends, the fds opened on
+  its `data` before are dead (they read and write `EIO`), and its `ctl`
+  is checked at every write, not only at the open. So a program left
+  running after its user's session neither reads the next login's input
+  nor writes to its screen (getty claims the tty, then opens it again). A
+  pty does not hang up: its master's holder sees all of it anyway, and a
+  pair is not used again while an fd holds it. The
   console keyboard and pointer themselves (`/dev/console/kbd`,
   `/dev/console/mouse`) are `dev`: the administrator's, not every terminal
   user's.
@@ -240,10 +264,9 @@ sec ns /bin:read,exec /lib:read /dev/sda/data:read,write -- B
   and domain by name across it.
 - Per-user `/tmp` is a namespace away (bind `/tmp/USER` at `/tmp`); login
   does not set one up yet.
-- The terminals share one label, `dev.tty`: a domain that may open its own
-  pty (`/dev/pts/N/data`) may open any user's, and the console (its input
-  and its control file, the keymap included). Keep `dev.tty` out of the
-  domains of programs that need no terminal.
+- A terminal's user is the session leader's user, so a process another
+  user starts in that session (`sec as`) reaches the terminal through the
+  fds it inherits and `/dev/tty`, not by name.
 - A rename of a directory walks its tree to check every name (the labels
   beneath the new name may differ): a large tree takes a moment, and one
   whose directory listing exceeds 256 KiB is refused.

@@ -101,6 +101,23 @@ fn canonical(real: &str) -> String {
     crate::fs::vfs::canonical(real).unwrap_or_else(|| String::from(real))
 }
 
+/// The label of the file at `real`: the policy's for its canonical path,
+/// whose owner a terminal gives when the rule names none. A pty or tty is
+/// its user's ([`crate::pty::user_of`]: the session's that claimed it), and
+/// `/dev/tty` is the caller's own, when its session has one.
+fn label_at(p: &Policy, real: &str) -> Label {
+    let path = canonical(real);
+    let mut label = p.label_of(&path);
+    if label.param.is_none() {
+        let uid = match path.as_str() {
+            "/dev/tty" => crate::pty::for_session(crate::task::current_pid()).map(|_| current_uid()),
+            _ => crate::pty::id_at(&path).and_then(crate::pty::user_of),
+        };
+        label.param = uid.and_then(|u| p.users.get(u as usize)).map(|u| u.name.clone());
+    }
+    label
+}
+
 /// A directory a namespace makes up (`task::ns`): it can be listed, no more.
 fn synthetic(real: &str) -> bool {
     real.starts_with('@')
@@ -120,7 +137,7 @@ pub fn rights_in(real: &str, ns: Rights) -> Rights {
     }
     match current() {
         None => ns,
-        Some((p, u, d)) => p.rights(u, d, &p.label_of(&canonical(real))) & ns,
+        Some((p, u, d)) => p.rights(u, d, &label_at(&p, real)) & ns,
     }
 }
 
@@ -143,7 +160,7 @@ pub fn allowed_in(real: &str, need: Rights, ns: Rights) -> bool {
     let Some((p, u, d)) = current() else {
         return true;
     };
-    let label = p.label_of(&canonical(real));
+    let label = label_at(&p, real);
     p.rights(u, d, &label).contains(need) || refused(&p, u, d, real, &label, need)
 }
 
@@ -308,7 +325,7 @@ pub fn mode_bits_in(real: &str, is_dir: bool, ns: Rights) -> u32 {
 }
 
 /// The uid `stat` shows for `real`: its label's owner when that is a user
-/// (`home(alice)`), else 0.
+/// (`home(alice)`, a terminal's user), else 0.
 pub fn owner_uid(real: &str) -> u32 {
     if synthetic(real) {
         return 0;
@@ -316,7 +333,7 @@ pub fn owner_uid(real: &str) -> u32 {
     let Some(p) = policy() else {
         return 0;
     };
-    let label = p.label_of(&canonical(real));
+    let label = label_at(&p, real);
     label.param.and_then(|o| p.user_id(&o)).map_or(0, u32::from)
 }
 
@@ -324,6 +341,13 @@ pub fn owner_uid(real: &str) -> u32 {
 /// kernel itself, which is no user's.
 pub fn current_uid() -> u32 {
     current().map_or(u32::MAX, |(_, u, _)| u32::from(u))
+}
+
+/// The uid process `pid` runs as.
+pub fn uid_of(pid: usize) -> Option<u32> {
+    let ctx = crate::task::sec_ctx_of(pid)?;
+    let p = policy()?;
+    Some(u32::from(if ctx == Ctx::BOOT { p.boot.0 } else { ctx.user }))
 }
 
 /// `/proc/self/ctx`: `uid user domain`.

@@ -25,7 +25,7 @@
 //! UART instead of a ring a master reads ([`Sink`]); they hold the first
 //! [`TERMS`] ids, so pair `N` of `/dev/pts` is id `TERMS + N`.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use alloc::boxed::Box;
@@ -75,6 +75,13 @@ pub struct Pty {
     /// `ctty`), its leader's pid. `usize::MAX` when unset; a claim lasts
     /// while the leader lives ([`crate::task::session_alive`]).
     session: AtomicUsize,
+    /// The uid of the user whose process opened `clone` for the pair (who
+    /// it belongs to until a session claims it: [`user_of`]); `u32::MAX`
+    /// for the kernel's terminals, nobody's until then.
+    opener: u32,
+    /// How many times a kernel terminal was hung up ([`hang_up`]): a slave
+    /// fd opened before the last time is dead.
+    hangups: AtomicU32,
     /// How many times the pair changed (bytes either way, an end closed):
     /// what an `et` wait set member on either end is reported against
     /// (`crate::evfd`).
@@ -166,6 +173,8 @@ fn new_pty(sink: Sink) -> Pty {
         master_refs: AtomicUsize::new(1),
         slave_refs: AtomicUsize::new(0),
         session: AtomicUsize::new(usize::MAX),
+        opener: u32::MAX,
+        hangups: AtomicU32::new(0),
         changes: AtomicU64::new(0),
     }
 }
@@ -178,6 +187,40 @@ pub fn dir(id: usize) -> alloc::string::String {
         1..TERMS => alloc::format!("/dev/tty{id}"),
         _ => alloc::format!("/dev/pts/{}", id - TERMS),
     }
+}
+
+/// The pair whose directory `path` (canonical) is or is in:
+/// `/dev/pts/N/…`, `/dev/ttyN/…` or `/dev/ttyS0/…` (not `/dev/pts/clone`).
+pub fn id_at(path: &str) -> Option<usize> {
+    let rest = path.strip_prefix("/dev/")?;
+    let (dir, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    match dir {
+        "pts" => {
+            let n = rest.split('/').next()?;
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            pts_id(n.parse().ok()?)
+        }
+        "ttyS0" => Some(SERIAL),
+        _ => {
+            let n = dir.strip_prefix("tty").filter(|n| n.len() == 1)?;
+            n.parse().ok().filter(|&n| (1..TERMS).contains(&n))
+        }
+    }
+}
+
+/// Whose pair `id` is (`docs/security.md`, issue #442): the user of the
+/// leader of the session that claimed it (so a login that enters a user in
+/// its session hands the terminal over), else the user whose process
+/// opened `clone` for it. The kernel's terminals are nobody's until a
+/// session claims them. A uid.
+pub fn user_of(id: usize) -> Option<u32> {
+    if let Some(sess) = session_of(id) {
+        return crate::sec::uid_of(sess);
+    }
+    let opener = pty_at(id)?.opener;
+    (opener != u32::MAX).then_some(opener)
 }
 
 /// The id of `/dev/pts/N`, if that pair exists.
@@ -205,6 +248,8 @@ pub fn alloc() -> Option<usize> {
         master_refs: AtomicUsize::new(1),
         slave_refs: AtomicUsize::new(0),
         session: AtomicUsize::new(usize::MAX),
+        opener: crate::sec::current_uid(),
+        hangups: AtomicU32::new(0),
         changes: AtomicU64::new(0),
     })?;
     let mut ptys = PTYS.lock();
@@ -303,9 +348,35 @@ pub fn claim_session(id: usize) {
     if held != usize::MAX && crate::task::session_alive(held) {
         return;
     }
-    let _ = p
-        .session
-        .compare_exchange(held, me, Ordering::SeqCst, Ordering::SeqCst);
+    if p.session.compare_exchange(held, me, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        hang_up(id);
+    }
+}
+
+/// A kernel terminal changes hands (a session claims it, or the one that
+/// had it ends): the slave fds opened on it before are dead from now on,
+/// they read and write `EIO` (issue #514). A program left running after
+/// its user's session does not read the next login's input, nor write to
+/// its screen; the getty that claims the terminal opens it again after
+/// (ubase's does, for Linux's `vhangup`). A pty is left alone: whoever
+/// holds its master sees everything anyway, and it is not used again
+/// while an fd holds it.
+fn hang_up(id: usize) {
+    let Some(p) = pty_at(id).filter(|p| p.sink != Sink::Master) else { return };
+    p.hangups.fetch_add(1, Ordering::SeqCst);
+    notify(id);
+}
+
+/// The hang-ups of pair `id` so far: what a slave fd opened now is opened
+/// at ([`hang_up`]).
+pub fn hangups(id: usize) -> u32 {
+    pty_at(id).map_or(0, |p| p.hangups.load(Ordering::SeqCst))
+}
+
+/// A slave fd opened at `hangups` is dead: its kernel terminal hung up
+/// since.
+fn dead(p: &Pty, hangups: u32) -> bool {
+    p.hangups.load(Ordering::SeqCst) != hangups
 }
 
 /// Session `sid`'s leader is gone: the pairs it claimed are nobody's. Its
@@ -314,11 +385,18 @@ pub fn claim_session(id: usize) {
 /// must not find itself the holder, nor keep the next claimant out
 /// (issue #448: a login on `ttyS0` without a controlling terminal).
 pub fn session_ended(sid: usize) {
+    let mut ended = [false; TERMS];
     let ptys = PTYS.lock();
-    for p in ptys.iter().flatten() {
-        let _ = p
-            .session
-            .compare_exchange(sid, usize::MAX, Ordering::SeqCst, Ordering::SeqCst);
+    for (id, p) in ptys.iter().enumerate() {
+        let Some(p) = p else { continue };
+        let ok = p.session.compare_exchange(sid, usize::MAX, Ordering::SeqCst, Ordering::SeqCst).is_ok();
+        if ok && id < TERMS {
+            ended[id] = true;
+        }
+    }
+    drop(ptys);
+    for id in (0..TERMS).filter(|&id| ended[id]) {
+        hang_up(id);
     }
 }
 
@@ -354,6 +432,13 @@ pub fn ctl_text(id: usize) -> Option<Vec<u8>> {
 /// `None` (and nothing applied) when the text is not valid.
 pub fn ctl_write(id: usize, text: &[u8]) -> Option<usize> {
     let p = pty_at(id)?;
+    // A kernel terminal's control file is checked at each write, not only
+    // at the open: an fd kept from a session that ended changes nothing
+    // ([`hang_up`]).
+    let ctl = alloc::format!("{}/ctl", dir(id));
+    if p.sink != Sink::Master && !crate::sec::allowed_in(&ctl, crate::sec::Rights::WRITE, crate::sec::Rights::ALL) {
+        return None;
+    }
     let current = p.term.lock().termios;
     let actions = crate::tty::ctl_parse(&current, text)?;
     // The keyboard map and the screen shown are the console's: refused
@@ -449,9 +534,10 @@ pub fn changes(id: usize) -> u64 {
     pty_at(id).map_or(0, |p| p.changes.load(Ordering::SeqCst))
 }
 
-/// Read from the slave: committed discipline output. Blocks until at least
-/// one byte is available; `EIO` (`usize::MAX`) once the master is closed.
-pub fn slave_read(id: usize, out: &mut [u8]) -> usize {
+/// Read from the slave, by an fd opened at `hangups`: committed discipline
+/// output. Blocks until at least one byte is available; `EIO`
+/// (`usize::MAX`) once the master is closed or the terminal hung up.
+pub fn slave_read(id: usize, hangups: u32, out: &mut [u8]) -> usize {
     if out.is_empty() {
         return 0;
     }
@@ -461,7 +547,7 @@ pub fn slave_read(id: usize, out: &mut [u8]) -> usize {
     crate::signal::enter_input_read();
     let n = loop {
         let seq = crate::task::wait_seq();
-        if p.master_refs.load(Ordering::SeqCst) == 0 {
+        if p.master_refs.load(Ordering::SeqCst) == 0 || dead(p, hangups) {
             break usize::MAX; // EIO: peer gone
         }
         if crate::signal::interrupt_wait() {
@@ -495,13 +581,14 @@ pub fn slave_read(id: usize, out: &mut [u8]) -> usize {
     n
 }
 
-/// Write to the slave: output processing (OPOST/ONLCR) into the master ring.
-/// Blocks while the ring is full; `EIO` once the master is closed.
-pub fn slave_write(id: usize, data: &[u8]) -> usize {
+/// Write to the slave, by an fd opened at `hangups`: output processing
+/// (OPOST/ONLCR) into the master ring. Blocks while the ring is full; `EIO`
+/// once the master is closed or the terminal hung up.
+pub fn slave_write(id: usize, hangups: u32, data: &[u8]) -> usize {
     let Some(p) = pty_at(id) else {
         return usize::MAX;
     };
-    if p.master_refs.load(Ordering::SeqCst) == 0 {
+    if p.master_refs.load(Ordering::SeqCst) == 0 || dead(p, hangups) {
         return usize::MAX; // EIO
     }
     let oflag = p.term.lock().termios.c_oflag;
@@ -609,9 +696,10 @@ pub fn master_read(id: usize, out: &mut [u8]) -> usize {
 
 /// `poll` readiness of one end of pair `id`, as (readable, writable, hung
 /// up). The slave reads committed discipline input (or a pending `^D`) and
-/// is hung up once the master is gone; the master reads slave output and is
-/// hung up once every slave fd closed.
-pub fn poll_state(id: usize, master: bool) -> (bool, bool, bool) {
+/// is hung up once the master is gone or, for an fd opened at `hangups`,
+/// the terminal hung up; the master reads slave output and is hung up once
+/// every slave fd closed.
+pub fn poll_state(id: usize, master: bool, hangups: u32) -> (bool, bool, bool) {
     let Some(p) = pty_at(id) else {
         return (true, false, true);
     };
@@ -624,7 +712,7 @@ pub fn poll_state(id: usize, master: bool) -> (bool, bool, bool) {
             term.available() > 0 || term.eof
         };
         let writable = p.sink != Sink::Master || p.out.lock().len < OUT_CAP;
-        (readable, writable, p.master_refs.load(Ordering::SeqCst) == 0)
+        (readable, writable, p.master_refs.load(Ordering::SeqCst) == 0 || dead(p, hangups))
     }
 }
 
