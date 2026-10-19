@@ -88,6 +88,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg` (the ECAM window), `bus-range`; `brcm,bcm2711-pcie` (aarch64, the Raspberry Pi 4's): `reg` (its registers, below) |
 | PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64; CPU and bus address, which may differ), `interrupt-map` / `interrupt-map-mask` |
 | DMA (`kernel/src/dma.rs`, below) | — (devices coherent, all of memory) | the host bridge's `dma-ranges`, a node's buses' `dma-ranges`; `dma-coherent` / `dma-noncoherent` on the node or a bus above |
+| The IOMMU (`kernel/src/iommu`, below) | aarch64: the IORT's SMMUv3 node and the root complex's ID mapping | `arm,smmu-v3` (`reg`, `interrupts` by `interrupt-names`, `dma-coherent`), the PCIe host's `iommu-map`; x86_64's VT-d units are the DMAR table's, read by `iommu/vtd.rs` itself |
 | virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
 | PSCI (aarch64 power-off and reset, `docs/power.md`) | FADT arm boot flags: PSCI compliant, HVC or SMC | `arm,psci-1.0` / `arm,psci-0.2` / `arm,psci`: `method` |
 
@@ -295,11 +296,15 @@ stays listed in issue #501).
 | Arch | Unit | Where it is described |
 |---|---|---|
 | x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the registers (whole: the context cache and the IOTLB), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
-| aarch64, riscv64 | none yet: `/proc/iommu` says `none`, `/dev/pci` is unconfined | |
+| aarch64 | Arm SMMUv3 (`iommu/smmuv3.rs`): a linear stream table, one entry per requester id, *bypass* for every function (no table walked) and a *stage-2* entry (VMSAv8, 4 KiB granule, a VMID per domain) for one a program holds; the command queue for invalidations and syncs, the event queue (its interrupt, which the SMMU pulses, taken edge-triggered) for the refused DMAs; the tables and queues written back for a unit that does not snoop (`IDR0.COHACC` clear) | the IORT's SMMUv3 node (registers, the event and global error GSIVs) and the root complex node's ID mapping to it, or the tree's `arm,smmu-v3` node and the PCIe host's `iommu-map`: a `platform::Iommu` component, `/proc/platform`'s `iommu smmuv3 ...` line |
+| riscv64 | none yet: `/proc/iommu` says `none`, `/dev/pci` is unconfined | |
 
 QEMU's `q35` carries the unit (`-device intel-iommu`, 39-bit, 3-level,
 both superpage sizes, snooping walks), every x86 boot of the launcher and
-of CI; `-device intel-iommu` is not for the `pc` machine
+of CI, and QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
+snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
+`[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
+boot line; `-device intel-iommu` is not for the `pc` machine
 (`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. The UEFI boots run
 OVMF from edk2-stable202505 (the launcher's `OVMF` constant): the
 edk2-stable202605 build raises an invalid-opcode exception inside the

@@ -522,6 +522,71 @@ pub fn pci_intx(bus: u8, slot: u8, func: u8, pin: u8) -> Option<IrqSpec> {
     None
 }
 
+/// An SMMUv3 in front of the PCIe host (`arm,smmu-v3`, the host's
+/// `iommu-map`): its registers, the interrupt specifiers of its event
+/// queue and global error (by `interrupt-names`), and the requester ids
+/// `[rid_base, rid_base + rid_count)` that are its streams from `sid_base`.
+#[cfg(target_arch = "aarch64")]
+pub struct Smmu {
+    pub base: u64,
+    pub size: u64,
+    pub event: Option<IrqSpec>,
+    pub gerror: Option<IrqSpec>,
+    pub coherent: bool,
+    pub rid_base: u32,
+    pub rid_count: u32,
+    pub sid_base: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn smmu() -> Option<Smmu> {
+    let fdt = get()?;
+    let node = find_enabled(fdt, &["arm,smmu-v3"])?;
+    let (base, size) = node_reg(node, 0)?;
+    let phandle = prop(node, "phandle").and_then(|p| p.get(0))?;
+    // The host's `iommu-map`: requester id base, the unit, stream id base,
+    // count; the entry naming this unit.
+    let host = pci_host_node(fdt)?;
+    let map = prop(host, "iommu-map")?;
+    let mut mapping = None;
+    let mut i = 0;
+    while let (Some(rid), Some(unit), Some(sid), Some(n)) = (map.get(i), map.get(i + 1), map.get(i + 2), map.get(i + 3)) {
+        if unit == phandle {
+            mapping = Some((rid, sid, n));
+            break;
+        }
+        i += 4;
+    }
+    let (rid_base, sid_base, rid_count) = mapping?;
+    // The interrupts, by name: the `interrupts` property holds one
+    // specifier per name, each `#interrupt-cells` of the parent.
+    let cells = interrupt_parent(fdt, node)?.interrupt_cells()?;
+    let names = node.property("interrupt-names").map(|p| p.value).unwrap_or(&[]);
+    let ints = prop(node, "interrupts");
+    let spec_named = |want: &str| {
+        let k = names.split(|&b| b == 0).position(|n| n == want.as_bytes())?;
+        let ints = ints.as_ref()?;
+        if cells == 0 || cells > 4 {
+            return None;
+        }
+        let mut spec = IrqSpec { cells: [0; 4], n: cells };
+        for c in 0..cells {
+            spec.cells[c] = ints.get(k * cells + c)?;
+        }
+        Some(spec)
+    };
+    Some(Smmu {
+        base,
+        size,
+        event: spec_named("eventq"),
+        gerror: spec_named("gerror"),
+        coherent: node.property("dma-coherent").is_some(),
+        rid_base,
+        rid_count,
+        sid_base,
+    })
+}
+
 /// `timebase-frequency` of the CPUs (riscv64: the `time` CSR rate).
 pub fn timebase_frequency() -> Option<u64> {
     let cpus = get()?.find_node("/cpus")?;
@@ -644,5 +709,23 @@ pub fn fill(p: &mut Platform) {
         Some("hvc") => offer_psci(p, PsciConduit::Hvc, from),
         Some("smc") => offer_psci(p, PsciConduit::Smc, from),
         _ => {}
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(s) = smmu() {
+        let irq = |spec: Option<IrqSpec>| spec.and_then(|s| crate::arch::irq_from_dt(s.cells()));
+        offer_iommu(
+            p,
+            Iommu {
+                base: s.base,
+                size: s.size,
+                event_irq: irq(s.event),
+                gerror_irq: irq(s.gerror),
+                rid_base: s.rid_base,
+                rid_count: s.rid_count,
+                sid_base: s.sid_base,
+                coherent: s.coherent,
+            },
+            from,
+        );
     }
 }

@@ -52,7 +52,11 @@ fn aarch64_machine() -> String {
         Ok("3") => "3",
         _ => "2",
     };
-    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off")
+    // `iommu=smmuv3`: the SMMUv3 in front of the PCIe host, the kernel's
+    // `iommu/smmuv3.rs` on every boot (`/dev/pci`'s devices confined). QEMU's
+    // unit does stage 1 only unless told (`arm-smmuv3.stage`, with
+    // `-global` in [`qemu_aarch64`]): the kernel uses stage 2.
+    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off,iommu=smmuv3")
 }
 
 /// aarch64: the kernel reads the board from the device tree, and the EDK2
@@ -869,6 +873,8 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     let mut cmd = Command::new("qemu-system-aarch64");
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
+        .arg("-global")
+        .arg("arm-smmuv3.stage=2")
         .arg("-machine")
         .arg(aarch64_machine())
         .arg("-cpu")

@@ -10,8 +10,10 @@
 //! bus-mastering device can.
 //!
 //! The units are the platform's: Intel VT-d on x86_64 (`vtd`, the ACPI
-//! DMAR table); a board without one leaves `/dev/pci` unconfined, which
-//! `/proc/iommu` says (`none`). Kernel drivers need nothing from here.
+//! DMAR table), Arm's SMMUv3 on aarch64 (`smmuv3`, the IORT or the device
+//! tree through `platform`); a board without one leaves `/dev/pci`
+//! unconfined, which `/proc/iommu` says (`none`). Kernel drivers need
+//! nothing from here.
 
 use alloc::string::String;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -22,9 +24,13 @@ use spin::Mutex;
 mod vtd;
 #[cfg(target_arch = "x86_64")]
 use vtd as backend;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+mod smmuv3;
+#[cfg(target_arch = "aarch64")]
+use smmuv3 as backend;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod none;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 use none as backend;
 
 /// A DMA the IOMMU refused.
@@ -33,7 +39,8 @@ pub struct Fault {
     /// The requester: `bus << 8 | slot << 3 | func`.
     pub sid: u16,
     pub addr: u64,
-    /// The unit's reason code (VT-d: 0x5 a write to no mapping, 0x6 a read).
+    /// The unit's reason code (VT-d: 0x5 a write to no mapping, 0x6 a
+    /// read; SMMUv3: the event type, 0x10 a translation fault).
     pub reason: u8,
     pub read: bool,
 }
@@ -44,7 +51,7 @@ static LAST: Mutex<Option<Fault>> = Mutex::new(None);
 /// A unit's fault handler reports a refused DMA: counted, the last one kept
 /// for `/proc/iommu`. From interrupt context: the record is skipped, not
 /// waited for, when a reader holds it.
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(any(target_arch = "x86_64", target_arch = "aarch64")), allow(dead_code))]
 pub(crate) fn record(f: Fault) {
     FAULTS.fetch_add(1, Ordering::Relaxed);
     if let Some(mut last) = LAST.try_lock() {

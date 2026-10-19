@@ -3,7 +3,8 @@
 //! the tables that name the platform are read, and no AML: MADT (the CPUs
 //! and the interrupt controller), MCFG (PCIe ECAM), SPCR (the console
 //! UART), GTDT (the arm timers), the FADT's arm boot flags (PSCI), DMAR
-//! (the VT-d units, x86_64).
+//! (the VT-d units, x86_64), IORT (the SMMUv3 and the PCI functions it
+//! translates for, aarch64).
 //! `modules/acpi` keeps `/proc/acpi` and the ACPI power methods (`_S5`
 //! power-off, the reset register: `docs/power.md`). Everything here runs before the heap exists, so nothing
 //! allocates; tables are read in place through the HHDM.
@@ -32,7 +33,7 @@ impl Table {
         self.bytes.get(off).copied()
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn u16(&self, off: usize) -> Option<u16> {
         let b = self.bytes.get(off..off + 2)?;
         Some(u16::from_le_bytes([b[0], b[1]]))
@@ -383,4 +384,76 @@ impl DeviceScope {
     pub fn path(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
         self.path.chunks_exact(2).map(|p| (p[0], p[1]))
     }
+}
+
+/// The IORT's SMMUv3 (I/O Remapping Table, Arm DEN 0049): the unit's
+/// registers and interrupts, and the requester ids the PCI root complex
+/// node maps to its streams.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct IortSmmu {
+    pub base: u64,
+    /// GSIVs (GIC INTIDs) of the event queue and the global error
+    /// interrupt; 0 for none.
+    pub event_gsiv: u32,
+    pub gerror_gsiv: u32,
+    /// The node's `COHACC override` flag: the unit snoops the caches.
+    pub coherent: bool,
+    /// The root complex's first ID mapping to this unit: requester ids
+    /// `[rid_base, rid_base + rid_count)` are streams from `sid_base`.
+    pub rid_base: u32,
+    pub rid_count: u32,
+    pub sid_base: u32,
+}
+
+/// The first SMMUv3 node of the IORT, with the first root complex mapping
+/// that names it (an SMMUv3 nobody maps to is not in front of PCI).
+#[cfg(target_arch = "aarch64")]
+pub fn iort_smmuv3() -> Option<IortSmmu> {
+    let t = find(b"IORT")?;
+    let count = t.u32(36)? as usize;
+    let first = t.u32(40)? as usize;
+    // Each node: type, length, revision, identifier, the number of ID
+    // mappings and their offset (16 bytes), then the node's own fields.
+    let nodes = |mut off: usize| {
+        let mut left = count;
+        core::iter::from_fn(move || {
+            if left == 0 {
+                return None;
+            }
+            left -= 1;
+            let len = t.u16(off + 1)? as usize;
+            if len < 16 || off + len > t.len() {
+                return None;
+            }
+            let here = off;
+            off += len;
+            Some(here)
+        })
+    };
+    let smmu = nodes(first).find(|&n| t.u8(n) == Some(4) && t.u16(n + 1).is_some_and(|l| l >= 60))?;
+    let mut s = IortSmmu {
+        base: t.u64(smmu + 16)?,
+        event_gsiv: t.u32(smmu + 44)?,
+        gerror_gsiv: t.u32(smmu + 52)?,
+        coherent: t.u32(smmu + 24)? & 1 != 0,
+        rid_base: 0,
+        rid_count: 0,
+        sid_base: 0,
+    };
+    // The root complex (type 2): its mappings, 20 bytes each (input base,
+    // count, output base, the output node's offset, flags).
+    for rc in nodes(first).filter(|&n| t.u8(n) == Some(2)) {
+        let (maps, at) = (t.u32(rc + 8)? as usize, t.u32(rc + 12)? as usize);
+        for i in 0..maps {
+            let m = rc + at + i * 20;
+            if t.u32(m + 12)? as usize == smmu {
+                s.rid_base = t.u32(m)?;
+                s.rid_count = t.u32(m + 4)?;
+                s.sid_base = t.u32(m + 8)?;
+                return Some(s);
+            }
+        }
+    }
+    None
 }

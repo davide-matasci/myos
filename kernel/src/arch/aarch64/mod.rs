@@ -148,6 +148,11 @@ pub fn irq_unmask(irq: u32) {
     interrupts::gic_enable_spi(irq);
 }
 
+/// [`irq_unmask`] for a line its device pulses (the SMMU's): edge-triggered.
+pub fn irq_unmask_edge(irq: u32) {
+    interrupts::gic_enable_spi_edge(irq);
+}
+
 /// Program this CPU's timer for a sleep deadline sooner than its next tick.
 pub fn timer_deadline(deadline_ns: u64) {
     interrupts::timer_deadline(deadline_ns);
