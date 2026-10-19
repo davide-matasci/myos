@@ -34,6 +34,7 @@ match the surrounding code's naming, idiom and comment density.
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
+| `boot/` | boot files other than Limine's: `boot/rpi3` (the Raspberry Pi 3's ARM stub and U-Boot build, `docs/raspberry-pi.md`) |
 | `etc/` | `etc/policy`, the default security policy (`/etc/policy` in the image, and the kernel's fallback; `docs/security.md`) |
 | `docs/` | design notes per subsystem (signals, sockets, Linux layer, security, ...) |
 | `target/` | all build output and fetched sources (never committed) |

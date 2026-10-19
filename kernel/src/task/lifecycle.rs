@@ -618,10 +618,30 @@ pub fn die() -> ! {
     let mut lock_owner = None;
     // A session leader's: its ptys' claims end with it (`pty::session_ended`).
     let mut session = None;
+    // The CPUs to kick for the signals its children asked for when it ends.
+    let mut pdeath_kicks = 0;
     let reclaim = {
         let mut tasks = TASKS.lock();
         let id = current_slot();
         let mut out = None;
+        // Its children that asked for a signal when it ends (`pdeath_sig`)
+        // get it now, under TASKS: a child's slot can not be another's yet.
+        if tasks[id].user_rip != 0 {
+            for j in tasks.slots() {
+                let t = &tasks[j];
+                let live = t.user_rip != 0
+                    && !t.exited
+                    && matches!(t.state, State::Ready | State::Running | State::Blocked);
+                let sig = if j != id && t.ppid == id && t.tgid == j && live {
+                    tasks.proc_opt(j).map_or(0, |p| p.pdeath_sig)
+                } else {
+                    0
+                };
+                if sig != 0 {
+                    pdeath_kicks |= super::signals::signal_send_held(&mut tasks, j, u32::from(sig));
+                }
+            }
+        }
         orphan_children(&mut tasks, id);
         if tasks[id].user_rip != 0 {
             chld_parent = tasks[id].ppid;
@@ -670,6 +690,7 @@ pub fn die() -> ! {
     if let Some(sid) = session {
         crate::pty::session_ended(sid);
     }
+    kick_cpus_mask(pdeath_kicks);
     // Notify the parent now that the TASKS lock is dropped: the exit status
     // is final, so the parent can reap it while this task still frees its
     // address space below (that walk is not on the parent's critical path).

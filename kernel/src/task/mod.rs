@@ -518,6 +518,22 @@ pub fn has_ns() -> bool {
     with_process_opt(|p| p.is_some_and(|p| p.ns.is_some()))
 }
 
+/// The signal the current process gets when its parent ends (0: none).
+pub fn pdeath_signal() -> u32 {
+    with_process_opt(|p| p.map_or(0, |p| u32::from(p.pdeath_sig)))
+}
+
+/// Have the current process get `sig` (0: none) when its parent ends
+/// (`die`): Linux's `PR_SET_PDEATHSIG`, which a sandbox (bubblewrap) sets
+/// so that its helpers do not outlive the program that started them.
+pub fn set_pdeath_signal(sig: u32) {
+    with_process_opt(|p| {
+        if let Some(p) = p {
+            p.pdeath_sig = sig as u8;
+        }
+    });
+}
+
 /// Run `f` on the current process's namespace (`None`: the whole tree).
 pub fn with_ns<R>(f: impl FnOnce(Option<&ns::Namespace>) -> R) -> R {
     with_process_opt(|p| f(p.and_then(|p| p.ns.as_deref())))

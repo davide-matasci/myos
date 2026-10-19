@@ -955,6 +955,71 @@ static void check_clocks(void) {
     pthread_cond_destroy(&cv);
 }
 
+/* The parent-death signal (issue #491): a process whose parent is killed
+ * gets the signal it asked for with PR_SET_PDEATHSIG, as bubblewrap's
+ * helpers do (gdk-pixbuf's loader outlived WebKitGTK's crashed UI
+ * process); a forked child starts without one. A middle process forks
+ * the one that asks, and is killed once that one is ready; the asker
+ * holds a pipe's write end, whose EOF says it ended. */
+static void check_pdeathsig(void) {
+    int ready[2], gone[2];
+    if (pipe(ready) != 0 || pipe(gone) != 0) {
+        check(0, "pipe");
+        return;
+    }
+    pid_t mid = fork();
+    if (mid == 0) {
+        pid_t c = fork();
+        if (c == 0) {
+            int sig = -1;
+            if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || prctl(PR_GET_PDEATHSIG, &sig) != 0 || sig != SIGTERM) {
+                _exit(1);
+            }
+            pid_t inner = fork();
+            if (inner == 0) {
+                sig = -1;
+                _exit(prctl(PR_GET_PDEATHSIG, &sig) == 0 && sig == 0 ? 0 : 1);
+            }
+            int st;
+            if (inner < 0 || waitpid(inner, &st, 0) != inner || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+                _exit(1);
+            }
+            pid_t me = getpid();
+            close(ready[0]);
+            close(gone[0]);
+            write(ready[1], &me, sizeof me);
+            for (;;) {
+                pause();
+            }
+        }
+        close(ready[0]);
+        close(ready[1]);
+        close(gone[0]);
+        close(gone[1]);
+        for (;;) {
+            pause();
+        }
+    }
+    close(ready[1]);
+    close(gone[1]);
+    pid_t asker = 0;
+    int got = mid > 0 && read(ready[0], &asker, sizeof asker) == sizeof asker;
+    check(got, "pdeathsig: the child set it, and its own fork has none");
+    if (mid > 0) {
+        kill(mid, SIGKILL);
+        waitpid(mid, NULL, 0);
+    }
+    struct pollfd p = { gone[0], POLLIN, 0 };
+    char c;
+    int ended = got && poll(&p, 1, 5000) == 1 && read(gone[0], &c, 1) == 0;
+    check(ended, "pdeathsig: sent when the parent is killed");
+    if (got && !ended) {
+        kill(asker, SIGKILL);
+    }
+    close(ready[0]);
+    close(gone[0]);
+}
+
 /* What Firefox asked for at startup: posix_fallocate (fallocate mode 0)
  * grows a file and other modes are EOPNOTSUPP; getresuid; getpriority;
  * prctl names a thread and refuses seccomp; mremap shrinks in place and
@@ -993,7 +1058,9 @@ static void check_misc_calls(void) {
      * are), no capabilities, the parent-death signal and no_new_privs
      * accepted, the overflow ids. */
     int pdeath = -1;
-    check(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0 && prctl(PR_GET_PDEATHSIG, &pdeath) == 0 &&
+    check(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0 && prctl(PR_GET_PDEATHSIG, &pdeath) == 0 && pdeath == SIGKILL &&
+              prctl(PR_SET_PDEATHSIG, 0) == 0 && prctl(PR_GET_PDEATHSIG, &pdeath) == 0 && pdeath == 0 &&
+              prctl(PR_SET_PDEATHSIG, 99) == -1 && errno == EINVAL &&
               prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1,
           "prctl: pdeathsig, no_new_privs");
     check(unshare(0) == 0 && unshare(CLONE_NEWUSER) == -1 && errno == EINVAL &&
@@ -1619,6 +1686,7 @@ int main(int argc, char **argv) {
     check_toolchain_calls(argv[0]);
     check_fork_vs_fds();
     check_misc_calls();
+    check_pdeathsig();
     check_clocks();
 
     if (failures) {

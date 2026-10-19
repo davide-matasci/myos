@@ -202,6 +202,12 @@ pub mod task {
     pub fn is_live_user(id: usize) -> bool {
         api().task_is_live_user(id)
     }
+    pub fn pdeath_signal() -> u32 {
+        api().task_pdeath_signal()
+    }
+    pub fn set_pdeath_signal(sig: u32) {
+        api().task_set_pdeath_signal(sig)
+    }
     pub fn yield_now() {
         api().task_yield()
     }

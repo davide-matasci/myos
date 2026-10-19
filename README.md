@@ -19,7 +19,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`, then `run-myos coreutils:ls`)
-- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open or WPA2-PSK network carrying netd's traffic, over the test boots' simulated radio; Intel's AX201 brought up and scanning through `/dev/pci` (after `insmod /lib/modules/pcidev`), its driver a port of OpenBSD's iwx, `docs/wifi.md`, issue #495); an IOMMU (Intel VT-d, Arm SMMUv3, the RISC-V IOMMU) confines a userspace driver's device to its buffers (`docs/pci-acpi-smp.md`)
+- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open or WPA2-PSK network carrying netd's traffic, over the test boots' simulated radio or Intel's AX201 through `/dev/pci`, its driver a port of OpenBSD's iwx, untried on the hardware, `docs/wifi.md`, issue #495); an IOMMU (Intel VT-d, Arm SMMUv3, the RISC-V IOMMU) confines a userspace driver's device to its buffers (`docs/pci-acpi-smp.md`)
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 - **Power** — `poweroff`, `reboot` and `halt` stop the processes, unmount the disks and power off or reset the board: ACPI S5 and the reset register on a PC, PSCI on AArch64, the SBI on RISC-V (`docs/power.md`)
@@ -105,7 +105,11 @@ cargo run -- aarch64   # serial only for now
 
 `cargo run -- rpi4` writes `target/rpi4.img`, the AArch64 boot disk for a
 Raspberry Pi 4 behind its UEFI firmware (serial console, HDMI and USB,
-untested on hardware; `docs/raspberry-pi.md`).
+untested on hardware; `docs/raspberry-pi.md`). `cargo run -- rpi3` boots a
+Raspberry Pi 3 in QEMU (`raspi3b`: U-Boot, then Limine, a serial shell) and
+leaves the boot files for a real one in `target/rpi3`; it also needs
+`gcc-aarch64-linux-gnu`, `bison`, `flex`, `bc`, `libssl-dev`,
+`libgnutls28-dev` (U-Boot's build) and `device-tree-compiler` (`fdtput`).
 
 The boot test types `root` at `login: ` (the password is empty), then `sh /lib/myos-tests/run.sh mini|full` at `$ `.
 

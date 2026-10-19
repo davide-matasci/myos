@@ -81,7 +81,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | Component | ACPI | Device tree (`compatible`) |
 |------|------|------|
 | CPUs | MADT enabled LAPIC / x2APIC / GICC entries | `/cpus` children |
-| Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | `arm,cortex-a15-gic` / `arm,gic-400` (GICv2), `arm,gic-v3`, `sifive,plic-1.0.0` / `riscv,plic0` |
+| Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | `arm,cortex-a15-gic` / `arm,gic-400` (GICv2), `arm,gic-v3`, `brcm,bcm2836-l1-intc` + `brcm,bcm2836-armctrl-ic` (the Raspberry Pi 3's local and peripheral controllers, `docs/raspberry-pi.md`), `sifive,plic-1.0.0` / `riscv,plic0` |
 | Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | the one `/chosen` `stdout-path` names (through `/aliases`), else the first `arm,pl011`, else the first `ns16550a` / `ns16550` / `snps,dw-apb-uart` / `brcm,bcm2835-aux-uart` (the Pi's mini UART); + `interrupts` |
 | RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: no RTC, no wall clock) |
 | Timers | GTDT: EL1 physical and virtual timer INTIDs | `/cpus` `timebase-frequency` (riscv64 `time` CSR rate) |
@@ -94,7 +94,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 
 What each arch requires of the description: aarch64 a GIC (v2: the
 distributor and the CPU interface; v3: the distributor and the
-redistributor region, below), a PL011 or a 16550 (with its register stride
+redistributor region, below) or a Raspberry Pi 3's two controllers, a PL011 or a 16550 (with its register stride
 and access width: the tree's `reg-shift` / `reg-io-width`, the SPCR's
 access size), and a PCIe host bridge, when it has one, with a 32-bit MMIO
 window (one the kernel cannot drive leaves the board without PCI); riscv64 a PLIC, a
@@ -279,7 +279,7 @@ it so that:
   domain* maps all of memory one-to-one, with the largest pages the unit
   has, so the drivers need nothing from it;
 - a function a program holds through `/dev/pci` gets a domain of its own
-  (`KernelApi::iommu_attach`, ABI 48, at the `ctl` open), holding only the
+  (`KernelApi::iommu_attach`, ABI 49, at the `ctl` open), holding only the
   DMA buffers the program asked for (`iommu_map`, at each `dma PAGES`,
   and the ones kept from the last driver), each at its physical address,
   so the numbers `ctl` shows stay the device's; closing `ctl` puts the

@@ -52,9 +52,15 @@ fn gic_v3() -> bool {
     GIC_V3.load(Ordering::Relaxed)
 }
 
-/// The GIC version, for the boot log.
+/// The interrupt controller, for the boot log.
 pub fn gic_name() -> &'static str {
-    if gic_v3() { "gicv3" } else { "gicv2" }
+    if super::bcm2836::active() {
+        "bcm2836"
+    } else if gic_v3() {
+        "gicv3"
+    } else {
+        "gicv2"
+    }
 }
 
 // GICv3 distributor registers (with affinity routing).
@@ -80,8 +86,8 @@ const GICR_TYPER_VLPIS: u64 = 1 << 1;
 const GICR_TYPER_LAST: u64 = 1 << 4;
 const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
 const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
-const PPI_EL1_VIRT: u32 = 27; // CNTV
-const PPI_EL1_PHYS: u32 = 30; // CNTP
+pub(super) const PPI_EL1_VIRT: u32 = 27; // CNTV
+pub(super) const PPI_EL1_PHYS: u32 = 30; // CNTP
 const SGI_TLB: u32 = 0;
 const SGI_RESCHED: u32 = 1;
 
@@ -435,6 +441,10 @@ const PER_CPU_INTS: u32 =
 /// registers and the CPU interface, on a GICv3 the distributor once (the
 /// BSP) then this CPU's redistributor and system-register interface.
 fn init_gic() {
+    if super::bcm2836::active() {
+        super::bcm2836::init_cpu();
+        return;
+    }
     if gic_v3() {
         // The BSP's `init` runs before any AP starts.
         if !GICD_V3_DONE.swap(true, Ordering::SeqCst) {
@@ -563,6 +573,10 @@ pub fn gic_enable_spi_edge(id: u32) {
 }
 
 fn gic_enable_spi_cfg(id: u32, edge: bool) {
+    if super::bcm2836::active() {
+        super::bcm2836::enable(id);
+        return;
+    }
     if !(32..1020).contains(&id) {
         return;
     }
@@ -586,6 +600,9 @@ fn gic_enable_spi_cfg(id: u32, edge: bool) {
 
 /// Acknowledge the pending interrupt: its INTID (1020.. special).
 fn ack() -> u32 {
+    if super::bcm2836::active() {
+        return super::bcm2836::ack();
+    }
     if gic_v3() {
         let iar: u64;
         unsafe {
@@ -597,6 +614,11 @@ fn ack() -> u32 {
 }
 
 fn eoi(id: u32) {
+    // The Raspberry Pi 3's controllers have no end of interrupt: a source
+    // stays pending until serviced.
+    if super::bcm2836::active() {
+        return;
+    }
     if gic_v3() {
         unsafe {
             asm!("msr S3_0_C12_C12_1, {i}", i = in(reg) u64::from(id), options(nostack)); // ICC_EOIR1_EL1
@@ -767,6 +789,10 @@ fn flush_tlb_local() {
 }
 
 fn send_sgi(id: u32) {
+    if super::bcm2836::active() {
+        super::bcm2836::send_others(id);
+        return;
+    }
     if gic_v3() {
         // ICC_SGI1R_EL1: IRM = all except self.
         sgi1r((1 << 40) | (u64::from(id & 0xf) << 24));
@@ -798,6 +824,10 @@ pub fn ipi_reschedule_cpu(cpu: usize) {
         return;
     }
     let mpidr = crate::smp::cpu_hw_id(cpu);
+    if super::bcm2836::active() {
+        super::bcm2836::send((mpidr & 0xff) as usize, SGI_RESCHED);
+        return;
+    }
     if gic_v3() {
         let aff0 = mpidr & 0xff;
         if aff0 >= 16 {
