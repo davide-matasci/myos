@@ -133,10 +133,11 @@ What breaks in an agent sandbox (Claude Code on the web and the like):
   the cargo commands under `env -u GITHUB_TOKEN -u GH_TOKEN`.
 - **The launcher's OVMF download fails behind a TLS-intercepting proxy**
   (`InvalidCertificate(UnknownIssuer)`: the `ovmf-prebuilt` crate has its own
-  CA roots). curl it into the crate's cache; the tag and sha256 are
-  `Source::LATEST` in `~/.cargo/registry/src/*/ovmf-prebuilt-*/src/source_constants.rs`:
+  CA roots). curl it into the crate's cache; the tag and sha256 are the
+  launcher's `OVMF` constant (`src/main.rs`, a `Source` of
+  `~/.cargo/registry/src/*/ovmf-prebuilt-*/src/source_constants.rs`):
   ```sh
-  tag=edk2-stable202605-r1 sha=8ae4d2d73161cc2335f5675d3b8b6edfa0642301679764a246940488ea3ce20d
+  tag=edk2-stable202505-r2 sha=ed4e5502dc6b4e1d524929b27b274f9d6e2581a4179612b5628de9660008c8e0
   curl -fsSL -o /tmp/ovmf.tar.xz "https://github.com/rust-osdev/ovmf-prebuilt/releases/download/$tag/$tag-bin.tar.xz"
   echo "$sha  /tmp/ovmf.tar.xz" | sha256sum -c - && mkdir -p target/ovmf \
     && tar -xJf /tmp/ovmf.tar.xz -C target/ovmf --strip-components=1 && printf %s "$sha" > target/ovmf/sha256

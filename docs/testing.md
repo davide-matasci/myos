@@ -154,7 +154,8 @@ and `user/c/host.sh mouse` moves and clicks the test boots' `usb-mouse`
 ## On the host
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
-(`src/main.rs` sets up the machine, the disks, the network with the port
+(`src/main.rs` sets up the machine (x86: `q35` with Intel's IOMMU,
+`docs/pci-acpi-smp.md`), the disks, the network with the port
 forwards, the simulated Wi-Fi radio and its access points
 (`src/wifi_sim.rs`, `docs/wifi.md`), unless `net` is skipped the package
 mirror and, with the

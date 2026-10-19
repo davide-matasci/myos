@@ -75,13 +75,19 @@ fn riscv_limine_conf() -> String {
 /// needs the x2APIC MSRs.
 const X86_CPU: &str = "qemu64,+x2apic";
 
-/// `-machine` for the x86 boots: QEMU's default (`pc`: PCI through port
-/// 0xCF8, no MCFG), or `$MYOS_X86_MACHINE` (`q35` for a PCIe PC with an
-/// MCFG, the ECAM path of `kernel/src/arch/x86/pci.rs`).
+/// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM
+/// path of `kernel/src/arch/x86/pci.rs`) with Intel's IOMMU (`kernel/src/
+/// iommu/vtd.rs`: `/dev/pci`'s devices confined, the edu test's DMA
+/// outside its buffer refused), or `$MYOS_X86_MACHINE` (`pc`: PCI through
+/// port 0xCF8, no MCFG, no IOMMU, QEMU's default machine).
 fn x86_machine(cmd: &mut Command) {
-    if let Ok(machine) = std::env::var("MYOS_X86_MACHINE") {
-        if !machine.is_empty() {
+    match std::env::var("MYOS_X86_MACHINE").as_deref() {
+        Ok(machine) if !machine.is_empty() && machine != "q35" => {
             cmd.arg("-machine").arg(machine);
+        }
+        _ => {
+            cmd.arg("-machine").arg("q35");
+            cmd.arg("-device").arg("intel-iommu,intremap=off");
         }
     }
 }
@@ -584,9 +590,16 @@ fn run_aarch64() {
     exit(status.code().unwrap_or(1));
 }
 
+/// The firmware release of rust-osdev's ovmf-prebuilt the boots use (x86_64
+/// UEFI, aarch64, riscv64). Pinned, not `Source::LATEST`: OVMF from
+/// edk2-stable202605 raises an invalid-opcode exception in the firmware on
+/// a `q35` with `-device intel-iommu` and an xHCI controller, before any
+/// boot loader runs; edk2-stable202505 and earlier boot it. AGENTS.md's
+/// manual download names the same tag and checksum.
+const OVMF: Source = Source::EDK2_STABLE202505_R2;
+
 fn ovmf_files(arch: Arch) -> (PathBuf, PathBuf) {
-    let prebuilt =
-        Prebuilt::fetch(Source::LATEST, "target/ovmf").expect("failed to fetch OVMF prebuilt");
+    let prebuilt = Prebuilt::fetch(OVMF, "target/ovmf").expect("failed to fetch OVMF prebuilt");
     (
         prebuilt.get_file(arch, FileType::Code),
         prebuilt.get_file(arch, FileType::Vars),
@@ -594,7 +607,7 @@ fn ovmf_files(arch: Arch) -> (PathBuf, PathBuf) {
 }
 
 fn aarch64_firmware() -> (PathBuf, PathBuf) {
-    if let Ok(prebuilt) = Prebuilt::fetch(Source::LATEST, "target/ovmf") {
+    if let Ok(prebuilt) = Prebuilt::fetch(OVMF, "target/ovmf") {
         let code = prebuilt.get_file(Arch::Aarch64, FileType::Code);
         let vars = prebuilt.get_file(Arch::Aarch64, FileType::Vars);
         if code.is_file() && vars.is_file() {

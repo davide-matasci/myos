@@ -300,7 +300,11 @@ stays listed in issue #501).
 QEMU's `q35` carries the unit (`-device intel-iommu`, 39-bit, 3-level,
 both superpage sizes, snooping walks), every x86 boot of the launcher and
 of CI; `-device intel-iommu` is not for the `pc` machine
-(`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. On the `[ OK ]` line at
+(`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. The UEFI boots run
+OVMF from edk2-stable202505 (the launcher's `OVMF` constant): the
+edk2-stable202605 build raises an invalid-opcode exception inside the
+firmware on a `q35` with the IOMMU and an xHCI controller, before any boot
+loader runs. On the `[ OK ]` line at
 boot: `iommu: vt-d, 1 unit(s), 3-level tables, 1 GiB superpages, memory
 to 0x...`; a board without a DMAR table prints nothing and `/proc/iommu`
 says `none`.
