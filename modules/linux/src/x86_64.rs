@@ -73,7 +73,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         28 => ret(sys::madvise(a[0], a[1], a[2])),
         32 => ret(sys::dup(a[0], 0)),
         33 => ret(sys::dup3(a[0], a[1], true, 0)), // dup2
-        35 => ret(sys::nanosleep(a[0], false)),
+        35 => ret(sys::nanosleep(sys::CLOCK_MONOTONIC, a[0], false)),
         39 => task::current_pid(),
         41 => ret(net::socket(a[0], a[1])),
         42 => ret(net::connect(a[0], a[1], a[2])),
@@ -155,8 +155,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
         228 => ret(sys::clock_gettime(a[0], a[1])),
-        229 => ret(sys::clock_getres(a[1])),
-        230 => ret(sys::nanosleep(a[2], a[1] & 1 != 0)), // clock_nanosleep
+        229 => ret(sys::clock_getres(a[0], a[1])),
+        230 => ret(sys::nanosleep(a[0], a[2], a[1] & 1 != 0)), // clock_nanosleep
         234 => ret(sys::kill(a[1], a[2])),               // tgkill
         257 => ret(sys::openat(a[0], a[1], a[2])),
         258 => ret(sys::mkdirat(a[0], a[1])),

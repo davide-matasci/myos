@@ -879,6 +879,82 @@ static void *flagger(void *arg) {
     return NULL;
 }
 
+/* The clocks (issue #317): CLOCK_MONOTONIC and CLOCK_BOOTTIME count from
+ * boot, not from 1970, which also puts their absolute deadlines there
+ * (clock_nanosleep, timerfd and a FUTEX_WAIT_BITSET wait, through
+ * pthread_cond_timedwait on a monotonic condition); a wall-clock deadline
+ * still works; the resolutions; an id no clock has is EINVAL. */
+static long long ns_of(const struct timespec *ts) {
+    return (long long)ts->tv_sec * 1000000000LL + ts->tv_nsec;
+}
+
+static void check_clocks(void) {
+    struct timespec wall, mono, boot, res, t0, t1, at;
+    check(clock_gettime(CLOCK_REALTIME, &wall) == 0 && clock_gettime(CLOCK_MONOTONIC, &mono) == 0 &&
+              clock_gettime(CLOCK_BOOTTIME, &boot) == 0 && mono.tv_sec < wall.tv_sec / 2 &&
+              ns_of(&boot) >= ns_of(&mono) && ns_of(&boot) - ns_of(&mono) < 60000000000LL,
+          "CLOCK_MONOTONIC and CLOCK_BOOTTIME count from boot");
+    check(clock_getres(CLOCK_MONOTONIC, &res) == 0 && res.tv_sec == 0 && res.tv_nsec == 1 &&
+              clock_getres(CLOCK_REALTIME, &res) == 0 && res.tv_nsec == 1000,
+          "clock_getres");
+    errno = 0;
+    check(clock_gettime((clockid_t)1234, &res) == -1 && errno == EINVAL, "clock_gettime: an unknown clock is EINVAL");
+
+    /* 50 ms ahead on each clock, absolute: none returns before then. */
+    clockid_t clocks[2] = {CLOCK_MONOTONIC, CLOCK_REALTIME};
+    for (int i = 0; i < 2; i++) {
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        clock_gettime(clocks[i], &at);
+        at.tv_nsec += 50000000;
+        if (at.tv_nsec >= 1000000000) {
+            at.tv_sec++;
+            at.tv_nsec -= 1000000000;
+        }
+        check(clock_nanosleep(clocks[i], TIMER_ABSTIME, &at, NULL) == 0, "clock_nanosleep: TIMER_ABSTIME");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        check(ns_of(&t1) - ns_of(&t0) >= 40000000LL && ns_of(&t1) - ns_of(&t0) < 5000000000LL,
+              i ? "clock_nanosleep: 50 ms ahead on CLOCK_REALTIME" : "clock_nanosleep: 50 ms ahead on CLOCK_MONOTONIC");
+
+        struct itimerspec its = {{0, 0}, {0, 0}};
+        uint64_t v;
+        int fd = timerfd_create(clocks[i], 0);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        clock_gettime(clocks[i], &its.it_value);
+        its.it_value.tv_nsec += 50000000;
+        if (its.it_value.tv_nsec >= 1000000000) {
+            its.it_value.tv_sec++;
+            its.it_value.tv_nsec -= 1000000000;
+        }
+        check(fd >= 0 && timerfd_settime(fd, TFD_TIMER_ABSTIME, &its, NULL) == 0 && read(fd, &v, 8) == 8 && v == 1,
+              "timerfd: TFD_TIMER_ABSTIME");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        check(ns_of(&t1) - ns_of(&t0) >= 40000000LL && ns_of(&t1) - ns_of(&t0) < 5000000000LL,
+              i ? "timerfd: 50 ms ahead on CLOCK_REALTIME" : "timerfd: 50 ms ahead on CLOCK_MONOTONIC");
+        close(fd);
+    }
+
+    pthread_condattr_t ca;
+    pthread_cond_t cv;
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    check(pthread_condattr_init(&ca) == 0 && pthread_condattr_setclock(&ca, CLOCK_MONOTONIC) == 0 &&
+              pthread_cond_init(&cv, &ca) == 0,
+          "pthread_condattr_setclock(CLOCK_MONOTONIC)");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    at = t0;
+    at.tv_nsec += 50000000;
+    if (at.tv_nsec >= 1000000000) {
+        at.tv_sec++;
+        at.tv_nsec -= 1000000000;
+    }
+    pthread_mutex_lock(&mu);
+    int r = pthread_cond_timedwait(&cv, &mu, &at);
+    pthread_mutex_unlock(&mu);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    check(r == ETIMEDOUT && ns_of(&t1) - ns_of(&t0) >= 40000000LL && ns_of(&t1) - ns_of(&t0) < 5000000000LL,
+          "pthread_cond_timedwait: 50 ms ahead on CLOCK_MONOTONIC");
+    pthread_cond_destroy(&cv);
+}
+
 /* What Firefox asked for at startup: posix_fallocate (fallocate mode 0)
  * grows a file and other modes are EOPNOTSUPP; getresuid; getpriority;
  * prctl names a thread and refuses seccomp; mremap shrinks in place and
@@ -1543,6 +1619,7 @@ int main(int argc, char **argv) {
     check_toolchain_calls(argv[0]);
     check_fork_vs_fds();
     check_misc_calls();
+    check_clocks();
 
     if (failures) {
         out("LINUX-SMOKE FAIL\n");

@@ -105,14 +105,19 @@ pub fn futex(uaddr: usize, op: usize, val: usize, timeout: usize, val3: usize) -
     const CMP_REQUEUE: usize = 4;
     const WAIT_BITSET: usize = 9;
     const WAKE_BITSET: usize = 10;
+    const CLOCK_REALTIME: usize = 256;
     // Without FUTEX_PRIVATE_FLAG and FUTEX_CLOCK_REALTIME: every futex is
-    // private to its process, and every Linux clock reads the same one.
+    // private to its process.
     match op & 0x7f {
         WAIT | WAIT_BITSET => {
-            // FUTEX_WAIT's timeout is relative, FUTEX_WAIT_BITSET's absolute.
+            // FUTEX_WAIT's timeout is relative, FUTEX_WAIT_BITSET's absolute
+            // on the monotonic clock, or the wall clock with
+            // FUTEX_CLOCK_REALTIME.
+            let abs = (op & 0x7f == WAIT_BITSET)
+                .then_some(if op & CLOCK_REALTIME != 0 { sys::Clock::Wall } else { sys::Clock::Monotonic });
             let deadline = match timeout {
                 0 => 0,
-                ts => sys::monotonic_deadline(sys::timespec_deadline(ts, op & 0x7f == WAIT_BITSET)?),
+                ts => sys::timespec_deadline(ts, abs)?,
             };
             match task::wait_addr(uaddr, val as u32, deadline) {
                 AddrWait::Woken => Ok(0),

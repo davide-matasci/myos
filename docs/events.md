@@ -101,8 +101,7 @@ nearer than the one it had, so an idle machine wakes for it
 
 A timerfd's clock matters only to `TFD_TIMER_ABSTIME`: libgloss remembers
 `CLOCK_REALTIME` per fd (forgotten by `exec`) and arms with `realtime`;
-the Linux layer, where every clock is the wall clock
-(`docs/linux-compat.md`), arms relative to now.
+the Linux layer remembers it per timer (`docs/linux-compat.md`).
 
 ## Wait sets
 
