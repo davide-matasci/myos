@@ -110,7 +110,9 @@ see `$MYOS_FIRMWARE`).
 Intel's AX201 (PCI `8086:06f0`, the ThinkPad T15p's, and `8086:02f0`:
 the ones with a QuZ MAC) is driven by the daemon itself, through
 `/dev/pci` (`docs/pci-acpi-smp.md`; `user/wifi/src/pci.rs`): BAR0 mapped,
-DMA buffers, its MSI-X or MSI interrupt. The driver is the `iwx` crate
+DMA buffers, its MSI-X or MSI interrupt, or its INTx line (all the
+aarch64 and riscv64 boards give a PCI function: serviced as MSI's, then
+unmasked again through `/dev/pci`'s `irq`). The driver is the `iwx` crate
 (`user/wifi/iwx`), a port of OpenBSD's `iwx(4)` (if_iwx.c rev 1.230) to
 `no_std` Rust behind a `Device` trait, so it builds and its encodings are
 tested on the host (`cargo test -p iwx`):
