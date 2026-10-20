@@ -147,12 +147,14 @@ static API: KernelApi = KernelApi {
     iommu_attach: api_iommu_attach,
     iommu_map: api_iommu_map,
     iommu_detach: api_iommu_detach,
+    irq_domain_register: api_irq_domain_register,
+    irq_dispatch: api_irq_dispatch,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
 /// device, or with their own wording); the loader announces the others.
 const SELF_REPORTING: &[&str] =
-    &["console", "virtio_blk", "virtio_scsi", "nvme", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage", "usb_hid", "pcidev", "tap"];
+    &["console", "virtio_blk", "virtio_scsi", "nvme", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage", "usb_hid", "pcidev", "pl061", "tap"];
 
 /// Load the boot modules: the names in the initramfs's `/lib/modules/boot.list`
 /// (one per line), each from `/lib/modules/<name>`, in that order. Called
@@ -1171,6 +1173,25 @@ unsafe extern "C" fn api_irq_enable(
     noted(crate::irq::enable(irq, name, handler, ctx as usize))
 }
 
+unsafe extern "C" fn api_irq_domain_register(
+    phandle: u32,
+    count: u32,
+    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+    ctx: *mut core::ffi::c_void,
+) -> u32 {
+    match crate::irqchip::domain_register(phandle, count, unmask, ctx as usize) {
+        Some(first) => {
+            registry::note_registration();
+            first
+        }
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn api_irq_dispatch(irq: u32) {
+    crate::irq::dispatch(irq);
+}
+
 unsafe extern "C" fn api_console_input() {
     crate::input::notify();
 }
@@ -1454,6 +1475,7 @@ unsafe extern "C" fn api_dt_mmio_find(compatible: StrRef, index: usize, out: *mu
             phys: dev.base,
             size: dev.size as usize,
             irq,
+            phandle: dev.phandle,
         };
     }
     0

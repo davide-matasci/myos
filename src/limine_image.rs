@@ -50,8 +50,10 @@ pub const BOOT_MODULES: &[&str] = &[
 
 /// Modules shipped under `/lib/modules/<name>` for `insmod` only, never
 /// loaded at boot: `pcidev`, the userspace PCI drivers' `/dev/pci`, which
-/// a board without an IOMMU cannot confine (issue #501), so root opts in.
-pub const RUNTIME_MODULES: &[&str] = &["pcidev"];
+/// a board without an IOMMU cannot confine (issue #501), so root opts in;
+/// `pl061`, a GPIO controller's interrupt domain no driver uses yet (its
+/// test loads it).
+pub const RUNTIME_MODULES: &[&str] = &["pcidev", "pl061"];
 
 /// Modules behind a root Cargo feature: always built and shipped under
 /// `/lib/modules/<name>` (so `insmod` can load one at run time), loaded at
