@@ -87,19 +87,21 @@ pub fn register(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
     true
 }
 
-/// Route platform interrupt `irq` to `handler(ctx)` on CPU 0: on x86_64 a
-/// legacy ISA IRQ (through the I/O APIC), elsewhere a GIC SPI or a PLIC
-/// source (the number the device tree or the SPCR gives). The handler is in
-/// place before the line is unmasked. False when it cannot be routed: the
-/// caller polls its device.
+/// Route platform interrupt `irq` to `handler(ctx)` on CPU 0, through the
+/// interrupt controller (`irqchip::root`): on x86_64 a legacy ISA IRQ
+/// (through the I/O APIC), elsewhere the number the device tree or the
+/// SPCR gives (a GIC SPI, a PLIC source). The handler is in place before
+/// the line is unmasked. False when it cannot be routed: the caller polls
+/// its device.
 pub fn enable(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
-    let Some(n) = crate::arch::irq_route(irq) else {
+    let chip = crate::irqchip::root();
+    let Some(n) = chip.route(irq) else {
         return false;
     };
     if !register(n, name, handler, ctx) {
         return false;
     }
-    crate::arch::irq_unmask(irq);
+    chip.unmask(irq);
     true
 }
 
@@ -132,6 +134,22 @@ pub fn dispatch(irq: u32) {
 /// QEMU `virt` machine wires to a GIC SPI / PLIC source.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
     crate::arch::pci_irq_setup(bus, slot, func)
+}
+
+/// A PCI function's INTx line where the device tree routes it (the host
+/// bridge's `interrupt-map`, `dt::pci_intx`), decoded by the interrupt
+/// controller it names and enabled on CPU 0. Legacy INTx: the handler
+/// must read the device's ISR to deassert the line.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn pci_intx_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
+    let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3C) >> 8) & 0xFF;
+    if pin == 0 || pin > 4 {
+        return None;
+    }
+    let spec = crate::dt::pci_intx(bus, slot, func, pin as u8)?;
+    let irq = crate::irqchip::xlate(&spec)?;
+    crate::irqchip::root().unmask(irq);
+    Some(PciIrq { irq, delivery: Delivery::IntX })
 }
 
 /// `/proc/interrupts`.

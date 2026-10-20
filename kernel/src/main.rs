@@ -20,6 +20,7 @@ mod heap;
 mod input;
 mod iommu;
 mod irq;
+mod irqchip;
 mod limine_boot;
 /// Optional Linux syscall compatibility layer (`--features linux_compat`).
 mod personality;

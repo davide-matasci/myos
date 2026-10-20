@@ -480,7 +480,7 @@ pub fn init() {
         if let Some(irq) = irq
             && crate::irq::register(irq, "iommu", interrupt, ctx)
         {
-            crate::arch::irq_unmask_edge(irq);
+            crate::irqchip::root().unmask_edge(irq);
             irqs |= if ctx == 0 { IRQ_EVENTQ } else { IRQ_GERROR };
         }
     }

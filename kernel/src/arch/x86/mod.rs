@@ -1,9 +1,9 @@
 //! x86_64: Limine already dropped us in long mode with HHDM + framebuffer.
 
+mod apic;
 pub mod gdt;
 mod interrupts;
 mod ioapic;
-pub use interrupts::{ipi_reschedule, ipi_reschedule_cpu, ipi_tlb_shootdown};
 mod paging;
 pub mod pci;
 mod power;
@@ -33,7 +33,7 @@ pub fn serial_flush_rx() {
     serial::flush_rx();
 }
 
-/// COM1's interrupt: ISA IRQ 4 (see [`irq_route`]).
+/// COM1's interrupt: ISA IRQ 4 (routed by the I/O APIC, `apic`).
 pub fn serial_irq() -> Option<u32> {
     Some(4)
 }
@@ -68,34 +68,22 @@ pub fn ap_init(logical: usize) {
 /// ACPI describes the platform; there is no device tree.
 pub const PREFER_ACPI: bool = true;
 
+/// The interrupt controllers the kernel drives (`irqchip`).
+pub static IRQCHIPS: &[&crate::irqchip::Driver] = &[&apic::DRIVER];
+
+/// Every PC has its APICs, described by the MADT or not.
+pub const IRQCHIP_DEFAULT: Option<&crate::irqchip::Driver> = Some(&apic::DRIVER);
+
 /// PCI configuration space goes through the MCFG's ECAM window when the
 /// description has one; the rest needs nothing from it (the LAPIC base
 /// comes from its MSR, the console from the COM1 port, configuration space
 /// from port 0xCF8 without an MCFG), so a PC without ACPI tables boots too.
 pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str> {
+    crate::irqchip::start(p)?;
     if let Some(host) = p.pci {
         pci::set_ecam(host.value.base, host.value.bus_start, host.value.bus_end);
     }
     Ok(())
-}
-
-/// No device-tree interrupt specifiers on x86_64.
-pub fn irq_from_dt(_cells: &[u32]) -> Option<u32> {
-    None
-}
-
-/// Give legacy ISA interrupt `irq` (0..15) a LAPIC vector through the I/O
-/// APIC, still masked: the vector is its `irq::dispatch` number. `None`
-/// without an I/O APIC.
-pub fn irq_route(irq: u32) -> Option<u32> {
-    ioapic::route(u8::try_from(irq).ok()?)
-}
-
-/// Unmask ISA `irq` after [`irq_route`]: delivered to the BSP.
-pub fn irq_unmask(irq: u32) {
-    if let Ok(irq) = u8::try_from(irq) {
-        ioapic::unmask(irq);
-    }
 }
 
 /// Fire this CPU's timer at a sleep's deadline when it is before the next tick.
