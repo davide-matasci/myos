@@ -249,6 +249,8 @@ pub fn init() {
         asm!("csrs sie, {}", in(reg) 1 << 5, options(nostack)); // STIE
         asm!("csrs sstatus, {}", in(reg) 1 << 1, options(nostack)); // SIE
     }
+    crate::console::status_info(crate::irqchip::root().name());
+    crate::irqchip::root().init_cpu();
     init_timer();
 }
 
@@ -266,6 +268,7 @@ pub fn ap_init(_logical: usize) {
         // Program STIE+SSIE but leave SIE clear until ap_idle_loop.
         asm!("csrs sie, {}", in(reg) (1 << 5) | (1 << 1), options(nostack));
     }
+    crate::irqchip::root().init_cpu();
     init_timer();
 }
 
@@ -405,15 +408,13 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             return;
         }
         if code == 9 {
-            // Supervisor external interrupt: claim from the PLIC, dispatch,
-            // complete. Loop: several sources may be pending.
-            loop {
-                let src = plic::claim();
-                if src == 0 {
-                    break;
-                }
+            // Supervisor external interrupt: claim from the interrupt
+            // controller (the PLIC), dispatch, complete. Loop: several
+            // sources may be pending.
+            let chip = crate::irqchip::root();
+            while let Some(src) = chip.claim() {
                 crate::irq::dispatch(src);
-                plic::complete(src);
+                chip.complete(src);
             }
             return;
         }
@@ -560,134 +561,4 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             super::exception::riscv64_trap(code, sepc, stval);
         }
     }
-}
-
-
-/// SiFive-style PLIC (base from the device tree), S-mode context of the
-/// boot hart.
-pub mod plic {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    static BASE: AtomicUsize = AtomicUsize::new(0);
-
-    pub fn set_base(base: usize) {
-        BASE.store(base, Ordering::SeqCst);
-    }
-
-    fn base() -> usize {
-        BASE.load(Ordering::Relaxed)
-    }
-    const PRIORITY: usize = 0x0;
-    const ENABLE: usize = 0x2000;
-    const ENABLE_STRIDE: usize = 0x80;
-    const CONTEXT: usize = 0x20_0000;
-    const CONTEXT_STRIDE: usize = 0x1000;
-
-    /// S-mode PLIC context of the BSP (`2 * hartid + 1`), resolved on first use.
-    static CTX: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-    fn ctx() -> usize {
-        let c = CTX.load(Ordering::Relaxed);
-        if c != usize::MAX {
-            return c;
-        }
-        let hart = crate::smp::cpu_hw_id(0) as usize;
-        let c = 2 * hart + 1;
-        CTX.store(c, Ordering::Relaxed);
-        c
-    }
-
-    fn w(off: usize, v: u32) {
-        unsafe { core::ptr::write_volatile((base() + off) as *mut u32, v) }
-    }
-
-    fn r(off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((base() + off) as *const u32) }
-    }
-
-    /// Enable `src` for the BSP's S-mode context (priority 1, threshold 0)
-    /// and turn on supervisor external interrupts.
-    pub fn enable(src: u32) {
-        if src == 0 || src >= 1024 {
-            return;
-        }
-        let c = ctx();
-        w(PRIORITY + 4 * src as usize, 1);
-        let en = ENABLE + c * ENABLE_STRIDE + (src as usize / 32) * 4;
-        w(en, r(en) | (1 << (src % 32)));
-        w(CONTEXT + c * CONTEXT_STRIDE, 0);
-        unsafe {
-            core::arch::asm!("csrs sie, {}", in(reg) 1u64 << 9, options(nostack)); // SEIE
-        }
-    }
-
-    pub fn claim() -> u32 {
-        r(CONTEXT + ctx() * CONTEXT_STRIDE + 4)
-    }
-
-    pub fn complete(src: u32) {
-        w(CONTEXT + ctx() * CONTEXT_STRIDE + 4, src);
-    }
-}
-
-const SBI_EXT_IPI: u64 = 0x73_5049; // "sPI", the SBI spec's IPI extension
-const SBI_IPI_SEND: u64 = 0;
-
-fn sbi_send_ipi(hart_mask: u64, hart_mask_base: u64) {
-    let mut _err: i64;
-    let mut _val: i64;
-    unsafe {
-        asm!(
-            "ecall",
-            in("a7") SBI_EXT_IPI,
-            in("a6") SBI_IPI_SEND,
-            inout("a0") hart_mask as i64 => _err,
-            inout("a1") hart_mask_base as i64 => _val,
-            options(nostack),
-        );
-    }
-}
-
-/// Send a software IPI to every online hart except self (logical indices).
-fn ipi_others() {
-    let self_id = crate::smp::cpu_id();
-    let mut mask = 0u64;
-    let mut base = u64::MAX;
-    for i in 0..crate::smp::MAX_CPUS {
-        if i == self_id || !crate::smp::cpu_online(i) {
-            continue;
-        }
-        let hart = crate::smp::cpu_hw_id(i);
-        if base == u64::MAX {
-            base = hart;
-        }
-        if hart >= base && hart < base + 64 {
-            mask |= 1u64 << (hart - base);
-        } else {
-            // Hart id outside current window — send a singleton.
-            sbi_send_ipi(1, hart);
-        }
-    }
-    if mask != 0 && base != u64::MAX {
-        sbi_send_ipi(mask, base);
-    }
-}
-
-pub fn ipi_tlb_shootdown() {
-    crate::smp::ipi_mark_tlb();
-    ipi_others();
-}
-
-pub fn ipi_reschedule() {
-    crate::smp::ipi_mark_resched();
-    ipi_others();
-}
-
-/// Reschedule IPI to one logical CPU (its hart id via SBI).
-pub fn ipi_reschedule_cpu(cpu: usize) {
-    if !crate::smp::cpu_online(cpu) {
-        return;
-    }
-    crate::smp::ipi_mark_resched();
-    sbi_send_ipi(1, crate::smp::cpu_hw_id(cpu));
 }

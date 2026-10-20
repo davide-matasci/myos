@@ -17,8 +17,11 @@ pub struct Pci {
     regs: *mut u8,
     regs_len: usize,
     irq: usize,
-    /// The interrupt is MSI-X (else MSI).
+    /// The interrupt is MSI-X (else MSI, or the INTx line).
     pub msix: bool,
+    /// The INTx line: masked by /dev/pci from its interrupt until the
+    /// driver quietened the device (a write to `irq`).
+    intx: bool,
 }
 
 /// The first function under `/dev/pci` whose `id VVVV:DDDD` is one of
@@ -50,10 +53,12 @@ pub fn find(ids: &[(u16, u16)]) -> Option<(Vec<u8>, (u16, u16))> {
 
 impl Pci {
     /// Hold the function at `dir`: memory decoding and bus mastering on,
-    /// BAR0 mapped, the interrupt routed (MSI-X or MSI, not INTx).
+    /// BAR0 mapped, the interrupt routed (MSI-X, MSI, or the INTx line of
+    /// the aarch64 and riscv64 boards).
     pub fn open(dir: &[u8]) -> Result<Self, &'static str> {
         let ctl = open_flags(&path(dir, b"/ctl", b""), O_RDWR).ok_or("its ctl does not open (driven, or not root)")?;
-        let mut p = Pci { dir: dir.to_vec(), ctl, regs: core::ptr::null_mut(), regs_len: 0, irq: usize::MAX, msix: false };
+        let mut p =
+            Pci { dir: dir.to_vec(), ctl, regs: core::ptr::null_mut(), regs_len: 0, irq: usize::MAX, msix: false, intx: false };
         if write_fd(ctl, b"enable") != 6 {
             return Err("enable");
         }
@@ -76,12 +81,15 @@ impl Pci {
             return Err("no interrupt");
         }
         let text = p.ctl_text().ok_or("ctl")?;
-        p.msix = match value(&text, b"irq ") {
-            Some(b"msix") => true,
-            Some(b"msi") => false,
-            _ => return Err("no MSI-X or MSI"),
+        (p.msix, p.intx) = match value(&text, b"irq ") {
+            Some(b"msix") => (true, false),
+            Some(b"msi") => (false, false),
+            Some(b"intx") => (false, true),
+            _ => return Err("no interrupt"),
         };
-        p.irq = open_flags(&path(dir, b"/irq", b""), O_RDONLY).ok_or("irq")?;
+        p.irq = open_flags(&path(dir, b"/irq", b""), O_RDWR).ok_or("irq")?;
+        // A line starts masked.
+        p.irq_done();
         Ok(p)
     }
 
@@ -179,6 +187,12 @@ impl Device for Pci {
 
     fn now_us(&mut self) -> u64 {
         monotonic_ns() / 1000
+    }
+
+    fn irq_done(&mut self) {
+        if self.intx {
+            write_fd(self.irq, b"");
+        }
     }
 }
 

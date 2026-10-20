@@ -9,6 +9,7 @@ use spin::Mutex;
 
 use crate::arch;
 use crate::console;
+use crate::irqchip::{Ipi, Target};
 use crate::limine_boot;
 
 pub const MAX_CPUS: usize = 8;
@@ -267,7 +268,7 @@ pub fn tlb_shootdown() {
         return;
     }
     ipi_mark_tlb();
-    arch::ipi_tlb_shootdown();
+    crate::irqchip::root().send_ipi(Target::Others, Ipi::Tlb);
     let mut spins = 0u32;
     while !tlb_all_seen(epoch) && spins < 2_000_000 {
         // Soft-ACK path for peers stuck briefly cli in schedule/wait.
@@ -284,7 +285,7 @@ pub fn kick_cpu(cpu: usize) {
         return;
     }
     ipi_mark_resched();
-    arch::ipi_reschedule_cpu(cpu);
+    crate::irqchip::root().send_ipi(Target::Cpu(cpu), Ipi::Resched);
 }
 
 /// Wake idle CPUs so they notice newly-ready tasks.
@@ -293,7 +294,7 @@ pub fn kick_cpus() {
         return;
     }
     ipi_mark_resched();
-    arch::ipi_reschedule();
+    crate::irqchip::root().send_ipi(Target::Others, Ipi::Resched);
 }
 
 pub fn cpuinfo_text() -> alloc::vec::Vec<u8> {

@@ -23,6 +23,43 @@ ABI version: **21** (`blk_unregister`, `service_register` / `service_lookup`, `t
 
 Boot modules come from the initramfs: `/lib/modules/<name>` for each name in `/lib/modules/boot.list` (`src/limine_image.rs` `BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
 
+## Interrupt controllers
+
+Every arch drives its root interrupt controller through one interface,
+`irqchip::IrqChip` (`kernel/src/irqchip.rs`): `init_cpu` (the BSP's side,
+then each AP's), `route` and `unmask` (a device's interrupt to the BSP),
+`claim` and `complete` (what the interrupt entry takes and ends), and
+`send_ipi` (TLB shootdown, reschedule; to one CPU or to every other).
+Each arch lists the drivers it has in `arch::IRQCHIPS`:
+
+| Arch | Driver | Device tree `compatible` | ACPI | File |
+|------|--------|--------------------------|------|------|
+| x86_64 | `apic`: the local APICs and the I/O APIC | — | MADT (also without it) | `arch/x86/apic.rs` |
+| aarch64 | `gicv2` | `arm,cortex-a15-gic`, `arm,gic-400`, `arm,cortex-a9-gic` | MADT GICD + GICC | `arch/aarch64/gic.rs` |
+| aarch64 | `gicv3` | `arm,gic-v3` | MADT GICD + GICR | `arch/aarch64/gic.rs` |
+| aarch64 | `bcm2836`: the Raspberry Pi 3's local and peripheral controllers | `brcm,bcm2836-l1-intc` + `brcm,bcm2836-armctrl-ic` | — | `arch/aarch64/bcm2836.rs` |
+| riscv64 | `plic` (with the SBI's IPIs) | `sifive,plic-1.0.0`, `riscv,plic0` | — | `arch/riscv64/plic.rs` |
+
+A driver (`irqchip::Driver`) is what is known before the controller runs:
+its name, the device tree nodes it is made of (each with its
+`compatible` strings and the number of `reg` entries it takes), `xlate`
+(an interrupt specifier of one of its nodes to an interrupt number) and
+`start` (its registers mapped from the description, the running
+controller returned). The platform description names the driver
+(`intc gicv2 ...` in `/proc/platform`, below): `dt::fill` takes the first
+of the arch's drivers whose nodes the tree has, the MADT names a GIC or
+the APICs, and `irqchip::start` starts it from `arch::apply_platform`
+(x86_64 starts `apic` without a description too). A device tree
+interrupt specifier is decoded by the driver its `interrupt-parent` (or
+the host bridge's `interrupt-map` entry) names, whichever controller the
+board's root is (`irqchip::xlate`); one whose parent no driver is made of
+is not delivered.
+
+Adding a controller is a file implementing `IrqChip` with its `Driver`,
+and the driver in its arch's `IRQCHIPS`. aarch64's controllers number
+their interrupts as the GIC does (SGI 0 and 1 the IPIs, PPI 27 and 30
+the timers, 32 and up the devices), which the interrupt entry reads.
+
 ## Device interrupts
 
 `kernel/src/irq.rs` keeps one handler per interrupt number and `pci_irq_setup`
@@ -37,10 +74,10 @@ use an MSI-X table entry or the INTx line:
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
 A board device's own interrupt goes through `irq::enable` (modules:
-`KernelApi::irq_enable`, ABI 33), which registers the handler before it
-unmasks the line. On aarch64 and riscv64 the number is the one the device
-tree or the SPCR gives (a GIC SPI, a PLIC source; `MmioDevice::irq` for a
-module). On x86_64 it is a legacy ISA IRQ: `arch/x86/ioapic.rs` drives the
+`KernelApi::irq_enable`, ABI 33), which registers the handler before the
+interrupt controller unmasks the line. On aarch64 and riscv64 the number
+is the one the device tree (decoded by its controller's driver) or the
+SPCR gives (a GIC SPI, a PLIC source; `MmioDevice::irq` for a module). On x86_64 it is a legacy ISA IRQ: `arch/x86/ioapic.rs` drives the
 MADT's first I/O APIC, takes the GSI and polarity/trigger from the
 interrupt source overrides, and points the pin at a fresh device vector
 on the BSP (the 8259s stay masked). The console's input uses it: the UART's
@@ -81,7 +118,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | Component | ACPI | Device tree (`compatible`) |
 |------|------|------|
 | CPUs | MADT enabled LAPIC / x2APIC / GICC entries | `/cpus` children |
-| Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | `arm,cortex-a15-gic` / `arm,gic-400` (GICv2), `arm,gic-v3`, `brcm,bcm2836-l1-intc` + `brcm,bcm2836-armctrl-ic` (the Raspberry Pi 3's local and peripheral controllers, `docs/raspberry-pi.md`), `sifive,plic-1.0.0` / `riscv,plic0` |
+| Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | the nodes of the arch's drivers ("Interrupt controllers" above: the GICs, the Raspberry Pi 3's two, `docs/raspberry-pi.md`, the PLIC) |
 | Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | the one `/chosen` `stdout-path` names (through `/aliases`), else the first `arm,pl011`, else the first `ns16550a` / `ns16550` / `snps,dw-apb-uart` / `brcm,bcm2835-aux-uart` (the Pi's mini UART); + `interrupts` |
 | RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: no RTC, no wall clock) |
 | Timers | GTDT: EL1 physical and virtual timer INTIDs | `/cpus` `timebase-frequency` (riscv64 `time` CSR rate) |
@@ -92,9 +129,10 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
 | PSCI (aarch64 power-off and reset, `docs/power.md`) | FADT arm boot flags: PSCI compliant, HVC or SMC | `arm,psci-1.0` / `arm,psci-0.2` / `arm,psci`: `method` |
 
-What each arch requires of the description: aarch64 a GIC (v2: the
-distributor and the CPU interface; v3: the distributor and the
-redistributor region, below) or a Raspberry Pi 3's two controllers, a PL011 or a 16550 (with its register stride
+What each arch requires of the description: aarch64 an interrupt
+controller it has a driver for (a GICv2: the distributor and the CPU
+interface; a GICv3: the distributor and the redistributor region, below;
+a Raspberry Pi 3's two controllers), a PL011 or a 16550 (with its register stride
 and access width: the tree's `reg-shift` / `reg-io-width`, the SPCR's
 access size), and a PCIe host bridge, when it has one, with a 32-bit MMIO
 window (one the kernel cannot drive leaves the board without PCI); riscv64 a PLIC, a
@@ -161,8 +199,9 @@ host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine options and
 `-smp` as the boot) into the ESP as `boot/virt-aarch64.dtb` /
 `boot/virt.dtb` and `limine.conf` passes it with `global_dtb`; AAVMF also
 publishes ACPI tables, so the aarch64 boots exercise the agreement check
-(`source acpi+dt`). Interrupt specifiers of the tree are decoded per arch
-(`arch::irq_from_dt`: GIC `<type number flags>` → INTID, PLIC `<source>`).
+(`source acpi+dt`). Interrupt specifiers of the tree are decoded by the
+driver of their interrupt parent (`irqchip::xlate`: GIC `<type number
+flags>` → INTID, the Pi 3's `<bank number>`, PLIC `<source>`).
 
 Handlers run in interrupt context with interrupts masked on CPU 0. On INTx
 the handler must read the device's ISR register so the level line deasserts
@@ -449,7 +488,7 @@ Running until `finish_switch`, also one a wake already made Ready while it
 halted there: left Ready, a peer could resume it from its previous, stale
 switch frame before `task_switch` saved the new one. `wake` queues the
 woken task for its home CPU (or marks the CPU it is halting on), and sends
-a **targeted** reschedule IPI (`arch::ipi_reschedule_cpu`: the LAPIC ICR with
+a **targeted** reschedule IPI (`IrqChip::send_ipi` to one CPU: the LAPIC ICR with
 a destination, a GIC SGI to one CPU (v2: a CPUTargetList bit, v3: the affinity in `ICC_SGI1R_EL1`), SBI IPI with a single
 hart) only when that CPU is halted.
 
