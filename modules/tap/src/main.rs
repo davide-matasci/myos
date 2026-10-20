@@ -193,7 +193,7 @@ unsafe extern "C" fn tap_listdir(path: *const u8, len: usize, buf: *mut u8, cap:
 }
 
 /// `prog`: the NIC comes with its program, one at a time, root.
-unsafe extern "C" fn tap_open(path: *const u8, len: usize) -> i32 {
+unsafe extern "C" fn tap_open(path: *const u8, len: usize, _out: *mut u8, _out_cap: usize) -> i32 {
     let Some(Node::File(i, f)) = node(path, len) else {
         return 0;
     };

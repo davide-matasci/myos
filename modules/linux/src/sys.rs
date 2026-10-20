@@ -682,28 +682,28 @@ pub fn pipe2(fds: usize, flags: usize) -> R {
 // ---- event counters and timers (docs/events.md) ---------------------------
 
 /// `/dev/<kind>`'s VFS path. `/dev` is the system's, also inside a
-/// `linux --root` chroot (a bind): the objects' `clone`, `ctl` and
-/// `status` are reached by VFS path, as `/net`'s conversations are.
+/// `linux --root` chroot (a bind): the objects' `ctl` and `status` are
+/// reached by VFS path, as `/net`'s conversations are.
 fn evfd_root(kind: &str) -> R2<String> {
     user::resolve_copied_path(&alloc::format!("/dev/{kind}")).ok_or(ENOMEM)
 }
 
-/// A new object at `/dev/<kind>/clone`: its number.
-fn evfd_clone(kind: &str) -> R2<usize> {
-    let mut b = [0u8; 16];
-    let n = fs::read(&alloc::format!("{}/clone", evfd_root(kind)?), 0, &mut b).ok_or(ENOMEM)?;
-    core::str::from_utf8(&b[..n]).ok().and_then(|t| t.trim().parse().ok()).ok_or(ENOMEM)
-}
-
-/// An fd on a new object of `kind` (its `data`), with the `O_CLOEXEC` and
-/// `O_NONBLOCK` of `flags`, and its directory's VFS path.
+/// An fd on a new object of `kind` (its `data`: opening `/dev/<kind>/clone`
+/// makes it), with the `O_CLOEXEC` and `O_NONBLOCK` of `flags`, and its
+/// directory's VFS path.
 fn evfd_open(kind: &str, flags: usize) -> R2<(usize, String)> {
-    let id = evfd_clone(kind)?;
-    let fd = native(user::open_path(&alloc::format!("/dev/{kind}/{id}/data"), 2), EMFILE)?;
+    let fd = native(user::open_path(&alloc::format!("/dev/{kind}/clone"), 2), EMFILE)?;
     files::remove(fd);
+    let dir = match evfd_dir(fd, kind) {
+        Ok(dir) => dir,
+        Err(e) => {
+            close(fd).ok();
+            return Err(e);
+        }
+    };
     files::set_cloexec(fd, flags & O_CLOEXEC != 0);
     files::set_nonblock(fd, flags & O_NONBLOCK != 0);
-    Ok((fd, alloc::format!("{}/{id}", evfd_root(kind)?)))
+    Ok((fd, dir))
 }
 
 /// The directory (`/dev/<kind>/N`, VFS path) of the object `fd` is open on.

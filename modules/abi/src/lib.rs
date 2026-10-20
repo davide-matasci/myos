@@ -77,7 +77,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// ([`KernelApi::task_set_pdeath_signal`], `task_pdeath_signal`).
 /// 49: the IOMMU confines a function a program drives
 /// ([`KernelApi::iommu_attach`], `iommu_map`, `iommu_detach`).
-pub const ABI_VERSION: u32 = 49;
+/// 50: a file's [`ModuleVfsOps::open`] may name another file for the fd
+/// (a `clone` opens the new object's `data`, `docs/events.md`).
+pub const ABI_VERSION: u32 = 50;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -238,8 +240,13 @@ pub struct ModuleVfsOps {
     // --- ABI 20: exclusive files ---
     /// Optional: an `open(2)` of `path` (not a `dup` or a `fork`): 0 lets it
     /// through, negative refuses it (a file one program holds at a time).
-    /// `release` follows when the last fd of the file closes.
-    pub open: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
+    /// `release` follows when the last fd of the file closes. Positive
+    /// (ABI 50): the fd is on another file, named by that many bytes the
+    /// hook wrote to `out` (at most `out_cap`), relative to `path`'s
+    /// directory: a `clone` that made a new conversation names its
+    /// `N/data`. That file's own `open` follows; a second redirect fails
+    /// the open.
+    pub open: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, out: *mut u8, out_cap: usize) -> i32>,
     // --- ABI 25: file times ---
     /// Optional: set `path`'s access and modification times, in seconds
     /// since the epoch ([`MYOS_TIME_OMIT`] keeps one): 0, or negative.

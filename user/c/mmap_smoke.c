@@ -284,7 +284,9 @@ static long faults(void) {
 /* Fault-around: a fault on a page of a file maps the following pages the
  * page cache holds too (16 in all). A first mapping reads the file's 16
  * pages, a fault each (the cache has them from then on); a second mapping
- * then reads them all with one fault. */
+ * then reads them all with one fault. The reads are volatile: in order,
+ * first page first (a compiler may otherwise load the last ones first,
+ * and fault-around maps the pages after a fault, not those before it). */
 static void fault_around(void) {
     const char *f = in_dir("mmap_around");
     int fd = make_file(f, 16);
@@ -295,13 +297,13 @@ static void fault_around(void) {
     check(p != MAP_FAILED, "a 16-page private mapping");
     if (p != MAP_FAILED) {
         for (int i = 0; i < 16; i++) {
-            sum += p[i * PAGE];
+            sum += ((volatile unsigned char *)p)[i * PAGE];
         }
         q = mmap(NULL, 16 * PAGE, PROT_READ, MAP_PRIVATE, fd, 0);
         check(q != MAP_FAILED, "a second mapping of the file");
         before = faults();
         for (int i = 0; i < 16; i++) {
-            sum += q[i * PAGE];
+            sum += ((volatile unsigned char *)q)[i * PAGE];
         }
         after = faults();
         if (before < 0 || after < 0) {

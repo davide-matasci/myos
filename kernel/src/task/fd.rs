@@ -349,18 +349,27 @@ fn user_buf_ok(buf: usize, len: usize, t: &Process) -> bool {
 }
 
 /// An fd on `node`, opened with `flags`, granting `rights` beneath it (see
-/// [`OpenFile::rights`]).
-pub fn fd_open(node: crate::fs::Vnode, flags: u32, rights: crate::sec::Rights) -> Option<usize> {
+/// [`OpenFile::rights`]). `Err(Some(name))`: its module put the fd on
+/// another file, `name` beside `node` (`OpenHook::Instead`), for the
+/// caller to open; `Err(None)`: no fd.
+pub fn fd_open(
+    node: crate::fs::Vnode,
+    flags: u32,
+    rights: crate::sec::Rights,
+) -> Result<usize, Option<alloc::string::String>> {
+    use crate::fs::vfs::OpenHook;
     let readable = flags & 3 != 1;
     let writable = crate::fs::open_writable(flags);
     let append = crate::fs::open_append(flags);
     // A file one program holds at a time (`/dev/console/kbd`) may say no.
-    if !crate::fs::vfs::open_hook(&node) {
-        return None;
+    match crate::fs::vfs::open_hook(&node) {
+        OpenHook::Pass => {}
+        OpenHook::Refuse => return Err(None),
+        OpenHook::Instead(name) => return Err(Some(name)),
     }
     let Some(id) = open_file_alloc(node.clone(), readable, writable, append, rights) else {
         crate::fs::vfs::open_hook_undo(&node);
-        return None;
+        return Err(None);
     };
     let fd = with_process_mut(|t| {
         for i in 0..MAX_FDS {
@@ -377,7 +386,7 @@ pub fn fd_open(node: crate::fs::Vnode, flags: u32, rights: crate::sec::Rights) -
         open_file_unref(id);
         crate::fs::vfs::open_hook_undo(&node);
     }
-    fd
+    fd.ok_or(None)
 }
 
 /// A pipe: its read and write ends, both closing at exec if `cloexec`.

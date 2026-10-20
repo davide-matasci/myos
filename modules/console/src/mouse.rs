@@ -203,7 +203,7 @@ unsafe extern "C" fn mouse_read(path: *const u8, len: usize, _pos: usize, buf: *
     n as i32
 }
 
-unsafe extern "C" fn mouse_open(path: *const u8, len: usize) -> i32 {
+unsafe extern "C" fn mouse_open(path: *const u8, len: usize, _out: *mut u8, _out_cap: usize) -> i32 {
     if !root(path, len) || HELD.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return -1;
     }

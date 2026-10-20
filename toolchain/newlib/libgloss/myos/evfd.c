@@ -2,10 +2,10 @@
  * the kernel's event counters (/dev/event), timers (/dev/timer), wait sets
  * (/dev/wait) and signal fds (/dev/sig), docs/events.md.
  *
- * Reading /dev/event/clone (or /dev/timer/clone, /dev/wait/clone,
- * /dev/sig/clone) makes an object and answers its number N; the fd a
- * program holds is N/data, read and written by the kernel as the Linux fd
- * is. What Linux does in the eventfd/timerfd/epoll/signalfd calls
+ * Opening /dev/event/clone (or /dev/timer/clone, /dev/wait/clone,
+ * /dev/sig/clone) makes an object and is its N/data: the fd a program
+ * holds, read and written by the kernel as the Linux fd is, and the
+ * object's until its last close. What Linux does in the eventfd/timerfd/epoll/signalfd calls
  * themselves goes to N/ctl as text (`semaphore`, `arm FIRST [INTERVAL]
  * [abs] [realtime]`, `disarm`, `add FD EVENTS COOKIE`, `mask N,N`, ...)
  * and comes back from N/status; the fd's /proc/self/fd link names the
@@ -74,31 +74,24 @@ static int write_file(const char *path, const char *text) {
     return n < 0 ? -1 : 0;
 }
 
-/* A new object of `kind` ("event", "timer"): its `data` opened O_RDWR, the
- * O_CLOEXEC / O_NONBLOCK of `flags` applied, and its directory in `dir`. */
+static int fd_dir(int fd, const char *kind, char *dir);
+
+/* A new object of `kind` ("event", "timer"): opening /dev/<kind>/clone
+ * makes it and is its `data`, opened O_RDWR, the O_CLOEXEC / O_NONBLOCK of
+ * `flags` applied; its directory in `dir`. */
 static int clone_open(const char *kind, int flags, char *dir) {
     char path[EVFD_PATH];
-    char id[24];
-    int n, fd;
+    int fd;
     strcpy(path, "/dev/");
     strcat(path, kind);
     strcat(path, "/clone");
-    n = read_file(path, id, sizeof id);
-    if (n <= 0 || id[0] < '0' || id[0] > '9') {
-        errno = n < 0 ? errno : EIO;
-        return -1;
-    }
-    if (id[n - 1] == '\n') {
-        id[n - 1] = '\0';
-    }
-    strcpy(dir, "/dev/");
-    strcat(dir, kind);
-    strcat(dir, "/");
-    strcat(dir, id);
-    strcpy(path, dir);
-    strcat(path, "/data");
     fd = open(path, O_RDWR | (flags & O_CLOEXEC));
     if (fd < 0) {
+        return -1;
+    }
+    if (fd_dir(fd, kind, dir) < 0) {
+        close(fd);
+        errno = EIO;
         return -1;
     }
     if (flags & O_NONBLOCK) {

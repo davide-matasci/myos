@@ -176,7 +176,7 @@ starts, is one, so it cannot be typed at the console.
   its files. The event counters, timers, wait sets and signal fds
   (`/dev/event/N`, `/dev/timer/N`, `/dev/wait/N`, `/dev/sig/N`:
   `docs/events.md`) are `dev.common`, every user's to make, and belong the
-  same way to the user whose process read `clone`.
+  same way to the user whose process opened `clone`.
 - The terminals (`/dev/ttyN`, `/dev/ttyS0`, `/dev/pts/N`: `docs/tty.md`)
   are `dev.tty`, and each takes its user as the label's owner,
   `dev.tty(alice)`: the user of the leader of the session that claimed it

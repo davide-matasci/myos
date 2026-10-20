@@ -57,15 +57,15 @@ impl Conv {
     }
 
     /// A new conversation, `cmd` written to its `ctl` (`announce NAME`,
-    /// `connect NAME`).
+    /// `connect NAME`). Opening `clone` makes it: that fd is its `data`.
     pub fn new(cmd: &[u8]) -> Option<Conv> {
-        let fd = open_flags(b"/net/unix/clone", O_RDWR)?;
-        let mut buf = [0u8; 16];
-        let k = read(fd, &mut buf);
-        let n = buf.get(..k).and_then(number);
-        let conv = n.and_then(Conv::open);
-        close(fd);
-        let conv = conv?;
+        let (data, n) = myos_user::clone_conv(b"/net/unix")?;
+        let mut p = [0u8; 48];
+        let Some(ctl) = open_flags(path(&mut p, u32::from(n), b"ctl"), O_RDWR) else {
+            close(data);
+            return None;
+        };
+        let conv = Conv { n: u32::from(n), ctl, data };
         if write_fd(conv.ctl, cmd) != cmd.len() {
             conv.close();
             return None;

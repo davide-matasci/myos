@@ -683,7 +683,7 @@ fn handle_clone(
         }
         _ => {}
     }
-    // The process that read `clone` holds the conversation.
+    // The process that opened `clone` holds the conversation.
     convs[i].held = true;
 }
 

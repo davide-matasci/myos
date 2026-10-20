@@ -11,28 +11,31 @@ kernel (`kernel/src/evfd.rs`), as directories under `/dev` the Plan 9 way
 `/net` conversations (`docs/sockets-curl.md`):
 
 ```
-/dev/event/clone         read: allocates an event counter, answers its number N
+/dev/event/clone         open: allocates an event counter, the fd is its N/data
 /dev/event/N/data        the counter: 8-byte reads take the count, 8-byte writes add to it
 /dev/event/N/ctl         commands: semaphore | counter | add N
 /dev/event/N/status      count N / mode counter|semaphore
-/dev/timer/clone         read: allocates a timer, answers its number N
+/dev/timer/clone         open: allocates a timer, the fd is its N/data
 /dev/timer/N/data        the timer: 8-byte reads take the expirations since the last
 /dev/timer/N/ctl         commands: arm FIRST [INTERVAL] [abs] [realtime] | disarm
 /dev/timer/N/status      armed LEFT INTERVAL | disarmed
-/dev/wait/clone          read: allocates a wait set, answers its number N
+/dev/wait/clone          open: allocates a wait set, the fd is its N/data
 /dev/wait/N/data         the set: 16-byte reads take the ready members {u64 cookie, u32 events, u32 0}
 /dev/wait/N/ctl          commands: add FD EVENTS COOKIE | mod FD EVENTS COOKIE | del FD
 /dev/wait/N/status       members N, then one FD EVENTS COOKIE line per member
-/dev/sig/clone           read: allocates a signal fd, answers its number N
+/dev/sig/clone           open: allocates a signal fd, the fd is its N/data
 /dev/sig/N/data          the fd: 16-byte reads take the reader's pending signals of the mask {u32 signo, u32 code, i32 pid, u32 uid}
 /dev/sig/N/ctl           commands: mask N,N,... | mask none
 /dev/sig/N/status        mask N,N,... | mask none
 /proc/self/fd/N          symlink: /dev/event/3/data for a counter, /dev/timer/0/data, /dev/wait/1/data, /dev/sig/0/data
 ```
 
-A program reads `clone` once (the number comes as text, `3\n`), opens
-`N/data` and keeps that fd: it is the eventfd, timerfd, epoll fd or
-signalfd. The kernel knows the fd as its own kind (`FdEntry::Event`,
+A program opens `clone` and keeps that fd: it is the new object's
+`N/data`, the eventfd, timerfd, epoll fd or signalfd, as opening
+`/dev/pts/clone` gives a new pair's master (`docs/tty.md`) and opening a
+`/net` protocol's `clone` a new conversation's `data`
+(`docs/sockets-curl.md`). The object is the fd's: it goes with the last
+fd on it, so none is ever left that nobody holds. The kernel knows the fd as its own kind (`FdEntry::Event`,
 `FdEntry::Timer`, `FdEntry::Wait`, `FdEntry::Sig` in
 `kernel/src/task/fd.rs`): `read`, `write` and `poll` on it are the
 kernel's,
@@ -185,16 +188,19 @@ number, the rest 0).
 
 ## From the shell
 
+A shell holds an object with an fd on its `clone`, and finds its
+directory through the fd's link:
+
 ```
-$ id=$(cat /dev/event/clone); echo add 2 > /dev/event/$id/ctl; cat /dev/event/$id/status
+$ exec 3<> /dev/event/clone; d=$(readlink /proc/self/fd/3); d=${d%/data}
+$ echo add 2 > $d/ctl; cat $d/status
 count 2
 mode counter
-$ id=$(cat /dev/timer/clone); echo arm 1000000000 500000000 > /dev/timer/$id/ctl; cat /dev/timer/$id/status
-armed 999871000 500000000
+$ exec 3>&-
 ```
 
-An object made this way, with its `data` never opened, stays until a
-program opens and closes it (as a `/net` conversation does).
+(`cat /dev/event/clone` makes a counter and reads it: it waits for a
+count, as a read of an eventfd does.)
 
 ## Tests
 

@@ -178,6 +178,34 @@ static int conv_path(char *out, size_t cap, const char *proto_path,
     return (int)pos;
 }
 
+static int parse_clone_id(const char *buf, size_t n, unsigned short *out);
+
+/* The number of the conversation of `proto_path` (/net/tcp) whose data
+ * `fd` is open on, from its /proc/self/fd link: 0, or -1 when it is none. */
+static int fd_conv(int fd, const char *proto_path, unsigned short *id) {
+    char link[32] = "/proc/self/fd/";
+    char path[64];
+    size_t plen = strlen(proto_path);
+    const char *rest;
+    ssize_t n;
+    if (fd < 0 || myos_u16_dec(link + 14, sizeof link - 14, (unsigned)fd) < 0) {
+        return -1;
+    }
+    n = readlink(link, path, sizeof path - 1);
+    if (n <= 0) {
+        return -1;
+    }
+    path[n] = '\0';
+    if (strncmp(path, proto_path, plen) != 0 || path[plen] != '/') {
+        return -1;
+    }
+    rest = path + plen + 1;
+    if (parse_clone_id(rest, strcspn(rest, "/"), id) < 0 || strcmp(rest + strcspn(rest, "/"), "/data") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int buf_has(const char *hay, size_t n, const char *needle) {
     size_t m = strlen(needle);
     size_t i;
@@ -656,9 +684,6 @@ int socket(int domain, int type, int protocol) {
     struct myos_sock *s;
     char clone_path[32];
     char path[64];
-    char idbuf[16];
-    ssize_t n;
-    int clone_fd;
     int data_fd;
     int ctl_fd;
     unsigned short id;
@@ -699,21 +724,16 @@ int socket(int domain, int type, int protocol) {
         clone_path[pos++] = '/';
         myos_cpy(clone_path + pos, sizeof clone_path - pos, "clone");
     }
-    clone_fd = open(clone_path, O_RDONLY);
-    if (clone_fd < 0) {
+    /* Opening clone makes the conversation, and the fd is on its data: the
+     * socket. Its last close hangs the conversation up. */
+    data_fd = open(clone_path, O_RDWR);
+    if (data_fd < 0) {
         sock_free(s);
         errno = EIO;
         return -1;
     }
-    n = read(clone_fd, idbuf, sizeof idbuf);
-    close(clone_fd);
-    if (n <= 0 || parse_clone_id(idbuf, (size_t)n, &id) < 0) {
-        sock_free(s);
-        errno = EIO;
-        return -1;
-    }
-
-    if (conv_path(path, sizeof path, proto, id, "ctl") < 0) {
+    if (fd_conv(data_fd, proto, &id) < 0 || conv_path(path, sizeof path, proto, id, "ctl") < 0) {
+        close(data_fd);
         sock_free(s);
         errno = EIO;
         return -1;
@@ -724,20 +744,7 @@ int socket(int domain, int type, int protocol) {
         ctl_fd = open(path, O_WRONLY);
     }
     if (ctl_fd < 0) {
-        sock_free(s);
-        errno = EIO;
-        return -1;
-    }
-
-    if (conv_path(path, sizeof path, proto, id, "data") < 0) {
-        close(ctl_fd);
-        sock_free(s);
-        errno = EIO;
-        return -1;
-    }
-    data_fd = open(path, O_RDWR);
-    if (data_fd < 0) {
-        close(ctl_fd);
+        close(data_fd);
         sock_free(s);
         errno = EIO;
         return -1;

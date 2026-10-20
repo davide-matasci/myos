@@ -672,7 +672,9 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
     }
     // An event counter's, a timer's, a wait set's or a signal fd's data
     // (docs/events.md): the fd is of that kind, its I/O routed via
-    // crate::evfd.
+    // crate::evfd. Opening the directory's `clone` makes a new object and
+    // is its data, as /dev/pts/clone is a new pair's master: the object
+    // lives as long as its fds, so none is left behind with nobody's.
     for (kind, prefix) in [
         (fs::evfs::Kind::Event, "dev/event/"),
         (fs::evfs::Kind::Timer, "dev/timer/"),
@@ -680,6 +682,9 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
         (fs::evfs::Kind::Sig, "dev/sig/"),
     ] {
         if let Some(rest) = path_rel.strip_prefix(prefix) {
+            if rest == "clone" {
+                return kind.alloc().and_then(|id| task::fd_open_evfd(kind, id)).unwrap_or(SYSERR);
+            }
             if let Some(id) = fs::evfs::data_id(kind, rest) {
                 return task::fd_open_evfd(kind, id).unwrap_or(SYSERR);
             }
@@ -706,8 +711,17 @@ fn open_fd(path: alloc::string::String, rights: Rights, flags: usize, tree: fs::
         return SYSERR;
     };
     match task::fd_open(node, flags as u32, rights) {
-        Some(fd) => fd,
-        None => SYSERR,
+        Ok(fd) => fd,
+        Err(None) => SYSERR,
+        // A module's door to a new object (`/net/tcp/clone`): the fd is on
+        // the object's file it named, beside the door.
+        Err(Some(name)) => {
+            let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            let Some(node) = fs::open(&alloc::format!("{dir}/{name}"), flags as u32) else {
+                return SYSERR;
+            };
+            task::fd_open(node, flags as u32, rights).unwrap_or(SYSERR)
+        }
     }
 }
 

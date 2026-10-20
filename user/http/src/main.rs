@@ -264,35 +264,11 @@ fn tcp_hangup(id: u16) {
 }
 
 fn tcp_connect(ip: &[u8], port: u16) -> (u16, usize) {
-    let Some(clone) = open(b"/net/tcp/clone") else {
+    // The fd is on the new conversation's data: its last close (exit
+    // included) hangs it up.
+    let Some((data, id)) = myos_user::clone_conv(b"/net/tcp") else {
         fail(b"open /net/tcp/clone fail\n");
     };
-    let mut idbuf = [0u8; 16];
-    let n = read(clone, &mut idbuf);
-    close(clone);
-    if n == 0 || n == usize::MAX {
-        fail(b"read clone fail\n");
-    }
-    let mut id: u16 = 0;
-    let mut any = false;
-    for &b in &idbuf[..n] {
-        match b {
-            b'\n' | b'\r' | b' ' => break,
-            _ => {
-                if !b.is_ascii_digit() {
-                    fail(b"clone id fail\n");
-                }
-                any = true;
-                id = match id.checked_mul(10).and_then(|x| x.checked_add((b - b'0') as u16)) {
-                    Some(y) => y,
-                    None => fail(b"clone id fail\n"),
-                };
-            }
-        }
-    }
-    if !any {
-        fail(b"clone id fail\n");
-    }
 
     let mut pbuf = [0u8; 40];
     let pn = conv_path(&mut pbuf, id, b"ctl");
@@ -326,10 +302,6 @@ fn tcp_connect(ip: &[u8], port: u16) -> (u16, usize) {
         fail(b"tcp connect timeout\n");
     }
 
-    let dn = conv_path(&mut pbuf, id, b"data");
-    let Some(data) = open_flags(&pbuf[..dn], O_RDWR) else {
-        fail(b"open data fail\n");
-    };
     (id, data)
 }
 
