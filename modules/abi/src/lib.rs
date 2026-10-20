@@ -75,9 +75,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// DMA and the caches in step.
 /// 48: a process may ask for a signal when its parent ends
 /// ([`KernelApi::task_set_pdeath_signal`], `task_pdeath_signal`).
-/// 49: a file's [`ModuleVfsOps::open`] may name another file for the fd
+/// 49: the IOMMU confines a function a program drives
+/// ([`KernelApi::iommu_attach`], `iommu_map`, `iommu_detach`).
+/// 50: a file's [`ModuleVfsOps::open`] may name another file for the fd
 /// (a `clone` opens the new object's `data`, `docs/events.md`).
-pub const ABI_VERSION: u32 = 49;
+pub const ABI_VERSION: u32 = 50;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -239,7 +241,7 @@ pub struct ModuleVfsOps {
     /// Optional: an `open(2)` of `path` (not a `dup` or a `fork`): 0 lets it
     /// through, negative refuses it (a file one program holds at a time).
     /// `release` follows when the last fd of the file closes. Positive
-    /// (ABI 49): the fd is on another file, named by that many bytes the
+    /// (ABI 50): the fd is on another file, named by that many bytes the
     /// hook wrote to `out` (at most `out_cap`), relative to `path`'s
     /// directory: a `clone` that made a new conversation names its
     /// `N/data`. That file's own `open` follows; a second redirect fails
@@ -1043,6 +1045,16 @@ pub struct KernelApi {
     /// The holder of the function's claim into `out`: its length, 0 when
     /// the function is free.
     pub pci_owner: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, out: *mut u8, cap: usize) -> usize,
+    // --- ABI 49 ---
+    /// Confine the PCI function's DMA to a domain of its own, empty until
+    /// `iommu_map`: the domain, or -1 when no IOMMU translates for the
+    /// function (its DMA reaches all of memory, as a kernel driver's).
+    pub iommu_attach: unsafe extern "C" fn(bus: u8, slot: u8, func: u8) -> i32,
+    /// Let the domain's devices reach `[phys, phys + len)` (whole pages),
+    /// at that address: 0, or -1 (no such domain, no memory).
+    pub iommu_map: unsafe extern "C" fn(domain: i32, phys: u64, len: usize) -> i32,
+    /// The function back in passthrough, its domain and mappings gone.
+    pub iommu_detach: unsafe extern "C" fn(bus: u8, slot: u8, func: u8),
 }
 
 /// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
@@ -1589,6 +1601,20 @@ impl KernelApi {
     pub fn pci_owner<'a>(&self, bus: u8, slot: u8, func: u8, out: &'a mut [u8; PCI_OWNER_MAX]) -> &'a [u8] {
         let n = unsafe { (self.pci_owner)(bus, slot, func, out.as_mut_ptr(), out.len()) };
         &out[..n.min(PCI_OWNER_MAX)]
+    }
+
+    /// The function's own IOMMU domain, or `None` without an IOMMU for it.
+    pub fn iommu_attach(&self, bus: u8, slot: u8, func: u8) -> Option<i32> {
+        let d = unsafe { (self.iommu_attach)(bus, slot, func) };
+        (d >= 0).then_some(d)
+    }
+
+    pub fn iommu_map(&self, domain: i32, phys: u64, len: usize) -> bool {
+        unsafe { (self.iommu_map)(domain, phys, len) == 0 }
+    }
+
+    pub fn iommu_detach(&self, bus: u8, slot: u8, func: u8) {
+        unsafe { (self.iommu_detach)(bus, slot, func) }
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {

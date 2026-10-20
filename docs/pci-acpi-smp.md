@@ -10,7 +10,8 @@
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
-| Userspace PCI drivers → `/dev/pci` | `modules/pcidev` | A function's registers, DMA memory and interrupt for a driver that is a program (below) |
+| Userspace PCI drivers → `/dev/pci` | `modules/pcidev` | A function's registers, DMA memory and interrupt for a driver that is a program (below); loaded with `insmod`, not at boot |
+| The IOMMU | `kernel/src/iommu` | What a device's DMA reaches: all of memory for a kernel driver's, its own buffers for a program's (below) |
 | Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists |
 | ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
@@ -87,6 +88,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg` (the ECAM window), `bus-range`; `brcm,bcm2711-pcie` (aarch64, the Raspberry Pi 4's): `reg` (its registers, below) |
 | PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64; CPU and bus address, which may differ), `interrupt-map` / `interrupt-map-mask` |
 | DMA (`kernel/src/dma.rs`, below) | — (devices coherent, all of memory) | the host bridge's `dma-ranges`, a node's buses' `dma-ranges`; `dma-coherent` / `dma-noncoherent` on the node or a bus above |
+| The IOMMU (`kernel/src/iommu`, below) | aarch64: the IORT's SMMUv3 node and the root complex's ID mapping | `arm,smmu-v3` (`reg`, `interrupts` by `interrupt-names`, `dma-coherent`), the PCIe host's `iommu-map`; x86_64's VT-d units are the DMAR table's, read by `iommu/vtd.rs` itself |
 | virtio-mmio transports | — | `virtio,mmio`, for modules through `KernelApi::dt_mmio_find`, in ascending address order |
 | PSCI (aarch64 power-off and reset, `docs/power.md`) | FADT arm boot flags: PSCI compliant, HVC or SMC | `arm,psci-1.0` / `arm,psci-0.2` / `arm,psci`: `method` |
 
@@ -104,8 +106,10 @@ needs nothing else (the LAPIC base comes from its MSR, the console from
 COM1, configuration space from port 0xCF8 without an MCFG), so a PC
 without ACPI tables boots too (QEMU's `pc` machine publishes neither an
 SPCR nor an MCFG: its description is the CPUs and the LAPIC).
-`MYOS_X86_MACHINE=q35 cargo run -- test-mini` boots the PCIe PC locally;
-CI boots `pc`. A missing source or component stops the boot with `fatal: platform:
+The x86 boots (`cargo run`, the tests, CI) are the PCIe PC, `q35`, with
+Intel's IOMMU (`-device intel-iommu`, "The IOMMU" below);
+`MYOS_X86_MACHINE=pc cargo run -- test-mini` boots QEMU's default machine,
+without ACPI's description of PCI and without an IOMMU. A missing source or component stops the boot with `fatal: platform:
 ...` on the UART at QEMU `virt`'s address (the one assumption left, so
 the message has somewhere to go).
 
@@ -219,6 +223,12 @@ are taken to share their DMA (QEMU's, coherent).
 
 `modules/pcidev` hands a PCI function to a driver that is a program (the
 Wi-Fi driver, issue #495): a directory per endpoint, `/dev/pci/BB:SS.F`.
+The module ships in the image but is not in `boot.list`: root loads it,
+`insmod /lib/modules/pcidev` (from `/data/etc/rc.local` on a machine that
+wants it, `docs/install.md`), because on a board without an IOMMU a program
+that drives a device reaches all of memory through it, as the kernel does
+(issue #501); with one ("The IOMMU" below) the device is confined to the
+program's buffers.
 Its `info` says what it is (`id VVVV:DDDD`, `class CC:SS:PP`) and who
 drives it (`driver nvme`); its `ctl` is the driver's, one at a time and
 root only (the `dev` label too), and while it is held the others are
@@ -234,7 +244,7 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 
 | File | What |
 |------|------|
-| `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
+| `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`), the IOMMU domain the function is confined to (`iommu N`; no line on a board without an IOMMU) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
 | `config` | the 256 bytes of configuration space, read and written at any offset |
 | `barN` | a memory BAR, for `mmap(MAP_SHARED)`: uncached (x86 PCD\|PWT, aarch64 Device-nGnRE; riscv64 from the platform's attributes for the address), the module's `mmap` hook saying so (`MYOS_MMAP_UNCACHED`, ABI 46), and it stays so through `mprotect` |
 | `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq`, once the driver quietened its device |
@@ -243,15 +253,72 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 Closing `ctl` (the driver's exit too) turns bus mastering and memory
 decoding off, so the device stops reaching memory and raising messages,
 and keeps the DMA buffers for the next driver, zeroed: they are never
-freed, since a mapping of one may outlive its fd. Without an IOMMU the
-program reaches all of memory through the device's DMA, as the kernel
-does (issue #501). The test (`pcidev_smoke`,
-tag `pcidev`) drives QEMU's `edu` device, which every test boot gets
+freed, since a mapping of one may outlive its fd. With an IOMMU the
+device reaches those buffers and nothing else; without one the program
+reaches all of memory through the device's DMA, as the kernel does
+(issue #501). The test (`pcidev_smoke`,
+tag `pcidev`, which loads the module first) drives QEMU's `edu` device, which every test boot gets
 (`edu,dma_mask=...`: its own mask is 28 bits): a kernel driver's
 function its `ctl` refused, the id, liveness and
 factorial registers, an interrupt it raises, a DMA copy through a buffer
-and back with the interrupt at its end. It takes MSI on x86 (`edu` has no
+and back with the interrupt at its end, and, where `ctl` names an IOMMU
+domain, a copy to the page after the buffer that the IOMMU refuses
+(`/proc/iommu` counts it, the buffer stays untouched). It takes MSI on x86 (`edu` has no
 MSI-X) and a shared INTx line on aarch64 and riscv64.
+
+## The IOMMU
+
+A PCI device reads and writes memory by the addresses its driver gives
+it, and a program driving one through `/dev/pci` gives them itself: a bug
+in it, or its device's own firmware, could reach kernel memory or another
+process's pages. The IOMMU (`kernel/src/iommu`, issue #501) is the
+platform's unit between the devices and memory, and the kernel programs
+it so that:
+
+- a device a kernel module drives stays in passthrough: the *identity
+  domain* maps all of memory one-to-one, with the largest pages the unit
+  has, so the drivers need nothing from it;
+- a function a program holds through `/dev/pci` gets a domain of its own
+  (`KernelApi::iommu_attach`, ABI 49, at the `ctl` open), holding only the
+  DMA buffers the program asked for (`iommu_map`, at each `dma PAGES`,
+  and the ones kept from the last driver), each at its physical address,
+  so the numbers `ctl` shows stay the device's; closing `ctl` puts the
+  function back in passthrough (`iommu_detach`);
+- a DMA anywhere else is refused by the unit and recorded: the unit's
+  fault event is an interrupt (an MSI to a device vector), its handler
+  reads the fault recording registers. `/proc/iommu` lists the units,
+  the domains with what they map, `faults N` and the last one
+  (`last BB:SS.F read|write ADDRESS reason R`).
+
+MSIs are DMA writes too; they still pass as they are (interrupt remapping
+stays listed in issue #501).
+
+| Arch | Unit | Where it is described |
+|---|---|---|
+| x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the registers (whole: the context cache and the IOTLB), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
+| aarch64 | Arm SMMUv3 (`iommu/smmuv3.rs`): a linear stream table, one entry per requester id, *bypass* for every function (no table walked) and a *stage-2* entry (VMSAv8, 4 KiB granule, a VMID per domain) for one a program holds; the command queue for invalidations and syncs, the event queue (its interrupt, which the SMMU pulses, taken edge-triggered) for the refused DMAs; the tables and queues written back for a unit that does not snoop (`IDR0.COHACC` clear) | the IORT's SMMUv3 node (registers, the event and global error GSIVs) and the root complex node's ID mapping to it, or the tree's `arm,smmu-v3` node and the PCIe host's `iommu-map`: a `platform::Iommu` component, `/proc/platform`'s `iommu smmuv3 ...` line |
+| riscv64 | the RISC-V IOMMU (`iommu/riscv.rs`, specification 1.0): a three-level device directory, one 64-byte context per device id (32 bytes for a unit without MSI translation), *bare* for every function of a populated bus (no table walked) and a *second-stage* context (a G-stage table in the CPU's Sv39x4 or Sv48x4 format, a GSCID per domain) for one a program holds; the command queue for invalidations and fences, the fault queue for the refused DMAs, read when `/proc/iommu` is (the PCI unit signals it by MSI only, which the riscv64 kernel does not take) | a PCI function of class 08.06 (system peripheral, IOMMU), its registers in BAR 0, claimed by the kernel so `/dev/pci` cannot hand it out; nothing from the tree |
+
+QEMU's `q35` carries the unit (`-device intel-iommu`, 39-bit, 3-level,
+both superpage sizes, snooping walks), every x86 boot of the launcher and
+of CI, QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
+snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
+`[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
+boot line, and the riscv64 `virt` the RISC-V IOMMU (`-device
+riscv-iommu-pci`, first on the bus as `00:01.0`, Sv39x4 to Sv57x4, MSI
+translation) on every boot whose QEMU has it: the device is QEMU 9.2's and later
+(CI's image has it, Ubuntu 24.04's 8.2 has not); without it the launcher
+says so once and boots without, `/proc/iommu` saying `none`.
+Its boot line: `[ OK ] iommu: riscv unit at 00:01.0, 256 device ids,
+Sv39x4 second stage`; `-device intel-iommu` is not for the `pc` machine
+(`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. The UEFI boots run
+OVMF from edk2-stable202505 (the launcher's `OVMF` constant): the
+edk2-stable202605 build raises an invalid-opcode exception inside the
+firmware on a `q35` with the IOMMU and an xHCI controller, before any boot
+loader runs. On the `[ OK ]` line at
+boot: `iommu: vt-d, 1 unit(s), 3-level tables, 1 GiB superpages, memory
+to 0x...`; a board without a DMAR table prints nothing and `/proc/iommu`
+says `none`.
 
 ## AML opcode set (custom interpreter — not ACPICA)
 

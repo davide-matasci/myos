@@ -10,7 +10,10 @@
 //! - `ctl`: held by one program at a time (the driver; root only), from
 //!   its open on, and only on a function no kernel driver drives (its
 //!   open is refused then: the PCI claim, `KernelApi::pci_claim`). Reads as lines: each memory BAR (`barN PHYS SIZE`), the
-//!   interrupt once routed (`irq msix|msi|intx`) and each DMA buffer
+//!   interrupt once routed (`irq msix|msi|intx`), the IOMMU domain the
+//!   function is confined to while held (`iommu N`: its DMA reaches the
+//!   buffers below and nothing else, `KernelApi::iommu_attach`; no line on
+//!   a board without an IOMMU, where it reaches all of memory) and each DMA buffer
 //!   (`dmaN BUS PAGES`, the address the device uses for it). Writes: `enable` (memory decoding
 //!   and bus mastering on), `disable` (off), `irq` (route the function's
 //!   interrupt to `irq`), `dma PAGES` (a physically contiguous, zeroed
@@ -29,6 +32,10 @@
 //! - `dmaN`: the buffer, for `mmap(MAP_SHARED)`.
 //!
 //! The files besides `info` and `ctl` are only there while `ctl` is held.
+//!
+//! The module ships in the image but is not loaded at boot: a program that
+//! drives a device is as trusted as the kernel on a board without an IOMMU
+//! (issue #501), so root loads it, `insmod /lib/modules/pcidev`.
 
 #![no_std]
 #![no_main]
@@ -98,6 +105,8 @@ struct Dev {
     bars: [(u64, u64); 6],
     probed: bool,
     irq: Irq,
+    /// The IOMMU domain while held, -1 without one.
+    iommu: i32,
     dma: [Dma; MAX_DMA],
 }
 
@@ -275,6 +284,11 @@ fn ctl_text(d: &Dev) -> Text {
         Irq::IntX => b"irq intx\n",
     };
     t.push(irq);
+    if d.iommu >= 0 {
+        t.push(b"iommu ");
+        t.dec(d.iommu as u64);
+        t.push(b"\n");
+    }
     for (i, b) in d.dma.iter().enumerate() {
         if b.used {
             t.push(b"dma");
@@ -388,6 +402,9 @@ fn dma_get(d: &mut Dev, pages: usize) -> bool {
                 return false;
             }
             d.dma[i] = Dma { bus, va: va as usize, pages, used: false };
+            if d.iommu >= 0 && !api().iommu_map(d.iommu, bus, pages * PAGE) {
+                return false;
+            }
             i
         }
     };
@@ -425,6 +442,10 @@ fn let_go(i: usize, d: &mut Dev) {
     }
     PENDING[i].store(0, Ordering::Relaxed);
     d.held = false;
+    if d.iommu >= 0 {
+        api().iommu_detach(d.bus, d.slot, d.func);
+        d.iommu = -1;
+    }
     api().pci_release(d.bus, d.slot, d.func, OWNER);
 }
 
@@ -531,6 +552,17 @@ unsafe extern "C" fn pci_open(path: *const u8, len: usize, _out: *mut u8, _out_c
     }
     if !d.probed {
         probe_bars(d);
+    }
+    // Confined to its own domain where there is an IOMMU: the buffers kept
+    // from the last driver go in, nothing else.
+    d.iommu = api().iommu_attach(d.bus, d.slot, d.func).unwrap_or(-1);
+    if d.iommu >= 0
+        && !d.dma.iter().filter(|b| b.pages != 0).all(|b| api().iommu_map(d.iommu, b.bus, b.pages * PAGE))
+    {
+        api().iommu_detach(d.bus, d.slot, d.func);
+        d.iommu = -1;
+        api().pci_release(d.bus, d.slot, d.func, OWNER);
+        return -1;
     }
     d.held = true;
     0
@@ -701,6 +733,7 @@ fn scan(devs: &mut [Option<Dev>; MAX_DEV]) -> usize {
                     bars: [(0, 0); 6],
                     probed: false,
                     irq: Irq::None,
+                    iommu: -1,
                     dma: [NO_DMA; MAX_DMA],
                 });
                 n += 1;

@@ -52,7 +52,11 @@ fn aarch64_machine() -> String {
         Ok("3") => "3",
         _ => "2",
     };
-    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off")
+    // `iommu=smmuv3`: the SMMUv3 in front of the PCIe host, the kernel's
+    // `iommu/smmuv3.rs` on every boot (`/dev/pci`'s devices confined). QEMU's
+    // unit does stage 1 only unless told (`arm-smmuv3.stage`, with
+    // `-global` in [`qemu_aarch64`]): the kernel uses stage 2.
+    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off,iommu=smmuv3")
 }
 
 /// aarch64: the kernel reads the board from the device tree, and the EDK2
@@ -75,13 +79,19 @@ fn riscv_limine_conf() -> String {
 /// needs the x2APIC MSRs.
 const X86_CPU: &str = "qemu64,+x2apic";
 
-/// `-machine` for the x86 boots: QEMU's default (`pc`: PCI through port
-/// 0xCF8, no MCFG), or `$MYOS_X86_MACHINE` (`q35` for a PCIe PC with an
-/// MCFG, the ECAM path of `kernel/src/arch/x86/pci.rs`).
+/// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM
+/// path of `kernel/src/arch/x86/pci.rs`) with Intel's IOMMU (`kernel/src/
+/// iommu/vtd.rs`: `/dev/pci`'s devices confined, the edu test's DMA
+/// outside its buffer refused), or `$MYOS_X86_MACHINE` (`pc`: PCI through
+/// port 0xCF8, no MCFG, no IOMMU, QEMU's default machine).
 fn x86_machine(cmd: &mut Command) {
-    if let Ok(machine) = std::env::var("MYOS_X86_MACHINE") {
-        if !machine.is_empty() {
+    match std::env::var("MYOS_X86_MACHINE").as_deref() {
+        Ok(machine) if !machine.is_empty() && machine != "q35" => {
             cmd.arg("-machine").arg(machine);
+        }
+        _ => {
+            cmd.arg("-machine").arg("q35");
+            cmd.arg("-device").arg("intel-iommu,intremap=off");
         }
     }
 }
@@ -591,9 +601,16 @@ fn run_aarch64() {
     exit(status.code().unwrap_or(1));
 }
 
+/// The firmware release of rust-osdev's ovmf-prebuilt the boots use (x86_64
+/// UEFI, aarch64, riscv64). Pinned, not `Source::LATEST`: OVMF from
+/// edk2-stable202605 raises an invalid-opcode exception in the firmware on
+/// a `q35` with `-device intel-iommu` and an xHCI controller, before any
+/// boot loader runs; edk2-stable202505 and earlier boot it. AGENTS.md's
+/// manual download names the same tag and checksum.
+const OVMF: Source = Source::EDK2_STABLE202505_R2;
+
 fn ovmf_files(arch: Arch) -> (PathBuf, PathBuf) {
-    let prebuilt =
-        Prebuilt::fetch(Source::LATEST, "target/ovmf").expect("failed to fetch OVMF prebuilt");
+    let prebuilt = Prebuilt::fetch(OVMF, "target/ovmf").expect("failed to fetch OVMF prebuilt");
     (
         prebuilt.get_file(arch, FileType::Code),
         prebuilt.get_file(arch, FileType::Vars),
@@ -601,7 +618,7 @@ fn ovmf_files(arch: Arch) -> (PathBuf, PathBuf) {
 }
 
 fn aarch64_firmware() -> (PathBuf, PathBuf) {
-    if let Ok(prebuilt) = Prebuilt::fetch(Source::LATEST, "target/ovmf") {
+    if let Ok(prebuilt) = Prebuilt::fetch(OVMF, "target/ovmf") {
         let code = prebuilt.get_file(Arch::Aarch64, FileType::Code);
         let vars = prebuilt.get_file(Arch::Aarch64, FileType::Vars);
         if code.is_file() && vars.is_file() {
@@ -863,6 +880,8 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     let mut cmd = Command::new("qemu-system-aarch64");
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
+        .arg("-global")
+        .arg("arm-smmuv3.stage=2")
         .arg("-machine")
         .arg(aarch64_machine())
         .arg("-cpu")
@@ -1420,6 +1439,22 @@ fn run_test_riscv64(mode: Mode) {
     });
 }
 
+/// Whether this host's `qemu-system-riscv64` has the RISC-V IOMMU
+/// (`riscv-iommu-pci`, QEMU 9.2 and later: CI's image has it, Ubuntu
+/// 24.04's 8.2 has none). A boot without it has no IOMMU: `/proc/iommu`
+/// says `none`, said once here.
+fn riscv64_iommu() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let out = Command::new("qemu-system-riscv64").args(["-device", "help"]).output();
+        let has = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("riscv-iommu-pci"));
+        if !has {
+            eprintln!("note: qemu-system-riscv64 has no riscv-iommu-pci (QEMU 9.2): the boot has no IOMMU");
+        }
+        has
+    })
+}
+
 fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     let (code, vars) = riscv64_firmware();
     let mut cmd = Command::new("qemu-system-riscv64");
@@ -1427,8 +1462,14 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
-        .arg("virt")
-        .arg("-cpu")
+        .arg("virt");
+    // The IOMMU in front of the PCI host, first on the bus (00:01.0), the
+    // kernel's `iommu/riscv.rs` on every boot that has it (`/dev/pci`'s
+    // devices confined).
+    if riscv64_iommu() {
+        cmd.arg("-device").arg("riscv-iommu-pci");
+    }
+    cmd.arg("-cpu")
         .arg("rv64")
         .arg("-m")
         .arg(if ci { "4096" } else { "2048" })
