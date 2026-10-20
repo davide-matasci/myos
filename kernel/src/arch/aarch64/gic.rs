@@ -123,16 +123,17 @@ fn sgi(ipi: Ipi) -> u32 {
     }
 }
 
-/// Enable SPI `id` in the distributor, level-triggered, priority 0x80,
-/// delivered to the BSP (GICv2: CPU interface 0; GICv3: the BSP's affinity).
-fn enable_spi(id: u32, v3: bool) {
+/// Enable SPI `id` in the distributor, level-triggered or edge-triggered,
+/// priority 0x80, delivered to the BSP (GICv2: CPU interface 0; GICv3: the
+/// BSP's affinity).
+fn enable_spi(id: u32, v3: bool, edge: bool) {
     if !(32..SPECIAL).contains(&id) {
         return;
     }
-    // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive.
+    // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive, 0b10 = edge.
     let cfg = gicd() + GICD_ICFGR + (id as usize / 16) * 4;
     let shift = (id % 16) * 2;
-    write32(cfg, read32(cfg) & !(0b11 << shift));
+    write32(cfg, (read32(cfg) & !(0b11 << shift)) | if edge { 0b10 << shift } else { 0 });
     write8(gicd() + GICD_IPRIORITYR + id as usize, 0x80);
     if v3 {
         let group = gicd() + GICD_IGROUPR + (id as usize / 32) * 4;
@@ -175,7 +176,11 @@ impl IrqChip for GicV2 {
     }
 
     fn unmask(&self, irq: u32) {
-        enable_spi(irq, false);
+        enable_spi(irq, false, false);
+    }
+
+    fn unmask_edge(&self, irq: u32) {
+        enable_spi(irq, false, true);
     }
 
     fn claim(&self) -> Option<u32> {
@@ -323,7 +328,11 @@ impl IrqChip for GicV3 {
     }
 
     fn unmask(&self, irq: u32) {
-        enable_spi(irq, true);
+        enable_spi(irq, true, false);
+    }
+
+    fn unmask_edge(&self, irq: u32) {
+        enable_spi(irq, true, true);
     }
 
     fn claim(&self) -> Option<u32> {

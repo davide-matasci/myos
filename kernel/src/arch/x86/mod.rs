@@ -114,6 +114,12 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     Some(PciIrq { irq, delivery: Delivery::Msi })
 }
 
+/// A device vector (its `irq::dispatch` number) and the MSI message address
+/// that raises it on the BSP, for a device's own message register.
+pub fn msi_vector() -> Option<(u32, u32)> {
+    interrupts::alloc_msi()
+}
+
 /// Brief halt until the next interrupt (idle loop).
 pub fn wait_interrupt() {
     unsafe {

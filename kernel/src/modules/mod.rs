@@ -144,6 +144,9 @@ static API: KernelApi = KernelApi {
     pci_claim: api_pci_claim,
     pci_release: api_pci_release,
     pci_owner: api_pci_owner,
+    iommu_attach: api_iommu_attach,
+    iommu_map: api_iommu_map,
+    iommu_detach: api_iommu_detach,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -593,6 +596,21 @@ unsafe extern "C" fn api_dma_alloc(dma: i32, n_pages: usize, bus: *mut u64) -> *
 
 unsafe extern "C" fn api_dma_sync(dma: i32, va: *const u8, len: usize, dir: u32) {
     crate::dma::sync(dma, va, len, dir);
+}
+
+unsafe extern "C" fn api_iommu_attach(bus: u8, slot: u8, func: u8) -> i32 {
+    crate::iommu::attach(bus, slot, func).map_or(-1, |d| d as i32)
+}
+
+unsafe extern "C" fn api_iommu_map(domain: i32, phys: u64, len: usize) -> i32 {
+    match u32::try_from(domain) {
+        Ok(d) if crate::iommu::map(d, phys, len) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn api_iommu_detach(bus: u8, slot: u8, func: u8) {
+    crate::iommu::detach(bus, slot, func)
 }
 
 unsafe extern "C" fn api_dev_register(

@@ -50,8 +50,16 @@ pub trait IrqChip: Sync {
     /// `None` when the controller cannot deliver it. The number itself on
     /// most; x86_64 gives an ISA interrupt a LAPIC vector.
     fn route(&self, irq: u32) -> Option<u32>;
-    /// Deliver device interrupt `irq` (after [`IrqChip::route`]) to the BSP.
+    /// Deliver device interrupt `irq` (after [`IrqChip::route`]) to the BSP,
+    /// level-triggered.
     fn unmask(&self, irq: u32);
+    /// [`IrqChip::unmask`] for a line its device pulses (the SMMU's event
+    /// queue): edge-triggered where the controller is told the trigger,
+    /// as `unmask` elsewhere.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    fn unmask_edge(&self, irq: u32) {
+        self.unmask(irq);
+    }
     /// The pending interrupt this CPU takes, acknowledged: `None` when
     /// nothing is pending. The controllers the CPU asks (the GIC, the
     /// PLIC, the Pi's); x86_64's vectors say which one it is.

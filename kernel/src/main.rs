@@ -18,6 +18,7 @@ mod exception;
 mod fs;
 mod heap;
 mod input;
+mod iommu;
 mod irq;
 mod irqchip;
 mod limine_boot;
@@ -179,6 +180,10 @@ pub(crate) fn kernel_main() -> ! {
         task::yield_now();
     }
 
+    // What a device's DMA may reach (`/dev/pci`'s are confined): the units
+    // are programmed before any driver's device does DMA.
+    iommu::init();
+
     fs::init();
     // The kernel's terminals, /dev/tty1…9 and /dev/ttyS0 (docs/tty.md).
     pty::init_terms();
@@ -187,8 +192,9 @@ pub(crate) fn kernel_main() -> ! {
     console::status_ok("urandom");
     // Every driver and filesystem is a module, loaded from the initramfs in
     // the order of /lib/modules/boot.list (console, hello, pci_enum, acpi,
-    // virtio_blk, nvme, xhci, usb_hub, usb_storage, usb_hid, pcidev, virtio_net, tap, netfs,
-    // fat, ext2). More can follow at runtime with `insmod` from /lib/modules.
+    // virtio_blk, nvme, xhci, usb_hub, usb_storage, usb_hid, virtio_net, tap, netfs,
+    // fat, ext2). More can follow at runtime with `insmod` from /lib/modules
+    // (pcidev, the userspace PCI drivers' module, ships but is not loaded).
     modules::load_boot_modules();
     // /msg lives on rootfs; /ok mounts /dev/vda/data as fat at /tmp/fat.
     let _ = fs::register("rootfs", "msg", MSG_OK);

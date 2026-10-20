@@ -458,6 +458,14 @@ fn msi_address() -> Option<u32> {
     (apic_id <= 0xFF).then_some(0xFEE0_0000 | (apic_id << 12))
 }
 
+/// A fresh device vector and the MSI message address that raises it on the
+/// BSP: what a device's own message register takes (the IOMMU's fault
+/// event). `None` when the vectors are gone or the BSP needs remapping.
+pub fn alloc_msi() -> Option<(u32, u32)> {
+    let address = msi_address()?;
+    Some((u32::from(alloc_vector()?), address))
+}
+
 /// Program MSI-X table entry 0 of the PCI function to raise a fresh LAPIC
 /// vector on the BSP, and enable MSI-X. Returns the vector (`irq::dispatch`
 /// number). The caller still has to point the device's queue at entry 0
