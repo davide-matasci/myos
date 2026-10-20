@@ -30,7 +30,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 ## Prerequisites
 
 - [rustup](https://rustup.rs/) — `rust-toolchain.toml` pins **nightly-2026-07-26** and installs components automatically
-- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-misc` for riscv64, `qemu-efi-aarch64`, `qemu-efi-riscv64`)
+- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-riscv` for riscv64 (`qemu-system-misc` before Ubuntu 26.04), `qemu-efi-aarch64`, `qemu-efi-riscv64`); CI runs Ubuntu 26.04's QEMU 10.2
 - `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`)
 - `make` — newlib build
 - `git` — fetching upstream port sources
@@ -44,10 +44,10 @@ This is a starting point to grow into a real OS, not a feature dump.
 - `e2fsprogs` — the boot test checks the scratch disk's ext2 with `e2fsck`
 - `dosfstools`, `mtools` — `cargo test -p fatvol`, and the boot test's `fsck.fat` of the FAT test disk
 
-On Ubuntu:
+On Ubuntu 26.04 (on 24.04, `qemu-system-misc` instead of `qemu-system-riscv`):
 
 ```sh
-sudo apt install qemu-system-x86 qemu-system-arm qemu-system-misc \
+sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git gh libc6-dev rsync \
   patch curl xorriso zstd e2fsprogs dosfstools mtools
 ```
