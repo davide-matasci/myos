@@ -110,7 +110,9 @@ see `$MYOS_FIRMWARE`).
 Intel's AX201 (PCI `8086:06f0`, the ThinkPad T15p's, and `8086:02f0`:
 the ones with a QuZ MAC) is driven by the daemon itself, through
 `/dev/pci` (`docs/pci-acpi-smp.md`; `user/wifi/src/pci.rs`): BAR0 mapped,
-DMA buffers, its MSI-X or MSI interrupt. `/dev/pci` is there once root
+DMA buffers, its MSI-X or MSI interrupt, or its INTx line (all the
+aarch64 and riscv64 boards give a PCI function: serviced as MSI's, then
+unmasked again through `/dev/pci`'s `irq`). `/dev/pci` is there once root
 loaded its module, `insmod /lib/modules/pcidev` (a line for
 `/data/etc/rc.local`): it is not loaded at boot, since on a board without
 an IOMMU the daemon's device reaches all of memory; the laptop's VT-d

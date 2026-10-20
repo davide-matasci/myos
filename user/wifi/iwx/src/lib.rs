@@ -19,5 +19,6 @@ pub mod hw;
 pub mod reg;
 pub mod ring;
 pub mod msg;
+pub mod sim;
 pub mod sta;
 pub mod dev;
