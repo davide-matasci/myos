@@ -41,13 +41,17 @@ pub const BOOT_MODULES: &[&str] = &[
     "usb_hub",
     "usb_storage",
     "usb_hid",
-    "pcidev",
     "virtio_net",
     "tap",
     "netfs",
     "fat",
     "ext2",
 ];
+
+/// Modules shipped under `/lib/modules/<name>` for `insmod` only, never
+/// loaded at boot: `pcidev`, the userspace PCI drivers' `/dev/pci`, which
+/// a board without an IOMMU cannot confine (issue #501), so root opts in.
+pub const RUNTIME_MODULES: &[&str] = &["pcidev"];
 
 /// Modules behind a root Cargo feature: always built and shipped under
 /// `/lib/modules/<name>` (so `insmod` can load one at run time), loaded at
@@ -74,6 +78,7 @@ pub fn all_modules() -> Vec<&'static str> {
     BOOT_MODULES
         .iter()
         .copied()
+        .chain(RUNTIME_MODULES.iter().copied())
         .chain(OPTIONAL_MODULES.iter().map(|(m, _)| *m))
         .collect()
 }

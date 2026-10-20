@@ -117,6 +117,29 @@ pub fn bar_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u64)> {
     Some((va, size))
 }
 
+/// Every function present, bus by bus, slot by slot (the RISC-V IOMMU
+/// gives each one a context).
+#[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+pub fn functions() -> Vec<Bdf> {
+    let mut all = Vec::new();
+    for bus in 0u8..=arch_pci::max_bus() {
+        for slot in 0u8..32 {
+            let bdf0 = Bdf { bus, slot, func: 0 };
+            if vendor(bdf0) == 0xFFFF {
+                continue;
+            }
+            let funcs = if header_type(bdf0) & 0x80 != 0 { 8 } else { 1 };
+            for func in 0..funcs {
+                let bdf = Bdf { bus, slot, func };
+                if vendor(bdf) != 0xFFFF {
+                    all.push(bdf);
+                }
+            }
+        }
+    }
+    all
+}
+
 /// Nth PCI function matching `vend`/`dev` (0-based), walking like NVMe scan.
 pub fn find(vend: u16, dev: u16, nth: u32) -> Option<Bdf> {
     let mut seen = 0u32;

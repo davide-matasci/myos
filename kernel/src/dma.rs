@@ -141,7 +141,7 @@ pub fn text() -> alloc::string::String {
 }
 
 #[cfg(target_arch = "aarch64")]
-mod cache {
+pub(crate) mod cache {
     use core::arch::asm;
 
     /// The smallest data cache line (CTR_EL0.DminLine, in words).
@@ -189,7 +189,7 @@ mod cache {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-mod cache {
+pub(crate) mod cache {
     // Coherent DMA only (`resolve`): nothing to clean.
     pub fn clean(_va: usize, _len: usize) {}
 

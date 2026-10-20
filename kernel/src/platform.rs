@@ -110,6 +110,26 @@ pub struct PciWindows {
 
 pub use crate::dt::PciWindow;
 
+/// An IOMMU in front of the PCIe host's functions (aarch64: an SMMUv3,
+/// `kernel/src/iommu/smmuv3.rs`). From the IORT (its SMMUv3 node and the
+/// root complex's ID mappings) or the tree (`arm,smmu-v3`, the host's
+/// `iommu-map`). x86_64's VT-d units come from the DMAR table directly.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Iommu {
+    pub base: u64,
+    pub size: u64,
+    /// The event queue's and the global error interrupt (INTIDs).
+    pub event_irq: Option<u32>,
+    pub gerror_irq: Option<u32>,
+    /// Requester ids `[rid_base, rid_base + rid_count)` are the streams
+    /// from `sid_base`.
+    pub rid_base: u32,
+    pub rid_count: u32,
+    pub sid_base: u32,
+    /// The description says the unit snoops the caches whatever it reports.
+    pub coherent: bool,
+}
+
 /// aarch64: how the PSCI firmware is called.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PsciConduit {
@@ -122,6 +142,7 @@ pub const DIFFERS_CPUS: u8 = 1;
 pub const DIFFERS_INTC: u8 = 2;
 pub const DIFFERS_UART: u8 = 4;
 pub const DIFFERS_PCI: u8 = 8;
+pub const DIFFERS_IOMMU: u8 = 16;
 
 #[derive(Clone, Copy)]
 pub struct Platform {
@@ -143,6 +164,7 @@ pub struct Platform {
     pub pci_windows: Option<Component<PciWindows>>,
     /// aarch64: PSCI (power-off, reboot: `crate::power`).
     pub psci: Option<Component<PsciConduit>>,
+    pub iommu: Option<Component<Iommu>>,
     /// `DIFFERS_*` bits: the second source disagreed with the first there.
     pub differs: u8,
 }
@@ -161,6 +183,7 @@ impl Platform {
         pci: None,
         pci_windows: None,
         psci: None,
+        iommu: None,
         differs: 0,
     };
 }
@@ -289,6 +312,23 @@ fn fill_acpi(p: &mut Platform) {
         let conduit = if hvc { PsciConduit::Hvc } else { PsciConduit::Smc };
         p.psci = Some(Component { value: conduit, from });
     }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(s) = acpi::iort_smmuv3() {
+        offer_iommu(
+            p,
+            Iommu {
+                base: s.base,
+                size: 0x20000,
+                event_irq: (s.event_gsiv != 0).then_some(s.event_gsiv),
+                gerror_irq: (s.gerror_gsiv != 0).then_some(s.gerror_gsiv),
+                rid_base: s.rid_base,
+                rid_count: s.rid_count,
+                sid_base: s.sid_base,
+                coherent: s.coherent,
+            },
+            from,
+        );
+    }
 }
 
 /// The device tree's view: what it describes that nothing filled yet, and
@@ -333,6 +373,21 @@ pub fn offer_pci_windows(p: &mut Platform, windows: PciWindows, from: Source) {
     }
 }
 
+/// The two sources may size the unit's mapping differently (QEMU's IORT
+/// maps the root complex's populated buses, its tree every requester id):
+/// the same unit with the same streams is one description, with the
+/// larger mapping.
+#[cfg(target_arch = "aarch64")]
+pub fn offer_iommu(p: &mut Platform, iommu: Iommu, from: Source) {
+    if let Some(c) = &mut p.iommu
+        && (Iommu { rid_count: 0, ..c.value }) == (Iommu { rid_count: 0, ..iommu })
+    {
+        c.value.rid_count = c.value.rid_count.max(iommu.rid_count);
+        return;
+    }
+    offer(&mut p.iommu, iommu, from, &mut p.differs, DIFFERS_IOMMU);
+}
+
 pub fn offer_psci(p: &mut Platform, conduit: PsciConduit, from: Source) {
     if p.psci.is_none() {
         p.psci = Some(Component { value: conduit, from });
@@ -359,6 +414,7 @@ pub fn differs_text(p: &Platform) -> alloc::string::String {
         (DIFFERS_INTC, "intc"),
         (DIFFERS_UART, "uart"),
         (DIFFERS_PCI, "pci"),
+        (DIFFERS_IOMMU, "iommu"),
     ] {
         if p.differs & bit != 0 {
             if !s.is_empty() {
@@ -462,6 +518,16 @@ pub fn text() -> alloc::vec::Vec<u8> {
             PsciConduit::Smc => "smc",
         };
         s += &format!("psci {conduit} ({})\n", c.from.name());
+    }
+    if let Some(c) = p.iommu {
+        let i = c.value;
+        s += &format!("iommu smmuv3 0x{:x} 0x{:x}", i.base, i.size);
+        for (name, irq) in [("event", i.event_irq), ("gerror", i.gerror_irq)] {
+            if let Some(irq) = irq {
+                s += &format!(" {name} {irq}");
+            }
+        }
+        s += &format!(" rid 0x{:x}+0x{:x} sid 0x{:x} {}\n", i.rid_base, i.rid_count, i.sid_base, tag(c.from, DIFFERS_IOMMU));
     }
     s += &crate::dma::text();
     s.into_bytes()

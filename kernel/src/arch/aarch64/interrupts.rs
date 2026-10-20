@@ -563,6 +563,16 @@ fn init_gicv3_cpu() {
 /// Enable SPI `id` in the distributor, level-triggered, priority 0x80,
 /// delivered to the BSP (GICv2: CPU interface 0; GICv3: the BSP's affinity).
 pub fn gic_enable_spi(id: u32) {
+    gic_enable_spi_cfg(id, false);
+}
+
+/// [`gic_enable_spi`] for a line the device pulses (the SMMU's event
+/// queue): edge-triggered.
+pub fn gic_enable_spi_edge(id: u32) {
+    gic_enable_spi_cfg(id, true);
+}
+
+fn gic_enable_spi_cfg(id: u32, edge: bool) {
     if super::bcm2836::active() {
         super::bcm2836::enable(id);
         return;
@@ -571,10 +581,10 @@ pub fn gic_enable_spi(id: u32) {
         return;
     }
     unsafe {
-        // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive.
+        // ICFGR: 2 bits per interrupt, 0b00 = level-sensitive, 0b10 = edge.
         let cfg = gicd() + GICD_ICFGR + (id as usize / 16) * 4;
         let shift = (id % 16) * 2;
-        write32(cfg, read32(cfg) & !(0b11 << shift));
+        write32(cfg, (read32(cfg) & !(0b11 << shift)) | if edge { 0b10 << shift } else { 0 });
         core::ptr::write_volatile((gicd() + GICD_IPRIORITYR + id as usize) as *mut u8, 0x80);
         if gic_v3() {
             let group = gicd() + GICD_IGROUPR + (id as usize / 32) * 4;
