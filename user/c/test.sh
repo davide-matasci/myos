@@ -45,8 +45,13 @@ t -t events epoll /bin/etc/epoll_smoke
 t -t events sigfd /bin/etc/sigfd_smoke
 # /dev/pci: a userspace driver for QEMU's edu device: its registers mapped
 # uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
-# copy through a buffer of /dev/pci (pcidev_smoke.c).
-t -t pcidev pcidev /bin/etc/pcidev_smoke
+# copy through a buffer of /dev/pci, and where the board has an IOMMU a DMA
+# outside the buffer refused (pcidev_smoke.c). The module is not loaded at
+# boot (root opts in, docs/pci-acpi-smp.md): the test loads it.
+pcidev_test() {
+	{ grep -q '^pcidev$' /proc/modules || insmod /lib/modules/pcidev; } && /bin/etc/pcidev_smoke
+}
+t -t pcidev pcidev pcidev_test
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).

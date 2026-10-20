@@ -124,7 +124,7 @@ fn dyn_writable(name: &str) -> bool {
 pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
     if name.is_empty() || name.len() > MAX_NAME || name == "mounts" || name == "cpuinfo"
         || name == "meminfo" || name == "interrupts" || name == "modules" || name == "platform"
-        || name == "self" || name.starts_with("self/")
+        || name == "iommu" || name == "self" || name.starts_with("self/")
     {
         return false;
     }
@@ -407,6 +407,8 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         "self/ctx" => Some(crate::sec::ctx_text()),
         "sys/security/users" => Some(crate::sec::users_text()),
         "cpu" => Some(cpu_text()),
+        // The IOMMU's units, domains and refused DMAs (`docs/pci-acpi-smp.md`).
+        "iommu" => Some(crate::iommu::text()),
         // What limine.conf's `cmdline:` gave this boot (`slot=a`: the boot
         // slot it came from, docs/install.md), and a newline.
         "cmdline" => Some(alloc::format!("{}\n", crate::limine_boot::cmdline())),
@@ -516,8 +518,8 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 fn list_root(buf: &mut [u8]) -> usize {
     // Dynamic nodes all live under `acpi/` (see `list_acpi`).
     const FIXED: &[&[u8]] = &[
-        b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"pci", b"acpi", b"self", b"sys",
-        b"cpu", b"partitions", b"cmdline", b"boot",
+        b"mounts", b"cpuinfo", b"meminfo", b"interrupts", b"modules", b"platform", b"iommu", b"pci", b"acpi", b"self",
+        b"sys", b"cpu", b"partitions", b"cmdline", b"boot",
     ];
     let mut off = 0usize;
     for name in FIXED {
@@ -646,6 +648,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 "self/ctx" => 94,
                 "sys/security/users" => 95,
                 "cpu" => 96,
+                "iommu" => 80,
                 "cmdline" => 98,
                 "partitions" => 97,
                 "boot/partuuid" => 86,
