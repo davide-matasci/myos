@@ -3,7 +3,7 @@
 //! Used by `/bin/custom/dns` and `/bin/custom/http` — do not duplicate the
 //! packet encoder/parser elsewhere.
 
-use crate::{close, open, open_flags, read, write_fd, Timeout, O_RDWR, O_WRONLY};
+use crate::{close, open, open_flags, read, write_fd, Timeout, O_WRONLY};
 
 /// Wall-clock budgets (the old 400k-iteration loops lasted seconds only while
 /// each read took tens of microseconds under TCG).
@@ -250,45 +250,23 @@ fn resolve_via(dns_server: &[u8], host: &[u8]) -> Result<[u8; 4], ResolveError> 
     query[qpos + 1] = 0x01;
     qpos += 2;
 
-    let Some(clone) = open(b"/net/udp/clone") else {
-        return Err(ResolveError::Open);
+    // The fd is on the new conversation's data, which holds it: closing it
+    // hangs the conversation up.
+    let Some((data, id)) = crate::clone_conv(b"/net/udp") else {
+        return Err(ResolveError::Clone);
     };
-    let mut idbuf = [0u8; 16];
-    let n = read(clone, &mut idbuf);
-    close(clone);
-    if n == 0 || n == usize::MAX {
-        return Err(ResolveError::Clone);
-    }
-    let mut id: u16 = 0;
-    let mut any = false;
-    for &b in &idbuf[..n] {
-        match b {
-            b'\n' | b'\r' | b' ' => break,
-            _ => {
-                if !b.is_ascii_digit() {
-                    return Err(ResolveError::Clone);
-                }
-                any = true;
-                id = id
-                    .checked_mul(10)
-                    .and_then(|x| x.checked_add((b - b'0') as u16))
-                    .ok_or(ResolveError::Clone)?;
-            }
-        }
-    }
-    if !any {
-        return Err(ResolveError::Clone);
-    }
 
     let mut pbuf = [0u8; 40];
     let pn = conv_path(&mut pbuf, id, b"ctl");
     let Some(ctl) = open_flags(&pbuf[..pn], O_WRONLY) else {
+        close(data);
         return Err(ResolveError::Open);
     };
     let mut cmd = [0u8; 40];
     let cm = connect_ctl(dns_server, dns_port, &mut cmd);
     if write_fd(ctl, &cmd[..cm]) == usize::MAX {
         close(ctl);
+        close(data);
         return Err(ResolveError::Write);
     }
     // Keep ctl open until connected so netd sees a live conversation (and so
@@ -318,12 +296,8 @@ fn resolve_via(dns_server: &[u8], host: &[u8]) -> Result<[u8; 4], ResolveError> 
     }
     close(ctl);
     if !connected {
-        // Best-effort hangup so the conv slot is freed for later HTTPS DNS.
-        let pn = conv_path(&mut pbuf, id, b"ctl");
-        if let Some(h) = open_flags(&pbuf[..pn], O_WRONLY) {
-            let _ = write_fd(h, b"hangup");
-            close(h);
-        }
+        // The conversation goes with its data fd.
+        close(data);
         // Diagnose: print last status so CI logs show cloned/bad ctl/empty/etc.
         crate::write(b"dns status: ");
         if last_n == 0 {
@@ -335,10 +309,6 @@ fn resolve_via(dns_server: &[u8], host: &[u8]) -> Result<[u8; 4], ResolveError> 
         return Err(ResolveError::Timeout);
     }
 
-    let dn = conv_path(&mut pbuf, id, b"data");
-    let Some(data) = open_flags(&pbuf[..dn], O_RDWR) else {
-        return Err(ResolveError::Open);
-    };
     let mut rbuf = [0u8; BUF];
     for _ in 0..DNS_ATTEMPTS {
         if write_fd(data, &query[..qpos]) == usize::MAX {

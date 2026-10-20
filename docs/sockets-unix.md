@@ -12,7 +12,7 @@ The files are those of `/net/tcp`, plus `listen`, `rights` and `from`:
 
 | File | |
 |------|-|
-| `clone` | reading it makes a conversation and returns its number `N`; its files are the reading process's user's alone (`docs/security.md`) |
+| `clone` | opening it makes a conversation, and the fd is its `N/data` (whose `/proc/self/fd` link names it); its files are the opening process's user's alone (`docs/security.md`) |
 | `N/ctl` | commands: `announce NAME`, `connect NAME`, `pair`, `hangup`, `rights FD...`, `norights` |
 | `N/data` | the byte stream; `st_size` is the number of bytes waiting |
 | `N/status` | `open`, `announced`, `connected` or `hangup` |
@@ -69,7 +69,7 @@ lock, so the unix conversations have their own spinlock.
 
 | Call | `/net/unix` |
 |------|-------------|
-| `socket(AF_UNIX, SOCK_STREAM, 0)` | `clone`, open `ctl` and `data`; returns the data fd |
+| `socket(AF_UNIX, SOCK_STREAM, 0)` | opens `clone` (the data fd) and `ctl`; returns the data fd |
 | `bind(sockaddr_un)` | remembers the name (an abstract name, leading NUL, becomes `@name`) |
 | `listen` | `announce NAME`; `EADDRINUSE` if the name has a listener |
 | `accept` | takes a number from `listen` and opens its `data`; blocking waits in `poll` for a queued connection, nonblocking says `EAGAIN` |

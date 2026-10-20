@@ -43,6 +43,7 @@ use myos_abi::{
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
+const S_IFCHR: u32 = 0o020000;
 
 const PROTO_TCP: u8 = 1;
 const PROTO_UDP: u8 = 2;
@@ -227,7 +228,7 @@ struct Conv {
     /// TCP: bytes the writers may still queue in netd (up to [`TX_CAP`]);
     /// REP_TXCREDIT gives back what netd moved into its socket.
     tx_room: u16,
-    /// The uid of the user whose process read `clone` (an accepted
+    /// The uid of the user whose process opened `clone` (an accepted
     /// connection: the listener's), the only one whose processes may open
     /// its files; [`NO_OWNER`] until an accepted connection is claimed.
     owner: u32,
@@ -961,7 +962,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
         Node::Ifaddrs => (S_IFREG | 0o444, st.ifaddrs_len as u32, 3),
         Node::Convs => (S_IFREG | 0o444, st.table_len as u32, 4),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
-        Node::Clone(p) => (S_IFREG | 0o666, 0, 20 + p as u32),
+        Node::Clone(p) => (S_IFCHR | 0o666, 0, 20 + p as u32),
         Node::ConvDir(p, id) => {
             if !conv_ok(&st.convs, id, p) {
                 return -1;
@@ -1070,6 +1071,61 @@ unsafe extern "C" fn net_listdir(
     0
 }
 
+/// `open` of `clone`: a new conversation, the opener's user's, and the fd
+/// is on its `N/data` (the kernel opens that next), which holds it: its
+/// last close hangs it up (`net_release`). Every other file opens as it is.
+unsafe extern "C" fn net_open(path: *const u8, path_len: usize, out: *mut u8, out_cap: usize) -> i32 {
+    let Some(path) = (unsafe { c_str(path, path_len) }) else {
+        return -1;
+    };
+    let Some(out) = (unsafe { c_buf_mut(out, out_cap) }) else {
+        return -1;
+    };
+    let Some(Node::Clone(p)) = parse_path(path) else {
+        return 0;
+    };
+    let id = if p == PROTO_UNIX {
+        unix::clone()
+    } else {
+        let (id, wake) = {
+            let st = &mut *lock();
+            (clone_locked(st, p), st.req.take_wake())
+        };
+        if wake {
+            wake_any();
+        }
+        id
+    };
+    let Some(id) = id else {
+        return -1;
+    };
+    let mut n = 0;
+    if !put_dec(out, &mut n, id) {
+        return -1;
+    }
+    // `put_dec` ends the number with a newline: the file's name instead.
+    n -= 1;
+    let name = b"/data";
+    if n + name.len() > out.len() {
+        return -1;
+    }
+    out[n..n + name.len()].copy_from_slice(name);
+    (n + name.len()) as i32
+}
+
+/// A new conversation of `proto` (tcp, udp, icmp), netd asked for its
+/// socket: its number.
+fn clone_locked(st: &mut State, proto: u8) -> Option<u16> {
+    let id = alloc_conv(&mut st.convs, proto)?;
+    // Never asked, netd would never answer: the slot would wait for its
+    // CLONE_OK forever (`cloning`).
+    if !enqueue_req(&mut st.req, REQ_CLONE, id, proto, &[]) {
+        st.convs[id as usize] = Conv::EMPTY;
+        return None;
+    }
+    Some(id)
+}
+
 unsafe extern "C" fn net_read(
     path: *const u8,
     path_len: usize,
@@ -1113,41 +1169,6 @@ fn read_locked(st: &mut State, node: Node, pos: usize, out: &mut [u8]) -> i32 {
         Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
         Node::Ifaddrs => copy_at(&st.ifaddrs[..st.ifaddrs_len as usize], pos, out),
         Node::Convs => copy_at(&st.table[..st.table_len as usize], pos, out),
-        Node::Clone(p) => {
-            if pos > 0 {
-                return 0;
-            }
-            let Some(id) = alloc_conv(&mut st.convs, p) else {
-                return 0;
-            };
-            // Never asked, netd would never answer: the slot would wait for
-            // its CLONE_OK forever (`cloning`).
-            if !enqueue_req(&mut st.req, REQ_CLONE, id, p, &[]) {
-                st.convs[id as usize] = Conv::EMPTY;
-                return 0;
-            }
-            let mut tmp = [0u8; 8];
-            let mut n = 0usize;
-            let mut x = id;
-            let mut d = [0u8; 6];
-            let mut i = d.len();
-            if x == 0 {
-                i -= 1;
-                d[i] = b'0';
-            } else {
-                while x != 0 && i > 0 {
-                    i -= 1;
-                    d[i] = b'0' + (x % 10) as u8;
-                    x /= 10;
-                }
-            }
-            let digits = &d[i..];
-            tmp[..digits.len()].copy_from_slice(digits);
-            n = digits.len();
-            tmp[n] = b'\n';
-            n += 1;
-            copy_at(&tmp[..n], 0, out)
-        }
         Node::Data(p, id) => {
             let Some(c) = conv_mut(&mut st.convs, id) else {
                 return -1;
@@ -1527,7 +1548,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         release: Some(net_release),
         mmap: None,
         poll: Some(net_poll),
-        open: None,
+        open: Some(net_open),
         set_times: None,
         unmount: None,
         unlink_keep: None,

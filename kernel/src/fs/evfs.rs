@@ -1,11 +1,11 @@
 //! evfs: the event counters at `/dev/event/…`, the timers at
 //! `/dev/timer/…`, the wait sets at `/dev/wait/…` and the signal fds at
-//! `/dev/sig/…` (`docs/events.md`, [`crate::evfd`]). Reading `clone`
-//! allocates an object and answers its number; each live one is a
-//! directory `N/` with `data` (the fd a program holds: opened as an
-//! event, timer, wait or signal fd in [`crate::task`], never read or
-//! written here), `ctl` (its commands, as text) and `status` (what it is
-//! doing).
+//! `/dev/sig/…` (`docs/events.md`, [`crate::evfd`]). Opening `clone`
+//! allocates an object and is its `data` (the open is the syscall's,
+//! `open_fd`); each live one is a directory `N/` with `data` (the fd a
+//! program holds: opened as an event, timer, wait or signal fd in
+//! [`crate::task`], never read or written here), `ctl` (its commands, as
+//! text) and `status` (what it is doing).
 
 use crate::evfd;
 use crate::fs::StatInfo;
@@ -41,7 +41,9 @@ impl Kind {
         }
     }
 
-    fn alloc(self) -> Option<usize> {
+    /// A new object of this kind: its id. Its first fd (`clone`'s open)
+    /// holds it; freed with the last.
+    pub fn alloc(self) -> Option<usize> {
         match self {
             Kind::Event => evfd::event_alloc(),
             Kind::Timer => evfd::timer_alloc(),
@@ -112,12 +114,6 @@ pub fn data_id(kind: Kind, rel: &str) -> Option<usize> {
 
 fn read(kind: Kind, name: &str, pos: usize, out: &mut [u8]) -> usize {
     let text = match parse(kind, name) {
-        // One answer per read of `clone` from its start: the new object's
-        // number.
-        Some(Node::Clone) if pos == 0 => match kind.alloc() {
-            Some(id) => alloc::format!("{id}\n").into_bytes(),
-            None => return 0,
-        },
         Some(Node::Status(id)) => match kind.status(id) {
             Some(text) => text,
             None => return 0,
@@ -189,7 +185,7 @@ fn stat(kind: Kind, name: &str) -> Option<StatInfo> {
         u32::try_from(id).map_or(u32::MAX, |id| 10 + id.saturating_mul(4).saturating_add(member))
     };
     Some(match parse(kind, name)? {
-        Node::Clone => info(S_IFREG | 0o444, 2, 0),
+        Node::Clone => info(S_IFCHR | 0o666, 2, 0),
         Node::Dir(id) => info(S_IFDIR | 0o755, ino(id, 0), 0),
         Node::Data(id) => info(S_IFCHR | 0o666, ino(id, 1), 0),
         Node::Ctl(id) => info(S_IFREG | 0o644, ino(id, 2), 0),

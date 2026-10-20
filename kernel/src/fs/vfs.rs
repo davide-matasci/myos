@@ -743,18 +743,37 @@ fn module_location(node: &Vnode) -> Option<(ModuleVfsOps, node::Rel)> {
     }
 }
 
+/// What a module's `open` hook says of an `open(2)` of one of its files.
+pub enum OpenHook {
+    Pass,
+    Refuse,
+    /// The fd is on this file instead, relative to the opened one's
+    /// directory (a `clone` names the new conversation's `N/data`).
+    Instead(alloc::string::String),
+}
+
 /// An `open(2)` of `node` is about to become an fd: its module's `open` hook
-/// may refuse it (a file one program holds at a time).
-pub fn open_hook(node: &Vnode) -> bool {
+/// may refuse it (a file one program holds at a time) or name another file
+/// for the fd.
+pub fn open_hook(node: &Vnode) -> OpenHook {
     let _tree = tree_read();
     let Some((ops, rel)) = module_location(node) else {
-        return true;
+        return OpenHook::Pass;
     };
     let Some(open) = ops.open else {
-        return true;
+        return OpenHook::Pass;
     };
     let rel = rel.as_str();
-    unsafe { (open)(rel.as_ptr(), rel.len()) >= 0 }
+    let mut out = [0u8; 64];
+    let rc = unsafe { (open)(rel.as_ptr(), rel.len(), out.as_mut_ptr(), out.len()) };
+    match rc {
+        0 => OpenHook::Pass,
+        n if n < 0 => OpenHook::Refuse,
+        n => match core::str::from_utf8(&out[..(n as usize).min(out.len())]) {
+            Ok(name) => OpenHook::Instead(alloc::string::String::from(name)),
+            Err(_) => OpenHook::Refuse,
+        },
+    }
 }
 
 /// [`open_hook`] let `node` through but no fd came of it: undo, as the last

@@ -1,7 +1,8 @@
 //! `/net/unix`: local stream connections, Plan 9 style, without netd.
 //!
 //! The same files as `/net/tcp` (`clone`, `N/ctl`, `N/data`, `N/status`) plus
-//! `N/listen`. Reading `clone` makes a conversation; its `ctl` takes:
+//! `N/listen`. Opening `clone` makes a conversation (the fd is on its
+//! `data`); its `ctl` takes:
 //!
 //! - `announce NAME`: listen under NAME (a name, not a file: nothing appears
 //!   in the filesystem, and the name is free again when the listener closes);
@@ -45,7 +46,7 @@ use alloc::vec::Vec;
 
 use myos_abi::{Lock, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT};
 
-use crate::{Node, put_bytes, put_dec, S_IFDIR, S_IFREG};
+use crate::{Node, put_bytes, put_dec, S_IFCHR, S_IFDIR, S_IFREG};
 
 /// Bytes one end holds for its reader: a whole large X reply or image.
 const BUF_CAP: usize = 64 * 1024;
@@ -76,7 +77,7 @@ struct Conv {
     /// buffer, room in its peer's): the change count its `data`'s `poll`
     /// reports. Kept across the slot's reuse ([`reset`]).
     changes: u64,
-    /// The uid of the user whose process read `clone` (a connection made
+    /// The uid of the user whose process opened `clone` (a connection made
     /// by `connect`: the listener's), the only one whose processes may
     /// open its files.
     owner: u32,
@@ -202,6 +203,11 @@ fn alloc(convs: &mut Vec<Conv>) -> Option<u16> {
     Some(i as u16)
 }
 
+/// A new conversation (`clone`'s open), the opener's user's: its number.
+pub fn clone() -> Option<u16> {
+    with_drops(|convs, _| alloc(convs))
+}
+
 /// Connect `a` and `b` (both just made or `Open`).
 fn link(convs: &mut Vec<Conv>, a: u16, b: u16) {
     convs[a as usize].state = State::Connected;
@@ -259,7 +265,7 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
     with(|convs| {
         let (id, tag) = match node {
             Node::Proto(_) => return Some((S_IFDIR | 0o755, 0, 14)),
-            Node::Clone(_) => return Some((S_IFREG | 0o666, 0, 24)),
+            Node::Clone(_) => return Some((S_IFCHR | 0o666, 0, 24)),
             Node::ConvDir(_, id) => (id, 0),
             Node::Ctl(_, id) => (id, 1),
             Node::Data(_, id) => (id, 2),
@@ -340,15 +346,6 @@ pub fn poll(node: Node, changes: *mut u64) -> u32 {
 
 fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
     with_drops(|convs, drops| match node {
-        Node::Clone(_) => {
-            if pos > 0 {
-                return 0;
-            }
-            match alloc(convs) {
-                Some(id) => dec(id, out),
-                None => 0,
-            }
-        }
         Node::Data(_, id) => {
             let Some(c) = get_own(convs, id) else {
                 return -1;

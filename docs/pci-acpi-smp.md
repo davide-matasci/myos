@@ -64,7 +64,7 @@ the timers, 32 and up the devices), which the interrupt entry reads.
 
 A secondary controller, whose lines reach the CPU through one interrupt
 of the root's (a GPIO block's pins, a PCIe bridge's MSI), is a module:
-an interrupt domain (`KernelApi::irq_domain_register`, ABI 50). The
+an interrupt domain (`KernelApi::irq_domain_register`, ABI 51). The
 module drives the controller; the kernel gives the domain a range of
 interrupt numbers from 4096 up (`irqchip::DOMAIN_FIRST`; at most 8
 domains, 4096 lines between them), line `n` being `first + n`:

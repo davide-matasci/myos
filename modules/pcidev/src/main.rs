@@ -536,7 +536,7 @@ unsafe extern "C" fn pci_listdir(path: *const u8, len: usize, buf: *mut u8, cap:
 }
 
 /// `ctl`: one holder, root.
-unsafe extern "C" fn pci_open(path: *const u8, len: usize) -> i32 {
+unsafe extern "C" fn pci_open(path: *const u8, len: usize, _out: *mut u8, _out_cap: usize) -> i32 {
     let mut devs = DEVS.lock();
     let Some(Node::File(i, f)) = node(&devs, path, len) else {
         return 0;
