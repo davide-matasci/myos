@@ -245,6 +245,22 @@ static int cond_timedwait_relocking(struct __mlibc_cond *__restrict cond, __mlib
     print("patched threads.cpp: the condition wait relocks on a cancellation")
 PY
 
+# A failed write through stdio sets the stream's error indicator (what
+# ferror reads) instead of a log line per failure: a program writing to a
+# full filesystem in a loop (the pthread smoke's busy threads) otherwise
+# floods the console and crawls.
+python3 - "$SRC/options/ansi/generic/stdio.cpp" <<'PY'
+import re, sys
+path = sys.argv[1]
+s = open(path).read()
+if "myos: the stream's error indicator" not in s:
+    pat = re.compile(r'(\t+)// TODO: Handle I/O errors\.\n\1mlibc::infoLogger\(\) << "mlibc: fwrite\(\) I/O errors are not handled"\n\t+<< frg::endlog;\n')
+    s, n = pat.subn(r"\1// myos: the stream's error indicator, as ferror reads it.\n\1file->__status_bits |= __MLIBC_ERROR_BIT;\n", s)
+    assert n == 2, "stdio.cpp: fwrite's error log lines not found (%d)" % n
+    open(path, "w").write(s)
+    print("patched stdio.cpp: a failed fwrite sets the error indicator")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose
