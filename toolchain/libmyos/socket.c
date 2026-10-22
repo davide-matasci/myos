@@ -1975,13 +1975,19 @@ ssize_t __myos_recvfrom(int sockfd, void *buf, size_t len, int flags,
     if (is_dgram(sockfd)) {
         return udp_recv(s, buf, len, flags, src_addr, addrlen);
     }
-    if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
-        s->nonblock = 1;
-        restore = 1;
-    }
-    n = read(sockfd, buf, len);
-    if (restore) {
-        s->nonblock = 0;
+    /* As __myos_recv: a peek leaves the bytes (mlibc's recv is a recvfrom
+     * without an address). */
+    if (s != NULL && (flags & MSG_PEEK) && s->family == AF_INET && s->state == SOCK_CONNECTED) {
+        n = tcp_peek(s, buf, len, flags);
+    } else {
+        if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
+            s->nonblock = 1;
+            restore = 1;
+        }
+        n = read(sockfd, buf, len);
+        if (restore) {
+            s->nonblock = 0;
+        }
     }
     if (n >= 0 && src_addr != NULL && addrlen != NULL) {
         s = sock_lookup(sockfd);

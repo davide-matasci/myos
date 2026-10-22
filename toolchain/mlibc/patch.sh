@@ -97,6 +97,20 @@ int memfd_create(const char *__name, unsigned int __flags);
     print("patched sys/mman.h: memfd_create without the linux option")
 PY
 
+# A locked mutex's destroy is EBUSY (POSIX lets it fail so; libgloss's does,
+# and the pthread smoke checks it), not a panic.
+python3 - "$SRC/options/internal/generic/threads.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "int thread_mutex_destroy(struct __mlibc_mutex *mutex) {\n\t__ensure(!mutex->__mlibc_state);\n\treturn 0;\n}\n"
+new = "int thread_mutex_destroy(struct __mlibc_mutex *mutex) {\n\tif(mutex->__mlibc_state)\n\t\treturn EBUSY;\n\treturn 0;\n}\n"
+if new not in s:
+    assert s.count(old) == 1, "threads.cpp: thread_mutex_destroy not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched threads.cpp: EBUSY for a locked mutex's destroy")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose

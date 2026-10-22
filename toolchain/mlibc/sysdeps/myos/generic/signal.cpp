@@ -19,13 +19,15 @@ constexpr int FRAME_SIGNO = 1;
 constexpr int FRAME_HANDLER = 2;
 constexpr int FRAME_SIGINFO = 10;
 
+// mlibc keeps signal `sig` at bit sig - 1 of its sigset_t; the kernel (and
+// newlib) at bit sig of a 32-bit mask.
 unsigned int mask_of(const sigset_t *set) {
-	return set ? (unsigned int)set->__sig[0] : 0;
+	return set ? (unsigned int)(set->__sig[0] << 1) : 0;
 }
 
 void set_mask(sigset_t *set, unsigned int mask) {
 	memset(set, 0, sizeof *set);
-	set->__sig[0] = mask;
+	set->__sig[0] = mask >> 1;
 }
 
 } // namespace
