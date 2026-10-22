@@ -11,6 +11,7 @@
 #include <time.h>
 #include <sys/time.h>
 
+#include "libmyos.h"
 #include "myos_syscalls.h"
 #include "libc.h"
 
@@ -48,7 +49,7 @@ __myos_clock_gettime(clockid_t clock_id, struct timespec *tp)
         tp->tv_nsec = (long)(ns % 1000000000UL);
         return 0;
     }
-    if (gettimeofday(&tv, NULL) != 0) {
+    if (__myos_gettimeofday(&tv, NULL) != 0) {
         tp->tv_sec = 0;
         tp->tv_nsec = 0;
         return -1;

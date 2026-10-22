@@ -162,7 +162,7 @@ void __myos_exit(int status) {
     }
 }
 
-/* read(2) and __myos_pread(2): MYOS_SYS_PREAD at the file position (flags 0) or at
+/* read(2) and pread(2): MYOS_SYS_PREAD at the file position (flags 0) or at
  * `off` (MYOS_FILE_AT). */
 static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
     if (flags == 0) {
@@ -240,7 +240,7 @@ ssize_t __myos_pread(int fd, void *buf, size_t cnt, off_t off) {
     return n;
 }
 
-/* write(2) and __myos_pwrite(2), as read_at. */
+/* write(2) and pwrite(2), as read_at. */
 static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long flags) {
     long ret;
     size_t done = 0;

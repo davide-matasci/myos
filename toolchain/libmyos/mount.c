@@ -1,4 +1,4 @@
-/* __myos_mount(2). */
+/* mount(2). */
 #include <errno.h>
 #include <stdint.h>
 #include <stdarg.h>

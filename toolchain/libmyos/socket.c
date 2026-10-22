@@ -1,6 +1,6 @@
 /*
  * Userspace BSD sockets over Plan 9 /net + netd (smoltcp).
- * No __myos_socket() syscall — TCP and UDP via clone/ctl/data, and AF_UNIX
+ * No socket() syscall — TCP and UDP via clone/ctl/data, and AF_UNIX
  * stream sockets over /net/unix, which the kernel serves itself
  * (docs/sockets-unix.md).
  *
@@ -541,7 +541,7 @@ static int status_accept_seq(const char *status) {
  * asking (a connected UDP socket is always writable) and *kevents to what
  * the kernel should wait for (a stream is writable while it has room). A listener
  * arms netd's accept first: select-driven servers like dropbear select()
- * before __myos_accept(), and netd only announces a connection once armed.
+ * before accept(), and netd only announces a connection once armed.
  */
 int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
     struct myos_sock *s = sock_by_fd(fd);

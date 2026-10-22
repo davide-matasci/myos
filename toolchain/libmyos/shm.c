@@ -7,7 +7,7 @@
  * A System V segment is the file /dev/shm/sysv.k<key> (IPC_PRIVATE: a
  * name of this process and a counter), its id the file's inode number
  * (unique until reboot): shmat finds the file by it among the directory's
- * entries and maps it MAP_SHARED, __myos_shmctl(IPC_RMID) unlinks it (the
+ * entries and maps it MAP_SHARED, shmctl(IPC_RMID) unlinks it (the
  * attached mappings go on sharing it; no new attach after that), and
  * IPC_STAT reports its size and a mode of 0666 (the file's protection is
  * the policy's: the X server, without the client's credentials, checks

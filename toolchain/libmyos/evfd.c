@@ -1,4 +1,4 @@
-/* __myos_eventfd(2), timerfd(2), epoll(7) and __myos_signalfd(2) over
+/* eventfd(2), timerfd(2), epoll(7) and signalfd(2) over
  * the kernel's event counters (/dev/event), timers (/dev/timer), wait sets
  * (/dev/wait) and signal fds (/dev/sig), docs/events.md.
  *

@@ -21,7 +21,7 @@
 #include "myos_syscalls.h"
 #include "libc.h"
 
-/* Most fds one __myos_poll() takes (the kernel's limit too). */
+/* Most fds one poll() takes (the kernel's limit too). */
 #define MYOS_POLL_MAX 256
 
 static long elapsed_ms(const struct timeval *start) {
@@ -182,7 +182,7 @@ static int select_body(int nfds, fd_set *readfds, fd_set *writefds,
 }
 
 /* select with a timespec and, if `sigmask` is non-NULL, that signal mask
- * while it waits. The mask is set and restored around __myos_select(): a signal
+ * while it waits. The mask is set and restored around select(): a signal
  * unblocked by it that arrives before the wait starts runs its handler
  * there and does not end the wait (POSIX makes the swap atomic). */
 static int pselect_body(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
