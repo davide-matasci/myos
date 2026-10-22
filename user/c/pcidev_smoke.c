@@ -212,6 +212,11 @@ int main(void) {
 
     if (write(ctl, "dma 1", 5) != 5 || !read_ctl(ctl, text, sizeof text))
         return fail("dma buffer");
+    /* Whether the device sees the caches: the buffer is mapped
+     * non-cacheable when it does not, so the copies below need no
+     * maintenance either way. */
+    if (!strstr(text, "dma coherent\n") && !strstr(text, "dma noncoherent\n"))
+        return fail("dma coherence in ctl");
     unsigned long long phys = 0;
     if (!ctl_value(text, "dma0 ", &phys) || phys == 0)
         return fail("dma0 in ctl");

@@ -82,12 +82,21 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 51: a module drives a secondary interrupt controller as a domain
 /// ([`KernelApi::irq_domain_register`], `irq_dispatch`); [`MmioDevice`]
 /// gives the node's phandle.
-pub const ABI_VERSION: u32 = 51;
+/// 52: `/dev/pci` on any board: a BAR's address as the CPUs see it
+/// ([`KernelApi::pci_bar_phys`]), whether a device's DMA sees the caches
+/// ([`KernelApi::dma_coherent`]), memory mapped non-cacheable for one that
+/// does not ([`MYOS_MMAP_NOCACHE`]).
+pub const ABI_VERSION: u32 = 52;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
 /// platform's attributes for the address).
 pub const MYOS_MMAP_UNCACHED: u32 = 1;
+/// [`ModuleVfsOps::mmap`]: map the page, ordinary memory, non-cacheable:
+/// a DMA buffer of a device that does not see the caches, so the program
+/// needs no cache maintenance (x86 PCD|PWT, aarch64 Normal non-cacheable;
+/// riscv64 cached, its DMA being coherent).
+pub const MYOS_MMAP_NOCACHE: u32 = 2;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -1076,6 +1085,16 @@ pub struct KernelApi {
     /// from the handler of the controller's own interrupt, for each line
     /// pending.
     pub irq_dispatch: unsafe extern "C" fn(irq: u32),
+    // --- ABI 52: /dev/pci where the PCI window moves addresses or DMA is not coherent (issue #513) ---
+    /// Memory BAR `bar` of the PCI function as the CPUs see it (the bus
+    /// address, moved by the host bridge's window; assigned when the
+    /// firmware left it unassigned) and its size: 0, or -1 for no such
+    /// memory BAR.
+    pub pci_bar_phys: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, bar: u8, cpu: *mut u64, size: *mut u64) -> i32,
+    /// Whether DMA handle `dma`'s device sees the caches (1), or needs
+    /// [`KernelApi::dma_sync`] and non-cacheable mappings
+    /// ([`MYOS_MMAP_NOCACHE`]) instead (0); -1 for no such handle.
+    pub dma_coherent: unsafe extern "C" fn(dma: i32) -> i32,
 }
 
 /// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
@@ -1656,6 +1675,20 @@ impl KernelApi {
 
     pub fn irq_dispatch(&self, irq: u32) {
         unsafe { (self.irq_dispatch)(irq) }
+    }
+
+    /// See [`KernelApi::pci_bar_phys`] (field).
+    pub fn pci_bar_phys(&self, bus: u8, slot: u8, func: u8, bar: u8, cpu: &mut u64, size: &mut u64) -> i32 {
+        unsafe { (self.pci_bar_phys)(bus, slot, func, bar, cpu, size) }
+    }
+
+    /// See [`KernelApi::dma_coherent`] (field): `None` for no such handle.
+    pub fn dma_coherent(&self, dma: i32) -> Option<bool> {
+        match unsafe { (self.dma_coherent)(dma) } {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
     }
 
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {
