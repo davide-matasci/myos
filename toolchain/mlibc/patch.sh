@@ -97,9 +97,9 @@ int memfd_create(const char *__name, unsigned int __flags);
     print("patched sys/mman.h: memfd_create without the linux option")
 PY
 
-# A locked mutex's destroy is EBUSY and an unlock of a mutex nobody holds
-# EPERM (POSIX lets them fail so; libgloss's do, and the pthread smoke
-# checks it), not a panic.
+# A locked mutex's destroy is EBUSY, an unlock of a mutex nobody holds EPERM
+# and a thread's join of itself EDEADLK (POSIX lets them fail so; libgloss's
+# do, and the pthread smoke checks it), not a panic or a wait.
 python3 - "$SRC/options/internal/generic/threads.cpp" <<'PY'
 import sys
 path = sys.argv[1]
@@ -117,8 +117,17 @@ old = "\t// Decrement the recursion level and unlock if we hit zero.\n\t__ensure
 new = "\t// Decrement the recursion level and unlock if we hit zero.\n\tif(!mutex->__mlibc_recursion)\n\t\treturn EPERM;\n"
 if new not in s:
     assert s.count(old) == 1, "threads.cpp: thread_mutex_unlock's check not found"
-    open(path, "w").write(s.replace(old, new))
+    s = s.replace(old, new)
+    open(path, "w").write(s)
     print("patched threads.cpp: EPERM for an unlock of a mutex nobody holds")
+# And a thread's join of itself: EDEADLK (POSIX's "may"), not a wait that
+# never ends.
+old = "\tmlibc::thread_testcancel();\n\n\twhile (!__atomic_load_n(&tcb->didExit, __ATOMIC_ACQUIRE)) {\n"
+new = "\tif(tcb == mlibc::get_current_tcb())\n\t\treturn EDEADLK;\n\n" + old
+if new not in s:
+    assert s.count(old) == 1, "threads.cpp: thread_join's wait not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched threads.cpp: EDEADLK for a thread's join of itself")
 PY
 
 # hstrerror says what the h_errno codes mean (upstream's returns ""; the
