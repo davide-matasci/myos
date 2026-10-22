@@ -205,6 +205,46 @@ if "myos: a thread's relock" not in s:
     print("patched pthread.cpp: the rwlock's writer is known")
 PY
 
+# A cancellation inside a condition wait (mlibc cancels from its signal
+# handler, in the wait) runs the cleanup handlers with the mutex locked
+# again, as POSIX says: the wait is wrapped in an internal cleanup handler
+# that takes the mutex. (Upstream's own TODO; the pthread smoke checks it.)
+python3 - "$SRC/options/internal/generic/threads.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "cond_timedwait_relocking" not in s:
+    old = """int thread_cond_timedwait(struct __mlibc_cond *__restrict cond, __mlibc_mutex *__restrict mutex,
+\t\tconst struct timespec *__restrict abstime, clockid_t clockid) {
+\tmlibc::thread_testcancel();
+"""
+    new = """static int cond_timedwait_relocking(struct __mlibc_cond *__restrict cond, __mlibc_mutex *__restrict mutex,
+\t\tconst struct timespec *__restrict abstime, clockid_t clockid);
+
+// myos: a cancellation in the wait (the signal handler cancels there) runs
+// the cleanup handlers with the mutex locked again, as POSIX says.
+int thread_cond_timedwait(struct __mlibc_cond *__restrict cond, __mlibc_mutex *__restrict mutex,
+\t\tconst struct timespec *__restrict abstime, clockid_t clockid) {
+\tauto self = get_current_tcb();
+\tauto relock = frg::construct<Tcb::CleanupHandler>(getAllocator());
+\trelock->func = [] (void *m) { thread_mutex_lock(static_cast<__mlibc_mutex *>(m)); };
+\trelock->arg = mutex;
+\tself->cleanupHandlers.push_back(relock);
+\tint e = cond_timedwait_relocking(cond, mutex, abstime, clockid);
+\tself->cleanupHandlers.pop_back();
+\tfrg::destruct(getAllocator(), relock);
+\treturn e;
+}
+
+static int cond_timedwait_relocking(struct __mlibc_cond *__restrict cond, __mlibc_mutex *__restrict mutex,
+\t\tconst struct timespec *__restrict abstime, clockid_t clockid) {
+\tmlibc::thread_testcancel();
+"""
+    assert s.count(old) == 1, "threads.cpp: thread_cond_timedwait not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched threads.cpp: the condition wait relocks on a cancellation")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose
