@@ -19,7 +19,7 @@ mkdir -p "$out"
 stub_sum=$(sha256sum "$here/armstub8.S" | cut -d' ' -f1)
 if [ ! -f "$out/armstub8-myos.bin" ] || [ "$(cat "$out/armstub8.sha256" 2>/dev/null)" != "$stub_sum" ]; then
 	clang --target=aarch64-none-elf -c "$here/armstub8.S" -o "$out/armstub8.o"
-	ld.lld -Ttext=0 --entry=_start "$out/armstub8.o" -o "$out/armstub8.elf"
+	ld.lld -Ttext=0 --image-base=0 --entry=_start "$out/armstub8.o" -o "$out/armstub8.elf"
 	# LLVM's objcopy, else the GNU aarch64 one (CI's image has binutils).
 	objcopy=$(command -v llvm-objcopy || command -v aarch64-linux-gnu-objcopy)
 	"$objcopy" -O binary "$out/armstub8.elf" "$out/armstub8-myos.bin"
