@@ -318,7 +318,7 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 | `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`), the IOMMU domain the function is confined to (`iommu N`; no line on a board without an IOMMU) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
 | `config` | the 256 bytes of configuration space, read and written at any offset |
 | `barN` | a memory BAR, for `mmap(MAP_SHARED)`: uncached (x86 PCD\|PWT, aarch64 Device-nGnRE; riscv64 from the platform's attributes for the address), the module's `mmap` hook saying so (`MYOS_MMAP_UNCACHED`, ABI 46), and it stays so through `mprotect` |
-| `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq`, once the driver quietened its device |
+| `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq` (a byte at least: the kernel passes an empty write to no file), once the driver quietened its device |
 | `dmaN` | the buffer, for `mmap(MAP_SHARED)` (ordinary memory: a device whose DMA is not coherent, or a board whose PCI window moves BAR addresses, is not for `/dev/pci` yet, issue #513) |
 
 Closing `ctl` (the driver's exit too) turns bus mastering and memory
