@@ -318,7 +318,7 @@ impl Dmar {
     /// The platform supports interrupt remapping (the table's `INTR_REMAP`
     /// flag).
     pub fn intr_remap(&self) -> bool {
-        self.t.u8(36).is_some_and(|f| f & 1 != 0)
+        self.t.u8(37).is_some_and(|f| f & 1 != 0)
     }
 
     /// Each DMA remapping hardware unit (DRHD): its registers, whether it
