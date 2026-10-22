@@ -134,6 +134,12 @@ int Sysdeps<PrepareStack>::operator()(void **stack, void *entry, void *arg, void
 // __mlibc_thread_entry on the prepared stack; the kernel sets its thread
 // pointer too (the trampoline sets it again, as every port's does).
 int Sysdeps<Clone>::operator()(void *tcb, pid_t *tid_out, void *stack) {
+	// Cancellation is enabled before the thread runs (the trampoline enables
+	// it too, once it does): a pthread_cancel right after pthread_create then
+	// sends its signal, instead of leaving a mark for a cancellation point
+	// that mlibc's blocking calls do not test (the thread would block in its
+	// read for good, and its join with it).
+	__atomic_fetch_or(&static_cast<Tcb *>(tcb)->cancelBits, tcbCancelEnableBit, __ATOMIC_RELAXED);
 	uint64_t spawn[4] = {
 		(uintptr_t)__mlibc_thread_entry, (uintptr_t)stack, 0, thread_pointer(tcb),
 	};
