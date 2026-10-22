@@ -167,12 +167,14 @@ if "myos: a thread's relock" not in s:
     s = s.replace(owner, "unsigned int desired = mlibc::this_tid();\n")
     old = """int pthread_rwlock_wrlock(pthread_rwlock_t *rw) {
 \tSCOPE_TRACE();
+
 \t// Take the __mlibc_m mutex.
 \t// Will be released in pthread_rwlock_unlock().
 \tif (int e = rwlock_m_lock(rw, true); e)
 """
     new = """int pthread_rwlock_wrlock(pthread_rwlock_t *rw) {
 \tSCOPE_TRACE();
+
 \t// myos: a thread's relock of its own write lock is EDEADLK, not a wait.
 \tif ((__mlibc_fair_rwlock::from(rw)->__mlibc_m.load(std::memory_order_relaxed)
 \t\t\t& (__mlibc_fair_rwlock::mutex_owner_mask | __mlibc_fair_rwlock::mutex_excl_bit))
