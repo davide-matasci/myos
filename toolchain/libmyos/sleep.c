@@ -73,7 +73,7 @@ unsigned __myos_sleep(unsigned seconds) {
     return seconds;
 }
 
-int __myos_usleep(unsigned int usec) {
+int __myos_usleep(useconds_t usec) {
     return __myos_sleep_ns((unsigned long long)usec * 1000ULL, 0);
 }
 

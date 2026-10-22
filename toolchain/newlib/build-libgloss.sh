@@ -174,7 +174,7 @@ for f in hooks posix_stubs posix_extra misc_stubs more_stubs signal environ init
   "$CC" -ffreestanding -fPIC -O2 -I"$LIBMYOS" -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
 done
-# The C both libcs share (toolchain/libmyos/README.md), compiled against
+# The C both libcs share (toolchain/libmyos, docs/mlibc.md), compiled against
 # newlib's headers; its files export their public names (libmyos/libc.h).
 for f in myos_raw fdio proc sigtramp at time pwdgrp mmap shm mount termios ttyctl socket ifaddrs statvfs pollselect pty evfd sleep uio reboot ioctl mntent random; do
   "$CC" -ffreestanding -fPIC -O2 -I"$LIBMYOS" -I"$PORT" -isystem "$inc" \

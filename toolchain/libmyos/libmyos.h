@@ -1,4 +1,4 @@
-/* The C both of myos's C libraries share (README.md): the POSIX calls over
+/* The C both of myos's C libraries share (docs/mlibc.md): the POSIX calls over
  * the kernel's syscalls and files, each defined as __myos_NAME and exported
  * as NAME by the libc (libc.h). This header declares them for the code
  * that calls them by these names: newlib's hooks (libgloss/myos/hooks.c)
@@ -137,7 +137,7 @@ int __myos_pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfd
                    const struct timespec *timeout, const sigset_t *sigmask);
 int __myos_nanosleep(const struct timespec *req, struct timespec *rem);
 unsigned __myos_sleep(unsigned seconds);
-int __myos_usleep(unsigned int usec);
+int __myos_usleep(useconds_t usec);
 int __myos_clock_gettime(clockid_t clock_id, struct timespec *tp);
 int __myos_clock_getres(clockid_t clock_id, struct timespec *res);
 int __myos_settimeofday(const struct timeval *tv, const struct timezone *tz);
@@ -226,13 +226,15 @@ int __myos_getgrgid_r(gid_t gid, struct group *grp, char *buf, size_t buflen, st
 int __myos_getgrnam_r(const char *name, struct group *grp, char *buf, size_t buflen,
                       struct group **result);
 
-/* ---- statvfs.c, uio.c, mount.c, reboot.c ------------------------------ */
+/* ---- statvfs.c, uio.c, mount.c, reboot.c, random.c -------------------- */
 int __myos_statvfs(const char *path, struct statvfs *buf);
 int __myos_fstatvfs(int fd, struct statvfs *buf);
 ssize_t __myos_writev(int fd, const struct iovec *iov, int iovcnt);
 ssize_t __myos_readv(int fd, const struct iovec *iov, int iovcnt);
 int __myos_mount(const char *source, const char *target, const char *fstype, ...);
 int __myos_reboot(int howto);
+/* random.c: getrandom(2) from /dev/urandom. */
+ssize_t __myos_getrandom(void *buf, size_t buflen, unsigned int flags);
 
 #ifdef __cplusplus
 }
