@@ -153,6 +153,56 @@ if new not in s:
     print("patched netdb.cpp: hstrerror's messages")
 PY
 
+# A read-write lock's writer is known (its tid in the lock word, where
+# upstream writes 1): a thread's relock of its own write lock is EDEADLK
+# and an unlock of a lock nobody holds EPERM (POSIX's "may"; libgloss's
+# are, the pthread smoke checks them), not a wait that never ends.
+python3 - "$SRC/options/posix/generic/pthread.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "myos: a thread's relock" not in s:
+    owner = "unsigned int desired = 1;\n"
+    assert s.count(owner) == 2, "pthread.cpp: the rwlock's lock words not found"
+    s = s.replace(owner, "unsigned int desired = mlibc::this_tid();\n")
+    old = """int pthread_rwlock_wrlock(pthread_rwlock_t *rw) {
+\tSCOPE_TRACE();
+\t// Take the __mlibc_m mutex.
+\t// Will be released in pthread_rwlock_unlock().
+\tif (int e = rwlock_m_lock(rw, true); e)
+"""
+    new = """int pthread_rwlock_wrlock(pthread_rwlock_t *rw) {
+\tSCOPE_TRACE();
+\t// myos: a thread's relock of its own write lock is EDEADLK, not a wait.
+\tif ((__mlibc_fair_rwlock::from(rw)->__mlibc_m.load(std::memory_order_relaxed)
+\t\t\t& (__mlibc_fair_rwlock::mutex_owner_mask | __mlibc_fair_rwlock::mutex_excl_bit))
+\t\t\t== (mlibc::this_tid() | __mlibc_fair_rwlock::mutex_excl_bit))
+\t\treturn EDEADLK;
+\t// Take the __mlibc_m mutex.
+\t// Will be released in pthread_rwlock_unlock().
+\tif (int e = rwlock_m_lock(rw, true); e)
+"""
+    assert s.count(old) == 1, "pthread.cpp: pthread_rwlock_wrlock not found"
+    s = s.replace(old, new)
+    old = """\tif(!rc_expected) {
+\t\t// We are doing a write-unlock.
+\t\trwlock_m_unlock(rw);
+\t\treturn 0;
+"""
+    new = """\tif(!rc_expected) {
+\t\t// We are doing a write-unlock.
+\t\t// myos: of a lock nobody holds, EPERM.
+\t\tif(!(l->__mlibc_m.load(std::memory_order_relaxed) & __mlibc_fair_rwlock::mutex_owner_mask))
+\t\t\treturn EPERM;
+\t\trwlock_m_unlock(rw);
+\t\treturn 0;
+"""
+    assert s.count(old) == 1, "pthread.cpp: pthread_rwlock_unlock's write path not found"
+    s = s.replace(old, new)
+    open(path, "w").write(s)
+    print("patched pthread.cpp: the rwlock's writer is known")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose
