@@ -110,6 +110,12 @@ if "host_machine.system() == 'myos'" not in s:
 	libc_include_dirs += include_directories('sysdeps/myos/include')
 	subdir('sysdeps/myos')
 """ + anchor)
+    # The kernel relocates a static PIE itself and applies RELATIVE
+    # relocations only (kernel/src/modules/elf.rs): no ifuncs (x86_64's
+    # strcmp), whose IRELATIVE it would refuse.
+    check = "\tifuncs_supported = cpp_compiler.compiles(ifunc_check, name: 'C++ compiler supports ifunc')\n"
+    assert s.count(check) == 1, "meson.build: the ifunc check not found"
+    s = s.replace(check, check + "\tif host_machine.system() == 'myos'\n\t\tifuncs_supported = false\n\tendif\n")
     open(path, "w").write(s)
-    print("patched meson.build: the myos sysdeps")
+    print("patched meson.build: the myos sysdeps, no ifuncs")
 PY
