@@ -989,8 +989,9 @@ int Sysdeps<EpollPwait>::operator()(int epfd, struct epoll_event *ev, int n, int
 	return 0;
 }
 
+// *fd is signalfd()'s: -1 for a new one, else the fd whose mask changes.
 int Sysdeps<SignalfdCreate>::operator()(const sigset_t *mask, int flags, int *fd) {
-	int r = __myos_signalfd(-1, mask, flags);
+	int r = __myos_signalfd(*fd, mask, flags);
 	if (r < 0)
 		return errno;
 	*fd = r;

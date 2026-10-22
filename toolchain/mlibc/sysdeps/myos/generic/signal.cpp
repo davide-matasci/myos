@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <bits/ensure.h>
 #include <mlibc/all-sysdeps.hpp>
@@ -38,6 +39,13 @@ extern "C" void __myos_sigdispatch(unsigned long *frame) {
 	info.si_signo = (int)(frame[FRAME_SIGINFO] & 0xffffffff);
 	info.si_code = (int)(frame[FRAME_SIGINFO] >> 32);
 	info.si_value.sival_ptr = (void *)frame[FRAME_SIGINFO + 1];
+	// The kernel keeps no sender. SIGCANCEL has one sender on myos, mlibc's
+	// pthread_cancel in this process (Tgkill), and its handler takes the
+	// signal only from there: what Linux's tgkill would say.
+	if (info.si_signo == SIGCANCEL) {
+		info.si_code = SI_TKILL;
+		info.si_pid = getpid();
+	}
 	__myos_sig_count++;
 	// A plain sa_handler takes one argument; passing three is harmless.
 	auto handler = (void (*)(int, siginfo_t *, void *))(uintptr_t)frame[FRAME_HANDLER];
