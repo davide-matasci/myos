@@ -180,9 +180,25 @@ is given to the firmware, every frame is sent with its encryption off
 (TX_FLAGS_ENCRYPT_DIS, as OpenBSD sends the frames it encrypts itself),
 and the protected frames it receives come up as they were sent; the two
 bytes of padding the firmware puts after a frame's header (after its
-CCMP header when it reports the frame as CCMP's) are taken out. No test
-boot has the device: CI tests the driver's encodings and its command
-sequences against a fake firmware (`cargo test -p iwx`); the rest needs
+CCMP header when it reports the frame as CCMP's) are taken out.
+
+No test boot has the device. `cargo test -p iwx` (CI runs it) tests the
+driver's encodings, and runs it against a model of the AX201
+(`user/wifi/iwx/tests/ax201`): the registers and periphery, the
+interrupt (MSI with the ICT, MSI-X with its automask), the receive ring
+and transmit queues in the driver's DMA buffers, and a firmware that
+loads itself from the context information (checking the sections are
+those of `iwx::sim`, a synthetic file in Intel's format with myos's own
+bytes), sends ALIVE and answers every command of the bring-up, the scan
+and joining a network as the real one does; three access points (the
+simulated radio's, below) beacon and answer authentication and
+association. Every command, descriptor and register access is checked
+against the firmware's structures as OpenBSD's if_iwxreg.h describes
+them, and the first thing a real device would not take stops it with
+the reason. The tests bring the device up with MSI and with MSI-X,
+scan (hearing the three networks at their signals), join `myos-open`,
+authenticate, associate and leave. What the model cannot show is
+whether Intel's firmware agrees with that reading of it: the rest needs
 the laptop.
 
 ## The simulated radio
