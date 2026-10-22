@@ -17,8 +17,16 @@
 //! controller here uses (SGI 0 and 1 the IPIs, PPI 27 and 30 the timers,
 //! 32 and up the devices: the arch's interrupt entry reads them so); a
 //! PLIC source on riscv64.
+//!
+//! Behind the root, a secondary controller (a GPIO block's lines, behind
+//! one of the root's) is an interrupt domain a module drives
+//! ([`domain_register`], `KernelApi::irq_domain_register`): its lines are
+//! interrupt numbers from [`DOMAIN_FIRST`] up, which [`route`] and
+//! [`unmask`] take to the domain instead of the root, which a specifier
+//! whose parent is the domain's node decodes to ([`xlate`]), and which the
+//! module's handler of its own line dispatches (`irq::dispatch`).
 
-use spin::Once;
+use spin::{Mutex, Once};
 
 use crate::platform::Intc;
 
@@ -142,11 +150,83 @@ pub fn root() -> &'static dyn IrqChip {
 }
 
 /// The interrupt number of a device tree interrupt specifier, decoded by
-/// the driver of its interrupt parent: `None` when no driver of this arch
+/// the domain or the driver of its interrupt parent: `None` when neither
 /// is made of that node.
 pub fn xlate(spec: &crate::dt::IrqSpec) -> Option<u32> {
+    if let Some(d) = DOMAINS.lock().iter().flatten().find(|d| d.phandle != 0 && d.phandle == spec.parent()) {
+        // The first cell is the line, as every GPIO controller has it.
+        return spec.cells().first().filter(|&&line| line < d.count).map(|line| d.first + line);
+    }
     crate::arch::IRQCHIPS.iter().find_map(|d| {
         let node = d.dt.iter().position(|n| crate::dt::phandle_compatible(spec.parent(), n.compatible))?;
         (d.xlate)(node, spec.cells())
     })
+}
+
+/// The `irq::dispatch` number of device interrupt `irq`, still masked
+/// ([`IrqChip::route`]): a domain's line is its own number.
+pub fn route(irq: u32) -> Option<u32> {
+    if domain_of(irq).is_some() {
+        return Some(irq);
+    }
+    root().route(irq)
+}
+
+/// Deliver device interrupt `irq` (after [`route`]): through its domain,
+/// or the root ([`IrqChip::unmask`]).
+pub fn unmask(irq: u32) {
+    match domain_of(irq) {
+        Some(d) => unsafe { (d.unmask)(d.ctx as *mut core::ffi::c_void, irq - d.first) },
+        None => root().unmask(irq),
+    }
+}
+
+/// The first interrupt number of the domains: above every root
+/// controller's (an x86 vector, a GIC INTID, a PLIC source).
+pub const DOMAIN_FIRST: u32 = 4096;
+/// The domains, and the lines they have between them.
+const MAX_DOMAINS: usize = 8;
+const DOMAIN_LINES: u32 = 4096;
+
+/// A secondary controller a module drives: its lines are interrupts
+/// `first..first + count`.
+#[derive(Clone, Copy)]
+struct Domain {
+    /// Its device tree node's phandle, 0 when it has none.
+    phandle: u32,
+    first: u32,
+    count: u32,
+    /// Deliver line `line` (`0..count`) of the controller.
+    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+    ctx: usize,
+}
+
+static DOMAINS: Mutex<[Option<Domain>; MAX_DOMAINS]> = Mutex::new([None; MAX_DOMAINS]);
+
+fn domain_of(irq: u32) -> Option<Domain> {
+    DOMAINS.lock().iter().flatten().find(|d| (d.first..d.first + d.count).contains(&irq)).copied()
+}
+
+/// A domain of `count` lines for the device tree node `phandle` (0 for a
+/// controller without one), whose line `n` `unmask(ctx, n)` delivers: its
+/// first interrupt number, `None` when the domains are full or the node
+/// has one already. A domain stays for as long as the kernel runs (its
+/// module stays loaded: a registration).
+pub fn domain_register(
+    phandle: u32,
+    count: u32,
+    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+    ctx: usize,
+) -> Option<u32> {
+    let mut domains = DOMAINS.lock();
+    if count == 0 || (phandle != 0 && domains.iter().flatten().any(|d| d.phandle == phandle)) {
+        return None;
+    }
+    let first = domains.iter().flatten().map(|d| d.first + d.count).max().unwrap_or(DOMAIN_FIRST);
+    if first + count > DOMAIN_FIRST + DOMAIN_LINES {
+        return None;
+    }
+    let slot = domains.iter_mut().find(|d| d.is_none())?;
+    *slot = Some(Domain { phandle, first, count, unmask, ctx });
+    Some(first)
 }

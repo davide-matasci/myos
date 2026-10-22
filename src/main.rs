@@ -56,7 +56,11 @@ fn aarch64_machine() -> String {
     // `iommu/smmuv3.rs` on every boot (`/dev/pci`'s devices confined). QEMU's
     // unit does stage 1 only unless told (`arm-smmuv3.stage`, with
     // `-global` in [`qemu_aarch64`]): the kernel uses stage 2.
-    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off,iommu=smmuv3")
+    // The GICv3 boots have no ACPI tables (`acpi=off`): the firmware hands
+    // the device tree alone, and the board has the PL061 GPIO controller,
+    // whose place an ACPI board's GED takes (the `pl061` module's test).
+    let acpi = if gic == "3" { ",acpi=off" } else { "" };
+    format!("virt,gic-version={gic},highmem-ecam=off,highmem-mmio=off,iommu=smmuv3{acpi}")
 }
 
 /// aarch64: the kernel reads the board from the device tree, and the EDK2
@@ -1094,7 +1098,12 @@ pub(crate) fn esp_limine_files(arch: &str) -> Vec<DiskFile> {
 /// time: it is cheap and must never be stale.
 fn aarch64_dtb() -> Vec<u8> {
     let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt-aarch64.dtb");
+    // With the firmware, as the boot has it: QEMU builds a board with ACPI
+    // tables differently (an ACPI GED where the PL061 would be).
+    let (code, _) = aarch64_firmware();
     let status = Command::new("qemu-system-aarch64")
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,unit=0,file={},readonly=on", code.display()))
         .args([
             "-machine",
             &format!("{},dumpdtb=target/virt-aarch64.dtb", aarch64_machine()),

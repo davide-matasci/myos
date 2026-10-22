@@ -60,6 +60,34 @@ and the driver in its arch's `IRQCHIPS`. aarch64's controllers number
 their interrupts as the GIC does (SGI 0 and 1 the IPIs, PPI 27 and 30
 the timers, 32 and up the devices), which the interrupt entry reads.
 
+### Interrupt domains
+
+A secondary controller, whose lines reach the CPU through one interrupt
+of the root's (a GPIO block's pins, a PCIe bridge's MSI), is a module:
+an interrupt domain (`KernelApi::irq_domain_register`, ABI 51). The
+module drives the controller; the kernel gives the domain a range of
+interrupt numbers from 4096 up (`irqchip::DOMAIN_FIRST`; at most 8
+domains, 4096 lines between them), line `n` being `first + n`:
+
+- a driver of a device on a line enables its interrupt as any other
+  (`irq_enable`); the kernel registers the handler, then calls the
+  domain's `unmask` with the line;
+- the module enables the controller's own interrupt, and its handler
+  passes each line pending to `KernelApi::irq_dispatch` (an edge is
+  cleared before, a level after its handlers);
+- a device tree specifier whose `interrupt-parent` is the domain's node
+  (`MmioDevice::phandle`) decodes to its line, the first cell
+  (`irqchip::xlate`).
+
+A domain stays while the kernel runs: it is a registration, so the
+module stays loaded. The first is `modules/pl061`, the ARM PL061 GPIO
+controller's 8 lines (QEMU `virt` without ACPI: with ACPI tables its
+place is the ACPI GED's). No driver uses a line yet, so it ships for
+`insmod` and is not loaded at boot; its probe checks the path once: it
+sets an idle input to interrupt while low and enables that line through
+the kernel, and its handler turns it off (`/proc/interrupts`: `pl061`,
+the controller's, and `pl061 check`, the line's; the `irq_domain` test).
+
 ## Device interrupts
 
 `kernel/src/irq.rs` keeps one handler per interrupt number and `pci_irq_setup`
@@ -191,12 +219,16 @@ for the IPIs with the target's affinity). The boot log says which GIC
 (`[INFO] gicv3`). QEMU `virt` gives a GICv3 with `gic-version=3`:
 `MYOS_AARCH64_GIC=3 cargo run -- aarch64 test-mini` (the launcher dumps
 the matching tree); CI boots both versions (`aarch64`, `aarch64-gicv3`).
+The GICv3 boots also have no ACPI tables (`acpi=off`): the firmware
+hands the device tree alone (`source dt`), so CI boots an aarch64 board
+described by the tree only, and the board has the PL061 (above).
 The ITS (message-signalled interrupts) is not driven: PCI devices use
 INTx on aarch64.
 
 The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine no tree, so the
-host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine options and
-`-smp` as the boot) into the ESP as `boot/virt-aarch64.dtb` /
+host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine options,
+firmware and `-smp` as the boot: QEMU builds a board with ACPI tables
+differently) into the ESP as `boot/virt-aarch64.dtb` /
 `boot/virt.dtb` and `limine.conf` passes it with `global_dtb`; AAVMF also
 publishes ACPI tables, so the aarch64 boots exercise the agreement check
 (`source acpi+dt`). Interrupt specifiers of the tree are decoded by the

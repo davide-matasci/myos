@@ -126,7 +126,7 @@ Boot (Limine)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
             │     acpi, virtio_blk, virtio_scsi, nvme, xhci, usb_hub, usb_storage, usb_hid, virtio_net, tap, netfs, fat, ext2
-            │     (pcidev ships for `insmod`, not loaded at boot)
+            │     (pcidev and pl061 ship for `insmod`, not loaded at boot)
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
                  ├─ /netd (smoltcp over /dev/net0/data and /dev/tap; only opener of net0)
@@ -184,6 +184,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |
 | `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
 | `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt, confined by the IOMMU where the board has one (`docs/pci-acpi-smp.md`); shipped for `insmod /lib/modules/pcidev`, not loaded at boot |
+| `modules/pl061` | The ARM PL061 GPIO controller's lines as an interrupt domain (`docs/pci-acpi-smp.md`, "Interrupt domains"); shipped for `insmod /lib/modules/pl061`, not loaded at boot |
 | `modules/usb_hid` | USB HID mice and tablets, the console's pointer (`/dev/console/mouse`), and boot keyboards, the console's keyboard (`docs/tty.md`, `docs/usb.md`) |
 | `modules/tap` | Virtual NICs: `/dev/tap/N`, a NIC whose wire is a program (the Wi-Fi daemon's link, `docs/wifi.md`) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |
@@ -252,7 +253,8 @@ qemu-system-aarch64 -m 256 -cpu cortex-a72 -machine virt,gic-version=2 \
   -bios /usr/share/AAVMF/AAVMF_CODE.fd -serial stdio
 ```
 The GIC version must match the device tree the launcher packed into the
-image (`MYOS_AARCH64_GIC=3 cargo run -- aarch64` for a GICv3 board).
+image (`MYOS_AARCH64_GIC=3 cargo run -- aarch64` for a GICv3 board, which
+also runs without ACPI tables: add `acpi=off` to `-machine`).
 
 ### RISC-V
 ```sh
@@ -332,7 +334,7 @@ Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, cal
 | Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
 | Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
 
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), virtio_net, tap, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on; `pcidev` (`RUNTIME_MODULES`) is shipped and never listed: root loads it (`docs/pci-acpi-smp.md`). The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
+`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, the block drivers (virtio_blk, virtio_scsi, nvme), the USB bus (xhci, then its class drivers usb_hub, usb_storage and usb_hid), virtio_net, tap, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on; `pcidev` and `pl061` (`RUNTIME_MODULES`) are shipped and never listed: root loads them (`docs/pci-acpi-smp.md`). The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
 
 Module exports:
 ```rust

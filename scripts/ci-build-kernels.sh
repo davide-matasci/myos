@@ -283,6 +283,9 @@ HELLO_OK_ELFS=(
   target/pcidev-x86_64-unknown-none
   target/pcidev-aarch64-unknown-none-softfloat
   target/pcidev-riscv64imac-unknown-none-elf
+  target/pl061-x86_64-unknown-none
+  target/pl061-aarch64-unknown-none-softfloat
+  target/pl061-riscv64imac-unknown-none-elf
   target/tap-x86_64-unknown-none
   target/tap-aarch64-unknown-none-softfloat
   target/tap-riscv64imac-unknown-none-elf

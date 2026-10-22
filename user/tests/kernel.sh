@@ -465,6 +465,34 @@ platform() {
 }
 t -t smoke platform platform
 
+# Interrupt domains (irqchip, docs/pci-acpi-smp.md "Interrupt domains"):
+# the pl061 module makes the PL061 GPIO controller's lines interrupts of
+# their own, behind the controller's one. Its probe sets an idle input to
+# interrupt while low and enables that line's interrupt through the
+# kernel; the handler turns it off. Both the controller's interrupt and
+# the line's (a domain number, 4096 and up) were taken. Only a board
+# without ACPI tables has the PL061 (QEMU's aarch64 GICv3 boots); on the
+# others the module finds none.
+irq_counts() {
+	# The count of the handler called "$1" ("$2" its second word) at an
+	# interrupt of at least $3.
+	while read -r n count w1 w2; do
+		[ "$w1" = "$1" ] && [ "$w2" = "$2" ] && [ "${n%:}" -ge "$3" ] && [ "$count" -gt 0 ] && return 0
+	done < /proc/interrupts
+	return 1
+}
+irq_domain() {
+	insmod /lib/modules/pl061 && grep -q "^pl061$" /proc/modules || return 1
+	grep -q '^source dt$' /proc/platform && grep -q '^intc gicv' /proc/platform || return 0
+	i=0
+	while [ $i -lt 5 ] && ! irq_counts pl061 check 4096; do
+		sleep 1
+		i=$((i + 1))
+	done
+	irq_counts pl061 check 4096 && irq_counts pl061 "" 32 || { cat /proc/interrupts; return 1; }
+}
+t -t irq,modules irq_domain irq_domain
+
 # FAT read-write (the fat module, modules/fat/fatvol, host-tested against
 # dosfstools): on the launcher's FAT16 disk, which /ok mounted at /tmp/fat,
 # files and a directory with long names are written, moved across

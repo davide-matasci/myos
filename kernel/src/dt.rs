@@ -256,6 +256,8 @@ pub struct MmioDevice {
     pub base: u64,
     pub size: u64,
     pub irq: Option<IrqSpec>,
+    /// Its phandle, 0 when nothing names it.
+    pub phandle: u32,
 }
 
 /// The `index`-th node compatible with `compat`, in ascending `reg` order
@@ -274,6 +276,7 @@ pub fn mmio_device(compat: &str, index: usize) -> Option<MmioDevice> {
         base,
         size,
         irq: interrupt_spec(fdt, node),
+        phandle: prop(node, "phandle").and_then(|p| p.get(0)).unwrap_or(0),
     })
 }
 

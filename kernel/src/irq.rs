@@ -9,6 +9,10 @@
 //! * riscv64: PCI INTx lines and the board's devices are PLIC sources; the
 //!   supervisor external interrupt claims from the PLIC and passes the
 //!   source id here.
+//! * an interrupt domain's lines (`irqchip::DOMAIN_FIRST` and up, a
+//!   secondary controller a module drives): the module's handler of the
+//!   controller's own interrupt passes each pending one here
+//!   (`KernelApi::irq_dispatch`).
 //!
 //! Handlers run in interrupt context on the CPU that took the interrupt
 //! (CPU 0: every interrupt is routed to the BSP). They ack the device
@@ -88,20 +92,20 @@ pub fn register(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
 }
 
 /// Route platform interrupt `irq` to `handler(ctx)` on CPU 0, through the
-/// interrupt controller (`irqchip::root`): on x86_64 a legacy ISA IRQ
-/// (through the I/O APIC), elsewhere the number the device tree or the
-/// SPCR gives (a GIC SPI, a PLIC source). The handler is in place before
+/// interrupt controller (`irqchip::root`, or the domain the number is
+/// one of): on x86_64 a legacy ISA IRQ (through the I/O APIC), elsewhere
+/// the number the device tree or the SPCR gives (a GIC SPI, a PLIC
+/// source, a domain's line). The handler is in place before
 /// the line is unmasked. False when it cannot be routed: the caller polls
 /// its device.
 pub fn enable(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
-    let chip = crate::irqchip::root();
-    let Some(n) = chip.route(irq) else {
+    let Some(n) = crate::irqchip::route(irq) else {
         return false;
     };
     if !register(n, name, handler, ctx) {
         return false;
     }
-    chip.unmask(irq);
+    crate::irqchip::unmask(irq);
     true
 }
 
@@ -148,7 +152,7 @@ pub fn pci_intx_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
     }
     let spec = crate::dt::pci_intx(bus, slot, func, pin as u8)?;
     let irq = crate::irqchip::xlate(&spec)?;
-    crate::irqchip::root().unmask(irq);
+    crate::irqchip::unmask(irq);
     Some(PciIrq { irq, delivery: Delivery::IntX })
 }
 

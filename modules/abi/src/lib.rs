@@ -79,7 +79,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// ([`KernelApi::iommu_attach`], `iommu_map`, `iommu_detach`).
 /// 50: a file's [`ModuleVfsOps::open`] may name another file for the fd
 /// (a `clone` opens the new object's `data`, `docs/events.md`).
-pub const ABI_VERSION: u32 = 50;
+/// 51: a module drives a secondary interrupt controller as a domain
+/// ([`KernelApi::irq_domain_register`], `irq_dispatch`); [`MmioDevice`]
+/// gives the node's phandle.
+pub const ABI_VERSION: u32 = 51;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1055,6 +1058,24 @@ pub struct KernelApi {
     pub iommu_map: unsafe extern "C" fn(domain: i32, phys: u64, len: usize) -> i32,
     /// The function back in passthrough, its domain and mappings gone.
     pub iommu_detach: unsafe extern "C" fn(bus: u8, slot: u8, func: u8),
+    // --- ABI 51: interrupt domains (docs/pci-acpi-smp.md) ---
+    /// Make the module's secondary interrupt controller, `count` lines
+    /// behind one interrupt of its own, an interrupt domain: the node
+    /// `phandle` ([`MmioDevice::phandle`], 0 for none; a specifier whose
+    /// `interrupt-parent` it is decodes to a line, its first cell), each
+    /// line `n` delivered by `unmask(ctx, n)` when [`KernelApi::irq_enable`]
+    /// enables its interrupt number. The first of those numbers (line `n`
+    /// is `first + n`), 0 on failure. Counted as a registration.
+    pub irq_domain_register: unsafe extern "C" fn(
+        phandle: u32,
+        count: u32,
+        unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+        ctx: *mut core::ffi::c_void,
+    ) -> u32,
+    /// Run the handlers of interrupt `irq`, a line of the caller's domain:
+    /// from the handler of the controller's own interrupt, for each line
+    /// pending.
+    pub irq_dispatch: unsafe extern "C" fn(irq: u32),
 }
 
 /// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
@@ -1617,6 +1638,26 @@ impl KernelApi {
         unsafe { (self.iommu_detach)(bus, slot, func) }
     }
 
+    /// See [`KernelApi::irq_domain_register`] (field).
+    ///
+    /// # Safety
+    ///
+    /// `unmask` and `ctx` must stay valid for as long as the kernel runs
+    /// (the registration keeps the module loaded).
+    pub unsafe fn irq_domain_register(
+        &self,
+        phandle: u32,
+        count: u32,
+        unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+        ctx: *mut core::ffi::c_void,
+    ) -> u32 {
+        unsafe { (self.irq_domain_register)(phandle, count, unmask, ctx) }
+    }
+
+    pub fn irq_dispatch(&self, irq: u32) {
+        unsafe { (self.irq_dispatch)(irq) }
+    }
+
     pub fn user_mapped(&self, addr: usize, len: usize) -> bool {
         unsafe { (self.user_mapped)(addr, len) != 0 }
     }
@@ -2050,6 +2091,9 @@ pub struct MmioDevice {
     /// Interrupt number as `irq::dispatch` / `irq_register` see it; 0 when
     /// the node has none or the kernel cannot route it.
     pub irq: u32,
+    /// The node's phandle (what other nodes name it by), 0 when it has
+    /// none.
+    pub phandle: u32,
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
