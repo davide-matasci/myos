@@ -95,7 +95,9 @@ fn x86_machine(cmd: &mut Command) {
         }
         _ => {
             cmd.arg("-machine").arg("q35");
-            cmd.arg("-device").arg("intel-iommu,intremap=off");
+            // `intremap=on`: the unit remaps interrupts too, each message
+            // through an entry naming its sender (`iommu/vtd.rs`).
+            cmd.arg("-device").arg("intel-iommu,intremap=on");
         }
     }
 }

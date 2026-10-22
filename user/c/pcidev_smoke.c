@@ -8,7 +8,11 @@
  * liveness register (it inverts what is written) and the factorial unit;
  * routes the interrupt
  * and has the device raise one (the `irq` read returns it, the status
- * register names it); allocates a DMA buffer and has the device copy a
+ * register names it); where the IOMMU remaps interrupts (`intremap` in
+ * /proc/iommu, x86_64), rewrites the device's MSI message to another
+ * entry's handle and has it raise again: the message is refused and
+ * counted as a fault, the device's own arrives once restored; allocates a
+ * DMA buffer and has the device copy a
  * pattern from it into its own memory and back to another part of it,
  * announcing the end with an interrupt. Where the board has an IOMMU
  * (`iommu N` in ctl), a copy to an address outside the buffer is refused:
@@ -149,6 +153,81 @@ static uint64_t wait_irq(int irq) {
     return n;
 }
 
+/* Where the IOMMU remaps interrupts (`intremap` in /proc/iommu) and the
+ * interrupt is an MSI, the message's address names the table entry that
+ * verifies its sender: the message rewritten (through `config`) to the
+ * next handle is refused and counted as a fault, nothing arrives on `irq`,
+ * and the device's own message arrives again once put back. 0 when the
+ * board has neither, or once this passed. */
+static int spoof_msi(int irq, const char *ctl_text) {
+    char text[4096], p[128];
+    int fd = open("/proc/iommu", O_RDONLY);
+    if (fd < 0)
+        return 0;
+    int ok = read_ctl(fd, text, sizeof text);
+    close(fd);
+    if (!ok || !strstr(text, " intremap ") || !strstr(ctl_text, "irq msi\n"))
+        return 0;
+    path(p, sizeof p, "config");
+    int cfg = open(p, O_RDWR);
+    if (cfg < 0)
+        return fail("open config for writing");
+    /* The MSI capability (id 5) along the list from 0x34; its message
+     * address at +4. */
+    uint8_t cap = 0, hdr[2] = {0, 0};
+    if (pread(cfg, &cap, 1, 0x34) != 1)
+        return fail("capability pointer");
+    while (cap >= 0x40 && hdr[0] != 0x05) {
+        if (pread(cfg, hdr, 2, cap) != 2)
+            return fail("capability header");
+        if (hdr[0] != 0x05)
+            cap = hdr[1];
+    }
+    if (hdr[0] != 0x05)
+        return fail("no msi capability");
+    uint32_t addr = 0;
+    if (pread(cfg, &addr, 4, cap + 4) != 4)
+        return fail("msi address");
+    /* The remappable format: bit 4, the handle in bits 19:5 and 2. */
+    if (!(addr & 1u << 4))
+        return fail("msi message not remappable");
+    unsigned handle = (addr >> 5 & 0x7fff) | (addr >> 2 & 1) << 15;
+    unsigned other = (handle + 1) % 256;
+    uint32_t spoof = 0xFEE00000u | (other & 0x7fff) << 5 | (other >> 15) << 2 | 1u << 4;
+    long long before = iommu_faults();
+    if (before < 0)
+        return fail("/proc/iommu faults");
+    if (pwrite(cfg, &spoof, 4, cap + 4) != 4)
+        return fail("rewrite the msi address");
+    wr(EDU_IRQ_RAISE, 0x5a);
+    long long after = before;
+    for (int i = 0; i < 300 && after <= before; i++) {
+        usleep(10000);
+        after = iommu_faults();
+    }
+    if (after <= before) {
+        printf("[ FAIL ] pcidev no iommu fault for a message with another entry's handle (faults %lld)\n", after);
+        return 1;
+    }
+    struct pollfd pd = {.fd = irq, .events = POLLIN};
+    if (poll(&pd, 1, 0) != 0)
+        return fail("the message with another entry's handle arrived");
+    wr(EDU_IRQ_ACK, 0x5a);
+    if (pwrite(cfg, &addr, 4, cap + 4) != 4)
+        return fail("restore the msi address");
+    close(cfg);
+    wr(EDU_IRQ_RAISE, 0x5a);
+    if (wait_irq(irq) == 0)
+        return fail("no interrupt once the message is restored");
+    if (rd(EDU_IRQ_STATUS) != 0x5a)
+        return fail("interrupt status once the message is restored");
+    wr(EDU_IRQ_ACK, 0x5a);
+    if (write(irq, "", 1) != 1)
+        return fail("unmask after the restored interrupt");
+    printf("intremap refused the message naming entry %u: faults %lld -> %lld\n", other, before, after);
+    return 0;
+}
+
 int main(void) {
     if (!find_edu())
         return fail("no edu device in /dev/pci");
@@ -209,6 +288,10 @@ int main(void) {
     wr(EDU_IRQ_ACK, 0x5a);
     if (write(irq, "", 1) != 1)
         return fail("unmask after the interrupt");
+    if (!read_ctl(ctl, text, sizeof text))
+        return fail("ctl");
+    if (spoof_msi(irq, text))
+        return 1;
 
     if (write(ctl, "dma 1", 5) != 5 || !read_ctl(ctl, text, sizeof text))
         return fail("dma buffer");
