@@ -40,6 +40,7 @@ ENV CI=true \
 #     ELFs (newlib/ports) + kernel/user EE linking.
 #   - gcc g++ make autoconf automake libtool texinfo bison flex pkg-config:
 #     host builds + configure-based GNU ports (newlib, git, vim, lynx, tcc...).
+#   - meson ninja-build: mlibc's build system (toolchain/mlibc).
 #   - zstd rsync xorriso: sysroot packaging + fetch, iso.yml ISO image.
 #   - git curl wget file patch bc ca-certificates python3: source fetch, SSL,
 #     checkout sync, wire-myos.py / port patching.
@@ -61,6 +62,7 @@ RUN apt-get update \
         gcc g++ make \
         autoconf automake libtool \
         texinfo bison flex \
+        meson ninja-build \
         pkg-config \
         zstd rsync \
         xorriso \
