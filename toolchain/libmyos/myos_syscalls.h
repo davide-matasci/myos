@@ -263,6 +263,10 @@ extern volatile unsigned long __myos_sig_count;
 
 /* Userspace BSD sockets (socket.c); weak stubs in fdio.c. */
 void myos_socket_on_close(int fd);
+/* evfd.c's hooks in fdio.c: a signal fd's records as the libc's structs. */
+int myos_sigfd_kernel_count(int fd, size_t cnt, size_t *kcnt);
+ssize_t myos_sigfd_expand(void *buf, ssize_t n);
+void myos_evfd_on_close(int fd);
 int myos_socket_empty_read(int fd);
 int myos_socket_fcntl(int fd, int cmd, int arg);
 int myos_socket_write_failed(int fd);

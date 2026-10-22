@@ -97,8 +97,9 @@ int memfd_create(const char *__name, unsigned int __flags);
     print("patched sys/mman.h: memfd_create without the linux option")
 PY
 
-# A locked mutex's destroy is EBUSY (POSIX lets it fail so; libgloss's does,
-# and the pthread smoke checks it), not a panic.
+# A locked mutex's destroy is EBUSY and an unlock of a mutex nobody holds
+# EPERM (POSIX lets them fail so; libgloss's do, and the pthread smoke
+# checks it), not a panic.
 python3 - "$SRC/options/internal/generic/threads.cpp" <<'PY'
 import sys
 path = sys.argv[1]
@@ -107,8 +108,40 @@ old = "int thread_mutex_destroy(struct __mlibc_mutex *mutex) {\n\t__ensure(!mute
 new = "int thread_mutex_destroy(struct __mlibc_mutex *mutex) {\n\tif(mutex->__mlibc_state)\n\t\treturn EBUSY;\n\treturn 0;\n}\n"
 if new not in s:
     assert s.count(old) == 1, "threads.cpp: thread_mutex_destroy not found"
-    open(path, "w").write(s.replace(old, new))
+    s = s.replace(old, new)
+    open(path, "w").write(s)
     print("patched threads.cpp: EBUSY for a locked mutex's destroy")
+# Likewise an unlock of a mutex nobody holds: EPERM, what POSIX says for
+# an error-checking one.
+old = "\t// Decrement the recursion level and unlock if we hit zero.\n\t__ensure(mutex->__mlibc_recursion);\n"
+new = "\t// Decrement the recursion level and unlock if we hit zero.\n\tif(!mutex->__mlibc_recursion)\n\t\treturn EPERM;\n"
+if new not in s:
+    assert s.count(old) == 1, "threads.cpp: thread_mutex_unlock's check not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched threads.cpp: EPERM for an unlock of a mutex nobody holds")
+PY
+
+# hstrerror says what the h_errno codes mean (upstream's returns ""; the
+# libc smoke, written to newlib's, expects the messages).
+python3 - "$SRC/options/posix/generic/netdb.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = 'const char *hstrerror(int) {\n\treturn "";\n}\n'
+new = """const char *hstrerror(int err) {
+\tswitch(err) {
+\tcase HOST_NOT_FOUND: return "Unknown host";
+\tcase TRY_AGAIN: return "Host name lookup failure";
+\tcase NO_RECOVERY: return "Unknown server error";
+\tcase NO_DATA: return "No address associated with name";
+\tdefault: return "Unknown resolver error";
+\t}
+}
+"""
+if new not in s:
+    assert s.count(old) == 1, "netdb.cpp: hstrerror not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched netdb.cpp: hstrerror's messages")
 PY
 
 # The top-level meson.build picks the sysdeps by host_machine.system().

@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -432,6 +433,9 @@ int __myos_epoll_pwait(int epfd, struct epoll_event *events, int maxevents, int 
 
 /* ---- signalfd --------------------------------------------------------- */
 
+/* The fds signalfd() made, one bit each (myos_sigfd_kernel_count). */
+static unsigned char sig_fds[(MYOS_MAX_FDS + 7) / 8];
+
 /* `mask N,N,...` (or `mask none`) for a sigset_t (one bit per signal). */
 static void mask_cmd(char *cmd, const sigset_t *mask) {
     int sig, any = 0;
@@ -476,7 +480,53 @@ int __myos_signalfd(int fd, const sigset_t *mask, int flags) {
     if (write_file(path, cmd) != 0) {
         return -1;
     }
+    if (fd < MYOS_MAX_FDS) {
+        sig_fds[fd / 8] |= (unsigned char)(1 << (fd % 8));
+    }
     return fd;
+}
+
+/* The kernel's record is 16 bytes, the signal number then zeros (it keeps
+ * no sender); newlib's struct signalfd_siginfo is that record. mlibc's is
+ * Linux's, 128 bytes with ssi_errno second: a read on a signal fd (fdio.c,
+ * read_at) asks the kernel for as many records as the structs the buffer
+ * holds and widens them in place, from the last one. The fds signalfd()
+ * made are the ones known here (a dup of one reads the records). */
+#define SIG_RECORD 16
+
+static int sig_fd_known(int fd) {
+    return fd >= 0 && fd < MYOS_MAX_FDS && ((sig_fds[fd / 8] >> (fd % 8)) & 1);
+}
+
+int myos_sigfd_kernel_count(int fd, size_t cnt, size_t *kcnt) {
+    if (sizeof(struct signalfd_siginfo) == SIG_RECORD || !sig_fd_known(fd)) {
+        return 0;
+    }
+    if (cnt < sizeof(struct signalfd_siginfo)) {
+        errno = EINVAL;
+        return -1;
+    }
+    *kcnt = cnt / sizeof(struct signalfd_siginfo) * SIG_RECORD;
+    return 1;
+}
+
+ssize_t myos_sigfd_expand(void *buf, ssize_t n) {
+    size_t records = (size_t)n / SIG_RECORD;
+    size_t i;
+    for (i = records; i-- > 0;) {
+        struct signalfd_siginfo *si = (struct signalfd_siginfo *)buf + i;
+        uint32_t signo;
+        memcpy(&signo, (char *)buf + i * SIG_RECORD, sizeof signo);
+        memset(si, 0, sizeof *si);
+        si->ssi_signo = signo;
+    }
+    return (ssize_t)(records * sizeof(struct signalfd_siginfo));
+}
+
+void myos_evfd_on_close(int fd) {
+    if (fd >= 0 && fd < MYOS_MAX_FDS) {
+        sig_fds[fd / 8] &= (unsigned char)~(1 << (fd % 8));
+    }
 }
 
 MYOS_ALIAS(eventfd)

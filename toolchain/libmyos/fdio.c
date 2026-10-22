@@ -143,10 +143,32 @@ void myos_fd_nonblock_dup(int from, int to) {
 /* A directory listing kept per fd (mlibc's sysdeps) goes with the fd. */
 void __myos_dir_closed(int fd) __attribute__((weak));
 void __myos_dir_closed(int fd) { (void)fd; }
+/* The fds evfd.c knows as signal fds too. */
+void myos_evfd_on_close(int fd) __attribute__((weak));
+void myos_evfd_on_close(int fd) { (void)fd; }
+
+/* A signal fd's read when the libc's struct signalfd_siginfo is not the
+ * kernel's 16-byte record (evfd.c): how many bytes of records the
+ * structs `cnt` holds take (1), or 0 for any other fd or a libc whose
+ * struct is the record, or -1 with errno; and the records read widened
+ * into the structs, in place. */
+int myos_sigfd_kernel_count(int fd, size_t cnt, size_t *kcnt) __attribute__((weak));
+int myos_sigfd_kernel_count(int fd, size_t cnt, size_t *kcnt) {
+    (void)fd;
+    (void)cnt;
+    (void)kcnt;
+    return 0;
+}
+ssize_t myos_sigfd_expand(void *buf, ssize_t n) __attribute__((weak));
+ssize_t myos_sigfd_expand(void *buf, ssize_t n) {
+    (void)buf;
+    return n;
+}
 
 int __myos_close(int fd) {
     myos_socket_on_close(fd);
     __myos_dir_closed(fd);
+    myos_evfd_on_close(fd);
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;
@@ -182,8 +204,13 @@ static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
         }
     }
 
+    size_t kcnt = cnt;
+    int sigfd = myos_sigfd_kernel_count(fd, cnt, &kcnt);
+    if (sigfd < 0) {
+        return -1;
+    }
     for (;;) {
-        long ret = myos_syscall6(MYOS_SYS_PREAD, fd, (long)(uintptr_t)buf, (long)cnt, (long)off, flags, 0);
+        long ret = myos_syscall6(MYOS_SYS_PREAD, fd, (long)(uintptr_t)buf, (long)kcnt, (long)off, flags, 0);
         if (ret == (long)MYOS_ESPIPE) {
             errno = ESPIPE;
             return -1;
@@ -218,7 +245,7 @@ static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
                 return -1;
             }
         }
-        return (ssize_t)ret;
+        return sigfd ? myos_sigfd_expand(buf, (ssize_t)ret) : (ssize_t)ret;
     }
 }
 
