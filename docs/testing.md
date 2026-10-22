@@ -232,7 +232,7 @@ and writes the boot job's matrix. A path selects tags:
 carries the Linux layer (`linux_compat`) when a `linux` test runs.
 
 The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
-GICv3, riscv64) in parallel boots: the long tests' groups (`ostest`,
+GICv3, riscv64; the Raspberry Pi 3, below, runs its own) in parallel boots: the long tests' groups (`ostest`,
 `alpine`: the curated os-test list, the apk installs) each in a boot of
 their own, whole (their tests build on each other), and one boot with
 everything else, so a full run is three boots of ten minutes per machine
@@ -242,7 +242,19 @@ selection without `net` tests skips the mirror, one without `alpine-disk`
 tests the Alpine disk, which a boot that needs it restores from the
 Actions cache (keyed by `linux-compat/alpine-disks.sh --hash`: the scripts
 that make it; bump `FIXTURE` there for a fresh one, Alpine's
-latest-stable moves) or makes on a miss. The plan is in the run's summary;
+latest-stable moves) or makes on a miss.
+
+The Raspberry Pi 3 (QEMU `raspi3b`, `myos rpi3 test`) boots once
+whenever an aarch64 machine does, with a fixed selection: the `smoke`
+tests it can run. It has no disk but the SD card it boots from (no
+driver for it yet), no network, PCI or USB, so the tests that need a
+disk (`blk`, `boot_rc`, `fstab_mount`, `fileio`) or a socket (`libc`,
+`heap_mini`: issue #538) are skipped, and its boot checks the markers it
+can print (`boot_test::Board::Rpi3`). The build job builds its boot files
+(`boot/rpi3/build.sh`, U-Boot cached by its pin) and packs them with the
+rest.
+
+The plan is in the run's summary;
 `scripts/ci-select.py --changed PATH...` prints it locally for any set of
 paths, `--all` the full one.
 

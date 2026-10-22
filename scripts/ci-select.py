@@ -50,10 +50,11 @@ MACHINES = [
 # The Raspberry Pi 3 (QEMU raspi3b, `myos rpi3 test`, docs/raspberry-pi.md):
 # no disk but the SD card it boots from (no driver for it yet), no network,
 # PCI or USB. One boot of the smoke tests it can run, whenever an aarch64
-# machine boots: the tests that need the boot disk (`blk`, `boot_rc`,
-# `fstab_mount`) and `libc` (its resolver waits for a netd the board does
-# not have, issue #538) stay out.
-RPI3_ARGS = "rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,libc --budget 20"
+# machine boots: the tests that need a disk (`blk`, `boot_rc`,
+# `fstab_mount`, `fileio`'s scratch disk) and the ones that open a socket
+# (`libc`'s resolver, `heap_mini`'s ping and socket stages: they wait for a
+# netd the board does not have, issue #538) stay out.
+RPI3_ARGS = "rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,fileio,libc,heap_mini --budget 20"
 # The long tests' groups, each a boot of its own (a `heavy` test outside
 # them, the heavy smoke, stays with the rest).
 HEAVY_GROUPS = ["ostest", "alpine"]

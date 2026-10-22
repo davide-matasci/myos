@@ -93,10 +93,13 @@ A Raspberry Pi 3 (BCM2837, four Cortex-A53) has no UEFI firmware: its
 GPU firmware starts an ARM stub and a kernel from the SD card, and myos
 uses [U-Boot](https://u-boot.org/) as that kernel, which runs Limine as
 a UEFI application. QEMU models the board (`raspi3b`), so this boot is
-checked there; **untested on hardware so far**.
+checked there, by CI too (the smoke tests it can run, `docs/testing.md`
+"In CI"); **untested on hardware so far**.
 
 ```sh
 cargo run -- rpi3        # builds the boot files and boots QEMU raspi3b
+cargo run -- rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,fileio,libc,heap_mini
+                         # CI's boot test of it
 ```
 
 The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
