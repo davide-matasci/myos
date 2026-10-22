@@ -13,7 +13,9 @@ request labelled `ci:full` run everything.
 
 The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
 GICv3, riscv64; a change under kernel/src/arch/<arch> runs everything on
-that arch's machines and the smoke set on the others), in parallel boots:
+that arch's machines and the smoke set on the others), and the Raspberry
+Pi 3 boots its smoke tests whenever an aarch64 machine boots, in parallel
+boots:
 the long tests' groups (`ostest`, `alpine`: each a boot of its own, whole,
 as its tests build on each other) and one boot with the rest. Each boot
 gets a budget from what it runs, and says whether it needs the Alpine
@@ -45,6 +47,13 @@ MACHINES = [
     ("aarch64-gicv3", "aarch64", "aarch64", "3"),
     ("riscv64", "riscv64", "riscv64", ""),
 ]
+# The Raspberry Pi 3 (QEMU raspi3b, `myos rpi3 test`, docs/raspberry-pi.md):
+# no disk but the SD card it boots from (no driver for it yet), no network,
+# PCI or USB. One boot of the smoke tests it can run, whenever an aarch64
+# machine boots: the tests that need the boot disk (`blk`, `boot_rc`,
+# `fstab_mount`) and `libc` (its resolver waits for a netd the board does
+# not have, issue #538) stay out.
+RPI3_ARGS = "rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,libc --budget 20"
 # The long tests' groups, each a boot of its own (a `heavy` test outside
 # them, the heavy smoke, stays with the rest).
 HEAVY_GROUPS = ["ostest", "alpine"]
@@ -312,6 +321,11 @@ def main(argv):
             continue
         machine_all = len(names) == len(tests)
         boots += shards(mid, names, tests, None if machine_all else tags_arg)
+    if any(b["arch"] == "aarch64" for b in boots):
+        boots.append({
+            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "",
+            "alpine": "false", "required": True,
+        })
 
     lines = []
     if everything:

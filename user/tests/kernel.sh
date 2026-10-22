@@ -438,7 +438,8 @@ t -t console keymap keymap_ctl
 # each ending in the source it came from. The CPUs and the interrupt
 # controller are always there; the console UART and the PCIe host bridge
 # too, except on a PC, whose arch does not need them described (QEMU's
-# `pc` has no SPCR and no MCFG); an arm board names its PSCI conduit
+# `pc` has no SPCR and no MCFG), and the host bridge on a board without
+# PCI (the Raspberry Pi 3); an arm board with a GIC names its PSCI conduit
 # (power-off, reboot); no component reads differently from the two
 # sources. The devices the drivers attached for DMA have a line each
 # (none on a board without such a device), all coherent on QEMU's boards,
@@ -450,7 +451,11 @@ platform() {
 	grep -q '^intc [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
 	if ! grep -q '^intc apic ' /proc/platform; then
 		grep -q '^uart [a-z0-9]* 0x[0-9a-f]* ' /proc/platform || return 1
-		grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
+		# A board with PCI devices (not the Raspberry Pi 3) describes its
+		# host bridge.
+		if grep -qv '^#' /proc/pci; then
+			grep -q '^pci ecam 0x[0-9a-f]* 0x[0-9a-f]* bus [0-9]*-[0-9]* (' /proc/platform || return 1
+		fi
 	fi
 	if grep -q '^intc gic' /proc/platform; then
 		grep -q '^psci [hs][vm]c ([a-z]*)$' /proc/platform || return 1
@@ -785,7 +790,9 @@ proc_pid() {
 	cat /proc/$kid/status
 	kill $kid
 	wait $kid
-	[ $rc -eq 0 ] && cat /proc/*/status | grep -q " usb .* kernel$"
+	# The USB bus's kernel thread, where xhci found a controller (it
+	# publishes /proc/usb; the Raspberry Pi 3 has none).
+	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel$"; }
 }
 t -t proc,smoke proc_pid proc_pid
 
