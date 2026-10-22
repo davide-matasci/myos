@@ -16,7 +16,8 @@ serial console, the HDMI framebuffer the firmware sets up (`docs/fb.md`),
 everything that runs from the initramfs, and USB (`docs/usb.md`): a
 keyboard on the HDMI console, a mouse, memory sticks, hubs, through the
 VL805 xHCI controller behind the BCM2711's PCIe bridge. What does not
-(yet): the SD card; Ethernet (GENET); Wi-Fi; the RTC (the Pi has none).
+(yet): the SD card; Ethernet (GENET); Wi-Fi. The Pi has no RTC: its wall
+clock counts from the epoch at boot until `date` or `settimeofday` sets it.
 
 ## Building the image
 
@@ -107,7 +108,8 @@ The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
 generic timer, the serial console, the framebuffer the firmware sets up,
 everything that runs from the initramfs, power-off and reboot. What does
 not (yet): USB (the DWC2 controller), so no keyboard, disk or Ethernet;
-the SD card (as a disk: U-Boot reads it); Wi-Fi.
+the SD card (as a disk: U-Boot reads it); Wi-Fi. It has no RTC either:
+the wall clock counts from the epoch at boot.
 
 `boot/rpi3/build.sh` (which `cargo run -- rpi3` runs) builds the boot
 files into `target/rpi3`:
