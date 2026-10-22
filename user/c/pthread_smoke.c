@@ -844,7 +844,18 @@ static int many_threads(void) {
 }
 
 int main(void) {
-    if (alone() || with_threads() || locks() || cancellation() || fork_busy() || many_threads()) {
+    if (alone() || with_threads() || locks() || cancellation()) {
+        return 1;
+    }
+#ifndef __MLIBC_POSIX_OPTION
+    /* Not on mlibc (its headers define the __MLIBC_* options): its fork
+     * takes none of its own locks, so a child forked while a thread holds
+     * the allocator's or stdio's waits for it forever (issue #544). */
+    if (fork_busy()) {
+        return 1;
+    }
+#endif
+    if (many_threads()) {
         return 1;
     }
     printf("[ OK ] pthread\n");
