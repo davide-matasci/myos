@@ -1,4 +1,4 @@
-/* myos libgloss: pty allocation (openpty/forkpty) over /dev/pts (docs/tty.md).
+/* pty allocation (openpty/forkpty) over /dev/pts (docs/tty.md).
  *
  * Opening /dev/pts/clone allocates a pair and returns the master fd; the
  * master's /proc/self/fd link names the pair's directory /dev/pts/N, whose
@@ -16,8 +16,9 @@
 
 #include "myos_syscalls.h"
 #include "pty.h"
+#include "libc.h"
 
-int openpty(int *amaster, int *aslave, char *name,
+int __myos_openpty(int *amaster, int *aslave, char *name,
             const struct termios *termp, const struct winsize *winp) {
     int m = -1, s = -1;
     char dir[MYOS_TTY_PATH];
@@ -82,12 +83,12 @@ fail: {
     }
 }
 
-int forkpty(int *amaster, char *name,
+int __myos_forkpty(int *amaster, char *name,
             const struct termios *termp, const struct winsize *winp) {
     int m = -1, s = -1;
     pid_t pid;
 
-    if (openpty(&m, &s, name, termp, winp) != 0) {
+    if (__myos_openpty(&m, &s, name, termp, winp) != 0) {
         return -1;
     }
 
@@ -124,3 +125,6 @@ int forkpty(int *amaster, char *name,
     *amaster = m;
     return pid;
 }
+
+MYOS_ALIAS(openpty)
+MYOS_ALIAS(forkpty)

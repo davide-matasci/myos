@@ -1,4 +1,4 @@
-/* myos libgloss: statvfs and fstatvfs, from the kernel's statfsat
+/* statvfs and fstatvfs, from the kernel's statfsat
  * (kernel/src/user/at.rs): the path's filesystem, or with an empty path
  * and MYOS_AT_EMPTY_PATH the fd's. */
 #include <errno.h>
@@ -7,6 +7,7 @@
 #include <sys/statvfs.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
 /* The kernel's MyosStatfs. */
 struct myos_statfs {
@@ -55,7 +56,7 @@ static int statfsat(long dirfd, const char *path, long len, long flags, struct s
     return 0;
 }
 
-int statvfs(const char *__restrict path, struct statvfs *__restrict buf) {
+int __myos_statvfs(const char *__restrict path, struct statvfs *__restrict buf) {
     size_t n;
     if (path == NULL) {
         errno = EFAULT;
@@ -73,6 +74,9 @@ int statvfs(const char *__restrict path, struct statvfs *__restrict buf) {
     return statfsat(MYOS_AT_FDCWD, path, (long)n, 0, buf, ENOENT);
 }
 
-int fstatvfs(int fd, struct statvfs *buf) {
+int __myos_fstatvfs(int fd, struct statvfs *buf) {
     return statfsat(fd, "", 0, MYOS_AT_EMPTY_PATH, buf, EBADF);
 }
+
+MYOS_ALIAS(statvfs)
+MYOS_ALIAS(fstatvfs)

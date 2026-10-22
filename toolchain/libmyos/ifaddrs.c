@@ -18,6 +18,8 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include "libmyos.h"
+#include "libc.h"
 
 #define IFADDRS_PATH "/net/ifaddrs"
 #define IFADDRS_CAP 512
@@ -133,7 +135,7 @@ static void set_in(struct sockaddr_in *sin, struct in_addr a) {
     sin->sin_addr = a;
 }
 
-int getifaddrs(struct ifaddrs **ifap) {
+int __myos_getifaddrs(struct ifaddrs **ifap) {
     struct ifline ifs[MAX_IFS];
     struct ifaddrs *head = NULL;
     struct ifaddrs **tail = &head;
@@ -147,7 +149,7 @@ int getifaddrs(struct ifaddrs **ifap) {
     for (k = 0; k < n; k++) {
         struct ifaddrs_block *b = calloc(1, sizeof *b);
         if (b == NULL) {
-            freeifaddrs(head);
+            __myos_freeifaddrs(head);
             errno = ENOMEM;
             return -1;
         }
@@ -173,7 +175,7 @@ int getifaddrs(struct ifaddrs **ifap) {
     return 0;
 }
 
-void freeifaddrs(struct ifaddrs *ifa) {
+void __myos_freeifaddrs(struct ifaddrs *ifa) {
     while (ifa != NULL) {
         struct ifaddrs *next = ifa->ifa_next;
         free(ifa); /* the start of its ifaddrs_block */
@@ -181,7 +183,7 @@ void freeifaddrs(struct ifaddrs *ifa) {
     }
 }
 
-unsigned int if_nametoindex(const char *ifname) {
+unsigned int __myos_if_nametoindex(const char *ifname) {
     struct ifline ifs[MAX_IFS];
     int n = read_ifs(ifs);
     int k;
@@ -194,7 +196,7 @@ unsigned int if_nametoindex(const char *ifname) {
     return 0;
 }
 
-char *if_indextoname(unsigned int ifindex, char *ifname) {
+char *__myos_if_indextoname(unsigned int ifindex, char *ifname) {
     struct ifline ifs[MAX_IFS];
     int n = read_ifs(ifs);
     if (ifindex == 0 || ifindex > (unsigned int)n) {
@@ -205,7 +207,7 @@ char *if_indextoname(unsigned int ifindex, char *ifname) {
     return ifname;
 }
 
-struct if_nameindex *if_nameindex(void) {
+struct if_nameindex *__myos_if_nameindex(void) {
     struct ifline ifs[MAX_IFS];
     int n = read_ifs(ifs);
     int k;
@@ -228,6 +230,13 @@ struct if_nameindex *if_nameindex(void) {
     return list;
 }
 
-void if_freenameindex(struct if_nameindex *ptr) {
+void __myos_if_freenameindex(struct if_nameindex *ptr) {
     free(ptr);
 }
+
+MYOS_PUBLIC(getifaddrs)
+MYOS_PUBLIC(freeifaddrs)
+MYOS_ALIAS(if_nametoindex)
+MYOS_ALIAS(if_indextoname)
+MYOS_ALIAS(if_nameindex)
+MYOS_ALIAS(if_freenameindex)

@@ -1,4 +1,4 @@
-/* myos libgloss: POSIX shared memory, memfd_create and System V shared
+/* POSIX shared memory, memfd_create and System V shared
  * memory, as files of /dev/shm (a directory of the tmpfs, bound there by
  * the kernel). A shm_open fd is close-on-exec, as POSIX has it; a memfd is
  * the file created and unlinked at once: it lives while an fd or a mapping
@@ -7,7 +7,7 @@
  * A System V segment is the file /dev/shm/sysv.k<key> (IPC_PRIVATE: a
  * name of this process and a counter), its id the file's inode number
  * (unique until reboot): shmat finds the file by it among the directory's
- * entries and maps it MAP_SHARED, shmctl(IPC_RMID) unlinks it (the
+ * entries and maps it MAP_SHARED, __myos_shmctl(IPC_RMID) unlinks it (the
  * attached mappings go on sharing it; no new attach after that), and
  * IPC_STAT reports its size and a mode of 0666 (the file's protection is
  * the policy's: the X server, without the client's credentials, checks
@@ -22,6 +22,7 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "libc.h"
 
 #define SHM_DIR "/dev/shm/"
 
@@ -41,7 +42,7 @@ static int shm_path(const char *name, char *path, size_t n) {
     return 0;
 }
 
-int shm_open(const char *name, int oflag, mode_t mode) {
+int __myos_shm_open(const char *name, int oflag, mode_t mode) {
     char path[256];
     if (shm_path(name, path, sizeof path) < 0) {
         return -1;
@@ -49,7 +50,7 @@ int shm_open(const char *name, int oflag, mode_t mode) {
     return open(path, oflag | O_CLOEXEC, mode);
 }
 
-int shm_unlink(const char *name) {
+int __myos_shm_unlink(const char *name) {
     char path[256];
     if (shm_path(name, path, sizeof path) < 0) {
         return -1;
@@ -57,7 +58,7 @@ int shm_unlink(const char *name) {
     return unlink(path);
 }
 
-int memfd_create(const char *name, unsigned flags) {
+int __myos_memfd_create(const char *name, unsigned flags) {
     static unsigned seq;
     char path[256];
     int tries;
@@ -120,7 +121,7 @@ static int sysv_find(int id, char *path, size_t n, struct stat *st) {
     return -1;
 }
 
-key_t ftok(const char *path, int id) {
+key_t __myos_ftok(const char *path, int id) {
     struct stat st;
     if (stat(path, &st) < 0) {
         return (key_t)-1;
@@ -128,7 +129,7 @@ key_t ftok(const char *path, int id) {
     return (key_t)(((unsigned)id & 0xff) << 24 | ((unsigned)st.st_dev & 0xff) << 16 | ((unsigned)st.st_ino & 0xffff));
 }
 
-int shmget(key_t key, size_t size, int shmflg) {
+int __myos_shmget(key_t key, size_t size, int shmflg) {
     static unsigned seq;
     char path[256];
     struct stat st;
@@ -169,7 +170,7 @@ int shmget(key_t key, size_t size, int shmflg) {
     return (int)st.st_ino;
 }
 
-void *shmat(int shmid, const void *shmaddr, int shmflg) {
+void *__myos_shmat(int shmid, const void *shmaddr, int shmflg) {
     char path[256];
     struct stat st;
     int fd, i, rdonly = shmflg & SHM_RDONLY;
@@ -202,7 +203,7 @@ void *shmat(int shmid, const void *shmaddr, int shmflg) {
     return p;
 }
 
-int shmdt(const void *shmaddr) {
+int __myos_shmdt(const void *shmaddr) {
     int i;
     for (i = 0; i < SYSV_SEGMENTS; i++) {
         if (attached[i].addr == shmaddr && shmaddr != NULL) {
@@ -216,7 +217,7 @@ int shmdt(const void *shmaddr) {
     return -1;
 }
 
-int shmctl(int shmid, int cmd, struct shmid_ds *buf) {
+int __myos_shmctl(int shmid, int cmd, struct shmid_ds *buf) {
     char path[256];
     struct stat st;
     if (sysv_find(shmid, path, sizeof path, &st) < 0) {
@@ -248,3 +249,12 @@ int shmctl(int shmid, int cmd, struct shmid_ds *buf) {
         return -1;
     }
 }
+
+MYOS_ALIAS(shm_open)
+MYOS_ALIAS(shm_unlink)
+MYOS_PUBLIC(memfd_create) /* mlibc declares it (sys/mman.h), with no body of its own */
+MYOS_ALIAS(ftok)
+MYOS_ALIAS(shmget)
+MYOS_ALIAS(shmat)
+MYOS_ALIAS(shmdt)
+MYOS_ALIAS(shmctl)

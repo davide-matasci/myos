@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct termios;
 struct winsize;
 
@@ -22,7 +26,16 @@ struct winsize;
 #define MYOS_SYS_DUPFD 14
 #define MYOS_DUP_EXACT 2
 #define MYOS_SYS_GETCWD 16
+/* mmap(&args) (mmap.c). */
 #define MYOS_SYS_MMAP 23
+struct myos_mmap_args {
+    unsigned long addr;
+    unsigned long length;
+    unsigned long prot;
+    unsigned long flags;
+    long fd;
+    unsigned long offset;
+};
 #define MYOS_SYS_MUNMAP 24
 #define MYOS_SYS_MPROTECT 25
 #define MYOS_SYS_LSEEK 26
@@ -56,6 +69,16 @@ struct winsize;
  * event a poller cares about (console/pipe/pty/device traffic, an exit). */
 #define MYOS_SYS_NANOSLEEP 52
 #define MYOS_SLEEP_ANY_EVENT 1
+/* Threads (docs/threads.md): thread_spawn(&{entry, stack, arg, tls}) returns
+ * the tid; thread_exit(code); wait_addr(addr, expected, timeout_ns) blocks
+ * while the 32-bit word holds `expected` (0 woken, 1 differed, 2 timed
+ * out, MYOS_EINTR); wake_addr(addr, count); gettid(); set_tp(value) makes
+ * `value` the thread pointer; yield(). */
+#define MYOS_SYS_THREAD_SPAWN 53
+#define MYOS_SYS_THREAD_EXIT 54
+#define MYOS_SYS_WAIT_ADDR 55
+#define MYOS_SYS_WAKE_ADDR 56
+#define MYOS_SYS_GETTID 57
 #define MYOS_SYS_GETPPID 60
 /* settimeofday(tv): two int64_t, seconds and microseconds (time.c). */
 #define MYOS_SYS_SETTIMEOFDAY 65
@@ -129,6 +152,8 @@ struct winsize;
  * at two u64, the microseconds until it fires (0: disarmed) and its
  * interval (0: once). Either may be 0. */
 #define MYOS_SYS_ITIMER 88
+#define MYOS_SYS_SET_TP 89
+#define MYOS_SYS_YIELD 90
 /* msync(addr, len, flags): the shared file mappings in the range are
  * written back to their files (the flags make no difference). */
 #define MYOS_SYS_MSYNC 92
@@ -219,7 +244,24 @@ int myos_tty_set_winsize(int fd, unsigned rows, unsigned cols);
 int myos_tty_write(int fd, const char *text);
 
 
-/* Userspace BSD sockets (socket.c); weak stubs in syscalls.c. */
+/* Signals (sigtramp.c). The kernel's sigaction record: handler 0 = SIG_DFL,
+ * 1 = SIG_IGN, else a function run through the trampoline; masks are 32
+ * bits, one per signal number. */
+struct myos_ksigaction {
+    unsigned long handler;
+    unsigned long flags;
+    unsigned long mask;
+    unsigned long tramp;
+};
+int __myos_sigaction_k(int sig, struct myos_ksigaction *kin, struct myos_ksigaction *kout);
+int __myos_sigprocmask_k(int how, const unsigned int *set, unsigned int *old);
+unsigned int __myos_sigpending_k(void);
+int __myos_sigsuspend_k(unsigned int mask);
+int __myos_sigwait_k(unsigned int set);
+/* The handlers run so far (the trampoline's dispatch counts them). */
+extern volatile unsigned long __myos_sig_count;
+
+/* Userspace BSD sockets (socket.c); weak stubs in fdio.c. */
 void myos_socket_on_close(int fd);
 int myos_socket_empty_read(int fd);
 int myos_socket_fcntl(int fd, int cmd, int arg);
@@ -250,5 +292,8 @@ void myos_fd_nonblock_dup(int from, int to);
 void __myos_cancel_enter(void);
 void __myos_cancel_leave(void);
 
+#ifdef __cplusplus
+}
 #endif
 
+#endif

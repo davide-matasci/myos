@@ -1,24 +1,24 @@
-/* myos libgloss: map newlib hooks to the existing myos syscall ABI. */
+/* The fd calls over the kernel's: read, write, close and their kin, and
+ * the process calls newlib's libc reaches through its _NAME hooks (fork,
+ * wait, kill, exit, getpid, sbrk, gettimeofday: no alias here, hooks.c
+ * defines those). The userspace socket library (socket.c) hooks into read,
+ * write, close and fcntl through the weak stubs below, so a program that
+ * never pulls socket.o still links. */
 
-#include <_ansi.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <reent.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
-
-static int myos_err(long ret) {
-    if (ret == (long)MYOS_SYSERR) {
-        return -1;
-    }
-    return (int)ret;
-}
+#include "libc.h"
 
 static void myos_set_errno_io(void) {
     errno = EIO;
@@ -83,8 +83,19 @@ void myos_socket_poll_done(int fd, short events, short *revents) {
     (void)fd; (void)events; (void)revents;
 }
 
+/* The cancellation points and the fork hooks are the threads library's
+ * (newlib: libgloss/myos/pthread.c; mlibc keeps its own cancellation and
+ * atfork handling above the sysdeps): nothing to do without one. */
+void __myos_cancel_enter(void) __attribute__((weak));
+void __myos_cancel_enter(void) {}
+void __myos_cancel_leave(void) __attribute__((weak));
+void __myos_cancel_leave(void) {}
+void __myos_fork_prepare(void) __attribute__((weak));
+void __myos_fork_prepare(void) {}
+void __myos_fork_done(int child) __attribute__((weak));
+void __myos_fork_done(int child) { (void)child; }
 
-/* SYS_POLL. Here rather than in pollselect.c: _read uses it, and linking
+/* SYS_POLL. Here rather than in pollselect.c: read uses it, and linking
  * pollselect.o into every program would clash with a port's own select()
  * (vim's myos_stubs.c). */
 int __myos_kpoll(struct pollfd *fds, unsigned long nfds, int timeout) {
@@ -129,9 +140,13 @@ void myos_fd_nonblock_dup(int from, int to) {
     myos_fd_nonblock_set(to, myos_fd_nonblock_get(from));
 }
 
-int _close(int fd) {
+/* A directory listing kept per fd (mlibc's sysdeps) goes with the fd. */
+void __myos_dir_closed(int fd) __attribute__((weak));
+void __myos_dir_closed(int fd) { (void)fd; }
 
+int __myos_close(int fd) {
     myos_socket_on_close(fd);
+    __myos_dir_closed(fd);
     long ret = myos_syscall1(MYOS_SYS_CLOSE, fd);
     if (ret == (long)MYOS_SYSERR) {
         errno = EBADF;
@@ -141,28 +156,13 @@ int _close(int fd) {
     return 0;
 }
 
-void _exit(int status) {
-
+void __myos_exit(int status) {
     myos_syscall1(MYOS_SYS_EXIT, status);
     for (;;) {
     }
 }
 
-/*
- * Kernel SYS_OPEN flags are Linux-shaped (O_CREAT 0100, O_TRUNC 01000,
- * O_APPEND 02000). newlib <fcntl.h> is BSD-shaped (O_CREAT 0x0200,
- * O_TRUNC 0x0400, O_APPEND 0x0008). O_ACCMODE already matches.
- *
- * Passing newlib bits through made `echo > /tmp/file` fail: the kernel never
- * saw O_CREAT (and treated 0x0200 as O_TRUNC). Map here; this is syscall glue.
- */
-#define MYOS_K_O_CREAT  0x40
-#define MYOS_K_O_TRUNC  0x200
-#define MYOS_K_O_APPEND 0x400
-#define MYOS_K_O_NONBLOCK 0x800
-
-
-/* read(2) and pread(2): MYOS_SYS_PREAD at the file position (flags 0) or at
+/* read(2) and __myos_pread(2): MYOS_SYS_PREAD at the file position (flags 0) or at
  * `off` (MYOS_FILE_AT). */
 static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
     if (flags == 0) {
@@ -222,14 +222,14 @@ static ssize_t read_at(int fd, void *buf, size_t cnt, off_t off, long flags) {
     }
 }
 
-int _read(int fd, void *buf, size_t cnt) {
+ssize_t __myos_read(int fd, void *buf, size_t cnt) {
     __myos_cancel_enter();
-    int n = (int)read_at(fd, buf, cnt, 0, 0);
+    ssize_t n = read_at(fd, buf, cnt, 0, 0);
     __myos_cancel_leave();
     return n;
 }
 
-ssize_t pread(int fd, void *buf, size_t cnt, off_t off) {
+ssize_t __myos_pread(int fd, void *buf, size_t cnt, off_t off) {
     if (off < 0) {
         errno = EINVAL;
         return -1;
@@ -240,7 +240,7 @@ ssize_t pread(int fd, void *buf, size_t cnt, off_t off) {
     return n;
 }
 
-/* write(2) and pwrite(2), as read_at. */
+/* write(2) and __myos_pwrite(2), as read_at. */
 static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long flags) {
     long ret;
     size_t done = 0;
@@ -302,14 +302,14 @@ static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long fla
     }
 }
 
-int _write(int fd, const void *buf, size_t cnt) {
+ssize_t __myos_write(int fd, const void *buf, size_t cnt) {
     __myos_cancel_enter();
-    int n = (int)write_at(fd, buf, cnt, 0, 0);
+    ssize_t n = write_at(fd, buf, cnt, 0, 0);
     __myos_cancel_leave();
     return n;
 }
 
-ssize_t pwrite(int fd, const void *buf, size_t cnt, off_t off) {
+ssize_t __myos_pwrite(int fd, const void *buf, size_t cnt, off_t off) {
     if (off < 0) {
         errno = EINVAL;
         return -1;
@@ -320,18 +320,19 @@ ssize_t pwrite(int fd, const void *buf, size_t cnt, off_t off) {
     return n;
 }
 
-int _isatty(int fd) {
-    if (myos_fd_is_tty(fd)) {
-        return 1;
+off_t __myos_lseek(int fd, off_t pos, int whence) {
+    long ret = myos_syscall3(MYOS_SYS_LSEEK, fd, (long)pos, whence);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ESPIPE;
+        return -1;
     }
-    errno = ENOTTY;
-    return 0;
+    return (off_t)ret;
 }
 
 /* The break is read anew each time, not kept: a Rust program's allocator
  * (user/lib) moves the same break when a C library is linked in (user/tls),
  * and each side only ever extends it from where it is. */
-void *_sbrk(ptrdiff_t incr) {
+void *__myos_sbrk(ptrdiff_t incr) {
     void *cur = (void *)(uintptr_t)myos_syscall1(MYOS_SYS_BRK, 0);
     void *next = (char *)cur + incr;
     void *got = (void *)(uintptr_t)myos_syscall1(MYOS_SYS_BRK, (long)(uintptr_t)next);
@@ -342,10 +343,108 @@ void *_sbrk(ptrdiff_t incr) {
     return cur;
 }
 
-int _getpid(void) {
+int __myos_getpid(void) {
     long ret = myos_syscall0(MYOS_SYS_GETPID);
     if (ret == (long)MYOS_SYSERR) {
         return 1;
     }
     return (int)ret;
 }
+
+int __myos_kill(int pid, int sig) {
+    /* Signal numbers must match <signal.h> / kernel signal.rs; 0 only
+     * checks that the target exists. */
+    if (sig < 0 || sig > 31) {
+        errno = EINVAL;
+        return -1;
+    }
+    long ret = myos_syscall3(MYOS_SYS_KILL, (long)pid, (long)sig, 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ESRCH;
+        return -1;
+    }
+    return 0;
+}
+
+int __myos_fork(void) {
+    __myos_fork_prepare();
+    long ret = myos_syscall0(MYOS_SYS_FORK);
+    __myos_fork_done(ret == 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EAGAIN;
+        return -1;
+    }
+    return (int)ret;
+}
+
+#ifndef WNOHANG
+#define WNOHANG 1
+#endif
+
+/*
+ * SYS_WAITPID(status, options, pid): the kernel writes a POSIX int status
+ * (WIFSIGNALED for a signal death) and waits for `pid` when it is > 0, for
+ * any child otherwise (process-group waits are treated as "any"). WNOHANG
+ * keeps dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop from
+ * blocking after the last zombie. WUNTRACED is ignored: nothing stops.
+ */
+static pid_t waitpid_body(pid_t pid, int *status, int options) {
+    int st = 0;
+    long ret;
+    long opts = 0;
+
+    if ((options & WNOHANG) != 0) {
+        opts |= MYOS_WAIT_NOHANG;
+    }
+
+    ret = myos_syscall3(MYOS_SYS_WAITPID, status ? (long)(uintptr_t)&st : 0, opts,
+                        pid > 0 ? (long)pid : 0);
+
+    if (ret == (long)MYOS_EINTR) {
+        errno = EINTR;
+        return -1;
+    }
+    if (ret == (long)MYOS_SYSERR) {
+        errno = ECHILD;
+        return -1;
+    }
+    /* Kernel returns 0 for WNOHANG with live children but no zombie. */
+    if (ret == 0 && (options & WNOHANG) != 0) {
+        return 0;
+    }
+    if (status != NULL) {
+        *status = st;
+    }
+    return (pid_t)ret;
+}
+
+/* A cancellation point. */
+pid_t __myos_waitpid(pid_t pid, int *status, int options) {
+    __myos_cancel_enter();
+    pid_t r = waitpid_body(pid, status, options);
+    __myos_cancel_leave();
+    return r;
+}
+
+pid_t __myos_wait(int *status) {
+    return __myos_waitpid(-1, status, 0);
+}
+
+int __myos_gettimeofday(struct timeval *tv, void *tz) {
+    (void)tz;
+    if (tv == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    long ret = myos_syscall3(
+        MYOS_SYS_GETTIMEOFDAY, (long)(uintptr_t)tv, 0, 0);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
+}
+
+MYOS_ALIAS(pread)
+MYOS_ALIAS(pwrite)
+MYOS_ALIAS(waitpid)

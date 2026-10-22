@@ -1,4 +1,4 @@
-/* myos libgloss: eventfd(2), timerfd(2), epoll(7) and signalfd(2) over
+/* __myos_eventfd(2), timerfd(2), epoll(7) and __myos_signalfd(2) over
  * the kernel's event counters (/dev/event), timers (/dev/timer), wait sets
  * (/dev/wait) and signal fds (/dev/sig), docs/events.md.
  *
@@ -23,7 +23,8 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
-#include "myos_syscalls.h"
+#include "libmyos.h"
+#include "libc.h"
 
 /* /dev/event/N/status is the longest member path. */
 #define EVFD_PATH 48
@@ -137,7 +138,7 @@ static int fd_dir(int fd, const char *kind, char *dir) {
 
 /* ---- eventfd ---------------------------------------------------------- */
 
-int eventfd(unsigned int initval, int flags) {
+int __myos_eventfd(unsigned int initval, int flags) {
     char dir[EVFD_PATH];
     char path[EVFD_PATH];
     int fd;
@@ -156,7 +157,7 @@ int eventfd(unsigned int initval, int flags) {
             goto fail;
         }
     }
-    if (initval != 0 && eventfd_write(fd, initval) != 0) {
+    if (initval != 0 && __myos_eventfd_write(fd, initval) != 0) {
         goto fail;
     }
     return fd;
@@ -165,11 +166,11 @@ fail:
     return -1;
 }
 
-int eventfd_read(int fd, eventfd_t *value) {
+int __myos_eventfd_read(int fd, eventfd_t *value) {
     return read(fd, value, sizeof *value) == (ssize_t)sizeof *value ? 0 : -1;
 }
 
-int eventfd_write(int fd, eventfd_t value) {
+int __myos_eventfd_write(int fd, eventfd_t value) {
     return write(fd, &value, sizeof value) == (ssize_t)sizeof value ? 0 : -1;
 }
 
@@ -178,7 +179,7 @@ int eventfd_write(int fd, eventfd_t value) {
 /* The timerfds on CLOCK_REALTIME, a bit per fd. */
 static unsigned long long tfd_realtime[MYOS_MAX_FDS / 64];
 
-int timerfd_create(clockid_t clockid, int flags) {
+int __myos_timerfd_create(clockid_t clockid, int flags) {
     char dir[EVFD_PATH];
     int fd;
     if (clockid != CLOCK_REALTIME && clockid != CLOCK_MONOTONIC) {
@@ -213,7 +214,7 @@ static void ns_timespec(unsigned long long ns, struct timespec *ts) {
     ts->tv_nsec = (long)(ns % 1000000000ull);
 }
 
-int timerfd_gettime(int fd, struct itimerspec *value) {
+int __myos_timerfd_gettime(int fd, struct itimerspec *value) {
     char path[EVFD_PATH];
     char status[64];
     unsigned long long left = 0, interval = 0;
@@ -234,7 +235,7 @@ int timerfd_gettime(int fd, struct itimerspec *value) {
     return 0;
 }
 
-int timerfd_settime(int fd, int flags, const struct itimerspec *value, struct itimerspec *ovalue) {
+int __myos_timerfd_settime(int fd, int flags, const struct itimerspec *value, struct itimerspec *ovalue) {
     char path[EVFD_PATH];
     char cmd[80];
     if (value == NULL || !timespec_ok(&value->it_value) || !timespec_ok(&value->it_interval)
@@ -242,7 +243,7 @@ int timerfd_settime(int fd, int flags, const struct itimerspec *value, struct it
         errno = EINVAL;
         return -1;
     }
-    if (ovalue != NULL && timerfd_gettime(fd, ovalue) != 0) {
+    if (ovalue != NULL && __myos_timerfd_gettime(fd, ovalue) != 0) {
         return -1;
     }
     if (fd_dir(fd, "timer", path) != 0) {
@@ -273,7 +274,7 @@ int timerfd_settime(int fd, int flags, const struct itimerspec *value, struct it
 /* epoll_wait takes this many at most in one call (the rest stay ready). */
 #define WAIT_BATCH 64
 
-int epoll_create1(int flags) {
+int __myos_epoll_create1(int flags) {
     char dir[EVFD_PATH];
     int fd;
     if (flags & ~EPOLL_CLOEXEC) {
@@ -289,12 +290,12 @@ int epoll_create1(int flags) {
     return fd;
 }
 
-int epoll_create(int size) {
+int __myos_epoll_create(int size) {
     if (size <= 0) {
         errno = EINVAL;
         return -1;
     }
-    return epoll_create1(0);
+    return __myos_epoll_create1(0);
 }
 
 /* Whether the set at `dir` lists `fd` as a member (its status). */
@@ -319,7 +320,7 @@ static int epoll_has(const char *dir, int fd) {
     return 0;
 }
 
-int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
+int __myos_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     char dir[EVFD_PATH];
     char path[EVFD_PATH];
     char cmd[96];
@@ -377,7 +378,7 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     return -1;
 }
 
-int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
+int __myos_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
     unsigned char buf[WAIT_BATCH * WAIT_RECORD];
     struct pollfd p = {epfd, POLLIN, 0};
     ssize_t n;
@@ -414,13 +415,13 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
     return count;
 }
 
-int epoll_pwait(int epfd, struct epoll_event *events, int maxevents, int timeout, const sigset_t *sigmask) {
+int __myos_epoll_pwait(int epfd, struct epoll_event *events, int maxevents, int timeout, const sigset_t *sigmask) {
     sigset_t old;
     int r, saved;
     if (sigmask != NULL && sigprocmask(SIG_SETMASK, sigmask, &old) != 0) {
         return -1;
     }
-    r = epoll_wait(epfd, events, maxevents, timeout);
+    r = __myos_epoll_wait(epfd, events, maxevents, timeout);
     if (sigmask != NULL) {
         saved = errno;
         sigprocmask(SIG_SETMASK, &old, NULL);
@@ -449,7 +450,7 @@ static void mask_cmd(char *cmd, const sigset_t *mask) {
     }
 }
 
-int signalfd(int fd, const sigset_t *mask, int flags) {
+int __myos_signalfd(int fd, const sigset_t *mask, int flags) {
     char dir[EVFD_PATH];
     char path[EVFD_PATH];
     char cmd[128];
@@ -477,3 +478,16 @@ int signalfd(int fd, const sigset_t *mask, int flags) {
     }
     return fd;
 }
+
+MYOS_ALIAS(eventfd)
+MYOS_ALIAS(eventfd_read)
+MYOS_ALIAS(eventfd_write)
+MYOS_ALIAS(timerfd_create)
+MYOS_ALIAS(timerfd_gettime)
+MYOS_ALIAS(timerfd_settime)
+MYOS_ALIAS(epoll_create1)
+MYOS_ALIAS(epoll_create)
+MYOS_ALIAS(epoll_ctl)
+MYOS_ALIAS(epoll_wait)
+MYOS_ALIAS(epoll_pwait)
+MYOS_ALIAS(signalfd)

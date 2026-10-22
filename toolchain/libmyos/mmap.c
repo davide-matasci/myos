@@ -1,4 +1,4 @@
-/* myos libgloss: mmap / munmap / mprotect / msync. */
+/* mmap / munmap / mprotect / msync. */
 #include <errno.h>
 #include <sys/types.h>
 #include <stdint.h>
@@ -6,17 +6,9 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
-struct myos_mmap_args {
-    unsigned long addr;
-    unsigned long length;
-    unsigned long prot;
-    unsigned long flags;
-    long fd;
-    unsigned long offset;
-};
-
-void *_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
+void *__myos_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
     struct myos_mmap_args args;
     long ret;
 
@@ -34,11 +26,7 @@ void *_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset
     return (void *)(uintptr_t)ret;
 }
 
-void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
-    return _mmap(addr, length, prot, flags, fd, offset);
-}
-
-int _munmap(void *addr, size_t length) {
+int __myos_munmap(void *addr, size_t length) {
     long ret = myos_syscall3(
         MYOS_SYS_MUNMAP, (long)(uintptr_t)addr, (long)length, 0);
     if (ret == (long)MYOS_SYSERR) {
@@ -48,11 +36,7 @@ int _munmap(void *addr, size_t length) {
     return 0;
 }
 
-int munmap(void *addr, size_t length) {
-    return _munmap(addr, length);
-}
-
-int _mprotect(void *addr, size_t length, int prot) {
+int __myos_mprotect(void *addr, size_t length, int prot) {
     long ret = myos_syscall3(
         MYOS_SYS_MPROTECT, (long)(uintptr_t)addr, (long)length, (long)prot);
     if (ret == (long)MYOS_SYSERR) {
@@ -62,11 +46,7 @@ int _mprotect(void *addr, size_t length, int prot) {
     return 0;
 }
 
-int mprotect(void *addr, size_t length, int prot) {
-    return _mprotect(addr, length, prot);
-}
-
-int msync(void *addr, size_t length, int flags) {
+int __myos_msync(void *addr, size_t length, int flags) {
     long ret;
     if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC) || ((flags & MS_ASYNC) && (flags & MS_SYNC))) {
         errno = EINVAL;
@@ -102,3 +82,8 @@ void __clear_cache(void *start, void *end) {
     (void)end;
 #endif
 }
+
+MYOS_ALIAS(mmap)
+MYOS_ALIAS(munmap)
+MYOS_ALIAS(mprotect)
+MYOS_ALIAS(msync)

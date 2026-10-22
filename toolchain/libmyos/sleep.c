@@ -1,7 +1,8 @@
 /*
- * sleep / usleep / nanosleep for myos: SYS_NANOSLEEP blocks the task in the
- * kernel (its CPU halts) instead of spinning on gettimeofday. Weak so a port
- * that ships its own nanosleep (dropbear's select-based shim) still links.
+ * sleep / usleep / nanosleep: SYS_NANOSLEEP blocks the task in the kernel
+ * (its CPU halts) instead of spinning on gettimeofday. Their newlib names
+ * are weak, so a port that ships its own nanosleep (dropbear's select-based
+ * shim) still links.
  */
 #include <errno.h>
 #include <stddef.h>
@@ -10,6 +11,7 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
 /* A cancellation point (pthread.c), as nanosleep, sleep and usleep are. */
 int __myos_sleep_ns(unsigned long long ns, int flags) {
@@ -23,7 +25,7 @@ int __myos_sleep_ns(unsigned long long ns, int flags) {
     return 0;
 }
 
-__attribute__((weak)) int nanosleep(const struct timespec *req, struct timespec *rem) {
+int __myos_nanosleep(const struct timespec *req, struct timespec *rem) {
     if (req == NULL || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L || req->tv_sec < 0) {
         errno = EINVAL;
         return -1;
@@ -54,7 +56,7 @@ __attribute__((weak)) int nanosleep(const struct timespec *req, struct timespec 
     return -1; /* errno = EINTR */
 }
 
-__attribute__((weak)) unsigned sleep(unsigned seconds) {
+unsigned __myos_sleep(unsigned seconds) {
     struct timeval start;
     int have_start = gettimeofday(&start, NULL) == 0;
     if (__myos_sleep_ns((unsigned long long)seconds * 1000000000ULL, 0) == 0) {
@@ -71,6 +73,10 @@ __attribute__((weak)) unsigned sleep(unsigned seconds) {
     return seconds;
 }
 
-__attribute__((weak)) int usleep(useconds_t usec) {
+int __myos_usleep(unsigned int usec) {
     return __myos_sleep_ns((unsigned long long)usec * 1000ULL, 0);
 }
+
+MYOS_WEAK_ALIAS(nanosleep)
+MYOS_WEAK_ALIAS(sleep)
+MYOS_WEAK_ALIAS(usleep)

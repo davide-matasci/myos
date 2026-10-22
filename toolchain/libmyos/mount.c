@@ -1,4 +1,4 @@
-/* myos libgloss: mount(2). */
+/* __myos_mount(2). */
 #include <errno.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
 struct myos_mount_args {
     unsigned long src;
@@ -38,7 +39,7 @@ int _mount(const char *source, const char *target, const char *fstype) {
     return 0;
 }
 
-int mount(const char *source, const char *target, const char *fstype, ...) {
+int __myos_mount(const char *source, const char *target, const char *fstype, ...) {
     {
         va_list ap;
         va_start(ap, fstype);
@@ -46,3 +47,5 @@ int mount(const char *source, const char *target, const char *fstype, ...) {
     }
     return _mount(source, target, fstype);
 }
+
+MYOS_PUBLIC(mount)

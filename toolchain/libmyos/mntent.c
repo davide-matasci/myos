@@ -1,4 +1,4 @@
-/* myos libgloss: setmntent, getmntent and friends over a mount table in
+/* setmntent, getmntent and friends over a mount table in
  * /proc/mounts' form: one mount per line, its source, mount point, type,
  * options and two numbers, separated by spaces or tabs, a space in a field
  * written \040 (and a tab \011, a backslash \134). */
@@ -7,11 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-FILE *setmntent(const char *path, const char *mode) {
+#include "libc.h"
+
+FILE *__myos_setmntent(const char *path, const char *mode) {
     return fopen(path, mode);
 }
 
-int endmntent(FILE *fp) {
+int __myos_endmntent(FILE *fp) {
     if (fp != NULL) {
         fclose(fp);
     }
@@ -45,7 +47,7 @@ static char *field(char **p) {
     return s;
 }
 
-struct mntent *getmntent_r(FILE *fp, struct mntent *me, char *buf, int size) {
+struct mntent *__myos_getmntent_r(FILE *fp, struct mntent *me, char *buf, int size) {
     while (fgets(buf, size, fp) != NULL) {
         char *p = buf;
         char *freq;
@@ -77,13 +79,13 @@ struct mntent *getmntent_r(FILE *fp, struct mntent *me, char *buf, int size) {
     return NULL;
 }
 
-struct mntent *getmntent(FILE *fp) {
+struct mntent *__myos_getmntent(FILE *fp) {
     static struct mntent me;
     static char buf[1024];
     return getmntent_r(fp, &me, buf, (int)sizeof(buf));
 }
 
-char *hasmntopt(const struct mntent *me, const char *opt) {
+char *__myos_hasmntopt(const struct mntent *me, const char *opt) {
     size_t n = strlen(opt);
     char *s = me->mnt_opts;
     while (s != NULL && *s != '\0') {
@@ -97,3 +99,9 @@ char *hasmntopt(const struct mntent *me, const char *opt) {
     }
     return NULL;
 }
+
+MYOS_PUBLIC(setmntent)
+MYOS_PUBLIC(endmntent)
+MYOS_PUBLIC(getmntent_r)
+MYOS_PUBLIC(getmntent)
+MYOS_PUBLIC(hasmntopt)

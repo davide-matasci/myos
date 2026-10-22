@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include "libc.h"
 
 #ifndef SSIZE_MAX
 #define SSIZE_MAX ((ssize_t)(~(size_t)0 >> 1))
@@ -41,7 +42,7 @@ static ssize_t iov_total(const struct iovec *iov, int iovcnt) {
     return (ssize_t)total;
 }
 
-ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
+ssize_t __myos_writev(int fd, const struct iovec *iov, int iovcnt) {
     ssize_t total = iov_total(iov, iovcnt);
     if (total < 0) {
         return -1;
@@ -77,7 +78,7 @@ ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
     return done;
 }
 
-ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
+ssize_t __myos_readv(int fd, const struct iovec *iov, int iovcnt) {
     ssize_t total = iov_total(iov, iovcnt);
     if (total < 0) {
         return -1;
@@ -105,3 +106,6 @@ ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
     free(buf);
     return n;
 }
+
+MYOS_ALIAS(writev)
+MYOS_ALIAS(readv)

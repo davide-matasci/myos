@@ -1,4 +1,4 @@
-/* myos libgloss: clock_gettime and clock_getres (CLOCK_REALTIME via
+/* clock_gettime and clock_getres (CLOCK_REALTIME via
  * gettimeofday, the monotonic clocks the kernel's time since boot, which
  * settimeofday does not move), settimeofday and clock_settime (the kernel
  * keeps the set time until the next boot; the RTC is not written).
@@ -12,6 +12,7 @@
 #include <sys/time.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
 /* <time.h> declares clock_gettime and the CLOCK_* ids: the installed
  * features.h sets _POSIX_TIMERS (toolchain/newlib/build-libgloss.sh). */
@@ -33,7 +34,7 @@ is_realtime(clockid_t clock_id)
 }
 
 int
-clock_gettime(clockid_t clock_id, struct timespec *tp)
+__myos_clock_gettime(clockid_t clock_id, struct timespec *tp)
 {
     struct timeval tv;
 
@@ -59,7 +60,7 @@ clock_gettime(clockid_t clock_id, struct timespec *tp)
 
 /* The monotonic clocks count nanoseconds, the wall clock microseconds. */
 int
-clock_getres(clockid_t clock_id, struct timespec *res)
+__myos_clock_getres(clockid_t clock_id, struct timespec *res)
 {
     if (!(is_monotonic(clock_id) || is_realtime(clock_id))) {
         errno = EINVAL;
@@ -73,7 +74,7 @@ clock_getres(clockid_t clock_id, struct timespec *res)
 }
 
 int
-settimeofday(const struct timeval *tv, const struct timezone *tz)
+__myos_settimeofday(const struct timeval *tv, const struct timezone *tz)
 {
     int64_t raw[2];
 
@@ -95,7 +96,7 @@ settimeofday(const struct timeval *tv, const struct timezone *tz)
 }
 
 int
-clock_settime(clockid_t clock_id, const struct timespec *tp)
+__myos_clock_settime(clockid_t clock_id, const struct timespec *tp)
 {
     struct timeval tv;
 
@@ -109,5 +110,10 @@ clock_settime(clockid_t clock_id, const struct timespec *tp)
     }
     tv.tv_sec = tp->tv_sec;
     tv.tv_usec = tp->tv_nsec / 1000;
-    return settimeofday(&tv, NULL);
+    return __myos_settimeofday(&tv, NULL);
 }
+
+MYOS_ALIAS(clock_gettime)
+MYOS_ALIAS(clock_getres)
+MYOS_ALIAS(settimeofday)
+MYOS_ALIAS(clock_settime)

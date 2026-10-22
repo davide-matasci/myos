@@ -1,4 +1,4 @@
-/* myos libgloss: the tty ioctls ported programs call (vim, getty, login,
+/* the tty ioctls ported programs call (vim, getty, login,
  * stty, openpty), served from the terminal's files (ttyctl.c, docs/tty.md).
  * There is no ioctl syscall behind this: a request that is not one of
  * these is ENOTTY. */
@@ -11,8 +11,9 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
-int ioctl(int fd, unsigned long request, ...) {
+int __myos_ioctl(int fd, unsigned long request, ...) {
     va_list ap;
     void *arg;
     char dir[MYOS_TTY_PATH];
@@ -69,3 +70,5 @@ int ioctl(int fd, unsigned long request, ...) {
         return -1;
     }
 }
+
+MYOS_ALIAS(ioctl)

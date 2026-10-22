@@ -1,19 +1,21 @@
-/* myos libgloss: reboot(2) over the native power(action). */
+/* reboot(2) over the native power(action). The RB_ names are the ones both
+ * libcs' <sys/reboot.h> carry (newlib's: libgloss/myos/sys/reboot.h). */
 #include <errno.h>
 #include <sys/reboot.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
-int reboot(int howto) {
+int __myos_reboot(int howto) {
     long action;
     switch (howto) {
     case RB_AUTOBOOT:
         action = MYOS_POWER_REBOOT;
         break;
-    case RB_HALT:
+    case RB_HALT_SYSTEM:
         action = MYOS_POWER_HALT;
         break;
-    case RB_POWEROFF:
+    case RB_POWER_OFF:
         action = MYOS_POWER_OFF;
         break;
     default:
@@ -24,3 +26,5 @@ int reboot(int howto) {
     errno = EPERM;
     return -1;
 }
+
+MYOS_ALIAS(reboot)

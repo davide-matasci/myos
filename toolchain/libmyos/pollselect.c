@@ -19,8 +19,9 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
-/* Most fds one poll() takes (the kernel's limit too). */
+/* Most fds one __myos_poll() takes (the kernel's limit too). */
 #define MYOS_POLL_MAX 256
 
 static long elapsed_ms(const struct timeval *start) {
@@ -135,7 +136,7 @@ static int select_body(int nfds, fd_set *readfds, fd_set *writefds,
         }
     }
 
-    /* Pure sleep: select(0, NULL, NULL, NULL, &tv) (curl's tool_sleep) is a
+    /* Pure sleep: __myos_select(0, NULL, NULL, NULL, &tv) (curl's tool_sleep) is a
      * poll of no fds, which a caught signal ends with EINTR. */
     if (n == 0) {
         return __myos_kpoll(NULL, 0, ms) < 0 ? -1 : 0;
@@ -181,7 +182,7 @@ static int select_body(int nfds, fd_set *readfds, fd_set *writefds,
 }
 
 /* select with a timespec and, if `sigmask` is non-NULL, that signal mask
- * while it waits. The mask is set and restored around select(): a signal
+ * while it waits. The mask is set and restored around __myos_select(): a signal
  * unblocked by it that arrives before the wait starts runs its handler
  * there and does not end the wait (POSIX makes the swap atomic). */
 static int pselect_body(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
@@ -208,14 +209,14 @@ static int pselect_body(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exc
 }
 
 /* Cancellation points (pthread.c). */
-int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+int __myos_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     __myos_cancel_enter();
     int r = poll_body(fds, nfds, timeout);
     __myos_cancel_leave();
     return r;
 }
 
-int select(int nfds, fd_set *readfds, fd_set *writefds,
+int __myos_select(int nfds, fd_set *readfds, fd_set *writefds,
     fd_set *exceptfds, struct timeval *timeout) {
     __myos_cancel_enter();
     int r = select_body(nfds, readfds, writefds, exceptfds, timeout);
@@ -223,10 +224,14 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
     return r;
 }
 
-int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+int __myos_pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
     const struct timespec *timeout, const sigset_t *sigmask) {
     __myos_cancel_enter();
     int r = pselect_body(nfds, readfds, writefds, exceptfds, timeout, sigmask);
     __myos_cancel_leave();
     return r;
 }
+
+MYOS_ALIAS(poll)
+MYOS_ALIAS(select)
+MYOS_ALIAS(pselect)

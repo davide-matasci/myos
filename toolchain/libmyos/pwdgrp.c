@@ -1,4 +1,4 @@
-/* myos libgloss: the users are the security policy's (docs/security.md):
+/* the users are the security policy's (docs/security.md):
  * /proc/sys/security/users lists them, one "uid name home groups" line
  * each, and /proc/self/ctx says who the caller is ("uid user domain").
  * There is one group, root (gid 0). */
@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
 #define MYOS_USERS_FILE "/proc/sys/security/users"
 #define MYOS_CTX_FILE "/proc/self/ctx"
@@ -121,27 +122,27 @@ static uid_t myos_ctx(void) {
     return (uid_t)strtoul(ctx, NULL, 10);
 }
 
-uid_t getuid(void) {
+uid_t __myos_getuid(void) {
     return myos_ctx();
 }
 
-uid_t geteuid(void) {
+uid_t __myos_geteuid(void) {
     return myos_ctx();
 }
 
 /* An exec never changes the user (a transition changes the domain only,
  * docs/security.md): a program always runs with its caller's ids, and
  * glob trusts $HOME for `~`. */
-int issetugid(void) {
+int __myos_issetugid(void) {
     return 0;
 }
 
-char *getlogin(void) {
+char *__myos_getlogin(void) {
     (void)myos_ctx();
     return ctx_name;
 }
 
-int getlogin_r(char *buf, size_t bufsize) {
+int __myos_getlogin_r(char *buf, size_t bufsize) {
     size_t n;
     (void)myos_ctx();
     if (buf == NULL || bufsize == 0) {
@@ -200,19 +201,19 @@ static struct group grp_root = {
 };
 
 struct passwd *
-getpwuid(uid_t uid)
+__myos_getpwuid(uid_t uid)
 {
     return myos_find_user(-1, uid, NULL);
 }
 
 struct passwd *
-getpwnam(const char *name)
+__myos_getpwnam(const char *name)
 {
     return name != NULL ? myos_find_user(-1, 0, name) : NULL;
 }
 
 struct group *
-getgrgid(gid_t gid)
+__myos_getgrgid(gid_t gid)
 {
     if (gid == grp_root.gr_gid) {
         return &grp_root;
@@ -221,7 +222,7 @@ getgrgid(gid_t gid)
 }
 
 struct group *
-getgrnam(const char *name)
+__myos_getgrnam(const char *name)
 {
     if (name != NULL && strcmp(name, grp_root.gr_name) == 0) {
         return &grp_root;
@@ -233,13 +234,13 @@ getgrnam(const char *name)
 static int pwd_pos = 0;
 
 void
-setpwent(void)
+__myos_setpwent(void)
 {
     pwd_pos = 0;
 }
 
 struct passwd *
-getpwent(void)
+__myos_getpwent(void)
 {
     struct passwd *p = myos_find_user(pwd_pos, 0, NULL);
     if (p != NULL) {
@@ -249,7 +250,7 @@ getpwent(void)
 }
 
 void
-endpwent(void)
+__myos_endpwent(void)
 {
     pwd_pos = 0;
 }
@@ -258,13 +259,13 @@ endpwent(void)
 static int grp_pos = 0;
 
 void
-setgrent(void)
+__myos_setgrent(void)
 {
     grp_pos = 0;
 }
 
 struct group *
-getgrent(void)
+__myos_getgrent(void)
 {
     if (grp_pos == 0) {
         grp_pos = 1;
@@ -274,7 +275,7 @@ getgrent(void)
 }
 
 void
-endgrent(void)
+__myos_endgrent(void)
 {
     grp_pos = 0;
 }
@@ -312,13 +313,13 @@ pack_passwd(struct passwd *dst, char *buf, size_t buflen, const struct passwd *s
 }
 
 int
-getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
+__myos_getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
            struct passwd **result)
 {
     if (pwd == NULL || buf == NULL || result == NULL) {
         return EINVAL;
     }
-    const struct passwd *found = getpwuid(uid);
+    const struct passwd *found = __myos_getpwuid(uid);
     if (found == NULL) {
         *result = NULL;
         return 0;
@@ -332,13 +333,13 @@ getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
 }
 
 int
-getpwnam_r(const char *name, struct passwd *pwd, char *buf, size_t buflen,
+__myos_getpwnam_r(const char *name, struct passwd *pwd, char *buf, size_t buflen,
            struct passwd **result)
 {
     if (pwd == NULL || buf == NULL || result == NULL) {
         return EINVAL;
     }
-    const struct passwd *found = getpwnam(name);
+    const struct passwd *found = __myos_getpwnam(name);
     if (found == NULL) {
         *result = NULL;
         return 0;
@@ -388,7 +389,7 @@ pack_group(struct group *dst, char *buf, size_t buflen, const struct group *src)
 }
 
 int
-getgrgid_r(gid_t gid, struct group *grp, char *buf, size_t buflen,
+__myos_getgrgid_r(gid_t gid, struct group *grp, char *buf, size_t buflen,
            struct group **result)
 {
     if (grp == NULL || buf == NULL || result == NULL) {
@@ -407,7 +408,7 @@ getgrgid_r(gid_t gid, struct group *grp, char *buf, size_t buflen,
 }
 
 int
-getgrnam_r(const char *name, struct group *grp, char *buf, size_t buflen,
+__myos_getgrnam_r(const char *name, struct group *grp, char *buf, size_t buflen,
            struct group **result)
 {
     if (grp == NULL || buf == NULL || result == NULL) {
@@ -424,3 +425,23 @@ getgrnam_r(const char *name, struct group *grp, char *buf, size_t buflen,
     *result = grp;
     return 0;
 }
+
+MYOS_ALIAS(getuid)
+MYOS_ALIAS(geteuid)
+MYOS_ALIAS(issetugid)
+MYOS_ALIAS(getlogin)
+MYOS_ALIAS(getlogin_r)
+MYOS_ALIAS(getpwuid)
+MYOS_ALIAS(getpwnam)
+MYOS_ALIAS(getgrgid)
+MYOS_ALIAS(getgrnam)
+MYOS_ALIAS(setpwent)
+MYOS_ALIAS(getpwent)
+MYOS_ALIAS(endpwent)
+MYOS_ALIAS(setgrent)
+MYOS_ALIAS(getgrent)
+MYOS_ALIAS(endgrent)
+MYOS_ALIAS(getpwuid_r)
+MYOS_ALIAS(getpwnam_r)
+MYOS_ALIAS(getgrgid_r)
+MYOS_ALIAS(getgrnam_r)

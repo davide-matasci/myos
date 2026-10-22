@@ -1,6 +1,6 @@
 /*
  * Userspace BSD sockets over Plan 9 /net + netd (smoltcp).
- * No socket() syscall — TCP and UDP via clone/ctl/data, and AF_UNIX
+ * No __myos_socket() syscall — TCP and UDP via clone/ctl/data, and AF_UNIX
  * stream sockets over /net/unix, which the kernel serves itself
  * (docs/sockets-unix.md).
  *
@@ -36,7 +36,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include "myos_syscalls.h"
+#include "libmyos.h"
+#include "libc.h"
 
 /* As many sockets as fds: the fd limit is the only one (an X server takes a
  * socket per client). */
@@ -55,7 +56,7 @@ enum {
     SOCK_OPEN,
     SOCK_CONNECTING, /* nonblock connect in flight; wait for Established */
     SOCK_CONNECTED,
-    SOCK_LISTENING,  /* announced (bound + listening); accept() incoming */
+    SOCK_LISTENING,  /* announced (bound + listening); __myos_accept() incoming */
 };
 
 struct myos_sock {
@@ -70,7 +71,7 @@ struct myos_sock {
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
     struct sockaddr_in peer;
     int peer_set;
-    struct in_addr bind_addr; /* TCP: the address and port bind() named */
+    struct in_addr bind_addr; /* TCP: the address and port __myos_bind() named */
     unsigned short bind_port;
     int accept_armed;  /* listener: "accept" ctl written, waiting for status */
     int last_accept_seq; /* listener: seq of the last accepted handoff */
@@ -82,7 +83,7 @@ struct myos_sock {
     /* UDP: */
     int hdata_fd;   /* /net/udp/N/hdata: datagrams with their headers */
     struct sockaddr_in local; /* local address and port, netd's answers */
-    int shut;       /* shutdown(): SHUT_RD_BIT, SHUT_WR_BIT */
+    int shut;       /* __myos_shutdown(): SHUT_RD_BIT, SHUT_WR_BIT */
     int reuse;      /* SO_REUSEADDR, for bind */
     int broadcast;  /* SO_BROADCAST (kept for getsockopt) */
     unsigned ctl_tag; /* the last udp_ctl command's tag */
@@ -540,7 +541,7 @@ static int status_accept_seq(const char *status) {
  * asking (a connected UDP socket is always writable) and *kevents to what
  * the kernel should wait for (a stream is writable while it has room). A listener
  * arms netd's accept first: select-driven servers like dropbear select()
- * before accept(), and netd only announces a connection once armed.
+ * before __myos_accept(), and netd only announces a connection once armed.
  */
 int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
     struct myos_sock *s = sock_by_fd(fd);
@@ -680,7 +681,7 @@ void myos_socket_on_close(int fd) {
     sock_free(s);
 }
 
-int socket(int domain, int type, int protocol) {
+int __myos_socket(int domain, int type, int protocol) {
     struct myos_sock *s;
     char clone_path[32];
     char path[64];
@@ -837,14 +838,14 @@ static int host_addr(struct in_addr a) {
     return found;
 }
 
-int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+int __myos_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     struct myos_sock *s = sock_lookup(sockfd);
     if (s == NULL) {
         errno = ENOTSOCK;
         return -1;
     }
     if (addr != NULL && s->family == AF_UNIX) {
-        /* The name is announced by listen(). */
+        /* The name is announced by __myos_listen(). */
         if (addr->sa_family != AF_UNIX) {
             errno = EAFNOSUPPORT;
             return -1;
@@ -872,7 +873,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
             errno = EADDRNOTAVAIL;
             return -1;
         }
-        /* Remembered; the listener is started by listen(). */
+        /* Remembered; the listener is started by __myos_listen(). */
         s->bind_addr = in->sin_addr;
         s->bind_port = in->sin_port;
     }
@@ -1083,7 +1084,7 @@ static int un_accept(struct myos_sock *ls, struct sockaddr *addr, socklen_t *add
     return fd;
 }
 
-int socketpair(int domain, int type, int protocol, int sv[2]) {
+int __myos_socketpair(int domain, int type, int protocol, int sv[2]) {
     struct myos_sock *s;
     unsigned short id;
     int a;
@@ -1096,7 +1097,7 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
         errno = EPROTONOSUPPORT;
         return -1;
     }
-    a = socket(AF_UNIX, SOCK_STREAM, protocol);
+    a = __myos_socket(AF_UNIX, SOCK_STREAM, protocol);
     if (a < 0) {
         return -1;
     }
@@ -1119,7 +1120,7 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
     return 0;
 }
 
-int listen(int sockfd, int backlog) {
+int __myos_listen(int sockfd, int backlog) {
     struct myos_sock *s = sock_lookup(sockfd);
     char cmd[sizeof "announce 255.255.255.255!65535"];
     (void)backlog; /* netd keeps a one-connection ready queue (smoltcp listener) */
@@ -1343,7 +1344,7 @@ static int accept_from_status(struct myos_sock *ls, char *status,
     s->data_fd = data_fd;
     /* Consume the parked head in netd without re-advertising it. A plain
      * ctl "accept" would take+reply the same <N> (and with accepted_pending
-     * bump seq), so the next accept() re-opened the live Child — dropbear
+     * bump seq), so the next __myos_accept() re-opened the live Child — dropbear
      * Integrity error bad packet size 0x53534831 on sequential SSH. */
     listener_send_taken(ls, (int)seq);
     /* Optional peer from "accepted <N> <ip>!<port>" — best effort. */
@@ -1498,7 +1499,7 @@ static int connect_body(int sockfd, const struct sockaddr *addr, socklen_t addrl
     return 0;
 }
 
-int shutdown(int sockfd, int how) {
+int __myos_shutdown(int sockfd, int how) {
     struct myos_sock *s = sock_lookup(sockfd);
     (void)how;
     if (s == NULL) {
@@ -1525,7 +1526,7 @@ int shutdown(int sockfd, int how) {
     return 0;
 }
 
-int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+int __myos_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
     struct myos_sock *s = sock_lookup(sockfd);
     if (s == NULL) {
         errno = ENOTSOCK;
@@ -1543,7 +1544,7 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
     return 0;
 }
 
-int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
+int __myos_getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
     struct myos_sock *s = sock_lookup(sockfd);
     (void)level;
     if (s == NULL) {
@@ -1609,7 +1610,7 @@ int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optl
     return -1;
 }
 
-int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+int __myos_getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     struct sockaddr_in local;
     struct myos_sock *s = sock_lookup(sockfd);
     if (s == NULL) {
@@ -1631,7 +1632,7 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     if (s->type == SOCK_DGRAM) {
         local = s->local;
     } else if (s->bind_port != 0) {
-        /* A bound or listening TCP socket: what bind() named. */
+        /* A bound or listening TCP socket: what __myos_bind() named. */
         local.sin_addr = s->bind_addr;
         local.sin_port = s->bind_port;
     }
@@ -1642,7 +1643,7 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     return 0;
 }
 
-int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+int __myos_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     struct myos_sock *s = sock_lookup(sockfd);
     if (s == NULL) {
         errno = ENOTSOCK;
@@ -1668,7 +1669,7 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     return 0;
 }
 
-ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
+ssize_t __myos_send(int sockfd, const void *buf, size_t len, int flags) {
     struct myos_sock *s = sock_lookup(sockfd);
     if (is_dgram(sockfd)) {
         return udp_send(s, buf, len, flags, NULL, 0);
@@ -1718,7 +1719,7 @@ static ssize_t tcp_peek(struct myos_sock *s, void *buf, size_t len, int flags) {
     }
 }
 
-ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
+ssize_t __myos_recv(int sockfd, void *buf, size_t len, int flags) {
     ssize_t n;
     struct myos_sock *s = sock_lookup(sockfd);
     int restore = 0;
@@ -1772,7 +1773,7 @@ static int sent_rights(const struct msghdr *msg, int *fds, int cap) {
 /* sendmsg: the data, with the fds of an SCM_RIGHTS message on a unix
  * socket: the conversation's "rights" takes them and they come with the
  * first byte (docs/sockets-unix.md). */
-ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
+ssize_t __myos_sendmsg(int sockfd, const struct msghdr *msg, int flags) {
     struct myos_sock *s = sock_lookup(sockfd);
     int fds[253];
     int n = sent_rights(msg, fds, 253);
@@ -1811,7 +1812,7 @@ ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
         }
     }
     if (msg->msg_name != NULL && s != NULL && s->state != SOCK_CONNECTED && !is_dgram(sockfd)) {
-        if (connect(sockfd, msg->msg_name, msg->msg_namelen) < 0) {
+        if (__myos_connect(sockfd, msg->msg_name, msg->msg_namelen) < 0) {
             return -1;
         }
     }
@@ -1878,7 +1879,7 @@ static int received_rights(struct myos_sock *s, int *fds, int cap) {
 /* recvmsg: the data, and on a unix socket the fds that came with it as an
  * SCM_RIGHTS message; those msg_control has no room for are closed
  * (MSG_CTRUNC). */
-ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags) {
+ssize_t __myos_recvmsg(int sockfd, struct msghdr *msg, int flags) {
     struct myos_sock *s = sock_lookup(sockfd);
     int restore = 0, fds[253], n = 0, kept, i;
     ssize_t r;
@@ -1950,7 +1951,7 @@ ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags) {
     return r;
 }
 
-ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+ssize_t __myos_sendto(int sockfd, const void *buf, size_t len, int flags,
     const struct sockaddr *dest_addr, socklen_t addrlen) {
     struct myos_sock *s = sock_lookup(sockfd);
     if (is_dgram(sockfd)) {
@@ -1958,14 +1959,14 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
     }
     (void)flags;
     if (s != NULL && s->state != SOCK_CONNECTED && dest_addr != NULL) {
-        if (connect(sockfd, dest_addr, addrlen) < 0) {
+        if (__myos_connect(sockfd, dest_addr, addrlen) < 0) {
             return -1;
         }
     }
     return write(sockfd, buf, len);
 }
 
-ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+ssize_t __myos_recvfrom(int sockfd, void *buf, size_t len, int flags,
     struct sockaddr *src_addr, socklen_t *addrlen) {
     ssize_t n;
     struct myos_sock *s;
@@ -1996,14 +1997,14 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 }
 
 /* Cancellation points (pthread.c): accept and connect wait for netd. */
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+int __myos_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     __myos_cancel_enter();
     int r = accept_body(sockfd, addr, addrlen);
     __myos_cancel_leave();
     return r;
 }
 
-int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+int __myos_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     __myos_cancel_enter();
     int r = connect_body(sockfd, addr, addrlen);
     __myos_cancel_leave();
@@ -2409,3 +2410,21 @@ static struct myos_sock *sock_adopt(int fd) {
     errno = saved;
     return s;
 }
+
+MYOS_ALIAS(socket)
+MYOS_ALIAS(bind)
+MYOS_ALIAS(socketpair)
+MYOS_ALIAS(listen)
+MYOS_ALIAS(shutdown)
+MYOS_ALIAS(setsockopt)
+MYOS_ALIAS(getsockopt)
+MYOS_ALIAS(getsockname)
+MYOS_ALIAS(getpeername)
+MYOS_ALIAS(send)
+MYOS_ALIAS(recv)
+MYOS_ALIAS(sendmsg)
+MYOS_ALIAS(recvmsg)
+MYOS_ALIAS(sendto)
+MYOS_ALIAS(recvfrom)
+MYOS_ALIAS(accept)
+MYOS_ALIAS(connect)

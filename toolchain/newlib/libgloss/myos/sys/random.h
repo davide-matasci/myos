@@ -1,4 +1,4 @@
-/* myos libgloss: getrandom (posix_extra.c), from /dev/urandom. Installed
+/* myos libgloss: getrandom (libmyos/random.c), from /dev/urandom. Installed
  * into the newlib sysroot as <sys/random.h>. */
 #ifndef _MYOS_SYS_RANDOM_H_
 #define _MYOS_SYS_RANDOM_H_

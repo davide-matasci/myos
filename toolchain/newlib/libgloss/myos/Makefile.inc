@@ -1,3 +1,7 @@
+# newlib's own part of libgloss. The C both libcs share is in
+# toolchain/libmyos, which toolchain/newlib/build-libgloss.sh compiles with
+# these into libgloss.a (this file is for a build of libgloss from newlib's
+# tree, which myos does not run).
 multilibtool_DATA += \
 	%D%/myos.specs \
 	%D%/crt0.o \
@@ -7,34 +11,23 @@ multilibtool_DATA += \
 multilibtool_LIBRARIES += %D%/libgloss.a
 %C%_libgloss_a_CPPFLAGS = -I$(srcdir)/%D%
 %C%_libgloss_a_SOURCES = \
-	%D%/myos_raw.c \
-	%D%/syscalls.c \
-	%D%/stubs.c \
+	%D%/hooks.c \
 	%D%/posix_stubs.c \
+	%D%/posix_extra.c \
 	%D%/misc_stubs.c \
-	%D%/signal.c \
 	%D%/more_stubs.c \
-	%D%/ioctl.c \
+	%D%/signal.c \
 	%D%/environ.c \
 	%D%/initfini.c \
 	%D%/getline.c \
-	%D%/mmap.c \
-	%D%/shm.c \
-	%D%/at.c \
-	%D%/termios.c \
-	%D%/ttyctl.c \
-	%D%/socket.c \
+	%D%/dirent.c \
+	%D%/basename.c \
+	%D%/dirname.c \
 	%D%/inet.c \
 	%D%/netdb.c \
-	%D%/ifaddrs.c \
-	%D%/statvfs.c \
-	%D%/mntent.c \
-	%D%/pollselect.c \
-	%D%/pty.c \
-	%D%/evfd.c \
-	%D%/sleep.c \
-	%D%/uio.c \
-	%D%/pthread.c
+	%D%/search.c \
+	%D%/pthread.c \
+	%D%/syslog.c
 
 %C%_extra_parts = crt0 crti crtn
 

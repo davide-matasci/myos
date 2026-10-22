@@ -1,4 +1,4 @@
-/* myos libgloss: the terminal behind an fd, through its files (docs/tty.md).
+/* the terminal behind an fd, through its files (docs/tty.md).
  *
  * A terminal is a directory: `data` is the terminal, `ctl` its state as
  * text (the termios fields, the control characters, the window size, one
@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "myos_syscalls.h"
+#include "libc.h"
 
 /* Numbers are written by hand: snprintf would pull newlib's floating point
  * formatting into every program that calls isatty (newlib's stdio does at
@@ -213,3 +214,5 @@ int myos_tty_set_winsize(int fd, unsigned rows, unsigned cols) {
     put_str(p, "\n");
     return myos_tty_write(fd, line);
 }
+
+
