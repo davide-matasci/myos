@@ -32,6 +32,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -442,7 +443,7 @@ static int with_threads(void) {
             return fail("create detached ending at once", rc);
         }
         while (!__atomic_load_n(&quick_done, __ATOMIC_ACQUIRE)) {
-            pthread_yield();
+            sched_yield();
         }
     }
     pthread_attr_destroy(&attr);

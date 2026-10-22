@@ -9,7 +9,8 @@ imports it. Read `README.md` for the overview and the subsystem notes in
 A small Rust kernel (`#![no_std]`) that boots through Limine in QEMU on
 **x86_64** (BIOS and UEFI), **AArch64** and **RISC-V** (riscv64imac), with a
 VFS, kernel modules, preemptive scheduling, signals, networking (smoltcp in
-userspace) and a C/Rust userspace built on newlib + libgloss. Ported programs
+userspace) and a C/Rust userspace built on newlib + libgloss (or, per port,
+mlibc: `docs/mlibc.md`). Ported programs
 (oksh, sbase, ubase, ripgrep, tcc, uutils coreutils, vim, git, curl,
 dropbear, ...) are fetched and cross-built at build time; the ones a boot
 does not need are packages (`packages/`, published to a rolling GitHub
@@ -27,8 +28,8 @@ match the surrounding code's naming, idiom and comment density.
 | `build.rs` | builds the x86_64 kernel and the disk images; checks port artifacts per enabled feature |
 | `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
-| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes) and the boot tests' runner (`user/tests`); one `port.env` per program |
-| `toolchain/` | newlib + libgloss/myos, the Rust `std` port (`toolchain/std`); both are ports too (`port.env`, kind `toolchain`) |
+| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program |
+| `toolchain/` | newlib + libgloss/myos, mlibc (`toolchain/mlibc`, the second C library a port opts into with `PORT_LIBC=mlibc`), the C both libcs share (`toolchain/libmyos`), the Rust `std` port (`toolchain/std`); the libcs and the sysroot are ports too (`port.env`, kind `toolchain`) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
 | `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, openssl, acme, ncurses, pcre2; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
@@ -47,6 +48,7 @@ don't change it except through `scripts/bump-nightly.sh`.
 
 ```sh
 ./toolchain/newlib/build.sh          # newlib + libgloss for the 3 arches (once)
+./toolchain/mlibc/build.sh           # mlibc for the 3 arches (once; meson, ninja, clang 19+)
 ./ports/<name>/build.sh              # a port; skips itself when up to date
 cargo build                          # x86_64 kernel + images (target/*.img)
 cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS)
@@ -116,8 +118,8 @@ first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
 
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
-  qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git libc6-dev rsync \
-  patch curl zstd e2fsprogs dosfstools mtools
+  qemu-efi-aarch64 qemu-efi-riscv64 clang lld make meson ninja-build git \
+  libc6-dev rsync patch curl zstd e2fsprogs dosfstools mtools
 export GITHUB_REPOSITORY=davide-matasci/myos
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
 # 24.04's QEMU 8.2 boots riscv64 without its IOMMU (QEMU 9.2 and later have
@@ -204,7 +206,7 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
 - **No ABI workarounds**: the kernel, the modules, libc and every port and
   package are rebuilt from this tree together, so an ABI (the native
   syscalls, the module `KernelApi` and its `#[repr(C)]` types in
-  `modules/abi`, libgloss) is changed the right way: widen the field,
+  `modules/abi`, libgloss and the shared `toolchain/libmyos`) is changed the right way: widen the field,
   change the struct or the call. Never add a compatibility shim to keep
   old binaries working (an appended `_hi` field, a second call beside the
   old one). Bump `ABI_VERSION` (`modules/abi`) when the module ABI changes.
