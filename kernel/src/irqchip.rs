@@ -223,7 +223,7 @@ pub fn domain_register(
         return None;
     }
     let first = domains.iter().flatten().map(|d| d.first + d.count).max().unwrap_or(DOMAIN_FIRST);
-    if first + count > DOMAIN_FIRST + DOMAIN_LINES {
+    if first.checked_add(count).is_none_or(|end| end > DOMAIN_FIRST + DOMAIN_LINES) {
         return None;
     }
     let slot = domains.iter_mut().find(|d| d.is_none())?;
