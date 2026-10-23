@@ -17,11 +17,14 @@
 COMMIT=a2dcb924f0897368b0b4f305cbf9808cdda90ce0
 MIRROR=${WIFI_FIRMWARE_MIRROR:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain}
 
-# NAME PATH SHA-256, one radio's firmware per line (iwx::chip and
-# mtw::chip name them): the AX201's, the AX200's, the MT7601U's.
+# NAME PATH SHA-256, a file per line (iwx::chip and mtw::chip name them):
+# the AX201's, the AX200's, the MT7601U's, the MT7612U's firmware and ROM
+# patch (the MT7662E's, which Linux's mt76x2u loads too).
 FILES='iwlwifi-QuZ-a0-hr-b0-77.ucode intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode 39d79587dd035bc84172b6bcf6de81217560088b0ceb06304d5121ba56db8d83
 iwlwifi-cc-a0-77.ucode intel/iwlwifi/iwlwifi-cc-a0-77.ucode 1866a58a1daee56b120362122d5f7548b443b53d33f2558a7e4407d58fd27dab
-mt7601u.bin mediatek/mt7601u.bin 4511b1d840e22aea2bf5fdca419c91c0d94cbfb291b9ac4f8be6d9100d1a7046'
+mt7601u.bin mediatek/mt7601u.bin 4511b1d840e22aea2bf5fdca419c91c0d94cbfb291b9ac4f8be6d9100d1a7046
+mt7662.bin mediatek/mt7662.bin f7e52492f58088cae50e51a54cca68e4abc5b74f7d0b6b731dbb4c04465a94b6
+mt7662_rom_patch.bin mediatek/mt7662_rom_patch.bin 6f0e871268f6e4d99196d90d89bcc09fe493d010366260a2cfcaa5dd66095f8c'
 
 dir() {
 	if [ -n "$MYOS_FIRMWARE" ]; then

@@ -4,15 +4,15 @@ Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
 (`user/wifi`). It scans, joins an open or WPA2-PSK network and carries
 netd's traffic over it, through the test boots' simulated radio, an
 Intel Wi-Fi 6 radio (a laptop's AX201 or an AX200 card: below, "Intel's
-radios") or a MediaTek MT7601U USB adapter, which any arch's USB port
-takes ("MediaTek's radios"); none yet tried on the hardware.
+radios") or a MediaTek MT7601U or MT7612U USB adapter, which any arch's
+USB port takes ("MediaTek's radios"); none yet tried on the hardware.
 
 ## `wifi`
 
 | Command | |
 |------|-|
-| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else an MT7601U when `/dev/usb` has one, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
-| `wifi scan` | a scan (the 2.4 GHz channels of the simulated radio and the MT7601U, every channel an Intel radio's regulatory domain allows); prints the networks that answered |
+| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else an MT7601U or MT7612U when `/dev/usb` has one, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
+| `wifi scan` | a scan (the 2.4 GHz channels of the simulated radio and the MT7601U, those of both bands of the MT7612U, every channel an Intel radio's regulatory domain allows); prints the networks that answered |
 | `wifi list` | what the last scan found |
 | `wifi connect SSID [PASSPHRASE]` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none): an open one, or a WPA2-PSK one with its passphrase (8 to 63 printable ASCII characters, or the PSK itself as 64 hex digits) |
 | `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
@@ -34,8 +34,11 @@ SSID`, the strongest first:
 without RSN). Bytes of an SSID outside printable ASCII are written
 `\xHH`.
 
-A scan tunes the radio to each channel in turn, sends a wildcard probe
-request and listens 120 ms for probe responses and beacons (every
+A scan tunes the radio to each of its channels in turn (`Radio::channels`:
+1 to 13, or the board's bands for the MT7612U, 13 + 25 channels), sends a
+wildcard probe request (none on a 5 GHz radar channel, 52 to 144, where a
+station only listens until it hears an access point) and listens 120 ms
+for probe responses and beacons (every
 102.4 ms), keeping each BSSID once with its strongest signal
 (`user/wifi/src/main.rs`; the frames: `frame.rs`). The radio is a trait
 (`radio.rs`): tuned to a channel, it sends and hears 802.11 frames, and
@@ -50,9 +53,10 @@ point gave (`error: association refused, status 43`). `connect` first
 leaves the network it is on (a deauthentication), and an access point's
 deauthentication or disassociation ends the link.
 
-The station offers the 802.11b and g rates (1 to 54 Mb/s, the faster
-four as Extended Supported Rates). With a radio that does 802.11n
-itself (`Radio::ht`, its HT Capabilities: the MT7601U's, and the
+The station offers the 802.11b and g rates on 2.4 GHz (1 to 54 Mb/s, the
+faster four as Extended Supported Rates), the 802.11a ones on 5 GHz (6
+to 54). With a radio that does 802.11n itself (`Radio::ht`, its HT
+Capabilities: the MT7601U's one stream, the MT7612U's two, and the
 simulated radio's) and an 802.11n access point (its beacon's HT
 Capabilities and WMM elements), the association request also offers
 802.11n: the radio's HT Capabilities and a WMM Information element, as
@@ -61,7 +65,8 @@ daemon sends QoS data frames of best effort (EAPOL frames go as plain
 data), and declines a block ack session the access point offers (its
 ADDBA request answered with status 37), so frames come one at a time.
 The radio learns which it is (`Radio::associated`), and gets a tick a
-second while associated (`Radio::tick`: the MT7601U's rate adaptation).
+second while associated (`Radio::tick`: the MediaTek radios' rate adaptation, the MT7612U's
+calibration).
 
 On a WPA2-PSK network (`rsn.rs`, the `wpa` crate in `user/wifi/wpa`)
 the association request carries an RSN element (CCMP, PSK), and the
@@ -102,8 +107,9 @@ associated tunes the radio back to the link's channel when it is done.
 
 A real radio runs its maker's firmware (the AX201's is
 `iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX200's `iwlwifi-cc-a0-77.ucode`:
-`iwx::chip` names each; the MT7601U's MCU runs `mt7601u.bin`,
-`mtw::chip`'s). The images never carry it: Intel's and MediaTek's
+`iwx::chip` names each; the MT7601U's MCU runs `mt7601u.bin`, the
+MT7612U's `mt7662.bin` after its ROM patch `mt7662_rom_patch.bin`, the
+MT7662E's files, which Linux's mt76x2u loads too: `mtw::chip`'s). The images never carry it: Intel's and MediaTek's
 licences let it be redistributed unmodified, but myos ships no
 third-party binaries. `wifi-firmware` gets it:
 
@@ -246,11 +252,15 @@ The MT7601U: an 802.11b/g/n USB adapter for 2.4 GHz with one antenna
 (the cheap "150 Mbps" dongles: ASUS USB-N10 v2, D-Link DWA-127 rev B1,
 Edimax EW-7711UAn V2, Xiaomi's and many unbranded ones), so a machine of
 any arch with a USB port can have Wi-Fi: a Raspberry Pi, a RISC-V board.
-Its ids and firmware are in `mtw::chip`, a table the MT7610U and MT7612U
-can join (they share the MAC; their RF and 5 GHz setup would be new:
-issue #553).
+The MT7612U: an 802.11ac USB 3 adapter for 2.4 and 5 GHz with two
+antennas (the "AC1200" ones: ASUS USB-AC55, Netgear A6210, Alfa
+AWUS036ACM, TP-Link TL-WDN6200, the Xbox One adapter), driven as an
+802.11n radio of two streams at 20 MHz (40 and 80 MHz and 802.11ac:
+issue #563). Their ids and firmware are in `mtw::chip`. The MT7610U is
+not there: the only complete driver for it, Linux's mt76x0u, is
+GPL-2.0-only, and OpenBSD's mtw(4) does not take it.
 
-It is a SoftMAC: its MCU calibrates the radio and takes the frames, the
+Each is a SoftMAC: its MCU calibrates the radio and takes the frames, the
 host does the rest, so the daemon scans (tuning to each channel and
 sending probe requests, as for the simulated radio), joins and encrypts,
 and the radio is told the network it joins (`Radio::joining`,
@@ -263,17 +273,21 @@ read is one transfer, which the MAC fills with up to 2 KiB of frames),
 the MCU's commands, the firmware and the management frames written to
 its first bulk OUT endpoint and the data frames to the next one (best
 effort; one per access category). `/dev/usb` is there at boot. The
-driver is the `mtw` crate (`user/wifi/mtw`), a port of OpenBSD's
-`mtw(4)` (if_mtw.c rev 1.13) to `no_std` Rust behind a `Usb` trait:
+driver is the `mtw` crate (`user/wifi/mtw`), behind a `Usb` trait: for
+the MT7601U a port of OpenBSD's `mtw(4)` (if_mtw.c rev 1.13) to
+`no_std` Rust, for the MT7612U (`mt76x2/`, below) one of Linux's
+mt76x2u:
 
 | Module | |
 |------|-|
-| `chip.rs` | the radios: their USB ids, ASIC, firmware file and where it goes |
+| `chip.rs` | the radios: their USB ids, ASICs, driver, firmware files and where they go, HT Capabilities |
 | `fw.rs` | the firmware file: its header, interrupt vectors, instruction and data parts |
 | `reg.rs` | registers, vendor requests, the eFUSE ROM's words, the descriptors' flags, the MAC, baseband and RF defaults, the channels' RF settings, the legacy rates |
-| `usb.rs` | the `Usb` trait (vendor requests, bulk OUT) and which bulk endpoint is which |
+| `usb.rs` | the `Usb` trait (vendor and class requests, bulk OUT, the MCU's answers on bulk IN) and which bulk endpoint is which |
 | `dev.rs` | the bring-up: the WLAN core powered, the firmware loaded and started, the eFUSE ROM read (address, calibration), the MAC, baseband and RF set up and calibrated; channels, joining, sending, leaving, stopping |
 | `rx.rs`, `tx.rs` | the frames as the endpoints carry them: an aggregated transfer's frames after their RXWI (signal, flags; a padded header put back), a frame to send after its TXD and TXWI (rate, ACK, the station's entry) |
+| `rate.rs` | the link's rates and AMRR (both radios') |
+| `mt76x2/` | the MT7612U: `reg.rs` (registers, vendor requests, the EEPROM's layout, MCU messages), `fw.rs` (the ROM patch and firmware files), `frame.rs` (its RXWI and TXINFO/TXWI), `dev.rs` (the radio) |
 
 Bring-up (mtw_attachhook, mtw_init): the WLAN core and its oscillator
 on, the firmware written in 8 KiB blocks to the MCU's memory, its
@@ -310,6 +324,45 @@ Once associated: the slot time and CCK preamble the access point's
 capabilities allow, its basic rates, the BSSID; the beacon timer (TSF
 sync) stays off, since the station never sleeps.
 
+### The MT7612U
+
+Its driver (`mtw::mt76x2`) is a port of Linux's mt76x2u (and the mt76x02
+and mt76 code it calls) at 20 MHz. Its registers are reached by `MULTI`
+vendor requests (the USB configuration's and the EEPROM's by their own),
+its MCU's commands carry a sequence number and are answered on the
+second bulk IN endpoint (read for up to 1.5 s), and a frame goes out
+after a TXINFO and a 20-byte TXWI, its header padded to 4 bytes, the
+management frames on the voice endpoint, one frame a transfer coming in
+(receive aggregation off).
+
+Bring-up (mt76x2u_init_hardware): the 512-byte EEPROM read, the WLAN
+core reset and powered (its power domain, both RF units), the ROM patch
+written through the FCE in 2 KiB blocks and applied, the firmware's
+instructions and data in 14 KiB blocks then started on its vectors, the
+USB DMA without receive aggregation, the queues selected and the radio
+on, the MAC's reference defaults (and the crystal's trim from the
+EEPROM), the station table and the shared keys cleared, the MCU's RF and
+baseband settings loaded, both chains on. `init` starts the MAC with a
+station's receive filter and tunes the first channel. A channel
+(mt76x2u_phy_set_channel) is the band's gains and signal offsets, PA
+settings and per-rate transmit power from the EEPROM (two chains, under
+20 dBm), the band and 20 MHz in the baseband, the MCU's tuning and its
+gain, its RX DC calibration (and once, the R and RC ones); a scan stops
+there, and joining calibrates the channel too (LC on 5 GHz, TX LO and
+IQ, RX IQ, temperature, TX shaping, TSSI), as Linux does outside a scan,
+except on a radar channel. Once a second (`calibrate`), besides AMRR:
+the channel's calibration if a scan left it undone, the TSSI
+compensation (triggered, then the chains' slopes and offsets, then a DPD
+calibration once), and the receive gain for the access point's averaged
+signal (lowered for a strong one, the VGA's adjusted to the false CCAs).
+AMRR's rates over 802.11n are MCS 0 to 7 then 12 to 15 (MCS 8 to 11 are
+as fast as 2 to 6 at two streams): 6.5 to 130 Mb/s; on 5 GHz the
+slowest is 6 Mb/s and there is no CCK. A frame's signal is the two
+chains' combined (mt76_rx_signal) after the EEPROM's offsets and LNA
+gain.
+
+### Tests
+
 No test boot has the radio: QEMU has no USB Wi-Fi device. `cargo test
 -p mtw` (CI runs it) tests the encodings (the firmware header, the
 endpoints, aggregated receive transfers, the transmit descriptors), and
@@ -334,8 +387,26 @@ in order), keep a running firmware, refuse another chip, scan the three
 channels (each network at its signal), join `myos-open`, send to it and
 leave; over 802.11n there AMRR climbs from MCS 0 to MCS 7 in seven
 seconds and stays, and on `myos-far` (802.11g, −82 dBm) it climbs to 9
-Mb/s and tries 11 now and then, more rarely each time. `/dev/usb` itself
-is tested in the boots (`usbdev`, with a USB serial adapter: `docs/usb.md`).
+Mb/s and tries 11 now and then, more rarely each time.
+
+The MT7612U's tests (`user/wifi/mtw/tests/mt76x2.rs`) run its driver
+against a model of it (`tests/model/mt76x2.rs`): the MAC's registers,
+the configuration space (the power domain coming up), the EEPROM (both
+bands, internal PAs, TSSI on), the FCE taking the ROM patch and
+firmware in blocks (its DMA address and length, the descriptor index
+moved once a block), the MCU applying the patch, starting only when the
+ILM and DLM are where they belong, answering the commands that want it
+with their sequence number, and the frames: out on the channel the MCU
+tuned to (a TXINFO and TXWI checked, the header pad, CCK refused on 5
+GHz), in a frame a transfer at two chains' signal; the air has a fourth
+access point there, `myos-5g` on channel 36. They bring it up (the MCU's
+commands and calibrations in order, the chains' power from the EEPROM),
+refuse another chip, scan both bands (a scan's channel not calibrated),
+join `myos-5g` (5 GHz's calibrations, 6 Mb/s) and leave, climb with AMRR
+from MCS 0 to 15 on `myos-open`, stay at 9 Mb/s or under on `myos-far`,
+run the periodic calibration (TSSI, DPD, the gain lowered 14 for −40
+dBm) and keep a radar channel uncalibrated. `/dev/usb` itself is tested
+in the boots (`usbdev`, with a USB serial adapter: `docs/usb.md`).
 
 ## The simulated radio
 

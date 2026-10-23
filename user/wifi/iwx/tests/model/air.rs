@@ -3,9 +3,10 @@
 //! beaconing every 100 TU on their channels, taking open-system
 //! authentication and association (each association the next id), and
 //! acknowledging what is sent to them. `myos-open` is an 802.11n access
-//! point (HT and WMM elements), the others 802.11g ones. Enough for the
-//! driver's frames to be answered; the keys of a WPA2 network are the
-//! launcher's.
+//! point (HT and WMM elements), the others 802.11g ones. A dual-band
+//! radio's air (`Air::dual_band`) has a fourth, `myos-5g`, an 802.11n
+//! access point on channel 36. Enough for the driver's frames to be
+//! answered; the keys of a WPA2 network are the launcher's.
 
 use std::time::Instant;
 
@@ -26,10 +27,11 @@ struct Ap {
     ht: bool,
 }
 
-const APS: [Ap; 3] = [
+const APS: [Ap; 4] = [
     Ap { ssid: b"myos-open", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x01], channel: 1, rssi: -40, wpa2: false, ht: true },
     Ap { ssid: b"myos-wpa2", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x06], channel: 6, rssi: -55, wpa2: true, ht: false },
     Ap { ssid: b"myos-far", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x0b], channel: 11, rssi: -82, wpa2: true, ht: false },
+    Ap { ssid: b"myos-5g", bssid: [0x02, 0x00, 0x5e, 0x00, 0x05, 0x24], channel: 36, rssi: -45, wpa2: false, ht: true },
 ];
 
 /// RSN: CCMP, PSK.
@@ -38,27 +40,36 @@ const RSN: [u8; 22] = [48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1
 pub struct Air {
     start: Instant,
     next_aid: u16,
+    aps: &'static [Ap],
 }
 
 impl Air {
+    /// The 2.4 GHz access points.
     pub fn new() -> Self {
-        Air { start: Instant::now(), next_aid: 1 }
+        Air { start: Instant::now(), next_aid: 1, aps: &APS[..3] }
+    }
+
+    /// The 2.4 GHz and 5 GHz ones.
+    #[allow(dead_code)]
+    pub fn dual_band() -> Self {
+        Air { aps: &APS, ..Air::new() }
     }
 
     /// Every access point's beacon, now.
     pub fn beacons(&self) -> Vec<Heard> {
-        APS.iter().map(|ap| self.heard(ap, mgmt(ap, 0x80, [0xff; 6], self.ts()))).collect()
+        self.aps.iter().map(|ap| self.heard(ap, mgmt(ap, 0x80, [0xff; 6], self.ts()))).collect()
     }
 
     /// Whether `bssid` is an access point on `channel` (it acknowledges
     /// what is sent to it).
     pub fn has_ap(&self, channel: u8, bssid: [u8; 6]) -> bool {
-        APS.iter().any(|ap| ap.bssid == bssid && ap.channel == channel)
+        self.aps.iter().any(|ap| ap.bssid == bssid && ap.channel == channel)
     }
 
     /// The signal of access point `bssid` on `channel`, when it is there.
+    #[allow(dead_code)]
     pub fn rssi(&self, channel: u8, bssid: [u8; 6]) -> Option<i8> {
-        APS.iter().find(|ap| ap.bssid == bssid && ap.channel == channel).map(|ap| ap.rssi)
+        self.aps.iter().find(|ap| ap.bssid == bssid && ap.channel == channel).map(|ap| ap.rssi)
     }
 
     /// What the access point `frame` is sent to on `channel` answers:
@@ -68,7 +79,7 @@ impl Air {
             return Vec::new();
         }
         let (ra, ta): ([u8; 6], [u8; 6]) = (frame[4..10].try_into().unwrap(), frame[10..16].try_into().unwrap());
-        let Some(ap) = APS.iter().find(|ap| ap.bssid == ra && ap.channel == channel) else {
+        let Some(ap) = self.aps.iter().find(|ap| ap.bssid == ra && ap.channel == channel) else {
             return Vec::new();
         };
         let body = &frame[24..];
@@ -85,7 +96,7 @@ impl Air {
                 f.extend_from_slice(&[0x01, 0x00, 0, 0]);
                 f.extend_from_slice(&(0xc000 | self.next_aid).to_le_bytes());
                 self.next_aid += 1;
-                f.extend_from_slice(&[1, 4, 0x82, 0x84, 0x8b, 0x96]);
+                f.extend_from_slice(if ap.channel > 14 { &[1, 3, 0x8c, 0x98, 0xb0] } else { &[1, 4, 0x82, 0x84, 0x8b, 0x96] });
                 f
             }
             _ => return Vec::new(),
@@ -114,7 +125,8 @@ fn header(subtype: u8, da: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
 }
 
 /// A beacon (0x80) or probe response (0x50): timestamp, 100 TU, an ESS
-/// (with privacy for WPA2), its SSID, rates, channel, RSN.
+/// (with privacy for WPA2), its SSID, rates (OFDM only on 5 GHz),
+/// channel, RSN.
 fn mgmt(ap: &Ap, subtype: u8, da: [u8; 6], ts_us: u64) -> Vec<u8> {
     let mut f = header(subtype, da, ap.bssid);
     f.extend_from_slice(&ts_us.to_le_bytes());
@@ -123,7 +135,11 @@ fn mgmt(ap: &Ap, subtype: u8, da: [u8; 6], ts_us: u64) -> Vec<u8> {
     f.extend_from_slice(&cap.to_le_bytes());
     f.extend_from_slice(&[0, ap.ssid.len() as u8]);
     f.extend_from_slice(ap.ssid);
-    f.extend_from_slice(&[1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
+    if ap.channel > 14 {
+        f.extend_from_slice(&[1, 8, 0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c]);
+    } else {
+        f.extend_from_slice(&[1, 8, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
+    }
     f.extend_from_slice(&[3, 1, ap.channel]);
     if ap.wpa2 {
         f.extend_from_slice(&RSN);

@@ -40,9 +40,9 @@ pub struct Peer {
     /// Its legacy rates (Supported Rates bytes: 500 kb/s units, the basic
     /// ones with bit 7 set).
     pub rates: alloc::vec::Vec<u8>,
-    /// Its HT Capabilities' first MCS bitmap byte, when it is an 802.11n
-    /// access point.
-    pub ht_mcs: Option<u8>,
+    /// Its HT Capabilities' RX MCS bitmap, the first two bytes (MCS 0 to
+    /// 15), when it is an 802.11n access point.
+    pub ht_mcs: Option<u16>,
     /// Its capabilities: short preambles, short slots.
     pub short_preamble: bool,
     pub short_slot: bool,
@@ -106,7 +106,7 @@ impl<U: Usb> Dev<U> {
         if ver == 0 || ver == 0xffff_ffff {
             return Err(Error::Timeout("the NIC to initialize"));
         }
-        if (ver >> 16) as u16 != chip.asic_ver {
+        if !chip.asic.contains(&((ver >> 16) as u16)) {
             return Err(Error::Chip((ver >> 16) as u16));
         }
         Ok(Dev {
@@ -280,7 +280,7 @@ impl<U: Usb> Dev<U> {
         self.wcid = aid_to_wcid(aid);
         self.write_region_1(WCID_ENTRY0 + 8 * u16::from(self.wcid), &peer.bssid)?;
         self.short_preamble = peer.short_preamble;
-        self.amrr = Some(Amrr::new(RateSet::new(&peer.rates, peer.ht_mcs.filter(|_| ht))));
+        self.amrr = Some(Amrr::new(RateSet::new(&peer.rates, peer.ht_mcs.filter(|_| ht), 1)));
         // The counters start from the association.
         self.tx_stats()?;
         self.set_leds(LED_MODE_BLINK_TX)

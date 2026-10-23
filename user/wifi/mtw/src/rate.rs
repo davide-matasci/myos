@@ -2,14 +2,14 @@
 //! ends have, slowest first, and AMRR choosing among them from what the
 //! last second's frames needed (OpenBSD's ieee80211_amrr.c and
 //! mtw_newassoc, mtw_calibrate_cb; notices in LICENSE). An 802.11n link's
-//! rates are the MCS of one stream at 20 MHz, a legacy one's the 802.11b
-//! and g rates.
+//! rates are the MCS of the station's streams at 20 MHz, a legacy one's
+//! the 802.11a, b and g rates.
 
 use alloc::vec::Vec;
 
 use crate::reg::{RATES, RIDX_CCK1};
 
-/// A rate: legacy (an index of `reg::RATES`) or HT (an MCS, 0 to 7).
+/// A rate: legacy (an index of `reg::RATES`) or HT (an MCS, 0 to 15).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TxRate {
     Legacy(usize),
@@ -23,9 +23,20 @@ impl TxRate {
     pub fn ctl_ridx(self) -> usize {
         match self {
             TxRate::Legacy(r) => RATES[r].ctl_ridx,
-            TxRate::Ht(0) => 4,
-            TxRate::Ht(1 | 2) => 6,
-            TxRate::Ht(_) => 8,
+            TxRate::Ht(m) => match m % 8 {
+                0 => 4,
+                1 | 2 => 6,
+                _ => 8,
+            },
+        }
+    }
+
+    /// The rate in kb/s (an MCS's at 20 MHz with a long guard interval).
+    pub fn kbps(self) -> u32 {
+        const MCS: [u32; 8] = [6500, 13_000, 19_500, 26_000, 39_000, 52_000, 58_500, 65_000];
+        match self {
+            TxRate::Legacy(r) => u32::from(RATES[r].rate) * 500,
+            TxRate::Ht(m) => MCS[usize::from(m % 8)] * (u32::from(m / 8) + 1),
         }
     }
 }
@@ -38,10 +49,16 @@ impl RateSet {
     /// The rates of a link with an access point that has legacy rates
     /// `rates` (as its Supported Rates elements say them: 500 kb/s units,
     /// the basic bit set or not), and over 802.11n when `ht_mcs` is its
-    /// first MCS bitmap byte (the MCS 0 to 7 it receives).
-    pub fn new(rates: &[u8], ht_mcs: Option<u8>) -> Self {
-        if let Some(mcs) = ht_mcs.filter(|&m| m != 0) {
-            return RateSet((0..8).filter(|m| mcs & 1 << m != 0).map(TxRate::Ht).collect());
+    /// RX MCS bitmap's first two bytes (MCS 0 to 15): those of the
+    /// station's `streams` (1 or 2), an MCS as fast as a slower one left
+    /// out (MCS 8 to 11 are 2 to 6 at two streams).
+    pub fn new(rates: &[u8], ht_mcs: Option<u16>, streams: u8) -> Self {
+        let mask = if streams > 1 { 0xffff } else { 0xff };
+        if let Some(mcs) = ht_mcs.map(|m| m & mask).filter(|&m| m != 0) {
+            let mut set: Vec<TxRate> = (0..16).filter(|m| mcs & 1 << m != 0).map(TxRate::Ht).collect();
+            set.sort_by_key(|r| r.kbps());
+            set.dedup_by_key(|r| r.kbps());
+            return RateSet(set);
         }
         let mut set: Vec<usize> =
             (0..RATES.len()).filter(|&r| rates.iter().any(|&v| v & 0x7f == RATES[r].rate)).collect();
@@ -138,21 +155,22 @@ mod tests {
     fn sets() {
         // An 802.11g access point's rates, the basic ones marked: slowest
         // first, CCK and OFDM interleaved by speed.
-        let g = RateSet::new(&[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6c], None);
-        let speeds: Vec<u8> = g.0.iter().map(|r| match r {
-            TxRate::Legacy(i) => RATES[*i].rate,
-            TxRate::Ht(_) => 0,
-        }).collect();
+        let g = RateSet::new(&[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6c], None, 1);
+        let speeds: Vec<u32> = g.0.iter().map(|r| r.kbps() / 500).collect();
         assert_eq!(speeds, [2, 4, 11, 12, 18, 22, 24, 36, 48, 72, 96, 108]);
-        let n = RateSet::new(&[0x82], Some(0xff));
+        let n = RateSet::new(&[0x82], Some(0xffff), 1);
         assert_eq!(n.0, (0..8).map(TxRate::Ht).collect::<Vec<_>>());
-        assert_eq!(RateSet::new(&[], None).0, [TxRate::Legacy(RIDX_CCK1)]);
+        // Two streams: MCS 0 to 7, then those of 8 to 15 faster than 7.
+        let n2 = RateSet::new(&[0x82], Some(0xffff), 2);
+        assert_eq!(n2.0, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15].map(TxRate::Ht));
+        assert_eq!((TxRate::Ht(12).kbps(), TxRate::Ht(15).kbps()), (78_000, 130_000));
+        assert_eq!(RateSet::new(&[], None, 1).0, [TxRate::Legacy(RIDX_CCK1)]);
         assert_eq!((TxRate::Ht(0).ctl_ridx(), TxRate::Ht(7).ctl_ridx()), (4, 8));
     }
 
     #[test]
     fn climbs_and_falls() {
-        let mut a = Amrr::new(RateSet::new(&[0x0c, 0x18, 0x30], None));
+        let mut a = Amrr::new(RateSet::new(&[0x0c, 0x18, 0x30], None, 1));
         // Clean periods: up a rate each (the threshold is 1), to the top.
         for want in [1, 2, 2] {
             a.update(20, 0);
@@ -160,7 +178,7 @@ mod tests {
         }
         // A bad period right after an increase: down, and the next
         // increase waits two good periods.
-        let mut b = Amrr::new(RateSet::new(&[0x0c, 0x18, 0x30], None));
+        let mut b = Amrr::new(RateSet::new(&[0x0c, 0x18, 0x30], None, 1));
         b.update(20, 0);
         b.update(20, 15);
         assert_eq!(b.txrate, 0);
@@ -169,7 +187,7 @@ mod tests {
         b.update(20, 0);
         assert_eq!(b.txrate, 1);
         // Too few frames say nothing.
-        let mut c = Amrr::new(RateSet::new(&[0x0c, 0x18], None));
+        let mut c = Amrr::new(RateSet::new(&[0x0c, 0x18], None, 1));
         c.update(5, 0);
         assert_eq!(c.txrate, 0);
     }

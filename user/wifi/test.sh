@@ -114,8 +114,8 @@ t -t wifi,tap wifi_data wifi_data myos-open
 t -t wifi,tap wifi_wpa2_data wifi_data myos-wpa2 myos-passphrase
 
 # The radios' firmware files, as wifi-firmware pins them: the AX201's, the
-# AX200's, the MT7601U's.
-WIFI_FIRMWARE='iwlwifi-QuZ-a0-hr-b0-77.ucode iwlwifi-cc-a0-77.ucode mt7601u.bin'
+# AX200's, the MT7601U's, the MT7612U's two.
+WIFI_FIRMWARE='iwlwifi-QuZ-a0-hr-b0-77.ucode iwlwifi-cc-a0-77.ucode mt7601u.bin mt7662.bin mt7662_rom_patch.bin'
 
 # wifi-firmware: a file whose SHA-256 is not the pinned one is refused and
 # not kept (a mirror directory with the wrong bytes); `list` says each

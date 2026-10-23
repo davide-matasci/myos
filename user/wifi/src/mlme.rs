@@ -59,7 +59,7 @@ fn join_steps(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refus
     }
     // 802.11n when both ends do it (an 802.11n station is a QoS one).
     let ht = radio.ht().filter(|_| bss.ht_mcs.is_some() && bss.wmm);
-    let assoc = frame::assoc_request(me, bss.bssid, &bss.ssid, rsn, ht.as_ref());
+    let assoc = frame::assoc_request(me, bss.bssid, bss.channel, &bss.ssid, rsn, ht.as_ref());
     let (status, aid) = exchange(radio, &assoc, bss.bssid, frame::ASSOC_RESP, frame::assoc_status)
         .ok_or(Refused::Silent(b"association"))?;
     if status != frame::STATUS_OK {

@@ -1,13 +1,15 @@
 //! `wifi`: the Wi-Fi daemon and its command (issue #495, `docs/wifi.md`).
 //!
 //! - `wifi daemon [NIC]` drives the radio: an Intel AX201 or AX200 when
-//!   `/dev/pci` has one and no NIC is named, else a MediaTek MT7601U when
-//!   `/dev/usb` has one (their firmware from `wifi-firmware fetch`),
+//!   `/dev/pci` has one and no NIC is named, else a MediaTek MT7601U or
+//!   MT7612U when `/dev/usb` has one (their firmware from `wifi-firmware
+//!   fetch`),
 //!   else the simulated one on NIC (default `/dev/net1`, the test boots'
 //!   second NIC, `src/wifi_sim.rs`).
 //!   It listens on the unix socket `wifid` for the commands below, one per
 //!   connection: a line in, the answer out, then the connection ends.
-//! - `wifi scan`: a scan of the 2.4 GHz channels; prints what answered.
+//! - `wifi scan`: a scan of the radio's channels (2.4 GHz, and 5 GHz on a
+//!   dual-band one); prints what answered.
 //! - `wifi list`: what the last scan found.
 //! - `wifi connect SSID [PASSPHRASE]`: join the network SSID (the
 //!   strongest the last scan heard, after a scan when it heard none): an
@@ -65,11 +67,16 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-/// The 2.4 GHz channels a scan visits.
-const CHANNELS: core::ops::RangeInclusive<u8> = 1..=13;
 /// How long a scan listens on each channel after its probe request, in
 /// ms: beacons come every 100 TU (102.4 ms), so one is heard too.
 const DWELL_MS: u64 = 120;
+
+/// Whether 5 GHz channel `ch` is one where radar has precedence (DFS,
+/// UNII-2A and -2C): a station only listens there until it hears an
+/// access point.
+fn radar(ch: u8) -> bool {
+    (52..=144).contains(&ch)
+}
 
 fn usage() -> ! {
     write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID [PASSPHRASE] | status | disconnect\n");
@@ -380,8 +387,9 @@ fn status(link: Option<&Link>) -> Vec<u8> {
     out
 }
 
-/// Visit every channel: a wildcard probe request, then whatever beacons and
-/// probe responses are heard for [`DWELL_MS`]; or the radio's own scan.
+/// Visit every channel of the radio: a wildcard probe request (none on a
+/// radar channel), then whatever beacons and probe responses are heard
+/// for [`DWELL_MS`]; or the radio's own scan.
 fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
     let mut seen: Vec<Seen> = Vec::new();
     if let Some(heard) = radio.scan() {
@@ -394,9 +402,11 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
         return seen;
     }
     let mut buf = [0u8; 2048];
-    for ch in CHANNELS {
+    for ch in radio.channels() {
         radio.set_channel(ch);
-        radio.send(&frame::probe_request(radio.mac()));
+        if !radar(ch) {
+            radio.send(&frame::probe_request(radio.mac(), ch));
+        }
         let end = monotonic_ns() + DWELL_MS * 1_000_000;
         loop {
             while let Some(rx) = radio.recv(&mut buf) {
@@ -515,7 +525,8 @@ fn client() -> ! {
     let mut buf = [0u8; 1024];
     let mut error = false;
     loop {
-        // A scan takes CHANNELS × DWELL_MS: well within the wait.
+        // A scan takes the radio's channels × DWELL_MS (38 channels on a
+        // dual-band radio: under 5 s), well within the wait.
         let n = conn.read(&mut buf, 30_000);
         if n == 0 {
             break;

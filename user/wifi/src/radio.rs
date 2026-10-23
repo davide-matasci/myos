@@ -1,6 +1,7 @@
 //! The radio a scan and an association go through: tuned to a channel, it
 //! sends and hears 802.11 frames. The simulated one is the test boots';
-//! Intel's (the AX201, the AX200) is `intel.rs`.
+//! Intel's (the AX201, the AX200) is `intel.rs`, MediaTek's (the MT7601U,
+//! the MT7612U) `mediatek.rs`.
 
 use alloc::vec::Vec;
 
@@ -17,6 +18,11 @@ pub struct Rx {
 pub trait Radio {
     /// The station's own address.
     fn mac(&self) -> [u8; 6];
+    /// The channels a scan visits: the 2.4 GHz ones, unless the radio has
+    /// others.
+    fn channels(&self) -> Vec<u8> {
+        (1..=13).collect()
+    }
     /// Hear and send on `channel` from now on.
     fn set_channel(&mut self, channel: u8);
     fn send(&mut self, frame: &[u8]) -> bool;

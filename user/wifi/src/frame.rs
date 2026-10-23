@@ -29,10 +29,12 @@ const FIXED: usize = 12;
 const CAP_PRIVACY: u16 = 0x0010;
 const CAP_SHORT_PREAMBLE: u16 = 0x0020;
 const CAP_SHORT_SLOT: u16 = 0x0400;
-/// The rates a station offers: 1, 2, 5.5 and 11 Mb/s, 6, 9, 12, 18
-/// (Supported Rates), then 24, 36, 48 and 54 (Extended Supported Rates).
+/// The rates a station offers on 2.4 GHz: 1, 2, 5.5 and 11 Mb/s, 6, 9,
+/// 12, 18 (Supported Rates), then 24, 36, 48 and 54 (Extended Supported
+/// Rates); on 5 GHz the OFDM ones, 6, 12 and 24 basic.
 const RATES: [u8; 8] = [0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24];
 const EXT_RATES: [u8; 4] = [0x30, 0x48, 0x60, 0x6c];
+const RATES_5G: [u8; 8] = [0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c];
 /// The WMM Information element of a station: the Wi-Fi Alliance's OUI,
 /// type 2, subtype 0, version 1, no U-APSD.
 const WMM_INFO: [u8; 9] = [221, 7, 0x00, 0x50, 0xf2, 0x02, 0x00, 0x01, 0x00];
@@ -74,9 +76,10 @@ pub struct Bss {
     /// Its legacy rates, as its Supported and Extended Supported Rates say
     /// them (500 kb/s units, bit 7 for a basic rate).
     pub rates: Vec<u8>,
-    /// An 802.11n access point's first MCS bitmap byte (HT Capabilities),
-    /// and whether it does WMM (QoS): an 802.11n station needs both.
-    pub ht_mcs: Option<u8>,
+    /// An 802.11n access point's RX MCS bitmap, its first two bytes (MCS
+    /// 0 to 15, HT Capabilities), and whether it does WMM (QoS): an
+    /// 802.11n station needs both.
+    pub ht_mcs: Option<u16>,
     pub wmm: bool,
     pub short_preamble: bool,
     pub short_slot: bool,
@@ -93,17 +96,23 @@ fn header(subtype: u8, da: [u8; 6], sa: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
     f
 }
 
-/// A wildcard probe request from `sa`: every network on the channel
+/// A wildcard probe request from `sa` on `channel`: every network there
 /// answers.
-pub fn probe_request(sa: [u8; 6]) -> Vec<u8> {
+pub fn probe_request(sa: [u8; 6], channel: u8) -> Vec<u8> {
     let mut f = header(PROBE_REQ, BROADCAST, sa, BROADCAST);
     f.extend_from_slice(&[0, 0]); // SSID: the wildcard
-    rates(&mut f);
+    rates(&mut f, channel);
     f
 }
 
-/// The Supported and Extended Supported Rates elements.
-fn rates(f: &mut Vec<u8>) {
+/// The Supported (and Extended Supported) Rates elements of `channel`'s
+/// band.
+fn rates(f: &mut Vec<u8>, channel: u8) {
+    if channel > 14 {
+        f.extend_from_slice(&[1, RATES_5G.len() as u8]);
+        f.extend_from_slice(&RATES_5G);
+        return;
+    }
     f.extend_from_slice(&[1, RATES.len() as u8]);
     f.extend_from_slice(&RATES);
     f.extend_from_slice(&[50, EXT_RATES.len() as u8]);
@@ -129,7 +138,7 @@ pub fn parse_bss(f: &[u8], channel: u8) -> Option<Bss> {
     };
     let rsn = rsn.map(|b| [&[48, b.len() as u8][..], b].concat()).unwrap_or_default();
     let rates = [ie(ies, 1).unwrap_or(&[]), ie(ies, 50).unwrap_or(&[])].concat();
-    let ht_mcs = ie(ies, 45).and_then(|ht| ht.get(3).copied());
+    let ht_mcs = ie(ies, 45).and_then(|ht| Some(u16::from_le_bytes([*ht.get(3)?, *ht.get(4)?])));
     // WMM's Parameter element (subtype 1) or Information element (0).
     let wmm = ies_of(ies, 221).any(|v| v.len() >= 5 && v[..4] == [0x00, 0x50, 0xf2, 0x02] && v[4] <= 1);
     Some(Bss {
@@ -188,18 +197,18 @@ pub fn auth_request(sa: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
     f
 }
 
-/// An association request to `bssid` for network `ssid`, with RSN element
-/// `rsn` (whole; empty for an open network), and as an 802.11n station
-/// with HT Capabilities `ht` (the element's body: the radio's) when given,
-/// a QoS (WMM) one then too.
-pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], ssid: &[u8], rsn: &[u8], ht: Option<&[u8; 26]>) -> Vec<u8> {
+/// An association request to `bssid` on `channel` for network `ssid`,
+/// with RSN element `rsn` (whole; empty for an open network), and as an
+/// 802.11n station with HT Capabilities `ht` (the element's body: the
+/// radio's) when given, a QoS (WMM) one then too.
+pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], channel: u8, ssid: &[u8], rsn: &[u8], ht: Option<&[u8; 26]>) -> Vec<u8> {
     let mut f = header(ASSOC_REQ, bssid, sa, bssid);
     f.extend_from_slice(&0x0001u16.to_le_bytes()); // capabilities: ESS
     f.extend_from_slice(&10u16.to_le_bytes()); // listen interval, in beacons
     f.push(0);
     f.push(ssid.len() as u8);
     f.extend_from_slice(ssid);
-    rates(&mut f);
+    rates(&mut f, channel);
     f.extend_from_slice(rsn);
     if let Some(ht) = ht {
         f.extend_from_slice(&[45, ht.len() as u8]);

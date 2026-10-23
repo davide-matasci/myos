@@ -27,9 +27,15 @@ impl Usb for Host {
         self.0.vendor_in(request, value, index, data);
         Ok(())
     }
+    fn class_out(&mut self, request: u8, _value: u16, _index: u16, _data: &[u8]) -> Result<(), UsbError> {
+        panic!("model: class request {request:#x} to an MT7601U");
+    }
     fn bulk_out(&mut self, endpoint: u8, data: &[u8]) -> Result<(), UsbError> {
         self.0.bulk_out(endpoint, data);
         Ok(())
+    }
+    fn bulk_in(&mut self, endpoint: u8, _buf: &mut [u8], _timeout_ms: u32) -> Result<usize, UsbError> {
+        panic!("model: the MT7601U's MCU answers nothing (read of {endpoint:#x})");
     }
     fn delay_us(&mut self, _us: u32) {}
 }
@@ -84,7 +90,7 @@ fn peer(beacon: &[u8]) -> Peer {
         bssid: beacon[16..22].try_into().unwrap(),
         channel: ie(beacon, 3).unwrap()[0],
         rates: [ie(beacon, 1).unwrap_or(&[]), ie(beacon, 50).unwrap_or(&[])].concat(),
-        ht_mcs: ie(beacon, 45).map(|ht| ht[3]),
+        ht_mcs: ie(beacon, 45).map(|ht| u16::from_le_bytes([ht[3], ht[4]])),
         short_preamble: cap & 0x20 != 0,
         short_slot: cap & 0x400 != 0,
     }
@@ -249,7 +255,7 @@ fn rate_adaptation_ht() {
     // from MCS 0, to MCS 7, and stays.
     let mut dev = up(&firmware());
     let (p, _) = join(&mut dev, 1, b"myos-open", true);
-    assert_eq!(p.ht_mcs, Some(0xff));
+    assert_eq!(p.ht_mcs, Some(0xffff));
     assert_eq!(dev.tx_rate(), TxRate::Ht(0));
     let rates = traffic(&mut dev, p.bssid, 10);
     assert_eq!(&rates[..7], &(1..8).map(TxRate::Ht).collect::<Vec<_>>()[..]);

@@ -72,7 +72,7 @@ pub enum Queue {
 }
 
 /// The access category of user priority `up` (ieee80211_up_to_ac).
-fn ac(up: u8) -> usize {
+pub(crate) fn ac(up: u8) -> usize {
     match up {
         1 | 2 => 1,
         4 | 5 => 2,
