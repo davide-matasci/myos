@@ -94,9 +94,10 @@ build_arch() {
   # host's libraries (PKG_CONFIG=false: with it, it took the host's libffi,
   # liblzma, readline and uuid for the target's). Every module static (no
   # dlopen in a static program); no mimalloc (it wants sys/syscall.h, a
-  # Linux header); the bundled expat and libmpdec; /usr the prefix the
-  # app's files are taken from (at run time the interpreter finds the
-  # library beside itself: /bin/custom/python3, /lib/python3.13).
+  # Linux header); the bundled expat and libmpdec; /usr the prefix, built
+  # into the interpreter: the app has the library at /usr/lib/python3.13
+  # (the search upwards from the executable's directory, /bin/custom,
+  # stops short of the root).
   (cd "$build" && CONFIG_SITE="$HERE/config.site" CC="$build/cc" CPP="$build/cc -E" \
     AR="${arch}-unknown-myos-ar" RANLIB="${arch}-unknown-myos-ranlib" READELF="$READELF_BIN" PKG_CONFIG=false \
     ZLIB_CFLAGS="-I$build/zlib" ZLIB_LIBS="-L$build/zlib -lz" MODULE_BUILDTYPE=static \

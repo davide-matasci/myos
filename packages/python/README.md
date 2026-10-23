@@ -4,8 +4,10 @@
 `run-myos python`), built against mlibc (`docs/mlibc.md`): the first port
 on the second C library. The app has the interpreter at
 `/bin/custom/python` (`python3`, `python3.13`) and the standard library at
-`/lib/python3.13`, which the interpreter finds beside itself (`sys.prefix`
-is `/`, `sys.platform` is `myos`). The library is sources only: the
+`/usr/lib/python3.13`, where the interpreter's built-in prefix (`/usr`,
+`sys.prefix`) has it: its search from the executable's directory upwards
+stops short of the root, so a library at `/lib` would not be found.
+`sys.platform` is `myos`. The library is sources only: the
 `.pyc` files would double the app's files and bytes (and the time its
 install takes), so the interpreter writes them into the app's directory
 on the first import instead.
