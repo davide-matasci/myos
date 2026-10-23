@@ -61,12 +61,14 @@ pub fn bt_config() -> [u8; 8] {
     c
 }
 
-/// The SoC: integrated (no DISCRETE flag), its crystal's latency in µs.
-/// OpenBSD's iwx_send_soc_conf sends no LTR delay flags for the AX201
-/// (`ltr_delay & mask` of an unshifted 1); Linux would set 1 << 2. This
-/// keeps what is known to work on OpenBSD.
-pub fn soc_configuration(latency_us: u32) -> [u8; 8] {
+/// The SoC: integrated (no DISCRETE flag) or not, its crystal's latency
+/// in µs. OpenBSD's iwx_send_soc_conf sends no LTR delay flags for the
+/// AX201 (`ltr_delay & mask` of an unshifted 1); Linux would set 1 << 2.
+/// This keeps what is known to work on OpenBSD.
+pub fn soc_configuration(integrated: bool, latency_us: u32) -> [u8; 8] {
+    const DISCRETE: u32 = 1 << 0;
     let mut c = [0; 8];
+    put32(&mut c, 0, if integrated { 0 } else { DISCRETE });
     put32(&mut c, 4, latency_us);
     c
 }
@@ -441,7 +443,8 @@ mod tests {
     fn small_commands() {
         assert_eq!(init_extended_cfg(), [2, 0, 0, 0]);
         assert_eq!(bt_config(), [3, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(soc_configuration(500), [0, 0, 0, 0, 0xf4, 1, 0, 0]);
+        assert_eq!(soc_configuration(true, 500), [0, 0, 0, 0, 0xf4, 1, 0, 0]);
+        assert_eq!(soc_configuration(false, 0), [1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(scan_cfg(3, 3), [0, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0]);
         assert_eq!((SCAN_REQ_UMAC.sent().group, MCC_UPDATE.sent().group), (1, 1));
     }

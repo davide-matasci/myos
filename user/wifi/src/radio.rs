@@ -1,6 +1,6 @@
 //! The radio a scan and an association go through: tuned to a channel, it
 //! sends and hears 802.11 frames. The simulated one is the test boots';
-//! the AX201's is `ax201.rs`.
+//! Intel's (the AX201, the AX200) is `intel.rs`.
 
 use alloc::vec::Vec;
 

@@ -2,15 +2,16 @@
 
 Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
 (`user/wifi`). It scans, joins an open or WPA2-PSK network and carries
-netd's traffic over it, through the test boots' simulated radio or a
-laptop's Intel AX201 (below, "The AX201"; not yet tried on the hardware).
+netd's traffic over it, through the test boots' simulated radio or an
+Intel Wi-Fi 6 radio, a laptop's AX201 or an AX200 card (below, "Intel's
+radios"; neither yet tried on the hardware).
 
 ## `wifi`
 
 | Command | |
 |------|-|
-| `wifi daemon [NIC]` | drives the radio: the AX201 when `/dev/pci` has one and no `NIC` is named, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
-| `wifi scan` | a scan (the simulated radio's 2.4 GHz channels, every channel the AX201's regulatory domain allows); prints the networks that answered |
+| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
+| `wifi scan` | a scan (the simulated radio's 2.4 GHz channels, every channel an Intel radio's regulatory domain allows); prints the networks that answered |
 | `wifi list` | what the last scan found |
 | `wifi connect SSID [PASSPHRASE]` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none): an open one, or a WPA2-PSK one with its passphrase (8 to 63 printable ASCII characters, or the PSK itself as 64 hex digits) |
 | `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
@@ -37,7 +38,7 @@ request and listens 120 ms for probe responses and beacons (every
 102.4 ms), keeping each BSSID once with its strongest signal
 (`user/wifi/src/main.rs`; the frames: `frame.rs`). The radio is a trait
 (`radio.rs`): tuned to a channel, it sends and hears 802.11 frames, and
-says its address; a radio whose firmware scans by itself (the AX201)
+says its address; a radio whose firmware scans by itself (Intel's)
 hands back the frames its scan heard instead.
 
 Joining (`mlme.rs`) is open-system authentication, then association: a
@@ -85,7 +86,8 @@ associated tunes the radio back to the link's channel when it is done.
 ## Firmware
 
 A real radio runs Intel's firmware (the AX201's is
-`iwlwifi-QuZ-a0-hr-b0-77.ucode`). The images never carry it: its licence
+`iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX200's `iwlwifi-cc-a0-77.ucode`:
+`iwx::chip` names each). The images never carry it: its licence
 lets it be redistributed unmodified, but myos ships no third-party
 binaries. `wifi-firmware` gets it:
 
@@ -105,15 +107,32 @@ of linux-firmware's tree (a USB stick) to copy from instead. The tests are
 the firmware from `/data/firmware`, else `/tmp/firmware` (it does not
 see `$MYOS_FIRMWARE`).
 
-## The AX201
+## Intel's radios
 
-Intel's AX201 (PCI `8086:06f0`, the ThinkPad T15p's, and `8086:02f0`:
-the ones with a QuZ MAC) is driven by the daemon itself, through
-`/dev/pci` (`docs/pci-acpi-smp.md`; `user/wifi/src/pci.rs`): BAR0 mapped,
-DMA buffers, its MSI-X or MSI interrupt, or its INTx line (all the
-aarch64 and riscv64 boards give a PCI function: serviced as MSI's, then
-unmasked again through `/dev/pci`'s `irq`). `/dev/pci` is there once root
-loaded its module, `insmod /lib/modules/pcidev` (a line for
+Two of Intel's Wi-Fi 6 radios, of the same (22000) family: one driver,
+the same rings, commands and firmware protocol, each radio's own facts
+in `iwx::chip`:
+
+| Radio | PCI | MAC | | Firmware |
+|------|-----|-----|-|----------|
+| AX201 | `8086:06f0` (Comet Lake H, the ThinkPad T15p's), `8086:02f0` | QuZ | integrated (CNVi: the MAC in Intel's chipset, so Intel x86 machines only); crystal latency 500 µs | `iwlwifi-QuZ-a0-hr-b0-77.ucode` |
+| AX200 | `8086:2723` | CC | discrete: an M.2 PCIe card, for any machine with the slot | `iwlwifi-cc-a0-77.ucode` |
+
+What differs, as OpenBSD's iwx_attach sets it up: the MAC the PCI id
+must have (HW_REV), whether the hardware start forces power gating and
+resets again (integrated only), where the latency tolerance for the
+firmware's boot goes (the periphery's `HPM_UMAC_LTR`, a discrete radio's
+`LTR_LONG_VAL_AD`), and SOC_CONFIGURATION (the `DISCRETE` flag, the
+crystal latency). The two firmware files agree in everything the driver
+checks (command versions, API and capability bits, limits).
+
+The daemon drives the radio itself (`user/wifi/src/intel.rs`), the
+first `/dev/pci` has whose id is in the table, through `/dev/pci`
+(`docs/pci-acpi-smp.md`; `user/wifi/src/pci.rs`): BAR0 mapped, DMA
+buffers, its MSI-X or MSI interrupt, or its INTx line (all the aarch64
+and riscv64 boards give a PCI function, an AX200 card's on them:
+serviced as MSI's, then unmasked again through `/dev/pci`'s `irq`).
+`/dev/pci` is there once root loaded its module, `insmod /lib/modules/pcidev` (a line for
 `/data/etc/rc.local`): it is not loaded at boot, since on a board without
 an IOMMU the daemon's device reaches all of memory; the laptop's VT-d
 confines it to the daemon's buffers. The driver is the `iwx` crate
@@ -123,6 +142,7 @@ tested on the host (`cargo test -p iwx`):
 
 | Module | |
 |------|-|
+| `chip.rs` | the radios: their ids, MAC, integrated or discrete, crystal latency, firmware file |
 | `fw.rs` | the firmware file: its TLVs, the runtime image's LMAC, UMAC and paging sections, API and capability bits, command versions |
 | `reg.rs`, `hw.rs` | registers; the NIC lock, the periphery window, preparing, resetting and starting the hardware, interrupt masks, the MAC address |
 | `ring.rs` | the context information the firmware loads itself from, the command queue's descriptors and commands, the packets of a receive buffer |
@@ -146,7 +166,7 @@ device's while it runs), and at the first join the station's transmit
 queue: its 256 descriptors with the byte count table, and 64 slots of
 4 KB for the frames on their way.
 
-`wifi scan` on the AX201 is the firmware's passive scan of every allowed
+`wifi scan` on an Intel radio is the firmware's passive scan of every allowed
 channel (110 ms each), every beacon and probe response passed up; the
 daemon reads the networks from them as from the simulated radio's, and
 keeps each access point's beacon timing (interval, DTIM, timestamp) and
@@ -182,9 +202,10 @@ and the protected frames it receives come up as they were sent; the two
 bytes of padding the firmware puts after a frame's header (after its
 CCMP header when it reports the frame as CCMP's) are taken out.
 
-No test boot has the device. `cargo test -p iwx` (CI runs it) tests the
-driver's encodings, and runs it against a model of the AX201
-(`user/wifi/iwx/tests/ax201`): the registers and periphery, the
+No test boot has either radio. `cargo test -p iwx` (CI runs it) tests
+the driver's encodings, and runs it against a model of each
+(`user/wifi/iwx/tests/model`, `radios.rs`; what differs between them in
+its `Hardware`): the registers and periphery, the
 interrupt (MSI with the ICT, MSI-X with its automask), the receive ring
 and transmit queues in the driver's DMA buffers, and a firmware that
 loads itself from the context information (checking the sections are
@@ -195,11 +216,13 @@ simulated radio's, below) beacon and answer authentication and
 association. Every command, descriptor and register access is checked
 against the firmware's structures as OpenBSD's if_iwxreg.h describes
 them, and the first thing a real device would not take stops it with
-the reason. The tests bring the device up with MSI and with MSI-X,
-scan (hearing the three networks at their signals), join `myos-open`,
-authenticate, associate and leave. What the model cannot show is
-whether Intel's firmware agrees with that reading of it: the rest needs
-the laptop.
+the reason, the radio's own facts included (its MAC, where it takes the
+latency tolerance, its SoC configuration). The tests bring each radio
+up with MSI and with MSI-X, scan (hearing the three networks at their
+signals), join `myos-open`, authenticate, associate and leave, and an
+AX200 the driver takes for integrated is refused. What the model cannot
+show is whether Intel's firmware agrees with that reading of it: the
+rest needs the hardware.
 
 ## The simulated radio
 

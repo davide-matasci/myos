@@ -16,8 +16,10 @@
 COMMIT=a2dcb924f0897368b0b4f305cbf9808cdda90ce0
 MIRROR=${WIFI_FIRMWARE_MIRROR:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain}
 
-# NAME PATH SHA-256, one radio's firmware per line.
-FILES='iwlwifi-QuZ-a0-hr-b0-77.ucode intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode 39d79587dd035bc84172b6bcf6de81217560088b0ceb06304d5121ba56db8d83'
+# NAME PATH SHA-256, one radio's firmware per line (iwx::chip names them):
+# the AX201's, the AX200's.
+FILES='iwlwifi-QuZ-a0-hr-b0-77.ucode intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode 39d79587dd035bc84172b6bcf6de81217560088b0ceb06304d5121ba56db8d83
+iwlwifi-cc-a0-77.ucode intel/iwlwifi/iwlwifi-cc-a0-77.ucode 1866a58a1daee56b120362122d5f7548b443b53d33f2558a7e4407d58fd27dab'
 
 dir() {
 	if [ -n "$MYOS_FIRMWARE" ]; then
