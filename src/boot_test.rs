@@ -643,8 +643,19 @@ pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow
     let login_ready = |t: &str| {
         t.contains("[ OK ] fork exec") && after_boot(t).contains("login: ") && typed_after(t, "login: ").is_empty()
     };
-    if !wait_for(&serial, deadline, login_ready) {
-        fail(&serial, &mut child, "no login prompt within the budget");
+    // A QEMU that refused its command line or a guest that reset is gone
+    // before any prompt: say so now, not at the end of the budget.
+    loop {
+        if login_ready(&snapshot(&serial)) {
+            break;
+        }
+        if let Some(status) = child.try_wait().expect("wait on qemu") {
+            fail(&serial, &mut child, &format!("QEMU exited ({status}) before the login prompt"));
+        }
+        if Instant::now() > deadline {
+            fail(&serial, &mut child, "no login prompt within the budget");
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
     let login_deadline = Instant::now() + LOGIN_BOUND;
     let mut attempts = 0;

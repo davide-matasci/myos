@@ -81,7 +81,10 @@ fn riscv_limine_conf() -> String {
 /// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
 /// needs the x2APIC MSRs.
-const X86_CPU: &str = "qemu64,+x2apic";
+/// `+rdtscp`: the kernel keeps its CPU index in `IA32_TSC_AUX`, RDTSCP's
+/// register (`arch/x86/cpu.rs`); TCG lets a CPU model without the feature
+/// write it, KVM faults the write.
+const X86_CPU: &str = "qemu64,+x2apic,+rdtscp";
 
 /// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM
 /// path of `kernel/src/arch/x86/pci.rs`) with Intel's IOMMU (`kernel/src/
@@ -90,13 +93,38 @@ const X86_CPU: &str = "qemu64,+x2apic";
 /// `$MYOS_X86_IOMMU=amd` (`iommu/amdvi.rs`; CI's `bios-amd` machine), or
 /// `$MYOS_X86_MACHINE` (`pc`: PCI through port 0xCF8, no MCFG, no IOMMU,
 /// QEMU's default machine).
+/// `-accel` for the x86 boots. TCG, QEMU's default, multi-threaded; with
+/// `MYOS_TCG_SINGLE=1` (`scripts/local-ci.sh`) single-threaded, far
+/// friendlier on a loaded 4-core host where MTTCG's vCPU threads starve
+/// each other and a boot stalls with no serial output. `MYOS_X86_ACCEL=kvm`
+/// runs the guest on the host's CPU through KVM instead (a host with
+/// `/dev/kvm`; the CPU model stays [`X86_CPU`], so the guest sees the same
+/// CPU either way): a measurement of what the emulation costs, not a boot
+/// CI runs (`docs/testing.md`).
+fn x86_accel_args() -> Vec<&'static str> {
+    if std::env::var("MYOS_X86_ACCEL").as_deref() == Ok("kvm") {
+        vec!["-accel", "kvm"]
+    } else if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
+        vec!["-accel", "tcg,thread=single"]
+    } else {
+        vec![]
+    }
+}
+
 fn x86_machine(cmd: &mut Command) {
     match std::env::var("MYOS_X86_MACHINE").as_deref() {
         Ok(machine) if !machine.is_empty() && machine != "q35" => {
             cmd.arg("-machine").arg(machine);
         }
         _ => {
-            cmd.arg("-machine").arg("q35");
+            // Under KVM the interrupt controllers live in the kernel by
+            // default, and interrupt remapping needs them split (the LAPICs
+            // there, the IOAPIC in QEMU); TCG has no such choice.
+            if std::env::var("MYOS_X86_ACCEL").as_deref() == Ok("kvm") {
+                cmd.arg("-machine").arg("q35,kernel-irqchip=split");
+            } else {
+                cmd.arg("-machine").arg("q35");
+            }
             // `intremap=on`: the unit remaps interrupts too, each message
             // through an entry of its sender's (`iommu/vtd.rs`,
             // `iommu/amdvi.rs`).
@@ -632,6 +660,7 @@ fn run_bios(bios_path: &str) {
     x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
+        .args(x86_accel_args())
         .arg("-m")
         .arg("1024")
         .arg("-smp")
@@ -660,6 +689,7 @@ fn run_uefi(uefi_path: &str) {
     x86_machine(&mut cmd);
     cmd.arg("-cpu")
         .arg(X86_CPU)
+        .args(x86_accel_args())
         .arg("-m")
         .arg("1024")
         .arg("-smp")
@@ -768,16 +798,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
         .arg("4096")
         .arg("-smp")
         .arg("4")  // ≥2 APs for parallel-fork RR / make -j
-        .args({
-            // MYOS_TCG_SINGLE=1: single-threaded TCG — far friendlier on a
-            // loaded 4-core host where MTTCG vCPU threads starve each other
-            // and the boot stalls mid-CI with no serial output.
-            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
-                vec!["-accel", "tcg,thread=single"]
-            } else {
-                vec![]
-            }
-        })
+        .args(x86_accel_args())
         .arg("-serial")
         .arg("stdio")
         .arg("-display")
@@ -833,15 +854,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
                 "4" // ≥2 APs for parallel-fork RR / make -j
             }
         })
-        .args({
-            // Match run_ci_bios: local-ci.sh exports MYOS_TCG_SINGLE=1 so MTTCG
-            // does not starve the boot. Without this, UEFI CI ignored the flag.
-            if std::env::var("MYOS_TCG_SINGLE").as_deref() == Ok("1") {
-                vec!["-accel", "tcg,thread=single"]
-            } else {
-                vec![]
-            }
-        })
+        .args(x86_accel_args())
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,unit=0,file={},readonly=on",

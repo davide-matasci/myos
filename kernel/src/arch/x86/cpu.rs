@@ -102,7 +102,9 @@ pub fn hw_cpu_id() -> Option<u64> {
 /// The logical CPU index stored in this CPU's id register (`IA32_TSC_AUX`,
 /// written by [`set_cpu_id_reg`]); out of range before that.
 pub fn cpu_id_reg() -> usize {
-    // Use RDMSR (not RDTSCP) — qemu64 may lack the RDTSCP feature.
+    // RDMSR, not RDTSCP: the register is what matters, not the
+    // instruction (the launcher gives QEMU's CPU model the feature,
+    // `X86_CPU`, so that KVM accepts the MSR too).
     let lo: u32;
     unsafe {
         core::arch::asm!(
