@@ -197,12 +197,24 @@ fi
 
 echo "tests: tags=${TAGS:--} skip=${SKIP:--}"
 
+# wait_lease: netd's DHCP lease (/net/ndb), within ten seconds of the
+# first test: a connect before it fails at once (no address to send
+# from), and the packages test is the run's first.
+wait_lease() {
+	i=0
+	while [ ! -s /net/ndb ] && [ $i -lt 10 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+}
+
 # The packages: every one of this build from the host's mirror
 # (docs/packages.md; packages.txt names the ports the image lacks, the
 # index has the image's ports too), as apps under /tmp/apps (all of them
 # do not fit the boot disk's data partition): the packages' tests run
 # them with run-myos.
 install_packages() {
+	wait_lease
 	names=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
 	echo "packages: $names"
 	# The first package with dependencies alone first, on the fresh system:
