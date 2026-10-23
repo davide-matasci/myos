@@ -106,6 +106,11 @@ pub const TX_PWR_CFG9: u16 = 0x13dc;
 pub const RX_FILTR_CFG: u16 = 0x1400;
 pub const AUTO_RSP_CFG: u16 = 0x1404;
 pub const LEGACY_BASIC_RATE: u16 = 0x1408;
+/// TX statistics, cleared when read: failures (CNT0 low half), successes
+/// and retries (CNT1 low and high halves).
+pub const TX_STA_CNT0: u16 = 0x170c;
+pub const TX_STA_CNT1: u16 = 0x1710;
+pub const TX_STA_CNT2: u16 = 0x1714;
 pub const WCID_ENTRY0: u16 = 0x1800;
 pub const H2M_MAILBOX: u16 = 0x7010;
 pub const IVEIV0: u16 = 0xa000;
@@ -197,6 +202,7 @@ pub const TX_ACK: u8 = 1 << 0;
 pub const PHY_SHIFT: u16 = 14;
 pub const PHY_CCK: u16 = 0;
 pub const PHY_OFDM: u16 = 1;
+pub const PHY_HT: u16 = 2;
 pub const PHY_SHPRE: u16 = 1 << 3;
 
 pub const RXD_LEN: u32 = 0x3fff;
@@ -241,7 +247,6 @@ pub const RATES: [Rate; 12] = [
     Rate { rate: 108, mcs: 7, ofdm: true, ctl_ridx: 8, sp_ack_dur: 40, lp_ack_dur: 40 },
 ];
 pub const RIDX_CCK1: usize = 0;
-pub const RIDX_OFDM24: usize = 6;
 
 /// Each 2.4 GHz channel's RF bank 0 registers 17 to 20 (MT7601_RF_CHAN).
 pub const RF_CHAN: [(u8, u8, u8, u8, u8); 14] = [

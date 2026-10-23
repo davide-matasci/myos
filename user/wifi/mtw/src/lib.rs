@@ -20,6 +20,7 @@ pub mod chip;
 pub mod reg;
 pub mod fw;
 pub mod usb;
+pub mod rate;
 pub mod rx;
 pub mod tx;
 pub mod dev;

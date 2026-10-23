@@ -2,8 +2,10 @@
 //! test boots' simulated radio (`src/wifi_sim.rs`, the launcher's),
 //! beaconing every 100 TU on their channels, taking open-system
 //! authentication and association (each association the next id), and
-//! acknowledging what is sent to them. Enough for the driver's frames to
-//! be answered; the keys of a WPA2 network are the launcher's.
+//! acknowledging what is sent to them. `myos-open` is an 802.11n access
+//! point (HT and WMM elements), the others 802.11g ones. Enough for the
+//! driver's frames to be answered; the keys of a WPA2 network are the
+//! launcher's.
 
 use std::time::Instant;
 
@@ -21,12 +23,13 @@ struct Ap {
     channel: u8,
     rssi: i8,
     wpa2: bool,
+    ht: bool,
 }
 
 const APS: [Ap; 3] = [
-    Ap { ssid: b"myos-open", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x01], channel: 1, rssi: -40, wpa2: false },
-    Ap { ssid: b"myos-wpa2", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x06], channel: 6, rssi: -55, wpa2: true },
-    Ap { ssid: b"myos-far", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x0b], channel: 11, rssi: -82, wpa2: true },
+    Ap { ssid: b"myos-open", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x01], channel: 1, rssi: -40, wpa2: false, ht: true },
+    Ap { ssid: b"myos-wpa2", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x06], channel: 6, rssi: -55, wpa2: true, ht: false },
+    Ap { ssid: b"myos-far", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x0b], channel: 11, rssi: -82, wpa2: true, ht: false },
 ];
 
 /// RSN: CCMP, PSK.
@@ -51,6 +54,11 @@ impl Air {
     /// what is sent to it).
     pub fn has_ap(&self, channel: u8, bssid: [u8; 6]) -> bool {
         APS.iter().any(|ap| ap.bssid == bssid && ap.channel == channel)
+    }
+
+    /// The signal of access point `bssid` on `channel`, when it is there.
+    pub fn rssi(&self, channel: u8, bssid: [u8; 6]) -> Option<i8> {
+        APS.iter().find(|ap| ap.bssid == bssid && ap.channel == channel).map(|ap| ap.rssi)
     }
 
     /// What the access point `frame` is sent to on `channel` answers:
@@ -119,6 +127,19 @@ fn mgmt(ap: &Ap, subtype: u8, da: [u8; 6], ts_us: u64) -> Vec<u8> {
     f.extend_from_slice(&[3, 1, ap.channel]);
     if ap.wpa2 {
         f.extend_from_slice(&RSN);
+    }
+    if ap.ht {
+        // HT Capabilities: 20 MHz, short GI; MCS 0 to 15 received.
+        f.extend_from_slice(&[45, 26, 0x2c, 0x01, 0x03]);
+        f.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0]);
+        f.extend_from_slice(&[0; 7]);
+        // HT Operation: the primary channel, no secondary.
+        f.extend_from_slice(&[61, 22, ap.channel]);
+        f.extend_from_slice(&[0; 21]);
+        // WMM Parameter element (the Wi-Fi Alliance's OUI, type 2, subtype 1).
+        f.extend_from_slice(&[221, 24, 0x00, 0x50, 0xf2, 0x02, 0x01, 0x01, 0x00, 0x00]);
+        f.extend_from_slice(&[0x03, 0xa4, 0x00, 0x00, 0x27, 0xa4, 0x00, 0x00]);
+        f.extend_from_slice(&[0x42, 0x43, 0x5e, 0x00, 0x62, 0x32, 0x2f, 0x00]);
     }
     f
 }

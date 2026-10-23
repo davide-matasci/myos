@@ -8,7 +8,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use mtw::chip::{CHIPS, Chip};
-use mtw::dev::{Dev, Error, Info};
+use mtw::dev::{Dev, Error, Info, Peer};
 use mtw::fw::Firmware;
 use mtw::reg::MAX_RXSZ;
 use mtw::rx;
@@ -31,7 +31,7 @@ pub struct Mediatek {
     /// The frames of the last transfer not handed out yet: {frame, dBm}.
     heard: VecDeque<(Vec<u8>, i8)>,
     /// The network being joined, or joined.
-    bssid: Option<[u8; 6]>,
+    peer: Option<Peer>,
 }
 
 /// Why the radio did not come up, for the daemon to say.
@@ -55,7 +55,7 @@ impl Mediatek {
         let mut dev = Dev::new(usb, chip, eps).map_err(Failed::Driver)?;
         let info = dev.attach(&fw).map_err(Failed::Driver)?;
         dev.init(info.mac).map_err(Failed::Driver)?;
-        Ok(Mediatek { dev, info, rx, channel: 1, heard: VecDeque::new(), bssid: None })
+        Ok(Mediatek { dev, info, rx, channel: 1, heard: VecDeque::new(), peer: None })
     }
 
     /// The transfer waiting on the bulk IN endpoint, if one is: its frames
@@ -143,22 +143,43 @@ impl Radio for Mediatek {
     /// Tuned to `bss`'s channel, its address the MAC's BSSID.
     fn joining(&mut self, bss: &Bss) -> bool {
         self.left();
-        if self.dev.joining(bss.bssid, bss.channel).is_err() {
+        let peer = Peer {
+            bssid: bss.bssid,
+            channel: bss.channel,
+            rates: bss.rates.clone(),
+            ht_mcs: bss.ht_mcs,
+            short_preamble: bss.short_preamble,
+            short_slot: bss.short_slot,
+        };
+        if self.dev.joining(&peer).is_err() {
             return false;
         }
         self.channel = bss.channel;
-        self.bssid = Some(bss.bssid);
+        self.peer = Some(peer);
         true
     }
 
-    fn associated(&mut self, aid: u16) -> bool {
-        self.bssid.is_some_and(|b| self.dev.associated(b, aid).is_ok())
+    /// The access point's rates for AMRR: its MCS over 802.11n.
+    fn associated(&mut self, aid: u16, ht: bool) -> bool {
+        let Some(p) = self.peer.as_ref() else {
+            return false;
+        };
+        self.dev.associated(p, aid, ht).is_ok()
     }
 
     fn left(&mut self) {
-        if self.bssid.take().is_some() {
+        if self.peer.take().is_some() {
             let _ = self.dev.left();
         }
+    }
+
+    fn ht(&self) -> Option<[u8; 26]> {
+        Some(self.dev.chip.ht_cap)
+    }
+
+    /// AMRR's once-a-second look at the TX statistics.
+    fn tick(&mut self) {
+        let _ = self.dev.calibrate();
     }
 }
 

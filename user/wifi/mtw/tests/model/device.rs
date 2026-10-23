@@ -201,6 +201,10 @@ impl Device {
             REQ_READ_REGION_1 => {
                 assert!(data.len() == 4 && index & 3 == 0, "model: READ_REGION_1 of {} at {index:#x}", data.len());
                 data.copy_from_slice(self.bytes(index, 4));
+                // The TX statistics clear when read.
+                if matches!(index, TX_STA_CNT0 | TX_STA_CNT1 | TX_STA_CNT2) {
+                    self.set(index, 0);
+                }
             }
             REQ_READ_CFG if index == MCU_DMA_ADDR => {
                 let v = if self.running { MCU_READY } else { self.mcu_dma_addr & !MCU_READY };
@@ -325,9 +329,31 @@ impl Device {
         }
         assert_eq!(xflags & TX_ACK != 0, ra[0] & 1 == 0, "model: ACK wanted of a group frame, or not of another");
         let channel = self.tuned.expect("model: frame sent before the RF was tuned");
-        let acked = xflags & TX_ACK != 0 && self.air.has_ap(channel, ra);
-        self.answers.extend(self.air.hear(channel, &frame));
+        let kbps = rate_kbps(phy);
+        // A frame faster than the access point's signal carries is lost:
+        // the MAC retries it 7 times and counts a failure.
+        let heard = self.air.rssi(channel, ra).is_some_and(|rssi| kbps <= max_kbps(rssi));
+        let acked = xflags & TX_ACK != 0 && heard;
+        if xflags & TX_ACK != 0 && self.air.has_ap(channel, ra) {
+            let (cnt0, cnt1) = (self.reg(TX_STA_CNT0), self.reg(TX_STA_CNT1));
+            if acked {
+                self.set(TX_STA_CNT1, cnt1 + 1);
+            } else {
+                self.set(TX_STA_CNT0, cnt0 + 1);
+                self.set(TX_STA_CNT1, cnt1 + (7 << 16));
+            }
+        }
+        if heard || ra[0] & 1 != 0 {
+            self.answers.extend(self.air.hear(channel, &frame));
+        }
         self.sent.push(Sent { channel, endpoint: ep, phy, xflags, wcid, acked, frame });
+    }
+
+    /// The TX statistics as the MAC counts them: {failures, successes,
+    /// retries}.
+    pub fn tx_counts(&self) -> (u32, u32, u32) {
+        let cnt1 = self.reg(TX_STA_CNT1);
+        (self.reg(TX_STA_CNT0) & 0xffff, cnt1 & 0xffff, cnt1 >> 16)
     }
 
     /// One bulk IN transfer on the frames endpoint: what was heard on the
@@ -365,5 +391,28 @@ impl Device {
             out.extend_from_slice(&[0; 4]);
         }
         out
+    }
+}
+
+/// The rate of TXWI PHY word `phy` in kb/s (one stream, 20 MHz, a long
+/// guard interval); a mode or code the MT7601U has not stops the model.
+fn rate_kbps(phy: u16) -> u32 {
+    let (mode, mcs) = (phy >> PHY_SHIFT, usize::from(phy & 0x3f & !PHY_SHPRE));
+    let table: &[u32] = match mode {
+        PHY_CCK => &[1000, 2000, 5500, 11_000],
+        PHY_OFDM => &[6000, 9000, 12_000, 18_000, 24_000, 36_000, 48_000, 54_000],
+        PHY_HT => &[6500, 13_000, 19_500, 26_000, 39_000, 52_000, 58_500, 65_000],
+        _ => panic!("model: PHY mode {mode}"),
+    };
+    *table.get(mcs).unwrap_or_else(|| panic!("model: MCS {mcs} in PHY mode {mode}"))
+}
+
+/// The fastest rate a signal of `rssi` dBm carries, roughly.
+fn max_kbps(rssi: i8) -> u32 {
+    match rssi {
+        -50.. => 65_000,
+        -60.. => 36_000,
+        -70.. => 18_000,
+        _ => 9000,
     }
 }

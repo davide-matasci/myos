@@ -19,7 +19,23 @@ pub struct Chip {
     /// the MCU's memory (no DLM written: 0).
     pub ilm_offset: u32,
     pub dlm_offset: u32,
+    /// The body of the HT Capabilities element the station offers: what
+    /// it receives over 802.11n (the driver sends no aggregates and takes
+    /// none: it declines block ack).
+    pub ht_cap: [u8; 26],
 }
+
+/// One stream at 20 MHz: SM power save off, short guard interval, one
+/// space-time block coding stream received; MCS 0 to 7, the TX MCS set
+/// the RX one's.
+pub const HT_CAP_1X1: [u8; 26] = [
+    0x2c, 0x01, // HT capabilities info
+    0x00, // A-MPDU parameters
+    0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, // supported MCS set
+    0, 0, // HT extended capabilities
+    0, 0, 0, 0, // transmit beamforming
+    0, // ASEL
+];
 
 /// The MT7601U: 802.11b/g/n, 2.4 GHz, one antenna, high-speed USB. Cheap
 /// "150 Mbps" dongles of every brand, a usual choice for a Raspberry Pi
@@ -45,6 +61,7 @@ pub const MT7601U: Chip = Chip {
     firmware: "mt7601u.bin",
     ilm_offset: 0x40,
     dlm_offset: 0,
+    ht_cap: HT_CAP_1X1,
 };
 
 pub const CHIPS: &[&Chip] = &[&MT7601U];

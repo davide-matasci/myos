@@ -137,6 +137,7 @@ fn daemon(nic: Option<&[u8]>) -> ! {
     // The link's NIC, there while `link` is.
     let mut tap: Option<Tap> = None;
     let mut frame = [0u8; 2048];
+    let mut tick = monotonic_ns();
     loop {
         let mut fds = Vec::from([
             PollFd { fd: listener.data as i32, events: POLLIN, revents: 0 },
@@ -145,7 +146,19 @@ fn daemon(nic: Option<&[u8]>) -> ! {
         if let Some(t) = &tap {
             fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
         }
-        poll(&mut fds, if radio.pending() { 0 } else { -1 });
+        // A link wakes the loop every second for the radio's tick.
+        let wait = if radio.pending() {
+            0
+        } else if link.is_some() {
+            1000
+        } else {
+            -1
+        };
+        poll(&mut fds, wait);
+        if link.is_some() && monotonic_ns() >= tick + 1_000_000_000 {
+            tick = monotonic_ns();
+            radio.tick();
+        }
         // What the radio hears between commands: data for the link's NIC
         // (decrypted first on a WPA2 network, where the access point may
         // also start a group key handshake); the access point letting the
@@ -161,6 +174,13 @@ fn daemon(nic: Option<&[u8]>) -> ! {
                 continue;
             }
             let (me, bssid) = (radio.mac(), l.bss.bssid);
+            // A block ack session the access point offers: declined.
+            if let Some((frame::ACTION, body)) = frame::from_ap(f, me, bssid) {
+                if let Some(answer) = frame::addba_declined(me, bssid, body) {
+                    radio.send(&answer);
+                }
+                continue;
+            }
             let clear;
             let f = match l.rsn.as_mut() {
                 Some(r) => match r.open(f) {
@@ -181,7 +201,7 @@ fn daemon(nic: Option<&[u8]>) -> ! {
         // What netd sends on the link.
         if let (Some(t), Some(l)) = (&tap, &mut link) {
             while let Some(n) = t.recv(&mut frame) {
-                let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n]) else {
+                let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n], l.qos) else {
                     continue;
                 };
                 match l.rsn.as_mut() {

@@ -35,10 +35,20 @@ pub trait Radio {
     fn joining(&mut self, _bss: &Bss) -> bool {
         true
     }
-    /// Associated with the network being joined, as `aid`.
-    fn associated(&mut self, _aid: u16) -> bool {
+    /// Associated with the network being joined, as `aid`, over 802.11n
+    /// when `ht` (the association offered the radio's [`Radio::ht`]).
+    fn associated(&mut self, _aid: u16, _ht: bool) -> bool {
         true
     }
+    /// The body of the HT Capabilities element of a radio that does
+    /// 802.11n itself (its rates, aggregation off): the association
+    /// offers it to an 802.11n access point.
+    fn ht(&self) -> Option<[u8; 26]> {
+        None
+    }
+    /// Once a second while associated: a radio's periodic work (choosing
+    /// the transmit rate from how the last second's frames went).
+    fn tick(&mut self) {}
     /// The network left, or joining it given up.
     fn left(&mut self) {}
     /// A scan the radio does by itself (its firmware's): what it heard;
@@ -90,6 +100,12 @@ impl Radio for Sim {
 
     fn set_channel(&mut self, channel: u8) {
         self.channel = channel;
+    }
+
+    /// An 802.11n radio of one stream, as the MT7601U is: the test boots'
+    /// `myos-open` takes it over 802.11n.
+    fn ht(&self) -> Option<[u8; 26]> {
+        Some(mtw::chip::HT_CAP_1X1)
     }
 
     fn send(&mut self, frame: &[u8]) -> bool {

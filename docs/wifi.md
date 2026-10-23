@@ -50,6 +50,19 @@ point gave (`error: association refused, status 43`). `connect` first
 leaves the network it is on (a deauthentication), and an access point's
 deauthentication or disassociation ends the link.
 
+The station offers the 802.11b and g rates (1 to 54 Mb/s, the faster
+four as Extended Supported Rates). With a radio that does 802.11n
+itself (`Radio::ht`, its HT Capabilities: the MT7601U's, and the
+simulated radio's) and an 802.11n access point (its beacon's HT
+Capabilities and WMM elements), the association request also offers
+802.11n: the radio's HT Capabilities and a WMM Information element, as
+an 802.11n station is a QoS one. The link is then a QoS link: the
+daemon sends QoS data frames of best effort (EAPOL frames go as plain
+data), and declines a block ack session the access point offers (its
+ADDBA request answered with status 37), so frames come one at a time.
+The radio learns which it is (`Radio::associated`), and gets a tick a
+second while associated (`Radio::tick`: the MT7601U's rate adaptation).
+
 On a WPA2-PSK network (`rsn.rs`, the `wpa` crate in `user/wifi/wpa`)
 the association request carries an RSN element (CCMP, PSK), and the
 4-way handshake follows (IEEE 802.11-2020 12.7.6): the pairwise master
@@ -279,14 +292,23 @@ calibration.
 The daemon's frames go out as they are, the MAC putting nothing in
 them (`TXD_WIV`: the IV is the frame's, CCMP being the daemon's): a
 management or group frame at 1 Mb/s, a data frame to the access point
-at 24 Mb/s OFDM (the hardware falling back to 6 on retries: there is no
-rate adaptation yet, issue #552) as the access point's entry in the
-station table, which association sets. A frame wanting an ACK gets the
-ACK's duration. The frames heard come up as the access point sent them
+as the access point's entry in the station table, which association
+sets, at the rate AMRR chose (`rate.rs`, OpenBSD's ieee80211_amrr.c).
+The rates are those both ends have, slowest first: MCS 0 to 7 (one
+stream, 20 MHz, a long guard interval: 6.5 to 65 Mb/s) on an 802.11n
+link, the access point's legacy rates on another. AMRR starts at the
+slowest and, once a second (`Radio::tick`), reads the MAC's TX
+statistics (cleared when read: successes, retries, failures): a second
+of more than 10 frames with under a tenth retried goes up a rate, one
+with over a third retried goes down, and an increase that fails right
+away makes the next wait twice as long (up to 10 seconds); between, the
+hardware falls back on its own on a frame's retries (OFDM down to 6
+Mb/s, CCK to 1). A frame wanting an ACK gets the ACK's duration at its
+control rate. The frames heard come up as the access point sent them
 (no key is in the MAC), with their signal in dBm from the ROM's offsets.
-Once associated: a long slot time, long preambles, 802.11g's basic
-rates, the BSSID; the beacon timer (TSF sync) stays off, since the
-station never sleeps.
+Once associated: the slot time and CCK preamble the access point's
+capabilities allow, its basic rates, the BSSID; the beacon timer (TSF
+sync) stays off, since the station never sleeps.
 
 No test boot has the radio: QEMU has no USB Wi-Fi device. `cargo test
 -p mtw` (CI runs it) tests the encodings (the firmware header, the
@@ -303,10 +325,16 @@ air is the Intel model's (the three access points). Every request and
 descriptor is checked against OpenBSD's mtwreg.h, and the first a real
 device would not take stops it with the reason (a frame sent with the
 MAC's transmit off, a data frame whose station entry is not its access
-point, the firmware written before the MCU's DMA is set up). The tests
-bring the radio up (the calibrations in order), keep a running
-firmware, refuse another chip, scan the three channels (each network at
-its signal), join `myos-open`, send to it and leave. `/dev/usb` itself
+point, the firmware written before the MCU's DMA is set up, a PHY mode
+or MCS the chip has not). The model's air carries a frame only as fast
+as the access point's signal allows (all of 802.11n at −40 dBm, 9 Mb/s
+at −82): one sent faster is retried 7 times and fails, as the TX
+statistics then count. The tests bring the radio up (the calibrations
+in order), keep a running firmware, refuse another chip, scan the three
+channels (each network at its signal), join `myos-open`, send to it and
+leave; over 802.11n there AMRR climbs from MCS 0 to MCS 7 in seven
+seconds and stays, and on `myos-far` (802.11g, −82 dBm) it climbs to 9
+Mb/s and tries 11 now and then, more rarely each time. `/dev/usb` itself
 is tested in the boots (`usbdev`, with a USB serial adapter: `docs/usb.md`).
 
 ## The simulated radio
@@ -347,7 +375,7 @@ scans is not woken thirty times a second for nothing.
 
 | SSID | BSSID | Channel | Signal | Security |
 |------|-------|---------|--------|----------|
-| `myos-open` | `02:00:5e:00:01:01` | 1 | −40 | open |
+| `myos-open` | `02:00:5e:00:01:01` | 1 | −40 | open, 802.11n (HT, WMM) |
 | `myos-wpa2` | `02:00:5e:00:01:06` | 6 | −55 | WPA2-PSK (CCMP) |
 | `myos-far` | `02:00:5e:00:01:0b` | 11 | −82 | WPA2-PSK (CCMP) |
 
@@ -357,7 +385,9 @@ scans and expects those three lines, from `scan` and `list` alike.
 `myos-wpa2` without a passphrase (the open network left meanwhile) and
 with a wrong one (aid 2, let go), joins `myos-open` again (aid 3), then
 `myos-wpa2` with its passphrase (aid 4), and disconnects. `wifi_data`
-(tags `wifi,tap`) joins `myos-open`, waits for netd's lease on the
+(tags `wifi,tap`) joins `myos-open` over 802.11n (the simulated radio
+offers HT, and the access point drops a plain data frame from an
+802.11n station: the link's are QoS data), waits for netd's lease on the
 link's NIC, pings 10.0.8.1 across it, checks that `net0` keeps the
 default route, and that the NIC goes at `disconnect`; `wifi_wpa2_data`
 does the same over `myos-wpa2`, so the lease comes under both group

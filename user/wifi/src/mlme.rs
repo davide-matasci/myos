@@ -17,6 +17,8 @@ const TRIES: usize = 3;
 pub struct Link {
     pub bss: Bss,
     pub aid: u16,
+    /// Over 802.11n, with QoS: data frames go as QoS data.
+    pub qos: bool,
     /// A WPA2 network's keys.
     pub rsn: Option<Rsn>,
 }
@@ -55,16 +57,18 @@ fn join_steps(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refus
     if status != frame::STATUS_OK {
         return Err(Refused::Status(b"authentication", status));
     }
-    let assoc = frame::assoc_request(me, bss.bssid, &bss.ssid, rsn);
+    // 802.11n when both ends do it (an 802.11n station is a QoS one).
+    let ht = radio.ht().filter(|_| bss.ht_mcs.is_some() && bss.wmm);
+    let assoc = frame::assoc_request(me, bss.bssid, &bss.ssid, rsn, ht.as_ref());
     let (status, aid) = exchange(radio, &assoc, bss.bssid, frame::ASSOC_RESP, frame::assoc_status)
         .ok_or(Refused::Silent(b"association"))?;
     if status != frame::STATUS_OK {
         return Err(Refused::Status(b"association", status));
     }
-    if !radio.associated(aid) {
+    if !radio.associated(aid, ht.is_some()) {
         return Err(Refused::Radio(b"association"));
     }
-    Ok(Link { bss, aid, rsn: None })
+    Ok(Link { bss, aid, qos: ht.is_some(), rsn: None })
 }
 
 /// Leave the network.
