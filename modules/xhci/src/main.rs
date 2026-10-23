@@ -125,7 +125,7 @@ static HOST_OPS: UsbHostOps = UsbHostOps {
     driver_register,
     control,
     bulk,
-    interrupt_start,
+    transfer_start,
     clear_halt,
     hub_configure,
     hub_attach,
@@ -171,11 +171,11 @@ unsafe extern "C" fn bulk(dev: u32, endpoint: u8, data: *mut u8, len: usize, tim
     on_device(dev, |c, s, d| usb::bulk(c, s, d, endpoint, data, len, timeout_ms))
 }
 
-unsafe extern "C" fn interrupt_start(dev: u32, endpoint: u8, data: *mut u8, len: usize, done: UsbCompletion, ctx: *mut c_void) -> i32 {
+unsafe extern "C" fn transfer_start(dev: u32, endpoint: u8, data: *mut u8, len: usize, done: UsbCompletion, ctx: *mut c_void) -> i32 {
     if data.is_null() || len == 0 {
         return -1;
     }
-    on_device(dev, |c, s, d| usb::interrupt_start(c, s, d, endpoint, data, len, done, ctx))
+    on_device(dev, |c, s, d| usb::transfer_start(c, s, d, endpoint, data, len, done, ctx))
 }
 
 unsafe extern "C" fn clear_halt(dev: u32, endpoint: u8) -> i32 {

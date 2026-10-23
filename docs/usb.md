@@ -37,7 +37,7 @@ The host enumerates on **its own kernel thread** (`thread_spawn`, another
 ABI 21 entry): resets, descriptor reads and `SET_CONFIGURATION` take
 milliseconds and wait on completions, which the interrupt handler cannot
 do. Every driver hook (`probe`, `disconnect`, the completion callback of
-`interrupt_start`) runs on that thread too, so a hub's `probe` may reset
+`transfer_start`) runs on that thread too, so a hub's `probe` may reset
 its ports and enumerate its children synchronously through `hub_attach`.
 Transfers started by a class driver from another context (a `blk_read`
 from a user task) run there: a device's table entry is behind a
@@ -110,7 +110,7 @@ reports), the vertical wheel and buttons 1 to 5 (left, right, middle,
 side, extra); a boot mouse whose descriptor does not parse is switched to
 the boot protocol (`SET_PROTOCOL`) and its fixed three-byte report. It
 asks for reports only on change (`SET_IDLE` 0), keeps one transfer queued
-on the interrupt IN endpoint (`interrupt_start`) and queues the next from
+on the interrupt IN endpoint (`transfer_start`) and queues the next from
 the completion, on the host's thread; motion goes to the console as it
 comes (a tablet's position when it moved), buttons as presses and
 releases of what changed.

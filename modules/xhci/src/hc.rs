@@ -164,7 +164,7 @@ pub struct Pending {
     pub td_start: AtomicU32,
     pub td_trbs: AtomicU32,
     pub total: AtomicU32,
-    /// An asynchronous transfer (`interrupt_start`): the USB thread runs
+    /// An asynchronous transfer (`transfer_start`): the USB thread runs
     /// the endpoint's callback when `done`.
     pub has_callback: AtomicBool,
     /// The endpoint's ring (base and TRBs), for the handler to find the
@@ -197,7 +197,7 @@ impl Pending {
     }
 
     /// No endpoint and no transfer any more (the device is gone): clean
-    /// for the next device in the entry, whose `interrupt_start` refuses
+    /// for the next device in the entry, whose `transfer_start` refuses
     /// a record still `active`.
     pub fn reset(&self) {
         self.ring_trbs.store(core::ptr::null_mut(), Ordering::Release);
@@ -243,11 +243,14 @@ pub struct Endpoint {
     /// Transfer type (`bmAttributes & 3`): 0 control, 2 bulk, 3 interrupt.
     pub kind: u8,
     pub max_packet: u16,
-    /// A bounce slot for small transfers (control data, interrupt reports).
+    /// A bounce slot for small transfers (control data, interrupt reports),
+    /// or a bulk IN endpoint's own page (`own_bounce`: from its first
+    /// `transfer_start`, back to the pool at detach).
     pub bounce: *mut u8,
     pub bounce_phys: u64,
     pub bounce_len: usize,
-    /// An asynchronous transfer (`interrupt_start`): its callback and the
+    pub own_bounce: bool,
+    /// An asynchronous transfer (`transfer_start`): its callback and the
     /// caller's buffer, which gets the bytes when the TD is done.
     pub callback: Option<(UsbCompletion, *mut c_void)>,
     pub user: *mut u8,

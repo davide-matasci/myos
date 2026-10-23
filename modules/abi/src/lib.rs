@@ -86,7 +86,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// ([`KernelApi::pci_bar_phys`]), whether a device's DMA sees the caches
 /// ([`KernelApi::dma_coherent`]), memory mapped non-cacheable for one that
 /// does not ([`MYOS_MMAP_NOCACHE`]).
-pub const ABI_VERSION: u32 = 52;
+/// 53: [`UsbHostOps::transfer_start`] (was `interrupt_start`) queues a
+/// bulk IN transfer too.
+pub const ABI_VERSION: u32 = 53;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1772,8 +1774,12 @@ pub const MYOS_MAX_MODULE_THREADS: usize = 8;
 
 /// The name the host controller publishes its [`UsbHostOps`] under.
 pub const USB_SERVICE: &str = "usb";
-/// [`UsbHostOps::version`]. 2 added [`UsbHostOps::interface_label`].
-pub const USB_HOST_VERSION: u32 = 2;
+/// [`UsbHostOps::version`]. 2 added [`UsbHostOps::interface_label`]; 3
+/// made `interrupt_start` [`UsbHostOps::transfer_start`], bulk IN too.
+pub const USB_HOST_VERSION: u32 = 3;
+/// Bytes of a bulk IN transfer `transfer_start` queues at most (a page:
+/// the endpoint's own bounce buffer).
+pub const USB_ASYNC_BULK_MAX: usize = 4096;
 
 /// Device speeds ([`UsbDeviceInfo::speed`], `hub_attach`).
 pub const USB_SPEED_LOW: u8 = 1;
@@ -1841,7 +1847,7 @@ pub struct UsbDeviceInfo {
     pub config: u8,
 }
 
-/// The completion of a transfer queued with `interrupt_start`: `status` is
+/// The completion of a transfer queued with `transfer_start`: `status` is
 /// the bytes moved, or a `USB_E*` error ([`USB_EGONE`]: the device went
 /// away; the transfer is not re-queued).
 pub type UsbCompletion = unsafe extern "C" fn(ctx: *mut core::ffi::c_void, status: i32);
@@ -1869,10 +1875,13 @@ pub struct UsbHostOps {
     /// A bulk transfer on `endpoint` (the address with its direction bit):
     /// bytes moved (a short IN transfer moves less than `len`), or an error.
     pub bulk: unsafe extern "C" fn(dev: u32, endpoint: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32,
-    /// Queue one interrupt IN transfer on `endpoint`; `done(ctx, status)`
-    /// runs on the host's thread when it completes. One outstanding
-    /// transfer per endpoint. 0, or negative.
-    pub interrupt_start: unsafe extern "C" fn(
+    /// Queue one IN transfer on an interrupt or bulk `endpoint` (a bulk one
+    /// of [`USB_ASYNC_BULK_MAX`] bytes at most); `done(ctx, status)` runs
+    /// on the host's thread when it completes. One outstanding transfer per
+    /// endpoint; nothing else of the device's is held while it waits (a
+    /// blocking `bulk` holds the device and the controller's bounce
+    /// buffer). 0, or negative.
+    pub transfer_start: unsafe extern "C" fn(
         dev: u32,
         endpoint: u8,
         data: *mut u8,
@@ -1902,7 +1911,7 @@ pub struct UsbHostOps {
 }
 
 /// Safe calls into the host, as [`KernelApi`]'s methods: the host checks
-/// what it is handed. `interrupt_start` stays `unsafe` (its buffer is
+/// what it is handed. `transfer_start` stays `unsafe` (its buffer is
 /// written after it returns) and is called through its field.
 impl UsbHostOps {
     pub fn driver_register(&self, ops: &'static UsbDriverOps) -> i32 {
