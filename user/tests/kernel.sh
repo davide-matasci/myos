@@ -506,7 +506,9 @@ platform() {
 	! grep '^dma ' /proc/platform | grep -Evq '^dma (pci [0-9a-f:.]*|mmio 0x[0-9a-f]*)( 0x[0-9a-f]* 0x[0-9a-f]*( bus 0x[0-9a-f]*)?)* (non)?coherent$' || return 1
 	if grep -q 'dma=noncoherent' /proc/cmdline; then
 		! grep -q '^dma .* coherent$' /proc/platform || return 1
-	else
+	elif ! grep -q '^model Raspberry Pi' /proc/platform; then
+		# QEMU's boards mark their devices coherent; a Raspberry Pi's are
+		# not (its tree says nothing, and the kernel takes that for not).
 		! grep -q '^dma .* noncoherent$' /proc/platform || return 1
 	fi
 	! grep -q 'differs' /proc/platform
