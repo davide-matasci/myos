@@ -104,7 +104,7 @@ jobs:
           # before them (it is rebuilt from master) installs them here.
           command -v fsck.fat > /dev/null && command -v mtype > /dev/null \
             || { apt-get update -q && apt-get install -y -q --no-install-recommends dosfstools mtools; }
-          cargo test -p ps2-scancode -p ext2fs -p fatvol -p sdio -p iwx -p mtw -p wpa
+          cargo test -p ps2-scancode -p ext2fs -p fatvol -p sdio -p iwx -p mtw -p bwfm -p wpa
           # The patched smoltcp is laid out when netd is built; a current
           # kernels bundle skips that build, so lay it out here (a no-op
           # when it is there).

@@ -1,0 +1,42 @@
+The Rust code of this crate is ported from OpenBSD's bwfm(4) driver
+(sys/dev/ic/bwfm.c rev 1.118, bwfmreg.h rev 1.28, bwfmvar.h rev 1.32,
+sys/dev/sdmmc/if_bwfm_sdio.c rev 1.45, if_bwfm_sdio.h rev 1.3). It keeps
+the notices of those files, reproduced below.
+
+==================== bwfm.c, bwfmreg.h, bwfmvar.h, if_bwfm_sdio.c ====================
+/* $OpenBSD: bwfm.c,v 1.118 2026/10/20 11:59:15 stsp Exp $ */
+/*
+ * Copyright (c) 2010-2016 Broadcom Corporation
+ * Copyright (c) 2016,2017 Patrick Wildt <patrick@blueri.se>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+==================== if_bwfm_sdio.h ====================
+/*	$OpenBSD: if_bwfm_sdio.h,v 1.3 2020/03/06 09:28:40 patrick Exp $	*/
+/*
+ * Copyright (c) 2010-2016 Broadcom Corporation
+ * Copyright (c) 2018 Patrick Wildt <patrick@blueri.se>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
