@@ -15,8 +15,10 @@ What should work: the four cores, the GIC-400, the generic timer, the
 serial console, the HDMI framebuffer the firmware sets up (`docs/fb.md`),
 everything that runs from the initramfs, and USB (`docs/usb.md`): a
 keyboard on the HDMI console, a mouse, memory sticks, hubs, through the
-VL805 xHCI controller behind the BCM2711's PCIe bridge, and the SD card
-(below). What does not (yet): Ethernet (GENET); Wi-Fi. The Pi has no RTC: its wall
+VL805 xHCI controller behind the BCM2711's PCIe bridge, the SD card
+(below) and Wi-Fi (the CYW43455 as `/dev/sdio`, driven by the `wifi`
+daemon: "Broadcom's radios" in `docs/wifi.md`). What does not (yet):
+Ethernet (GENET). The Pi has no RTC: its wall
 clock counts from the epoch at boot until `date` or `settimeofday` sets it.
 
 ## Building the image
@@ -183,10 +185,12 @@ The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
 `target/rpi3/u-boot.log` (the PL011). What works: the four cores, the
 generic timer, the serial console, the framebuffer the firmware sets up,
 everything that runs from the initramfs, power-off and reboot, the SD
-card (above) and USB (the DWC2 controller, below: a keyboard, a mouse, a
-stick). What does not (yet): Ethernet (the LAN9514 behind the USB hub
-is a class driver to write); Wi-Fi. It has no RTC either: the wall clock
-counts from the epoch at boot.
+card (above), USB (the DWC2 controller, below: a keyboard, a mouse, a
+stick) and, untried like the Pi 4's, Wi-Fi (the 3 B's CYW43438 or the
+3 B+'s CYW43455 as `/dev/sdio`, driven by the `wifi` daemon: "Broadcom's
+radios" in `docs/wifi.md`). What does not (yet): Ethernet (the LAN9514
+behind the USB hub is a class driver to write). It has no RTC either: the
+wall clock counts from the epoch at boot.
 
 ### USB: the DWC2 controller
 

@@ -17,6 +17,7 @@ bench = false
 myos-user = { path = "../lib" }
 iwx = { path = "iwx" }
 mtw = { path = "mtw" }
+bwfm = { path = "bwfm" }
 wpa = { path = "wpa" }
 
 [profile.dev]

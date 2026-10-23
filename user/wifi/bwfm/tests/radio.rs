@@ -182,13 +182,13 @@ fn joins_a_wpa2_network_with_the_firmware_supplicant() {
     assert!(dev.bus.sdio.cmds.iter().any(|(c, _)| *c == C_DISASSOC));
     assert_eq!(dev.bus.sdio.joined, None);
     // The wrong key: the access point throws us out before the keys are
-    // in place, which the driver reports as the link lost while joining.
+    // in place, which the driver reports as the link lost while joining,
+    // with the access point's reason.
     let wrong = [0x11; 32];
     dev.join(&psk.ssid, psk.bssid, psk.channel, Some(&wrong)).unwrap();
-    for _ in 0..10 {
-        dev.service().unwrap();
-    }
-    assert_ne!(dev.link(), Link::Up);
+    until(&mut dev, |d| d.link() != Link::Joining);
+    assert_eq!(dev.link(), Link::Lost(15));
+    assert_eq!(dev.bus.sdio.joined, None);
 }
 
 #[test]

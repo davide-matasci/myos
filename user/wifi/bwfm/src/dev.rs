@@ -29,6 +29,9 @@ pub enum Link {
     Up,
     /// The firmware gave up: its status.
     Failed(u32),
+    /// The access point let the station go before the link was up (its
+    /// reason code; 15: the 4-way handshake did not finish, a wrong key).
+    Lost(u32),
 }
 
 /// What the firmware says of itself once up.
@@ -304,10 +307,14 @@ impl<S: Sdio> Dev<S> {
                 }
             }
             E_LINK => {
-                self.link_up = e.flags & EVENT_FLAG_LINK_UP != 0;
-                if !self.link_up && self.link == Link::Up {
-                    self.link = Link::Down;
+                let up = e.flags & EVENT_FLAG_LINK_UP != 0;
+                if !up && self.link_up {
+                    self.link = match self.link {
+                        Link::Joining => Link::Lost(e.reason),
+                        _ => Link::Down,
+                    };
                 }
+                self.link_up = up;
             }
             E_PSK_SUP => {
                 if e.status == WLC_SUP_KEYED {
@@ -316,9 +323,11 @@ impl<S: Sdio> Dev<S> {
             }
             E_DEAUTH | E_DEAUTH_IND | E_DISASSOC | E_DISASSOC_IND => {
                 self.link_up = false;
-                if self.link == Link::Up {
-                    self.link = Link::Down;
-                }
+                self.link = match self.link {
+                    Link::Joining => Link::Lost(e.reason),
+                    Link::Up => Link::Down,
+                    l => l,
+                };
             }
             _ => {}
         }
