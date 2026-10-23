@@ -225,7 +225,10 @@ install_packages() {
 				|| { echo "missing dependency $d"; return 1; }
 		done
 	fi
-	get-myos -m $MIRROR $names
+	# get-myos's line per package (stderr) goes to the console: the install of
+	# them all is minutes under TCG (python's alone is minutes on
+	# riscv64), and the host's stall watchdog wants the console moving.
+	get-myos -m $MIRROR $names 2>&3
 }
 # source_tests: the kernel's tests, then every port's (the packages' are
 # in the image too), in the order of their names. A ports file is
