@@ -80,6 +80,7 @@ MODULE_TAGS = {
     "nvme": {"blk"},
     "sdmmc": {"blk", "sdmmc"},
     "virtio_scsi": {"blk"},
+    "usb": {"usb"},
     "xhci": {"usb"},
     "usb_hub": {"usb"},
     "usb_storage": {"usb"},

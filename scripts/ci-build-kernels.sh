@@ -271,6 +271,9 @@ HELLO_OK_ELFS=(
   target/sdmmc-x86_64-unknown-none
   target/sdmmc-aarch64-unknown-none-softfloat
   target/sdmmc-riscv64imac-unknown-none-elf
+  target/usb-x86_64-unknown-none
+  target/usb-aarch64-unknown-none-softfloat
+  target/usb-riscv64imac-unknown-none-elf
   target/xhci-x86_64-unknown-none
   target/xhci-aarch64-unknown-none-softfloat
   target/xhci-riscv64imac-unknown-none-elf

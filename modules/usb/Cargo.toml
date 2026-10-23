@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "usb"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The USB core kernel module: the devices, their enumeration and the class drivers' bus service, on the host controllers the controller modules (xhci, dwc2) register."
+
+[[bin]]
+name = "usb"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

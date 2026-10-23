@@ -38,6 +38,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "virtio_scsi",
     "nvme",
     "sdmmc",
+    "usb",
     "xhci",
     "usb_hub",
     "usb_storage",

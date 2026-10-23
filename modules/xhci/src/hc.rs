@@ -11,11 +11,10 @@
 //! only through atomics.
 
 use core::cell::UnsafeCell;
-use core::ffi::c_void;
 use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use myos_abi::{SleepLock, USB_EGONE, USB_EIO, USB_ESTALL, USB_ETIMEDOUT, UsbCompletion};
+use myos_abi::{SleepLock, USB_EGONE, USB_EIO, USB_ESTALL, USB_ETIMEDOUT};
 use xhci::accessor::Mapper;
 use xhci::ring::trb::{Link, command, event, transfer};
 
@@ -164,8 +163,8 @@ pub struct Pending {
     pub td_start: AtomicU32,
     pub td_trbs: AtomicU32,
     pub total: AtomicU32,
-    /// An asynchronous transfer (`interrupt_start`): the USB thread runs
-    /// the endpoint's callback when `done`.
+    /// A queued transfer (`interrupt_start`): its completion wakes the
+    /// core's thread, which asks for it (`interrupt_take`).
     pub has_callback: AtomicBool,
     /// The endpoint's ring (base and TRBs), for the handler to find the
     /// TD's TRBs; null while the endpoint does not exist.
@@ -247,9 +246,9 @@ pub struct Endpoint {
     pub bounce: *mut u8,
     pub bounce_phys: u64,
     pub bounce_len: usize,
-    /// An asynchronous transfer (`interrupt_start`): its callback and the
-    /// caller's buffer, which gets the bytes when the TD is done.
-    pub callback: Option<(UsbCompletion, *mut c_void)>,
+    /// A queued transfer (`interrupt_start`) is on the ring, and the
+    /// caller's buffer gets the bytes when the TD is done.
+    pub queued: bool,
     pub user: *mut u8,
     pub user_len: usize,
 }
@@ -282,7 +281,7 @@ unsafe impl Send for Bounce {}
 /// A controller and what hangs from it, reached as `&Controller` from
 /// every context: each part is an atomic, behind a lock, or written by
 /// one context alone (the USB thread for the DCBAA, `init` for the rest).
-/// The devices are in `crate::usb`'s table, indexed by the table slot
+/// The devices are in `crate::dev`'s table, indexed by the table slot
 /// (not the xHCI slot id).
 pub struct Controller {
     pub mmio_base: usize,
@@ -310,10 +309,10 @@ pub struct Controller {
     pub irq_on: AtomicBool,
     /// Events handled, for the boot log.
     pub events: AtomicU32,
-    /// Root ports whose status changed (bit = port index), for the thread.
-    pub port_change: AtomicU64,
-    /// An asynchronous transfer completed: the thread runs its callback.
-    pub async_done: AtomicBool,
+    /// The core's index for the controller (`controller_register`), what
+    /// its port changes and completions are reported against; `u32::MAX`
+    /// until registered.
+    pub core_index: AtomicU32,
     /// The bulk bounce buffer, held for a transfer.
     pub bounce: SleepLock<Bounce>,
     /// Which xHCI slot ids are in use: `slot_owner[slot] = device table
@@ -446,7 +445,7 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
             let dci = e.endpoint_id() as usize;
             let residual = e.trb_transfer_length();
             let owner = c.slot_owner.get(slot).map(|o| o.load(Ordering::Acquire));
-            let Some(p) = owner.and_then(|o| crate::usb::pending_at(c.index, o, dci)) else {
+            let Some(p) = owner.and_then(|o| crate::dev::pending_at(c.index, o, dci)) else {
                 return;
             };
             if !p.active.load(Ordering::Acquire) || p.done.load(Ordering::Acquire) {
@@ -497,8 +496,7 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
             p.code.store(code, Ordering::Relaxed);
             p.done.store(true, Ordering::Release);
             if p.has_callback.load(Ordering::Acquire) {
-                c.async_done.store(true, Ordering::Release);
-                api().wake(crate::THREAD_KEY.as_ptr() as usize);
+                crate::core_wake(c);
             } else {
                 api().wake(p.key());
             }
@@ -506,8 +504,7 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
         Ok(event::Allowed::PortStatusChange(e)) => {
             let port = e.port_id();
             if port >= 1 {
-                c.port_change.fetch_or(1 << (port - 1).min(63), Ordering::Release);
-                api().wake(crate::THREAD_KEY.as_ptr() as usize);
+                crate::core_port_change(c, port - 1);
             }
         }
         _ => {}
@@ -829,8 +826,7 @@ pub fn init(mmio: usize, index: u8, dma: i32) -> Result<Controller, &'static str
         evt_again: AtomicBool::new(false),
         irq_on: AtomicBool::new(false),
         events: AtomicU32::new(0),
-        port_change: AtomicU64::new(0),
-        async_done: AtomicBool::new(false),
+        core_index: AtomicU32::new(u32::MAX),
         bounce: SleepLock::new(&crate::API, Bounce { va: bounce, phys: bounce_phys, len: bounce_len }),
         slot_owner: [const { AtomicU8::new(0) }; 256],
         port_major,
