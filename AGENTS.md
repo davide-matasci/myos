@@ -87,7 +87,7 @@ cargo run -- test                          # every test: + packages, HTTPS, SSH,
 cargo run -- test --tags netfs --skip heavy   # a selection by tag; a test's name is one of its tags
 cargo run -- packages                      # the package tarballs + indexes (target/packages/)
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
-cargo test -p ps2-scancode -p ext2fs -p fatvol -p iwx -p mtw -p wpa   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
+cargo test -p ps2-scancode -p ext2fs -p fatvol -p sdio -p iwx -p mtw -p bwfm -p wpa   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
 cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp (user/net/smoltcp/prepare.sh lays it out)
 ```
 
@@ -176,10 +176,12 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   (`scripts/ci-select.py`, `docs/testing.md` "In CI") selects the tests by
   tag from the changed paths (a port's directory its tests and its
   dependents', a module's its tag, the kernel or the toolchain
-  everything, documentation nothing) and runs them on bios, uefi,
-  bios-amd (AMD's IOMMU, the light tests only), aarch64, aarch64-gicv3
-  and riscv64, the long groups (os-test, the Alpine apk
-  installs) each in a boot of its own; the Alpine roots the Linux layer
+  everything, documentation nothing) and runs them on each arch's
+  primary machine (uefi, aarch64-gicv3, riscv64; the variants bios,
+  bios-amd with AMD's IOMMU and aarch64 with GICv2 boot the smoke set for
+  a kernel change, everything on every machine for a change to what sets
+  them apart), the long groups (os-test, the Alpine apk installs, the
+  packages with the install tests) each in a boot of its own; the Alpine roots the Linux layer
   tests mount (rustc, Python, an X client) come from a disk made once and
   cached. The Linux layer's musl pieces are built and
   cached like a port (`linux-compat`) in every run. The Raspberry Pi 3

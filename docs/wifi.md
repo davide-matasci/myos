@@ -4,18 +4,19 @@ Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
 (`user/wifi`). It scans, joins an open or WPA2-PSK network and carries
 netd's traffic over it, through the test boots' simulated radio, an
 Intel Wi-Fi 6 radio (a laptop's AX201 or an AX200 card: below, "Intel's
-radios") or a MediaTek MT7601U USB adapter, which any arch's USB port
-takes ("MediaTek's radios"); none yet tried on the hardware.
+radios"), a MediaTek MT7601U USB adapter, which any arch's USB port
+takes ("MediaTek's radios"), or the Raspberry Pi's own Broadcom chip
+("Broadcom's radios"); none yet tried on the hardware.
 
 ## `wifi`
 
 | Command | |
 |------|-|
-| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else an MT7601U when `/dev/usb` has one, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
-| `wifi scan` | a scan (the 2.4 GHz channels of the simulated radio and the MT7601U, every channel an Intel radio's regulatory domain allows); prints the networks that answered |
+| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else an MT7601U when `/dev/usb` has one, else a CYW43455 or CYW43438 when `/dev/sdio` has one, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
+| `wifi scan` | a scan (the 2.4 GHz channels of the simulated radio and the MT7601U, every channel an Intel radio's regulatory domain allows or a Broadcom radio's firmware scans); prints the networks that answered |
 | `wifi list` | what the last scan found |
 | `wifi connect SSID [PASSPHRASE]` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none): an open one, or a WPA2-PSK one with its passphrase (8 to 63 printable ASCII characters, or the PSK itself as 64 hex digits) |
-| `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
+| `wifi status` | `associated BSSID CHANNEL SSID aid N` (`aid 0` on a Broadcom radio, whose firmware keeps the association), or `disconnected` |
 | `wifi disconnect` | leave the network |
 
 A command is one line over one connection to `wifid` (`connect`'s
@@ -41,7 +42,12 @@ request and listens 120 ms for probe responses and beacons (every
 (`radio.rs`): tuned to a channel, it sends and hears 802.11 frames, and
 says its address; a radio whose firmware scans by itself (Intel's)
 hands back the frames its scan heard instead, and a SoftMAC radio
-(MediaTek's) is tuned and listened to like the simulated one.
+(MediaTek's) is tuned and listened to like the simulated one. A FullMAC
+radio (Broadcom's; `FullMac` in `radio.rs`) scans, joins and encrypts in
+its firmware and carries Ethernet frames: the daemon asks it and waits
+for its answer, and the link's frames go between it and the NIC as they
+are (`daemon_fullmac` in `main.rs`; the rest of this section is the
+SoftMAC path).
 
 Joining (`mlme.rs`) is open-system authentication, then association: a
 request and its answer each, sent again (three times, 300 ms apart) when
@@ -90,9 +96,16 @@ associated tunes the radio back to the link's channel when it is done.
 A real radio runs its maker's firmware (the AX201's is
 `iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX200's `iwlwifi-cc-a0-77.ucode`:
 `iwx::chip` names each; the MT7601U's MCU runs `mt7601u.bin`,
-`mtw::chip`'s). The images never carry it: Intel's and MediaTek's
-licences let it be redistributed unmodified, but myos ships no
-third-party binaries. `wifi-firmware` gets it:
+`mtw::chip`'s; the Raspberry Pi's CYW43455 runs `cyfmac43455-sdio.bin`
+with the regulatory data `cyfmac43455-sdio.clm_blob` and the board's
+NVRAM `brcmfmac43455-sdio.raspberrypi,3-model-b-plus.txt` or
+`raspberrypi,4-model-b.txt`, the CYW43438 `cyfmac43430-sdio.bin`, its
+`.clm_blob` and `brcmfmac43430-sdio.raspberrypi,3-model-b.txt`:
+`bwfm::chip` and "Broadcom's radios" below). The images never carry it:
+Intel's, MediaTek's and Cypress's licences let the firmware be
+redistributed unmodified (the Pi's NVRAM files are GPLv2 in
+linux-firmware), but myos ships no third-party binaries.
+`wifi-firmware` gets it:
 
 | Command | |
 |------|-|
@@ -308,6 +321,115 @@ bring the radio up (the calibrations in order), keep a running
 firmware, refuse another chip, scan the three channels (each network at
 its signal), join `myos-open`, send to it and leave. `/dev/usb` itself
 is tested in the boots (`usbdev`, with a USB serial adapter: `docs/usb.md`).
+
+## Broadcom's radios
+
+The Raspberry Pi's Wi-Fi is a Broadcom (Cypress's, now Infineon's)
+FullMAC chip on the SoC's second SDHCI controller: the CYW43455 (dual
+band 802.11ac) on the 3 B+, 3 A+, 4, 400 and Compute Module 4, the
+CYW43438 (2.4 GHz 802.11n) on the 3 B and the Zero W. The chip runs the
+whole 802.11 state machine in its firmware: it scans, joins, runs the
+WPA2 handshake with its own supplicant, keeps the keys and encrypts, and
+exchanges Ethernet frames with the host. The daemon
+(`user/wifi/src/broadcom.rs`) drives the first such card in `/dev/sdio`
+(the `sdmmc` module hands SDIO cards over that way: "SDIO" in
+`docs/raspberry-pi.md`; `WL_REG_ON` is raised through the VideoCore
+firmware's GPIO expander by the module) through `user/wifi/src/sdio.rs`:
+its `ctl` held, function N's registers read and written through `fN`
+with the file position as the register address (one byte is a CMD52,
+more a CMD53; a transfer longer than byte mode's 512 bytes goes as whole
+blocks first, as every host splits them) and the firmware's frames
+through `f2fifo` (a fixed address), the block sizes set through `ctl`
+(64 bytes on function 1, 512 on function 2), and the card's interrupt
+waited for on `irq`, which the kernel masks until the daemon has served
+the card and writes to it again (a slot with no interrupt line is looked
+at every 20 ms). The chips' ids and files are in `bwfm::chip`; the
+firmware, the CLM blob (the regulatory data the firmware needs) and the
+board's NVRAM (its calibration and pins; chosen by the start of
+`/proc/platform`'s `model`, the 3 A+ taking the 3 B+'s, the Zero W the
+3 B's, the 400 and the Compute Module 4 the 4's, as linux-firmware links
+them) come from `wifi-firmware fetch` (above). The Zero 2 W's CYW43436
+(a later revision of the 43430 with firmware of its own) and the Pi 5
+are not covered.
+
+The driver is the `bwfm` crate (`user/wifi/bwfm`), a port of OpenBSD's
+`bwfm(4)` and its SDIO attachment (bwfm.c rev 1.118, if_bwfm_sdio.c rev
+1.45) to `no_std` Rust behind an `Sdio` trait (`sdio.rs`: single bytes
+and transfers on the functions, the block sizes, time):
+
+| Module | |
+|------|-|
+| `chip.rs` | the chips (id, name, firmware files, SDIO product), the backplane: the AI interconnect's enumeration ROM read through chipcommon for the cores (the SDIO device core, the ARM CR4 or CM3 and its memory, the 802.11 core) and their agents, the RAM's size and base (the CR4's TCM banks, the CM3's SOCRAM), the PMU, the cores held in reset and released |
+| `bus.rs` | the card: function 2 enabled, the backplane window (function 1's SBADDR registers, 32 KiB pages), the clocks (ALP, HT, the save-restore engine), RAM reads and writes through the window, SDPCM: the hardware header (length and its complement), the software header (sequence, channel, data offset, the credits the firmware grants), frames in and out on function 2, glommed frames, the mailbox |
+| `bcdc.rs` | BCDC: a command (id, length, flags, status) and its variables (name, NUL, value), the data header before an Ethernet frame |
+| `fw.rs` | the firmware's reset vector, the NVRAM text converted to the firmware's form (comments dropped, each setting NUL-terminated, the length token at the end), the CLM blob cut into `clmload` pieces |
+| `event.rs` | the firmware's events (an Ethernet frame to Broadcom's EtherType with the event message after a BCM header): their kinds, status and reason, the escan results' BSS records (BSSID, SSID, chanspec to channel, RSSI, capabilities, information elements), the event mask |
+| `dev.rs` | the driver: attach (the chip found and held), start (the firmware at the RAM's start and the NVRAM at its end, the CPU released, the firmware's `FWREADY`, function 2 ready, the version, MAC and band list asked, the CLM loaded, the events wanted, power save and the supplicant set, `up`), commands and their answers (one at a time, the answer matched by request id, a second's wait), service (the mailbox, every frame: control answers, events, data), scan, join, leave, send and receive |
+
+Bring-up (bwfm_attach, bwfm_sdio_attach, bwfm_sdio_load_microcode,
+bwfm_preinit): the backplane window set, the chip identified through
+chipcommon and its cores enumerated, the CPU held in reset, the firmware
+written to the RAM (the reset vector of a CR4 chip at its start) and the
+NVRAM to the RAM's end with the firmware's length token, the CPU reset
+with the reset vector (the CR4's) or the SOCRAM's banks set up and the
+CM3 released, then a wait for `FWREADY` in the mailbox and for function
+2 to be ready, the interrupt enabled at the card (the CCCR's master and
+function enables) and the firmware's: `cur_etheraddr`, the version (the
+I/O type decides the chanspec encoding), the band list, `event_msgs` with
+the events used, the CLM in pieces of 1400 bytes, `mpc` and power save
+(fast), `sup_wpa` 1 (the firmware's supplicant), `up`. A command is a
+BCDC message on the control channel with its request id; the daemon
+waits for its answer, serving the frames that come first (events, data).
+Credits: a frame is sent only while the firmware's `tx_max` is past the
+sequence sent (each frame received brings the new maximum).
+
+`wifi scan` is the firmware's escan (every channel, active, the
+firmware's own dwell times, both bands on the CYW43455); the results
+come as `ESCAN_RESULT` events (partial ones with BSS records, keeping
+each BSSID at its strongest, then the one that ends the scan), and the
+daemon builds the networks from the records' capabilities and elements
+as it does from a beacon. `connect` sets `wpa_auth`, `wsec` and `auth`
+for the network (none, or WPA2-PSK with CCMP and open authentication),
+gives the firmware the pairwise master key (`wsec_pmk`, the PSK as 64
+hex digits: the daemon derives it from the passphrase as for the other
+radios) and asks the `join` iovar (the SSID, the BSSID, the channel's
+chanspec; `C_SET_SSID` on a firmware without it), then waits for the
+events: `SET_SSID` (its status when the network is not there), `LINK`
+up, and on a WPA2 network `PSK_SUP` with the keys in place; the access
+point letting the station go before that (a deauthentication, reason 15
+after a failed handshake) is reported as the link lost, a wrong
+passphrase probably. Twelve seconds cover the join. While up, Ethernet
+frames go out with a BCDC data header on the data channel and come in
+from it (a frame while the link is down is dropped); a `LINK` down or a
+deauthentication ends the link and the NIC goes with it; `disconnect` is
+`C_DISASSOC`. The firmware does the encryption, so `rsn.rs` is not
+involved.
+
+No test boot has the radio: QEMU's Raspberry Pi 3 has the SDHCI
+controller but no card in it (the `sdio` test checks `/dev/sdio` stays
+empty), and its property mailbox has no GPIO expander. `cargo test -p
+bwfm` (CI runs it) tests the encodings (BCDC messages and variables, the
+NVRAM conversion, the CLM pieces, the events and BSS records, the
+chanspecs) and runs the driver against a model of the chip
+(`user/wifi/bwfm/tests/model`, `radio.rs`): the CCCR and function 1
+registers, the clock request bits answered, the cores and agents behind
+the backplane window (a CYW43455 with a CR4 and its TCM, or a CYW43438
+with a CM3 and SOCRAM), the RAM, a firmware that starts when its CPU is
+released with its image in place and then answers the commands (one
+reply first, its events once the host has drained the queue, as the
+real one), scans a made-up air of an open and a WPA2 network, joins them
+(the WPA2 one with the right key only), carries frames both ways and
+lets the station go. The model checks every frame and command it is
+given (padding, the hardware header's checksum, the data offset, the
+BCDC version, the escan parameters, the join's chanspec) and found the
+data offset of transmitted frames pointing past the BCDC header. The
+tests attach to both chips, start the firmware (the image and NVRAM
+where the firmware finds them, the set-up commands in order), refuse a
+firmware that does not fit, scan, join the open network and move frames,
+join the WPA2 network with the firmware's supplicant and leave, fail with
+the wrong key and on a network that is not there. The kernel's SDIO
+layer is untried on hardware too, like the rest of the Pi 4
+(`docs/raspberry-pi.md`).
 
 ## The simulated radio
 

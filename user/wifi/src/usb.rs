@@ -6,7 +6,9 @@
 use alloc::vec::Vec;
 
 use mtw::usb::{Usb as Bus, UsbError};
-use myos_user::{close, listdir, monotonic_ns, open_flags, read, sleep_ns, write_fd, LISTDIR_BUF, O_RDONLY, O_RDWR};
+use myos_user::{close, monotonic_ns, open_flags, read, sleep_ns, write_fd, O_RDWR};
+
+use crate::devs::{self, hex, path, slurp};
 
 pub struct Usb {
     dir: Vec<u8>,
@@ -21,28 +23,7 @@ pub struct Usb {
 /// The first device under `/dev/usb` whose `id VVVV:PPPP` is one of
 /// `ids`: its directory and id.
 pub fn find(ids: &[(u16, u16)]) -> Option<(Vec<u8>, (u16, u16))> {
-    let mut names = [0u8; LISTDIR_BUF];
-    let n = listdir(b"/dev/usb", &mut names);
-    if n == usize::MAX {
-        return None;
-    }
-    for name in names[..n].split(|&c| c == b'\n' || c == 0).filter(|s| !s.is_empty() && s[0] != b'.') {
-        let dir = path(b"/dev/usb/", name, b"");
-        let Some(text) = slurp(&path(&dir, b"/info", b"")) else {
-            continue;
-        };
-        let Some(id) = value(&text, b"id ") else {
-            continue;
-        };
-        let mut parts = id.split(|&c| c == b':');
-        let (Some(v), Some(p)) = (parts.next().and_then(hex), parts.next().and_then(hex)) else {
-            continue;
-        };
-        if let Some(&id) = ids.iter().find(|&&id| id == (v as u16, p as u16)) {
-            return Some((dir, id));
-        }
-    }
-    None
+    devs::find(b"/dev/usb/", ids)
 }
 
 impl Usb {
@@ -134,29 +115,4 @@ impl Bus for Usb {
 
 fn hex_digit(v: u8) -> u8 {
     if v < 10 { b'0' + v } else { b'a' + v - 10 }
-}
-
-fn path(a: &[u8], b: &[u8], c: &[u8]) -> Vec<u8> {
-    let mut p = Vec::with_capacity(a.len() + b.len() + c.len());
-    p.extend_from_slice(a);
-    p.extend_from_slice(b);
-    p.extend_from_slice(c);
-    p
-}
-
-fn slurp(path: &[u8]) -> Option<Vec<u8>> {
-    let fd = open_flags(path, O_RDONLY)?;
-    let mut buf = [0u8; 1024];
-    let n = read(fd, &mut buf);
-    close(fd);
-    (n != usize::MAX).then(|| buf[..n].to_vec())
-}
-
-/// What follows `key` on its line of `text`.
-fn value<'a>(text: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
-    text.split(|&c| c == b'\n').find_map(|l| l.strip_prefix(key)).map(|v| v.trim_ascii())
-}
-
-fn hex(s: &[u8]) -> Option<u64> {
-    u64::from_str_radix(core::str::from_utf8(s).ok()?, 16).ok()
 }

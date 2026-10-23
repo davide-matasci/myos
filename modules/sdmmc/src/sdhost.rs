@@ -5,7 +5,7 @@
 //! FIFO (no DMA), completion by polling. It keeps the GPIO pins as the
 //! firmware and U-Boot left them (48 to 53 on the slot).
 
-use crate::card::{BLOCK, Data, Error, Host, Response};
+use crate::card::{Data, Error, Host, Response};
 use crate::{now_ns, until};
 
 const SDCMD: usize = 0x00;
@@ -152,6 +152,10 @@ impl Host for Sdhost {
         self.write(SDHCFG, self.hcfg);
     }
 
+    fn delay_ms(&mut self, ms: u32) {
+        delay_ms(u64::from(ms));
+    }
+
     fn command(&mut self, index: u8, arg: u32, response: Response, data: Option<Data>) -> Result<[u32; 4], Error> {
         if !until(TIMEOUT_NS, || self.read(SDCMD) & CMD_NEW == 0) {
             return Err(Error::Timeout);
@@ -164,8 +168,8 @@ impl Host for Sdhost {
                 _ => 0,
             };
         if let Some(d) = &data {
-            self.write(SDHBCT, BLOCK as u32);
-            self.write(SDHBLC, (d.buf.len() / BLOCK) as u32);
+            self.write(SDHBCT, d.block as u32);
+            self.write(SDHBLC, (d.buf.len() / d.block) as u32);
             cmd |= if d.write { CMD_WRITE } else { CMD_READ };
         }
         self.write(SDARG, arg);

@@ -1,0 +1,12 @@
+[package]
+name = "sdio"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The SD bus as a controller driver offers it, and SDIO cards on it (CMD5, CMD52, CMD53, the CCCR and CIS): no_std, host-testable, the sdmmc module's."
+
+[lib]
+test = true
+
+[dependencies]

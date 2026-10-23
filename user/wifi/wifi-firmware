@@ -1,8 +1,8 @@
 #!/bin/sh
 # wifi-firmware [fetch | path | list]: the firmware of the Wi-Fi radios the
-# wifi daemon drives (docs/wifi.md). The images never carry it (Intel's
-# and MediaTek's licences let it be redistributed unmodified, but myos
-# ships no third-party binaries): `fetch` downloads each file from
+# wifi daemon drives (docs/wifi.md). The images never carry it (Intel's,
+# MediaTek's and Cypress's licences let it be redistributed unmodified,
+# but myos ships no third-party binaries): `fetch` downloads each file from
 # linux-firmware at a pinned commit, checks its SHA-256 and keeps it in the
 # firmware directory, `path` prints that directory, `list` says what is
 # there.
@@ -17,11 +17,23 @@
 COMMIT=a2dcb924f0897368b0b4f305cbf9808cdda90ce0
 MIRROR=${WIFI_FIRMWARE_MIRROR:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain}
 
-# NAME PATH SHA-256, one radio's firmware per line (iwx::chip and
-# mtw::chip name them): the AX201's, the AX200's, the MT7601U's.
+# NAME PATH SHA-256, one file per line (iwx::chip, mtw::chip and
+# bwfm::chip name them): the AX201's, the AX200's, the MT7601U's; then
+# the Raspberry Pi's CYW43455 (3 B+, 4) and CYW43438 (3 B, Zero W):
+# their firmware, their CLM (the regulatory data) and the NVRAM of each
+# board (the firmware's board file; the 3 A+ shares the 3 B+'s, the Zero
+# W the 3 B's, the 400 and the Compute Module 4 the 4's, as
+# linux-firmware's links do: user/wifi/src/broadcom.rs picks it).
 FILES='iwlwifi-QuZ-a0-hr-b0-77.ucode intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode 39d79587dd035bc84172b6bcf6de81217560088b0ceb06304d5121ba56db8d83
 iwlwifi-cc-a0-77.ucode intel/iwlwifi/iwlwifi-cc-a0-77.ucode 1866a58a1daee56b120362122d5f7548b443b53d33f2558a7e4407d58fd27dab
-mt7601u.bin mediatek/mt7601u.bin 4511b1d840e22aea2bf5fdca419c91c0d94cbfb291b9ac4f8be6d9100d1a7046'
+mt7601u.bin mediatek/mt7601u.bin 4511b1d840e22aea2bf5fdca419c91c0d94cbfb291b9ac4f8be6d9100d1a7046
+cyfmac43455-sdio.bin cypress/cyfmac43455-sdio.bin eaff8d2b6d2501bb5c477ba343900c7487af915898eac13bc91b33b1285dadce
+cyfmac43455-sdio.clm_blob cypress/cyfmac43455-sdio.clm_blob 8fbe9fc2952e2fbab062a142c1ea3e261cd74604761e12f304781b911df4a328
+brcmfmac43455-sdio.raspberrypi,3-model-b-plus.txt brcm/brcmfmac43455-sdio.raspberrypi,3-model-b-plus.txt ae2f9e43c609766036cd7d82d709e62135fc266cbe8f40fb10f782114d585658
+brcmfmac43455-sdio.raspberrypi,4-model-b.txt brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt edb6f4e4fb19e18940004124feb4ffe160d72fc607243a07a4480338a28b2748
+cyfmac43430-sdio.bin cypress/cyfmac43430-sdio.bin 93f3c40c94340c29a40714cb04e3e89974870fcae42a844b8a4544750159f40d
+cyfmac43430-sdio.clm_blob cypress/cyfmac43430-sdio.clm_blob 3376b9c9b32d16bf762e21c7fafb665365070ae240d092498d0d1987c22022aa
+brcmfmac43430-sdio.raspberrypi,3-model-b.txt brcm/brcmfmac43430-sdio.raspberrypi,3-model-b.txt 489c12a33e0fd0899cd27bfb316b30944f0b9dd571c266a0aa3704b35817b788'
 
 dir() {
 	if [ -n "$MYOS_FIRMWARE" ]; then

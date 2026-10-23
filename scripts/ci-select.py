@@ -11,13 +11,19 @@ everything, documentation nothing. `smoke` (the quick basics) is always
 in. A push to master, the daily run, a dispatch with full_boot and a pull
 request labelled `ci:full` run everything.
 
-The selected tests run on every machine (bios, uefi, bios with AMD's
-IOMMU, aarch64, aarch64 with GICv3, riscv64; a change under
-kernel/src/arch/<arch> runs everything on that arch's machines and the
-smoke set on the others), and the Raspberry Pi 3 boots its smoke tests
-whenever an aarch64 machine boots, in parallel boots:
-the long tests' groups (`ostest`, `alpine`: each a boot of its own, whole,
-as its tests build on each other) and one boot with the rest. Each boot
+Each arch has a primary machine (uefi, aarch64 with GICv3, riscv64) and
+variants (bios, bios with AMD's IOMMU, aarch64 with GICv2). A run of
+everything boots everything on every machine, as does a change to what
+differs between an arch's machines (MACHINE_SPECIFIC: the IOMMUs, the
+boot files, the launcher, the workflows). A pull request's change
+otherwise boots on the primaries: everything on them and the smoke set on
+the variants when it selects everything (the kernel, the toolchain), its
+tags on them alone when it selects tags; a change under
+kernel/src/arch/<arch> boots everything on that arch's machines, variants
+too. The Raspberry Pi 3 boots its smoke tests whenever an aarch64 machine
+boots. A machine's selection runs in parallel boots: the long tests'
+groups (`ostest`, `alpine`, `pkg`: each a boot of its own, whole, as its
+tests build on each other) and one light boot with the rest. Each boot
 gets a budget from what it runs, and says whether it needs the Alpine
 disk (`alpine`, the `alpine-disk` tag: the boot job restores it from the
 cache).
@@ -41,16 +47,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The boot machines: id, the launcher's arch word, the arch, the variant
 # (aarch64: the GIC version, `MYOS_AARCH64_GIC`; x86_64: the IOMMU,
-# `MYOS_X86_IOMMU`). The AMD IOMMU machine boots the light tests only: the
-# long groups exercise nothing the unit changes.
+# `MYOS_X86_IOMMU`), and whether it is the arch's primary machine, the one
+# a pull request's selection boots on (`plan`). The variants differ from
+# it in the firmware, the IOMMU or the interrupt controller: what a
+# MACHINE_SPECIFIC path or a run of everything exercises. The AMD IOMMU
+# machine boots the light tests only: the long groups exercise nothing
+# the unit changes.
 MACHINES = [
-    ("bios", "", "x86_64", ""),
-    ("uefi", "uefi", "x86_64", ""),
-    ("bios-amd", "", "x86_64", "amd"),
-    ("aarch64", "aarch64", "aarch64", ""),
-    ("aarch64-gicv3", "aarch64", "aarch64", "3"),
-    ("riscv64", "riscv64", "riscv64", ""),
+    ("bios", "", "x86_64", "", False),
+    ("uefi", "uefi", "x86_64", "", True),
+    ("bios-amd", "", "x86_64", "amd", False),
+    ("aarch64", "aarch64", "aarch64", "", False),
+    ("aarch64-gicv3", "aarch64", "aarch64", "3", True),
+    ("riscv64", "riscv64", "riscv64", "", True),
 ]
+# Paths whose change is every machine's, not the primaries' alone: what
+# differs between an arch's machines (the IOMMUs, the boot protocol and
+# the boot files, the launcher's QEMU per machine, the workflows).
+MACHINE_SPECIFIC = re.compile(r"^(kernel/src/iommu/|kernel/src/limine_boot\.rs|src/|boot/|\.github/|scripts/ci-)")
 # The Raspberry Pi 3 (QEMU raspi3b, `myos rpi3 test`, docs/raspberry-pi.md):
 # no disk but the SD card it boots from (`sdmmc` checks it), no network or
 # PCI; its USB (the dwc2 module) carries QEMU's hub with the stick, the
@@ -69,14 +83,31 @@ RPI3_ARGS = (
     " --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini,ps2_mouse,virtio_mouse,xev_pointer"
     " --budget 20"
 )
-# The long tests' groups, each a boot of its own (a `heavy` test outside
-# them, the heavy smoke, stays with the rest).
-HEAVY_GROUPS = ["ostest", "alpine"]
+# The long tests' groups, each a boot of its own: the group's name and the
+# tags of its tests. `ostest` and `alpine` (the curated os-test list, the
+# apk installs) build on each other; `pkg` is the packages' install from
+# the mirror (the runner's `packages` test, six minutes on riscv64), the
+# packages' and get-myos's tests on it and the `install` tests of the
+# boot disk, which build on the install too. A test tagged with two
+# groups' tags is the first group's; what is tagged none of them is the
+# light boot's (a `heavy` test there, the heavy smoke, stays with the
+# rest).
+HEAVY_GROUPS = {"ostest": ("ostest",), "alpine": ("alpine",), "pkg": ("pkg", "install")}
 # The budget of a boot in minutes, by what it runs; riscv64 (the slowest
 # under TCG) gets half as much again. A budget is a guard against a hang,
 # not a target: the x86 Alpine boot takes 11 minutes on a good runner and
-# a slow one adds a quarter.
-BUDGETS = {"light": 20, "smoke": 8, "ostest": 15, "alpine": 15}
+# a slow one adds a quarter; the light boot and the pkg boot take 9 and 13
+# on riscv64.
+BUDGETS = {"light": 15, "smoke": 8, "ostest": 15, "alpine": 15, "pkg": 15}
+
+
+def group_of(tags):
+    """The long group a test with `tags` belongs to, `None` for the light
+    boot."""
+    for g, gtags in HEAVY_GROUPS.items():
+        if tags & set(gtags):
+            return g
+    return None
 # A module's directory selects these tags (its own name otherwise).
 MODULE_TAGS = {
     "console": {"console", "tty", "mouse"},
@@ -85,7 +116,7 @@ MODULE_TAGS = {
     "virtq": {"blk", "virtio_net"},
     "virtio_blk": {"blk"},
     "nvme": {"blk"},
-    "sdmmc": {"blk", "sdmmc"},
+    "sdmmc": {"blk", "sdmmc", "sdio"},
     "rpi_firmware": {"rpi_firmware"},
     "virtio_scsi": {"blk"},
     "usb": {"usb"},
@@ -215,39 +246,60 @@ def classify(path, ports):
 
 
 def plan(changed, everything, ports, tests):
-    """The selection per machine: a set of test names, and whether the
-    Linux layer must be in the image."""
+    """The selection per machine (the tests it boots, and the tags they
+    were selected by: `None` when it boots everything), whether the Linux
+    layer must be in the image, and the tags.
+
+    A run of everything, and a change to what differs between an arch's
+    machines (MACHINE_SPECIFIC), boot everything on every machine. A
+    change under kernel/src/arch/<arch> boots everything on that arch's
+    machines. Otherwise only the primary machines boot: everything when
+    the change selects everything (the variants the smoke set then), the
+    change's tags when it selects tags (the variants nothing)."""
     tags = {"smoke"}
-    all_on = set()  # the arches that run everything
-    if everything:
-        all_on = {m[2] for m in MACHINES}
-    else:
-        for path in changed:
-            what, arch = classify(path, ports)
+    all_on = set()  # the arches that run everything, variants too
+    whole = False  # the change selects everything, not for one arch
+    every_machine = everything
+    if not everything:
+        if not changed:
+            return {}, False, None
+        kinds = [classify(path, ports) for path in changed]
+        if all(what is None for what, _ in kinds):
+            return {}, False, None
+        for path, (what, arch) in zip(changed, kinds):
             if what is None:
                 continue
             if what is Everything:
-                all_on |= {m[2] for m in MACHINES} if arch is None else {arch}
+                if arch is None:
+                    whole = True
+                else:
+                    all_on.add(arch)
             else:
                 tags |= what
-        if not changed:
-            return {}, False
-        if all(classify(p, ports)[0] is None for p in changed):
-            return {}, False
+            if MACHINE_SPECIFIC.match(path):
+                every_machine = True
+    tags_arg = ",".join(sorted(tags))
+    by_tags = {n for n, t in tests.items() if t & tags}
+    smoke = {n for n, t in tests.items() if "smoke" in t}
+    # The runner installs the packages before a `pkg` test whatever the
+    # selection says: that boot needs the mirror and the time.
+    for names in (by_tags, smoke):
+        if any("pkg" in tests[n] for n in names):
+            names.add("packages")
     selection = {}
     linux = False
-    for mid, _, arch, _ in MACHINES:
-        if arch in all_on:
-            names = set(tests)
+    for mid, _, arch, _, primary in MACHINES:
+        if every_machine or arch in all_on:
+            names, mode = set(tests), None
+        elif primary:
+            names, mode = (set(tests), None) if whole else (by_tags, tags_arg)
+        elif whole:
+            names, mode = smoke, "smoke"
         else:
-            names = {n for n, t in tests.items() if t & tags}
-            # The runner installs the packages before a `pkg` test whatever
-            # the selection says: that boot needs the mirror and the time.
-            if any("pkg" in tests[n] for n in names):
-                names.add("packages")
-        selection[mid] = names
+            continue
+        selection[mid] = (names, mode)
         linux |= any("linux" in tests[n] for n in names)
-    return selection, linux
+    return selection, linux, tags_arg
 
 
 def shards(mid, names, tests, tags_arg):
@@ -272,9 +324,9 @@ def shards(mid, names, tests, tags_arg):
             "alpine": "true" if disk else "false", "required": True,
         })
 
-    groups = [] if machine[3] == "amd" else [g for g in HEAVY_GROUPS if any(g in tests[n] for n in names)]
-    light = {n for n in names if not any(g in tests[n] for g in HEAVY_GROUPS)}
-    skip = ",".join(HEAVY_GROUPS)
+    groups = [] if machine[3] == "amd" else [g for g in HEAVY_GROUPS if any(group_of(tests[n]) == g for n in names)]
+    light = {n for n in names if group_of(tests[n]) is None}
+    skip = ",".join(t for gtags in HEAVY_GROUPS.values() for t in gtags)
     if light:
         # Nothing from the network: the quick budget, and the launcher
         # serves no mirror (`net` skipped); nothing from the Alpine disk:
@@ -287,8 +339,12 @@ def shards(mid, names, tests, tags_arg):
             skips = skip + (",net" if quick else "") + ("" if disk else ",alpine-disk")
             boot("light", f"--tags {tags_arg} --skip {skips}", "smoke" if quick else "light", disk)
     for g in groups:
-        disk = any("alpine-disk" in tests[n] and g in tests[n] for n in names)
-        boot(g, f"--tags {g}" + ("" if disk else " --skip alpine-disk"), g, disk)
+        disk = any("alpine-disk" in tests[n] and group_of(tests[n]) == g for n in names)
+        # The groups before this one keep the tests they share with it.
+        before = [t for other, gtags in HEAVY_GROUPS.items() if other != g for t in gtags
+                  if list(HEAVY_GROUPS).index(other) < list(HEAVY_GROUPS).index(g)]
+        skips = before + ([] if disk else ["alpine-disk"])
+        boot(g, f"--tags {','.join(HEAVY_GROUPS[g])}" + (f" --skip {','.join(skips)}" if skips else ""), g, disk)
     return out
 
 
@@ -329,24 +385,12 @@ def main(argv):
 
     ports = load_ports()
     tests = load_tests(ports)
-    selection, linux = plan(changed, everything, ports, tests)
-    # The tags the light boots name (the planner's union over the change):
-    # everything runs by `--skip heavy` alone.
-    tags_arg = None
-    if not everything:
-        tags = {"smoke"}
-        for path in changed:
-            what, _ = classify(path, ports)
-            if what not in (None, Everything):
-                tags |= what
-        tags_arg = ",".join(sorted(tags))
+    selection, linux, tags_arg = plan(changed, everything, ports, tests)
     boots = []
-    for mid, _, arch, _ in MACHINES:
-        names = selection.get(mid, set())
-        if not names:
-            continue
-        machine_all = len(names) == len(tests)
-        boots += shards(mid, names, tests, None if machine_all else tags_arg)
+    for mid, *_ in MACHINES:
+        if mid in selection:
+            names, mode = selection[mid]
+            boots += shards(mid, names, tests, mode)
     if any(b["arch"] == "aarch64" for b in boots):
         boots.append({
             "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "", "iommu": "", "accel": "",
@@ -362,10 +406,11 @@ def main(argv):
             lines.append("No boot test: documentation only.")
         else:
             lines.append(f"Tags: {tags_arg}")
-    for mid, _, _, _ in MACHINES:
-        names = selection.get(mid)
-        if names:
-            lines.append(f"- {mid}: {len(names)} of {len(tests)} tests in {sum(1 for b in boots if b['machine'] == mid)} boot(s)")
+    for mid, *_ in MACHINES:
+        if mid in selection:
+            names, mode = selection[mid]
+            what = "everything" if mode is None else f"`{mode}`"
+            lines.append(f"- {mid}: {len(names)} of {len(tests)} tests ({what}) in {sum(1 for b in boots if b['machine'] == mid)} boot(s)")
     for b in boots:
         lines.append(f"  - `{b['id']}`: `myos {b['args']}`")
     summary = "\n".join(lines)
