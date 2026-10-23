@@ -31,7 +31,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use spin::Mutex;
 
@@ -181,6 +181,8 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 /// and the event log's.
 static IRQ_REGS: [AtomicUsize; MAX_UNITS] = [const { AtomicUsize::new(0) }; MAX_UNITS];
 static IRQ_EVT: [AtomicU64; MAX_UNITS] = [const { AtomicU64::new(0) }; MAX_UNITS];
+/// A unit's log being read (the handler and `text` both read it).
+static DRAINING: [AtomicBool; MAX_UNITS] = [const { AtomicBool::new(false) }; MAX_UNITS];
 
 fn read64(va: usize) -> u64 {
     unsafe { core::ptr::read_volatile(va as *const u64) }
@@ -257,30 +259,43 @@ fn set_dte(u: &Unit, devid: u16, q0: u64, q1: u64, q2: u64, dids: &[u16]) -> boo
     submit(u, &cmds)
 }
 
-/// The unit's event log since the handler last read it: each entry a
-/// refused DMA (or a table the unit could not read), handed over.
-unsafe extern "C" fn event_handler(ctx: *mut core::ffi::c_void) {
-    let i = ctx as usize;
-    if i >= MAX_UNITS {
-        return;
-    }
+/// Unit `i`'s event log since it was last read: each entry a refused DMA
+/// (or a table the unit could not read), handed over and cleared. The
+/// entries are read by their content, not the tail register (QEMU's unit
+/// leaves it behind), from the head the unit was last told; the head
+/// register and the status bits are written back. A reader finding
+/// another at it leaves the log to that one.
+fn drain(i: usize) {
     let (regs, evt) = (IRQ_REGS[i].load(Ordering::Relaxed), IRQ_EVT[i].load(Ordering::Relaxed));
-    if regs == 0 {
+    if regs == 0 || DRAINING[i].compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         return;
     }
-    let tail = read64(regs + EVT_TAIL) & RING_MASK;
     let mut head = read64(regs + EVT_HEAD) & RING_MASK;
-    while head != tail {
-        let e = mm::hhdm(evt + head) as *const u64;
+    for _ in 0..RING_ENTRIES {
+        let e = mm::hhdm(evt + head) as *mut u64;
         let (w0, addr) = unsafe { (e.read_volatile(), e.add(1).read_volatile()) };
         let code = (w0 >> EVT_CODE_SHIFT) as u8;
-        if code != 0 {
-            super::record(Fault { sid: w0 as u16, addr, reason: code, read: w0 & EVT_WRITE == 0 });
+        if code == 0 {
+            break;
+        }
+        super::record(Fault { sid: w0 as u16, addr, reason: code, read: w0 & EVT_WRITE == 0 });
+        unsafe {
+            e.write_volatile(0);
+            e.add(1).write_volatile(0);
         }
         head = (head + ENTRY) % (u64::from(RING_ENTRIES) * ENTRY);
     }
     write64(regs + EVT_HEAD, head);
     write64(regs + STATUS, read64(regs + STATUS) & STATUS_CLEAR);
+    DRAINING[i].store(false, Ordering::Release);
+}
+
+/// The event log's interrupt.
+unsafe extern "C" fn event_handler(ctx: *mut core::ffi::c_void) {
+    let i = ctx as usize;
+    if i < MAX_UNITS {
+        drain(i);
+    }
 }
 
 /// The index into a table at `level` (1 the 4 KiB leaves).
@@ -581,6 +596,11 @@ pub fn text() -> String {
         return s;
     };
     for u in &st.units {
+        // The log drained here too, for a unit whose interrupt does not
+        // come.
+        if let Some(i) = IRQ_REGS.iter().position(|r| r.load(Ordering::Relaxed) == u.regs) {
+            drain(i);
+        }
         let tables = st.irts.len();
         let _ = writeln!(
             s,
