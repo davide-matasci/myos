@@ -178,7 +178,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/davide-matasci/myos-ci:latest
-      options: -e HOME=/root
+      # /dev/kvm: the x86 boots run on the runner's CPU (the plan's `accel`;
+      # GitHub's Linux runners have the device, a runner without it would
+      # not start this container).
+      options: -e HOME=/root --device /dev/kvm
     timeout-minutes: 45
     needs: [plan, build]
     if: |
@@ -243,8 +246,10 @@ jobs:
           # dumps the matching device tree into the ESP before each boot.
           MYOS_AARCH64_GIC: ${{ matrix.gic }}
           # The x86 boots' IOMMU (Intel's when unset, `amd` on the
-          # bios-amd machine).
+          # bios-amd machine), and their accelerator (`kvm`: the runner's
+          # CPU through /dev/kvm; TCG when unset, as the other arches).
           MYOS_X86_IOMMU: ${{ matrix.iommu }}
+          MYOS_X86_ACCEL: ${{ matrix.accel }}
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:

@@ -77,7 +77,8 @@ selected tests **in the guest** (the ports' `test.sh`, the kernel's
 `user/tests/kernel.sh`; every test carries tags, `docs/testing.md`),
 while the host watches the console for `TEST <name> PASS|FAIL` lines
 (`src/boot_test.rs`, `docs/testing.md`). QEMU runs under TCG, so a boot
-takes minutes.
+takes minutes; on a host with `/dev/kvm`, `MYOS_X86_ACCEL=kvm` runs the
+x86 boots on the host's CPU (as CI does), about twice as fast.
 
 ```sh
 cargo run -- test-mini                     # the quick tests: --skip net,pkg,heavy,install,alpine-disk
