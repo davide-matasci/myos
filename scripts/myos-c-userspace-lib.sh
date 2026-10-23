@@ -59,6 +59,7 @@ MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
+MYOS_PYTHON_VERSION="$MYOS_ROOT/target/.myos-python-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
@@ -1292,6 +1293,34 @@ myos_lua_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/lua-${arch}-unknown-none" ]] || return 1
   done
+}
+
+# CPython (packages/python), against mlibc: its sysroot's hash, zlib's pin
+# (the module's zlib is built from that source) and the port's files.
+myos_python_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      sha256sum "$(myos_port_dir zlib)/versions.env"
+      find "$(myos_port_dir python)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_python_outputs_present() {
+  local arch
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -x "$MYOS_ROOT/target/python-${arch}/usr/bin/python3.13" ]] || return 1
+  done
+}
+
+myos_python_is_current() {
+  [[ -f "$MYOS_PYTHON_VERSION" ]] \
+    && [[ "$(cat "$MYOS_PYTHON_VERSION")" == "$(myos_python_version_hash)" ]] \
+    && myos_python_outputs_present
 }
 
 myos_openssl_version_hash() {

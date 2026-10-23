@@ -1,0 +1,6 @@
+# What CPython's configure would run to find out, answered for myos (a
+# cross build runs nothing): no /dev/ptmx or /dev/ptc (the ptys are
+# openpty's), a getaddrinfo that works (mlibc's resolver).
+ac_cv_file__dev_ptmx=no
+ac_cv_file__dev_ptc=no
+ac_cv_buggy_getaddrinfo=no
