@@ -93,6 +93,7 @@ Files in this repository that carry notices from upstream (kept as required):
 | The Raspberry Pi 3's device tree (`bcm2710-rpi-3-b.dtb`, from the Raspberry Pi firmware) | `FIRMWARE_TAG` in `boot/rpi3/versions.env` | **GPL-2.0** (the Raspberry Pi Linux kernel's device tree sources) | downloaded on the host by `boot/rpi3/build.sh`, SHA-256 pinned; not part of any image |
 | Alpine Linux packages | n/a | per package | downloaded **at run time** by `get-alpine` on the user's machine; nothing from Alpine is in the image |
 | Intel Wi-Fi firmware (`iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX201's; `iwlwifi-cc-a0-77.ucode`, the AX200's) | linux-firmware `a2dcb924` | Intel's redistributable licence (`LICENCE.iwlwifi_firmware` in linux-firmware: binary only, unmodified, no reverse engineering) | downloaded **at run time** by `wifi-firmware fetch` on the user's machine, SHA-256 pinned; not in the image |
+| MediaTek MT7601U firmware (`mt7601u.bin`) | linux-firmware `a2dcb924` | Ralink's redistributable licence (`LICENSES/LICENCE.ralink_a_mediatek_company_firmware` in linux-firmware: binary only, unmodified, no reverse engineering) | downloaded **at run time** by `wifi-firmware fetch` on the user's machine, SHA-256 pinned; not in the image |
 
 ## Source code for copyleft components
 
