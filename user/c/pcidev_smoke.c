@@ -155,8 +155,8 @@ static uint64_t wait_irq(int irq) {
 }
 
 /* The interrupt controller's registers, from /proc/platform's `intc` line
- * (`intc NAME 0xBASE ...`: a GIC's distributor, the PLIC), its name in
- * `name`; 0 without the line (x86, whose controller it does not name). */
+ * (`intc NAME 0xBASE ...`: a GIC's distributor, the PLIC, x86's local
+ * APIC), its name in `name`; 0 without the line. */
 static unsigned long long intc_base(char *name, size_t cap) {
     char text[4096];
     int fd = open("/proc/platform", O_RDONLY);
@@ -415,12 +415,13 @@ int main(void) {
         /* The interrupt controller's registers (where an MSI doorbell
          * sits) are no more the device's than any other address: the unit
          * translates a DMA there like the rest, so a device cannot forge
-         * an interrupt by writing them (x86 remaps the messages instead,
-         * `spoof_msi`). A harmless word of them: a GIC's read-only IIDR,
-         * the PLIC's priority of source 0 (none). */
+         * an interrupt by writing them. Not on x86, whose units take a
+         * write to the local APIC's range as the interrupt message it is
+         * (`spoof_msi` checks those). A harmless word of them: a GIC's
+         * read-only IIDR, the PLIC's priority of source 0 (none). */
         char intc[32];
         unsigned long long base = intc_base(intc, sizeof intc);
-        if (base) {
+        if (base && (strncmp(intc, "gic", 3) == 0 || strcmp(intc, "plic") == 0)) {
             unsigned long long target = base + (strncmp(intc, "gic", 3) == 0 ? 8 : 0);
             long long was = iommu_faults();
             wr64(EDU_DMA_SRC, EDU_DMA_BUF);
