@@ -84,9 +84,9 @@ pub fn temp_reporting_thresholds() -> [u8; 20] {
 }
 
 /// The regulatory domain `alpha2` ("ZZ": the world), the firmware asked for
-/// the current one (GET_CURRENT, with LAR).
-pub fn mcc_update(alpha2: [u8; 2], get_current: bool) -> [u8; 32] {
-    let mut c = [0; 32];
+/// the current one (GET_CURRENT, with LAR): iwx_mcc_update_cmd, 28 bytes.
+pub fn mcc_update(alpha2: [u8; 2], get_current: bool) -> [u8; 28] {
+    let mut c = [0; 28];
     put16(&mut c, 0, (alpha2[0] as u16) << 8 | alpha2[1] as u16);
     c[2] = if get_current { 0x10 } else { 0 };
     c

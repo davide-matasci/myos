@@ -4,7 +4,10 @@
 #   u-boot.bin         U-Boot (rpi_3_defconfig), which starts Limine
 #   bcm2710-rpi-3-b.dtb  the board's device tree
 # U-Boot is built with the GNU aarch64 cross compiler
-# (aarch64-linux-gnu-gcc, bison, flex); a file already there is kept.
+# (aarch64-linux-gnu-gcc, bison, flex); a file already there is kept, as
+# is a stub built from the same source (a CI boot job has the files the
+# build job made, `scripts/ci-pack-build-artifacts.sh`, and no compiler to
+# spare).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -13,9 +16,15 @@ out="$root/target/rpi3"
 mkdir -p "$out"
 
 # The stub: clang and lld, as the rest of the tree.
-clang --target=aarch64-none-elf -c "$here/armstub8.S" -o "$out/armstub8.o"
-ld.lld -Ttext=0 --entry=_start "$out/armstub8.o" -o "$out/armstub8.elf"
-llvm-objcopy -O binary "$out/armstub8.elf" "$out/armstub8-myos.bin"
+stub_sum=$(sha256sum "$here/armstub8.S" | cut -d' ' -f1)
+if [ ! -f "$out/armstub8-myos.bin" ] || [ "$(cat "$out/armstub8.sha256" 2>/dev/null)" != "$stub_sum" ]; then
+	clang --target=aarch64-none-elf -c "$here/armstub8.S" -o "$out/armstub8.o"
+	ld.lld -Ttext=0 --image-base=0 --entry=_start "$out/armstub8.o" -o "$out/armstub8.elf"
+	# LLVM's objcopy, else the GNU aarch64 one (CI's image has binutils).
+	objcopy=$(command -v llvm-objcopy || command -v aarch64-linux-gnu-objcopy)
+	"$objcopy" -O binary "$out/armstub8.elf" "$out/armstub8-myos.bin"
+	echo "$stub_sum" > "$out/armstub8.sha256"
+fi
 
 dtb="$out/bcm2710-rpi-3-b.dtb"
 if ! echo "$DTB_SHA256  $dtb" | sha256sum -c - >/dev/null 2>&1; then

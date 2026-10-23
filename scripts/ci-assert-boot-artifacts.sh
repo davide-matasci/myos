@@ -44,6 +44,11 @@ while read -r f; do
   require "$f" || missing=1
 done < <(./scripts/ports.sh --all-files all)
 
+# The Raspberry Pi 3's boot files (the rpi3 boot; boot/rpi3/build.sh).
+for f in armstub8-myos.bin armstub8.sha256 u-boot.bin u-boot.version bcm2710-rpi-3-b.dtb; do
+  require "target/rpi3/$f" || missing=1
+done
+
 if [[ "$missing" -ne 0 ]]; then
   echo "::error::ci-build.tar.zst is incomplete for boot/boot-mini."
   echo "::error::The build job must pack these via scripts/ci-pack-build-artifacts.sh"

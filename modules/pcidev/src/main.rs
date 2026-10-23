@@ -32,7 +32,8 @@
 //! - `irq`: a read waits for the interrupt and returns how many came since
 //!   the last read (8 bytes, little endian); `poll` says one is pending.
 //!   A legacy INTx line stays masked (the command register's interrupt
-//!   disable) from the interrupt until a write to `irq`, once the driver
+//!   disable) from the interrupt until a write to `irq` (of a byte at
+//!   least: the kernel passes an empty one to no file), once the driver
 //!   has quietened the device; MSI and MSI-X need no write.
 //! - `dmaN`: the buffer, for `mmap(MAP_SHARED)`: cached memory, or
 //!   non-cacheable (`MYOS_MMAP_NOCACHE`) for a device whose DMA does not

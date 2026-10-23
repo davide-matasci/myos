@@ -116,8 +116,8 @@ first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
 
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
-  qemu-efi-aarch64 qemu-efi-riscv64 clang lld make git libc6-dev rsync \
-  patch curl zstd e2fsprogs dosfstools mtools
+  qemu-efi-aarch64 qemu-efi-riscv64 clang lld make meson ninja-build git \
+  libc6-dev rsync patch curl zstd e2fsprogs dosfstools mtools
 export GITHUB_REPOSITORY=davide-matasci/myos
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
 # 24.04's QEMU 8.2 boots riscv64 without its IOMMU (QEMU 9.2 and later have
@@ -178,7 +178,9 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   installs) each in a boot of its own; the Alpine roots the Linux layer
   tests mount (rustc, Python, an X client) come from a disk made once and
   cached. The Linux layer's musl pieces are built and
-  cached like a port (`linux-compat`) in every run.
+  cached like a port (`linux-compat`) in every run. The Raspberry Pi 3
+  (QEMU `raspi3b`) boots its smoke tests whenever an aarch64 machine does
+  (`docs/testing.md`).
 - **Everything** runs on a push to master, daily, on a dispatch of
   `ci.yml` with `full_boot: true` and on a pull request labelled
   `ci:full`; a `linux` test in the selection puts the layer in the image

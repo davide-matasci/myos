@@ -111,6 +111,28 @@ jobs:
           ./user/net/smoltcp/prepare.sh
           cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib
 
+      # The Raspberry Pi 3's boot files (boot/rpi3/build.sh, the rpi3 boot):
+      # U-Boot, built with the GNU aarch64 cross compiler, cached by what
+      # makes it; the stub and the board's tree are quick.
+      - name: Raspberry Pi 3 U-Boot cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/rpi3/u-boot.bin
+            target/rpi3/u-boot.version
+          key: rpi3-uboot-${{ hashFiles('boot/rpi3/versions.env', 'boot/rpi3/build.sh') }}
+
+      - name: Raspberry Pi 3 boot files
+        run: |
+          # The cross compiler and U-Boot's host tools' headers are in the
+          # Dockerfile; an image built before them (it is rebuilt from
+          # master) installs them here, when U-Boot is not cached.
+          if [[ ! -f target/rpi3/u-boot.bin ]] && ! command -v aarch64-linux-gnu-gcc > /dev/null; then
+            apt-get update -q && apt-get install -y -q --no-install-recommends \
+              gcc-aarch64-linux-gnu libssl-dev libgnutls28-dev
+          fi
+          ./boot/rpi3/build.sh
+
       - name: Pack CI build artifacts
         env:
           MYOS_CI_FEATURES: ${{ needs.plan.outputs.features }}
@@ -204,6 +226,14 @@ jobs:
             target/alpine-${{ matrix.arch }}.img
             target/.myos-alpine-disks-${{ matrix.arch }}-version
           key: ${{ steps.alpine.outputs.key }}
+
+      # The rpi3 boot fills the board's device tree in with fdtput; an image
+      # built before device-tree-compiler was in the Dockerfile installs it.
+      - name: Raspberry Pi 3 tools
+        if: matrix.machine == 'rpi3'
+        run: |
+          command -v fdtput > /dev/null \
+            || { apt-get update -q && apt-get install -y -q --no-install-recommends device-tree-compiler; }
 
       - name: Boot and test in QEMU
         continue-on-error: ${{ !matrix.required }}
