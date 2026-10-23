@@ -100,14 +100,10 @@ fn x86_machine(cmd: &mut Command) {
             // `intremap=on`: the unit remaps interrupts too, each message
             // through an entry of its sender's (`iommu/vtd.rs`,
             // `iommu/amdvi.rs`).
-            if std::env::var("MYOS_X86_IOMMU").as_deref() == Ok("amd") {
-                let mut unit = String::from("amd-iommu,intremap=on");
+            if std::env::var("MYOS_X86_IOMMU").as_deref() == Ok("amd") && x86_amd_iommu_dma_remap() {
                 // QEMU 10.1 and later translate an emulated device's DMA
                 // through the AMD unit only when asked to.
-                if x86_amd_iommu_dma_remap() {
-                    unit.push_str(",dma-remap=on");
-                }
-                cmd.arg("-device").arg(unit);
+                cmd.arg("-device").arg("amd-iommu,intremap=on,dma-remap=on");
             } else {
                 cmd.arg("-device").arg("intel-iommu,intremap=on");
             }
@@ -116,12 +112,20 @@ fn x86_machine(cmd: &mut Command) {
 }
 
 /// Whether this host's `qemu-system-x86_64` has the AMD unit's `dma-remap`
-/// property (QEMU 10.1 and later; 8.2 translates every DMA without it).
+/// property (QEMU 10.1 and later), the unit the kernel's driver is tested
+/// with: an older one (Ubuntu 24.04's 8.2) translates a DMA through it
+/// but refuses one to an unmapped page without logging it, so the pcidev
+/// test's fault count would stay. Without the property the boot keeps
+/// Intel's unit, said once here.
 fn x86_amd_iommu_dma_remap() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
         let out = Command::new("qemu-system-x86_64").args(["-device", "amd-iommu,help"]).output();
-        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("dma-remap"))
+        let has = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("dma-remap"));
+        if !has {
+            eprintln!("note: qemu-system-x86_64's amd-iommu has no dma-remap (QEMU 10.1): the boot keeps Intel's unit");
+        }
+        has
     })
 }
 

@@ -396,11 +396,13 @@ like any other, which the smoke checks too.
 QEMU's `q35` carries the unit (`-device intel-iommu,intremap=on`, 39-bit,
 3-level, both superpage sizes, snooping walks, queued invalidation,
 interrupt remapping), every x86 boot of the launcher and of CI, or AMD's
-under `MYOS_X86_IOMMU=amd` (`-device amd-iommu,intremap=on`, with
-`dma-remap=on` where the QEMU has the property, 10.1 and later, which
-otherwise translates no DMA of an emulated device; CI's `bios-amd`
-machine; the boot line `[ OK ] iommu: amd-vi, 1 unit(s), 256 device ids,
-4-level tables, interrupts remapped`), QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
+under `MYOS_X86_IOMMU=amd` (`-device amd-iommu,intremap=on,dma-remap=on`;
+CI's `bios-amd` machine; the boot line `[ OK ] iommu: amd-vi, 1 unit(s),
+256 device ids, 4-level tables, interrupts remapped`) on a QEMU of 10.1
+or later: it translates an emulated device's DMA through the unit only
+with `dma-remap=on`, and an older one (Ubuntu 24.04's 8.2) refuses a DMA
+to an unmapped page without logging it, so the launcher keeps Intel's
+unit there and says so once, QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
 snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
 `[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
 boot line, and the riscv64 `virt` the RISC-V IOMMU (`-device
