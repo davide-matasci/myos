@@ -15,6 +15,7 @@
  *
  * `shm_smoke child FD`: the exec'd program, maps the memfd FD and answers.
  */
+#define _GNU_SOURCE /* memfd_create */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>

@@ -11,7 +11,8 @@ terminates with a `WIFSIGNALED` wait status, and blocking syscalls return
 |-------|------|
 | `kernel/src/signal.rs` | policy: signal numbers, default actions, delivery, `sigreturn`, `sigaction`/`sigprocmask`/`sigsuspend`/`sigwait` |
 | `kernel/src/task/signals.rs` | per-thread pending / blocked bits; per-process ignored bits, caught-handler table and libc trampoline address |
-| `toolchain/newlib/libgloss/myos/signal.c` | `__myos_sigtramp` (per arch), `sigaction`, `signal`, `sigpending`, `sigsuspend`, `sigwait`, `pthread_sigmask` |
+| `toolchain/libmyos/sigtramp.c` | `__myos_sigtramp` (per arch) and the kernel calls (`__myos_sigaction_k`, `__myos_sigprocmask_k`, ...), shared by both libcs (`docs/mlibc.md`) |
+| `toolchain/newlib/libgloss/myos/signal.c`, `toolchain/mlibc/sysdeps/myos/generic/signal.cpp` | each libc's `sigaction`, `signal`, `sigpending`, `sigsuspend`, `sigwait`, `pthread_sigmask` over them, and its handler dispatch |
 | `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO`, `SA_NOCLDWAIT` |
 | `toolchain/newlib/build.sh` | `-DSIGNAL_PROVIDED`: newlib's userspace `signal()`/`raise()` emulation is off; `raise` is `kill(getpid(), sig)` |
 
