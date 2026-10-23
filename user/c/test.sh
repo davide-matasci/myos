@@ -342,8 +342,10 @@ t -t console caps_lock caps_lock
 # tty1 again. The console's own keyboard took none of it (its interrupt
 # count), and the keyboard is gone from /proc/usb once pulled out.
 usb_keyboard() {
+	# The console's own keyboard, whose interrupt count must not move (a
+	# Raspberry Pi has none).
 	native=$(grep -o -e ' ps2 keyboard$' -e ' virtio-input$' /proc/interrupts | head -n 1 | sed 's/^ //')
-	before=$(mouse_irqs "$native")
+	[ -z "$native" ] || before=$(mouse_irqs "$native")
 	echo "HOST c-smokes usb-kbd plug" >&3
 	i=0
 	while [ $i -lt 30 ] && ! grep -q ':usb_hid keyboard$' /proc/usb; do
@@ -391,8 +393,10 @@ usb_keyboard() {
 		i=$((i + 1))
 	done
 	grep -q '^screen 1$' /dev/console/ctl || { echo 'screen 1' > /dev/console/ctl; echo "no Alt+1"; ok=1; }
-	after=$(mouse_irqs "$native")
-	[ "$after" = "$before" ] || { echo "$native: $before, then $after"; ok=1; }
+	if [ -n "$native" ]; then
+		after=$(mouse_irqs "$native")
+		[ "$after" = "$before" ] || { echo "$native: $before, then $after"; ok=1; }
+	fi
 	echo "HOST c-smokes usb-kbd unplug" >&3
 	i=0
 	while [ $i -lt 30 ] && grep -q ':usb_hid keyboard$' /proc/usb; do
