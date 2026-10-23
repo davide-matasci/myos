@@ -86,8 +86,10 @@ const X86_CPU: &str = "qemu64,+x2apic";
 /// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM
 /// path of `kernel/src/arch/x86/pci.rs`) with Intel's IOMMU (`kernel/src/
 /// iommu/vtd.rs`: `/dev/pci`'s devices confined, the edu test's DMA
-/// outside its buffer refused), or `$MYOS_X86_MACHINE` (`pc`: PCI through
-/// port 0xCF8, no MCFG, no IOMMU, QEMU's default machine).
+/// outside its buffer refused), with AMD's instead under
+/// `$MYOS_X86_IOMMU=amd` (`iommu/amdvi.rs`; CI's `bios-amd` machine), or
+/// `$MYOS_X86_MACHINE` (`pc`: PCI through port 0xCF8, no MCFG, no IOMMU,
+/// QEMU's default machine).
 fn x86_machine(cmd: &mut Command) {
     match std::env::var("MYOS_X86_MACHINE").as_deref() {
         Ok(machine) if !machine.is_empty() && machine != "q35" => {
@@ -96,10 +98,31 @@ fn x86_machine(cmd: &mut Command) {
         _ => {
             cmd.arg("-machine").arg("q35");
             // `intremap=on`: the unit remaps interrupts too, each message
-            // through an entry naming its sender (`iommu/vtd.rs`).
-            cmd.arg("-device").arg("intel-iommu,intremap=on");
+            // through an entry of its sender's (`iommu/vtd.rs`,
+            // `iommu/amdvi.rs`).
+            if std::env::var("MYOS_X86_IOMMU").as_deref() == Ok("amd") {
+                let mut unit = String::from("amd-iommu,intremap=on");
+                // QEMU 10.1 and later translate an emulated device's DMA
+                // through the AMD unit only when asked to.
+                if x86_amd_iommu_dma_remap() {
+                    unit.push_str(",dma-remap=on");
+                }
+                cmd.arg("-device").arg(unit);
+            } else {
+                cmd.arg("-device").arg("intel-iommu,intremap=on");
+            }
         }
     }
+}
+
+/// Whether this host's `qemu-system-x86_64` has the AMD unit's `dma-remap`
+/// property (QEMU 10.1 and later; 8.2 translates every DMA without it).
+fn x86_amd_iommu_dma_remap() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let out = Command::new("qemu-system-x86_64").args(["-device", "amd-iommu,help"]).output();
+        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("dma-remap"))
+    })
 }
 
 fn main() {

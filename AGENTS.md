@@ -173,8 +173,9 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   (`scripts/ci-select.py`, `docs/testing.md` "In CI") selects the tests by
   tag from the changed paths (a port's directory its tests and its
   dependents', a module's its tag, the kernel or the toolchain
-  everything, documentation nothing) and runs them on bios, uefi, aarch64,
-  aarch64-gicv3 and riscv64, the long groups (os-test, the Alpine apk
+  everything, documentation nothing) and runs them on bios, uefi,
+  bios-amd (AMD's IOMMU, the light tests only), aarch64, aarch64-gicv3
+  and riscv64, the long groups (os-test, the Alpine apk
   installs) each in a boot of its own; the Alpine roots the Linux layer
   tests mount (rustc, Python, an X client) come from a disk made once and
   cached. The Linux layer's musl pieces are built and

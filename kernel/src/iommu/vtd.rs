@@ -39,6 +39,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use super::Fault;
+use super::x86::Source;
 use crate::mm;
 
 // The registers (chapter 11).
@@ -153,13 +154,6 @@ struct Unit {
     eime: bool,
     /// The I/O APIC's source id, from the unit's scope of that kind.
     ioapic: Option<u16>,
-}
-
-/// Who an interrupt comes from: a PCI function, or the I/O APIC.
-#[derive(Clone, Copy)]
-pub enum Source {
-    Pci(u8, u8, u8),
-    IoApic,
 }
 
 /// A function's own domain.
@@ -695,6 +689,11 @@ pub fn remap(source: Source, vector: u8, level: bool) -> Option<u16> {
     tables_written(u.coherent, e as usize, 16);
     queue(u, &[QI_IEC_GLOBAL]);
     Some(idx)
+}
+
+/// Whether a unit is driven.
+pub fn active() -> bool {
+    STATE.lock().is_some()
 }
 
 pub fn attach(bus: u8, slot: u8, func: u8) -> Option<u32> {
