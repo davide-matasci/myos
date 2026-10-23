@@ -16,8 +16,9 @@
  * pattern from it into its own memory and back to another part of it,
  * announcing the end with an interrupt. Where the board has an IOMMU
  * (`iommu N` in ctl), a copy to an address outside the buffer is refused:
- * /proc/iommu counts the fault and the memory there stays untouched.
- * Prints [ OK ] pcidev.
+ * /proc/iommu counts the fault and the memory there stays untouched; so is
+ * one to the interrupt controller's registers (aarch64, riscv64), where a
+ * device would forge an interrupt. Prints [ OK ] pcidev.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -153,12 +154,38 @@ static uint64_t wait_irq(int irq) {
     return n;
 }
 
+/* The interrupt controller's registers, from /proc/platform's `intc` line
+ * (`intc NAME 0xBASE ...`: a GIC's distributor, the PLIC), its name in
+ * `name`; 0 without the line (x86, whose controller it does not name). */
+static unsigned long long intc_base(char *name, size_t cap) {
+    char text[4096];
+    int fd = open("/proc/platform", O_RDONLY);
+    if (fd < 0)
+        return 0;
+    int ok = read_ctl(fd, text, sizeof text);
+    close(fd);
+    if (!ok)
+        return 0;
+    const char *l = strncmp(text, "intc ", 5) == 0 ? text : strstr(text, "\nintc ");
+    if (!l)
+        return 0;
+    l += *l == '\n' ? 6 : 5;
+    size_t n = strcspn(l, " \n");
+    if (n >= cap)
+        n = cap - 1;
+    memcpy(name, l, n);
+    name[n] = 0;
+    return strtoull(l + n, NULL, 0);
+}
+
 /* Where the IOMMU remaps interrupts (`intremap` in /proc/iommu) and the
- * interrupt is an MSI, the message's address names the table entry that
- * verifies its sender: the message rewritten (through `config`) to the
- * next handle is refused and counted as a fault, nothing arrives on `irq`,
- * and the device's own message arrives again once put back. 0 when the
- * board has neither, or once this passed. */
+ * interrupt is an MSI, the message names the table entry that holds its
+ * vector and answers to this device only: VT-d in the message's address
+ * (the remappable format), AMD-Vi in its data (the index into the device's
+ * table). The message rewritten (through `config`) to the next entry is
+ * refused: nothing arrives on `irq`, and VT-d counts a fault (QEMU's AMD
+ * unit logs none); the device's own message arrives again once put back.
+ * 0 when the board has neither, or once this passed. */
 static int spoof_msi(int irq, const char *ctl_text) {
     char text[4096], p[128];
     int fd = open("/proc/iommu", O_RDONLY);
@@ -168,12 +195,14 @@ static int spoof_msi(int irq, const char *ctl_text) {
     close(fd);
     if (!ok || !strstr(text, " intremap ") || !strstr(ctl_text, "irq msi\n"))
         return 0;
+    int amd = strncmp(text, "amdvi ", 6) == 0;
     path(p, sizeof p, "config");
     int cfg = open(p, O_RDWR);
     if (cfg < 0)
         return fail("open config for writing");
-    /* The MSI capability (id 5) along the list from 0x34; its message
-     * address at +4. */
+    /* The MSI capability (id 5) along the list from 0x34: its message
+     * address at +4, the data at +8, or +12 with a 64-bit address (message
+     * control bit 7). */
     uint8_t cap = 0, hdr[2] = {0, 0};
     if (pread(cfg, &cap, 1, 0x34) != 1)
         return fail("capability pointer");
@@ -185,36 +214,49 @@ static int spoof_msi(int irq, const char *ctl_text) {
     }
     if (hdr[0] != 0x05)
         return fail("no msi capability");
-    uint32_t addr = 0;
-    if (pread(cfg, &addr, 4, cap + 4) != 4)
-        return fail("msi address");
-    /* The remappable format: bit 4, the handle in bits 19:5 and 2. */
-    if (!(addr & 1u << 4))
-        return fail("msi message not remappable");
-    unsigned handle = (addr >> 5 & 0x7fff) | (addr >> 2 & 1) << 15;
-    unsigned other = (handle + 1) % 256;
-    uint32_t spoof = 0xFEE00000u | (other & 0x7fff) << 5 | (other >> 15) << 2 | 1u << 4;
+    uint16_t control = 0;
+    if (pread(cfg, &control, 2, cap + 2) != 2)
+        return fail("msi control");
+    unsigned field = amd ? cap + ((control & 0x80) ? 12 : 8) : cap + 4;
+    uint32_t orig = 0;
+    if (pread(cfg, &orig, 4, field) != 4)
+        return fail("msi message");
+    unsigned handle, other;
+    uint32_t spoof;
+    if (amd) {
+        /* The index in the data's bits 10:0. */
+        handle = orig & 0x7ff;
+        other = (handle + 1) % 256;
+        spoof = (orig & ~0x7ffu) | other;
+    } else {
+        /* The remappable format: bit 4, the handle in bits 19:5 and 2. */
+        if (!(orig & 1u << 4))
+            return fail("msi message not remappable");
+        handle = (orig >> 5 & 0x7fff) | (orig >> 2 & 1) << 15;
+        other = (handle + 1) % 256;
+        spoof = 0xFEE00000u | (other & 0x7fff) << 5 | (other >> 15) << 2 | 1u << 4;
+    }
     long long before = iommu_faults();
     if (before < 0)
         return fail("/proc/iommu faults");
-    if (pwrite(cfg, &spoof, 4, cap + 4) != 4)
-        return fail("rewrite the msi address");
+    if (pwrite(cfg, &spoof, 4, field) != 4)
+        return fail("rewrite the msi message");
     wr(EDU_IRQ_RAISE, 0x5a);
     long long after = before;
-    for (int i = 0; i < 300 && after <= before; i++) {
+    for (int i = 0; i < (amd ? 20 : 300) && after <= before; i++) {
         usleep(10000);
         after = iommu_faults();
     }
-    if (after <= before) {
-        printf("[ FAIL ] pcidev no iommu fault for a message with another entry's handle (faults %lld)\n", after);
+    if (!amd && after <= before) {
+        printf("[ FAIL ] pcidev no iommu fault for a message naming another entry (faults %lld)\n", after);
         return 1;
     }
     struct pollfd pd = {.fd = irq, .events = POLLIN};
     if (poll(&pd, 1, 0) != 0)
-        return fail("the message with another entry's handle arrived");
+        return fail("the message naming another entry arrived");
     wr(EDU_IRQ_ACK, 0x5a);
-    if (pwrite(cfg, &addr, 4, cap + 4) != 4)
-        return fail("restore the msi address");
+    if (pwrite(cfg, &orig, 4, field) != 4)
+        return fail("restore the msi message");
     close(cfg);
     wr(EDU_IRQ_RAISE, 0x5a);
     if (wait_irq(irq) == 0)
@@ -224,7 +266,10 @@ static int spoof_msi(int irq, const char *ctl_text) {
     wr(EDU_IRQ_ACK, 0x5a);
     if (write(irq, "", 1) != 1)
         return fail("unmask after the restored interrupt");
-    printf("intremap refused the message naming entry %u: faults %lld -> %lld\n", other, before, after);
+    if (amd)
+        printf("intremap refused the message naming entry %u\n", other);
+    else
+        printf("intremap refused the message naming entry %u: faults %lld -> %lld\n", other, before, after);
     return 0;
 }
 
@@ -367,6 +412,34 @@ int main(void) {
                 return 1;
             }
         printf("iommu domain %llu refused the dma: faults %lld -> %lld\n", domain, before, after);
+        /* The interrupt controller's registers (where an MSI doorbell
+         * sits) are no more the device's than any other address: the unit
+         * translates a DMA there like the rest, so a device cannot forge
+         * an interrupt by writing them (x86 remaps the messages instead,
+         * `spoof_msi`). A harmless word of them: a GIC's read-only IIDR,
+         * the PLIC's priority of source 0 (none). */
+        char intc[32];
+        unsigned long long base = intc_base(intc, sizeof intc);
+        if (base) {
+            unsigned long long target = base + (strncmp(intc, "gic", 3) == 0 ? 8 : 0);
+            long long was = iommu_faults();
+            wr64(EDU_DMA_SRC, EDU_DMA_BUF);
+            wr64(EDU_DMA_DST, target);
+            wr64(EDU_DMA_COUNT, 4);
+            wr64(EDU_DMA_CMD, 1 | 2);
+            if (!settle(EDU_DMA_CMD, 1))
+                return fail("dma to the interrupt controller did not end");
+            long long now = was;
+            for (int i = 0; i < 300 && now <= was; i++) {
+                usleep(10000);
+                now = iommu_faults();
+            }
+            if (now <= was) {
+                printf("[ FAIL ] pcidev no iommu fault for a dma to the %s at 0x%llx (faults %lld)\n", intc, target, now);
+                return 1;
+            }
+            printf("iommu refused the dma to the %s at 0x%llx: faults %lld -> %lld\n", intc, target, was, now);
+        }
     } else {
         printf("no iommu: the dma is unconfined\n");
     }
