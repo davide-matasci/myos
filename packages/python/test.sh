@@ -22,4 +22,4 @@ print(r[0], p.stdout.strip(), m.decode(), len(d), json.dumps({"k": [1, 2.5]}),
 	echo "$out"
 	[ "$out" = '4950 42 ping 400 {"k": [1, 2.5]} 2d711642 True f00' ]
 }
-t -t pkg,python python_run
+t -t pkg,python python_run python_run
