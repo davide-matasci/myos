@@ -110,6 +110,16 @@ impl Writer<'_> {
         self.buf[self.len..self.len + n].copy_from_slice(&b[..n]);
         self.len += n;
     }
+    pub fn hex(&mut self, v: u32) {
+        let mut t = [0u8; 10];
+        t[0] = b'0';
+        t[1] = b'x';
+        for i in 0..8 {
+            let d = ((v >> (28 - 4 * i)) & 0xF) as u8;
+            t[2 + i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        }
+        self.str(core::str::from_utf8(&t).unwrap_or(""));
+    }
     pub fn dec(&mut self, mut v: u32) {
         let mut t = [0u8; 10];
         let mut n = 0;

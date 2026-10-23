@@ -515,6 +515,29 @@ pub fn start(c: &Controller, ch: usize, t: &Target, to_host: bool, bus: u64, len
     write(c.regs, reg_hcchar(ch), hcchar | HCCHAR_CHENA);
 }
 
+/// A channel that did not halt in time: its registers and the controller's
+/// interrupt state, for the log (`[ WARN ] dwc2: channel 0 timed out ...`).
+pub fn timed_out(c: &Controller, ch: usize) {
+    let mut buf = [0u8; 160];
+    let mut w = crate::Writer { buf: &mut buf, len: 0 };
+    w.str("dwc2: channel ");
+    w.dec(ch as u32);
+    w.str(" timed out: hcchar ");
+    w.hex(read(c.regs, reg_hcchar(ch)));
+    w.str(" hcint ");
+    w.hex(read(c.regs, reg_hcint(ch)));
+    w.str(" hctsiz ");
+    w.hex(read(c.regs, reg_hctsiz(ch)));
+    w.str(" haint ");
+    w.hex(read(c.regs, HAINT));
+    w.str(" gintsts ");
+    w.hex(read(c.regs, GINTSTS));
+    w.str(" hprt0 ");
+    w.hex(read(c.regs, HPRT0));
+    let n = w.len;
+    myos_abi::status_warn(api(), core::str::from_utf8(&buf[..n]).unwrap_or("dwc2: timed out"));
+}
+
 /// Stop channel `ch`, whatever it is doing: disabled, then halted.
 pub fn disable(c: &Controller, ch: usize) {
     let v = read(c.regs, reg_hcchar(ch));
@@ -630,6 +653,7 @@ fn set(c: &Controller, ch: usize, t: &Target, to_host: bool, bus: u64, len: usiz
     loop {
         start(c, ch, t, to_host, bus, len, packets, pid, false);
         if !wait(c, ch, deadline) {
+            timed_out(c, ch);
             disable(c, ch);
             return Err(USB_ETIMEDOUT);
         }
