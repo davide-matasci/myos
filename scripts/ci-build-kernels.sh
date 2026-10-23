@@ -268,6 +268,9 @@ HELLO_OK_ELFS=(
   target/nvme-x86_64-unknown-none
   target/nvme-aarch64-unknown-none-softfloat
   target/nvme-riscv64imac-unknown-none-elf
+  target/sdmmc-x86_64-unknown-none
+  target/sdmmc-aarch64-unknown-none-softfloat
+  target/sdmmc-riscv64imac-unknown-none-elf
   target/xhci-x86_64-unknown-none
   target/xhci-aarch64-unknown-none-softfloat
   target/xhci-riscv64imac-unknown-none-elf

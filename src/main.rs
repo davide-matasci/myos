@@ -343,6 +343,27 @@ fn add_nvme(cmd: &mut Command) {
     }
 }
 
+/// The SD card: QEMU's SDHCI controller on PCI with a card (`/dev/mmcblk0/`,
+/// the `sdmmc` module), sparse and recreated every boot. Past 2 GiB, so it
+/// is a high-capacity card (addressed by block; the Pi 3's boot disk is a
+/// standard-capacity one, addressed by byte).
+const SDCARD_BYTES: u64 = 4 << 30;
+
+fn sdcard_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/sdcard.img")
+}
+
+fn add_sdcard(cmd: &mut Command) {
+    let img = sdcard_img_path();
+    let _ = std::fs::remove_file(&img);
+    std::fs::File::create(&img)
+        .and_then(|f| f.set_len(SDCARD_BYTES))
+        .unwrap_or_else(|e| panic!("write {}: {e}", img.display()));
+    cmd.arg("-device").arg("sdhci-pci");
+    cmd.arg("-drive").arg(format!("if=none,id=mmc0,format=raw,file={}", img.display()));
+    cmd.arg("-device").arg("sd-card,drive=mmc0");
+}
+
 /// After a boot: an ext2 filesystem the guest left on the scratch disk must
 /// be one e2fsprogs finds clean (`e2fsck -fn`; skipped without e2fsprogs).
 fn fsck_scratch_disk() -> bool {
@@ -457,6 +478,7 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     cmd.arg("-device").arg("virtio-blk-pci,drive=vd1");
     add_virtio_scsi(cmd, "virtio-scsi-pci");
     add_nvme(cmd);
+    add_sdcard(cmd);
     add_usb(cmd);
 }
 
@@ -474,6 +496,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
     add_virtio_scsi(cmd, "virtio-scsi-device");
     add_nvme(cmd);
+    add_sdcard(cmd);
     add_usb(cmd);
 }
 
