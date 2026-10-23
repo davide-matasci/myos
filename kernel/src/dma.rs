@@ -90,6 +90,12 @@ fn get(handle: i32) -> Option<Dma> {
     with_table(|t| t.get(i).copied())
 }
 
+/// Whether handle `handle`'s device sees the caches; `None` for no such
+/// handle.
+pub fn coherent(handle: i32) -> Option<bool> {
+    get(handle).map(|d| d.coherent)
+}
+
 /// `n` zeroed, contiguous pages the device reaches, from its first window
 /// that has them: `(bus address, va)`. Zeroed through the cache: for a
 /// non-coherent device the zeros are written back here, before they could

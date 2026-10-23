@@ -120,6 +120,11 @@ pub const MMAP_SHARED: u32 = 1 << 30;
 /// registers (`MYOS_MMAP_UNCACHED`), mapped uncached.
 pub const MMAP_UNCACHED: u32 = 1 << 29;
 
+/// [`MmapRegion::prot`] flag, with [`MMAP_DEVICE`]: the device pages are
+/// memory a device reads and writes without seeing the caches
+/// (`MYOS_MMAP_NOCACHE`), mapped non-cacheable.
+pub const MMAP_NOCACHE: u32 = 1 << 28;
+
 
 /// The scheduler's record of one thread (see [`Process`] for what the
 /// threads of a process share). Small and `Copy`: it is written whole into

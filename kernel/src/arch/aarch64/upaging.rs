@@ -13,6 +13,8 @@ const SH_INNER: u64 = 0b11 << 8;
 const SH_OUTER: u64 = 0b10 << 8;
 /// MAIR Attr2: Device-nGnRE (`paging::ATTR_DEVICE`).
 const ATTR_DEVICE: u64 = 2 << 2;
+/// MAIR Attr3: Normal non-cacheable (`paging::ATTR_NOCACHE`).
+const ATTR_NOCACHE: u64 = 3 << 2;
 const AF: u64 = 1 << 10;
 const AP_RW: u64 = 0b01 << 6;
 const AP_RO: u64 = 0b11 << 6;
@@ -275,6 +277,20 @@ pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
         return;
     };
     let mut ent = PAGE_DESC | (pa & PA) | ATTR_DEVICE | SH_OUTER | AF | PXN | UXN;
+    ent |= if w { AP_RW } else { AP_RO };
+    unsafe { (*l3)[l3_idx] = ent };
+}
+
+/// Memory at `pa` a device reads and writes without seeing the caches (a
+/// DMA buffer of such a device): MAIR Attr3, Normal non-cacheable, never
+/// executable.
+pub fn map_user_nocache_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    let page = aarch64_user_page_idx(va);
+    let l3_idx = page % USER_L3_PAGES;
+    let Some(l3) = aarch64_l3_table_mut(aspace, page) else {
+        return;
+    };
+    let mut ent = PAGE_DESC | (pa & PA) | ATTR_NOCACHE | SH_OUTER | AF | PXN | UXN;
     ent |= if w { AP_RW } else { AP_RO };
     unsafe { (*l3)[l3_idx] = ent };
 }

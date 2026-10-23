@@ -58,6 +58,11 @@ const WINDOW_L1_TABLES: usize = 16;
 const TABLE: u64 = 0b11;
 const BLOCK: u64 = 0b01;
 const ATTR_DEVICE: u64 = 2 << 2; // MAIR Attr2: device-nGnRE (we install it)
+/// MAIR Attr2 and Attr3 as the kernel installs them: Device-nGnRE and
+/// Normal non-cacheable (`upaging::map_user_nocache_page`); Attr0 and
+/// Attr1 stay Limine's.
+const MAIR_OURS: u64 = 0x04 << 16 | 0x44 << 24;
+const MAIR_OURS_MASK: u64 = 0xff << 16 | 0xff << 24;
 const SH_OUTER: u64 = 0b10 << 8;
 const AF: u64 = 1 << 10;
 const PXN: u64 = 1 << 53;
@@ -72,7 +77,7 @@ pub fn map_devices() {
 
         let mut mair: u64;
         asm!("mrs {m}, mair_el1", m = out(reg) mair, options(nomem, nostack, preserves_flags));
-        mair |= 0x04 << 16; // Attr2 = device-nGnRE; leave Attr0/Attr1 alone
+        mair = (mair & !MAIR_OURS_MASK) | MAIR_OURS;
 
         asm!(
             "msr mair_el1, {mair}",
@@ -138,7 +143,7 @@ pub fn apply_bsp_device_map() {
         let l0_phys = limine_boot::kernel_virt_to_phys(l0 as usize);
         let mut mair: u64;
         asm!("mrs {m}, mair_el1", m = out(reg) mair, options(nomem, nostack, preserves_flags));
-        mair |= 0x04 << 16;
+        mair = (mair & !MAIR_OURS_MASK) | MAIR_OURS;
         let el: u64;
         asm!("mrs {el}, CurrentEL", el = out(reg) el, options(nomem, nostack, preserves_flags));
         let el = (el >> 2) & 3;

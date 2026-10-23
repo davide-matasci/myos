@@ -235,6 +235,12 @@ pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
     map_user_page_prot(aspace, va, pa, w, false);
 }
 
+/// Memory at `pa` a device reads and writes: an ordinary leaf (riscv64imac
+/// has no cache maintenance, its DMA is coherent), never executable.
+pub fn map_user_nocache_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    map_user_page_prot(aspace, va, pa, w, false);
+}
+
 pub fn unmap_user_page(aspace: u64, va: u64) {
     let i0 = ((va >> 12) & 0x1ff) as usize;
     let leaf = ensure_riscv_leaf(aspace, va);

@@ -1819,14 +1819,16 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
     if let (true, Some(node)) = (device, &file) {
         // Registers (a PCI BAR) are mapped uncached, and stay so through
         // mprotect: the region says it.
-        let uncached = fs::device_frame(node, offset).is_some_and(|f| f.uncached);
-        let kind = task::MMAP_DEVICE | if uncached { task::MMAP_UNCACHED } else { 0 };
+        let first = fs::device_frame(node, offset);
+        let kind = task::MMAP_DEVICE
+            | if first.is_some_and(|f| f.uncached) { task::MMAP_UNCACHED } else { 0 }
+            | if first.is_some_and(|f| f.nocache) { task::MMAP_NOCACHE } else { 0 };
         let Some(va) = record(prot as u32 | kind, None) else {
             return SYSERR;
         };
         for i in 0..pages {
             if let Some(frame) = fs::device_frame(node, offset + i * PAGE) {
-                map_user_page_kind(aspace, (va + i * PAGE) as u64, frame.phys, prot, uncached);
+                map_user_page_kind(aspace, (va + i * PAGE) as u64, frame.phys, prot, kind);
             }
         }
         flush(va);
@@ -2068,7 +2070,7 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
                 phys = own;
             }
         }
-        map_user_page_kind(aspace, va, phys, prot, backing & task::MMAP_UNCACHED != 0);
+        map_user_page_kind(aspace, va, phys, prot, backing);
         if keep_cow {
             if let Some(p) = crate::arch::upaging::leaf_mut(aspace, va) {
                 unsafe { *p |= crate::arch::upaging::LEAF_COW };

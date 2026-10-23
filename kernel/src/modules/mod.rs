@@ -149,6 +149,8 @@ static API: KernelApi = KernelApi {
     iommu_detach: api_iommu_detach,
     irq_domain_register: api_irq_domain_register,
     irq_dispatch: api_irq_dispatch,
+    pci_bar_phys: api_pci_bar_phys,
+    dma_coherent: api_dma_coherent,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -572,6 +574,26 @@ unsafe extern "C" fn api_pci_bar_map(
         }
         None => -1,
     }
+}
+
+unsafe extern "C" fn api_pci_bar_phys(bus: u8, slot: u8, func: u8, bar: u8, cpu: *mut u64, size: *mut u64) -> i32 {
+    if cpu.is_null() || size.is_null() {
+        return -1;
+    }
+    match crate::pci::bar_mmio(crate::pci::Bdf { bus, slot, func }, bar) {
+        Some((addr, sz)) => {
+            unsafe {
+                *cpu = crate::arch::pci::bus_to_cpu(addr);
+                *size = sz;
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_dma_coherent(dma: i32) -> i32 {
+    crate::dma::coherent(dma).map_or(-1, i32::from)
 }
 
 unsafe extern "C" fn api_dma_attach(dev: *const myos_abi::DmaDevice) -> i32 {
