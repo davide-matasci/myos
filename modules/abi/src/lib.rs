@@ -2169,11 +2169,23 @@ pub const RPI_TAG_BOARD_REVISION: u32 = 0x0001_0002;
 pub const RPI_TAG_GET_POWER_STATE: u32 = 0x0002_0001;
 pub const RPI_TAG_SET_POWER_STATE: u32 = 0x0002_8001;
 pub const RPI_TAG_GET_CLOCK_RATE: u32 = 0x0003_0002;
+/// The firmware's GPIO expander lines (`RPI_GPIO_EXPANDER` and up): a
+/// line's state, its state set, its configuration (direction, polarity,
+/// termination, state) set.
+pub const RPI_TAG_GET_GPIO_STATE: u32 = 0x0003_0041;
+pub const RPI_TAG_SET_GPIO_STATE: u32 = 0x0003_8041;
+pub const RPI_TAG_SET_GPIO_CONFIG: u32 = 0x0003_8043;
 /// The power domains the firmware switches.
 pub const RPI_POWER_SD_CARD: u32 = 0;
 pub const RPI_POWER_UART0: u32 = 1;
 pub const RPI_POWER_UART1: u32 = 2;
 pub const RPI_POWER_USB_HCD: u32 = 3;
+/// The GPIO expander the firmware drives (the Pi 3's and 4's, `expgpio`
+/// in their trees): its lines are numbered from here. `WL_ON` powers the
+/// Wi-Fi chip (`WL_REG_ON`), `BT_ON` the Bluetooth side.
+pub const RPI_GPIO_EXPANDER: u32 = 128;
+pub const RPI_GPIO_BT_ON: u32 = RPI_GPIO_EXPANDER;
+pub const RPI_GPIO_WL_ON: u32 = RPI_GPIO_EXPANDER + 1;
 /// The clocks it reports.
 pub const RPI_CLOCK_EMMC: u32 = 1;
 pub const RPI_CLOCK_UART: u32 = 2;
@@ -2201,12 +2213,12 @@ impl RpiFirmwareOps {
         unsafe { (self.property)(tags.as_mut_ptr(), tags.len()) }
     }
 
-    /// One tag with `values` of 4 bytes each (at most 5), in and out: the
+    /// One tag with `values` of 4 bytes each (at most 9), in and out: the
     /// values the firmware answered, `None` when it did not or the tag
     /// failed.
     pub fn tag<const N: usize>(&self, tag: u32, values: [u32; N]) -> Option<[u32; N]> {
-        let mut buf = [0u32; 8];
-        if N > 5 {
+        let mut buf = [0u32; 12];
+        if N > 9 {
             return None;
         }
         buf[0] = tag;
@@ -2230,6 +2242,22 @@ impl RpiFirmwareOps {
     /// firmware does not know it.
     pub fn clock_rate(&self, clock: u32) -> Option<u32> {
         self.tag(RPI_TAG_GET_CLOCK_RATE, [clock, 0]).map(|[_, rate]| rate).filter(|&r| r != 0)
+    }
+
+    /// Expander line `gpio` (`RPI_GPIO_*`) an output, driven `on` or off:
+    /// whether the firmware took it.
+    pub fn gpio_output(&self, gpio: u32, on: bool) -> bool {
+        self.tag(RPI_TAG_SET_GPIO_CONFIG, [gpio, 1, 0, 0, 0, u32::from(on)]).is_some()
+    }
+
+    /// Expander line `gpio` driven `on` or off.
+    pub fn set_gpio(&self, gpio: u32, on: bool) -> bool {
+        self.tag(RPI_TAG_SET_GPIO_STATE, [gpio, u32::from(on)]).is_some()
+    }
+
+    /// Expander line `gpio`'s state, `None` when the firmware does not say.
+    pub fn gpio(&self, gpio: u32) -> Option<bool> {
+        self.tag(RPI_TAG_GET_GPIO_STATE, [gpio, 0]).map(|[_, state]| state & 1 != 0)
     }
 }
 

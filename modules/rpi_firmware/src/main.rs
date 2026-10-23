@@ -17,9 +17,9 @@ use core::fmt::Write;
 
 use myos_abi::{
     ABI_VERSION, ApiCell, DMA_FROM_DEVICE, DMA_TO_DEVICE, DmaDevice, KernelApi, MmioDevice, RPI_CLOCK_ARM,
-    RPI_CLOCK_CORE, RPI_CLOCK_EMMC, RPI_CLOCK_UART, RPI_FIRMWARE_SERVICE, RPI_FIRMWARE_VERSION, RPI_POWER_USB_HCD,
-    RPI_TAG_BOARD_REVISION, RPI_TAG_FIRMWARE_REVISION, RPI_TAG_GET_POWER_STATE, RpiFirmwareOps, SleepLock,
-    status_fail, status_ok,
+    RPI_CLOCK_CORE, RPI_CLOCK_EMMC, RPI_CLOCK_UART, RPI_FIRMWARE_SERVICE, RPI_FIRMWARE_VERSION, RPI_GPIO_WL_ON,
+    RPI_POWER_USB_HCD, RPI_TAG_BOARD_REVISION, RPI_TAG_FIRMWARE_REVISION, RPI_TAG_GET_POWER_STATE, RpiFirmwareOps,
+    SleepLock, status_fail, status_ok,
 };
 
 /// The two mailboxes: the ARM reads 0, writes 1. Status bit 31: full, bit
@@ -176,6 +176,9 @@ fn proc_write(api: &KernelApi) {
     }
     if let Some([_, state]) = OPS.tag(RPI_TAG_GET_POWER_STATE, [RPI_POWER_USB_HCD, 0]) {
         let _ = writeln!(text, "power usb {}", if state & 1 != 0 { "on" } else { "off" });
+    }
+    if let Some(on) = OPS.gpio(RPI_GPIO_WL_ON) {
+        let _ = writeln!(text, "gpio wl_on {}", if on { "on" } else { "off" });
     }
     api.proc_register("firmware", text.as_bytes());
 }

@@ -6,7 +6,7 @@
 //! are lost): the transfer mode is written with the command, the
 //! write-1-to-clear status on its own.
 
-use crate::card::{BLOCK, Data, Error, Host, Response};
+use crate::card::{Data, Error, Host, Response};
 use crate::{now_ns, until};
 
 /// Block size (bits 11:0) and block count (31:16).
@@ -49,6 +49,9 @@ const INT_CMD_DONE: u32 = 1 << 0;
 const INT_XFER_DONE: u32 = 1 << 1;
 const INT_WRITE_READY: u32 = 1 << 4;
 const INT_READ_READY: u32 = 1 << 5;
+/// An SDIO card's interrupt (DAT1 low), level: it stays until the card is
+/// served, so the handler masks it.
+const INT_CARD: u32 = 1 << 8;
 const INT_ERROR: u32 = 1 << 15;
 /// Command timeout (the first error bit) and data timeout.
 const INT_TIMEOUT: u32 = 1 << 16 | 1 << 20;
@@ -70,6 +73,29 @@ const CMD_DATA: u32 = 1 << 5;
 const BASE_CLOCK_UNKNOWN: u32 = 250_000_000;
 /// How long a command or a block may take.
 const TIMEOUT_NS: u64 = 1_000_000_000;
+
+fn reg_read(regs: usize, off: usize) -> u32 {
+    unsafe { core::ptr::read_volatile((regs + off) as *const u32) }
+}
+
+fn reg_write(regs: usize, off: usize, value: u32) {
+    unsafe { core::ptr::write_volatile((regs + off) as *mut u32, value) }
+}
+
+/// The card interrupt of the controller at `regs` raised to the CPU (`on`)
+/// or masked: from any context, the status and signal enables' bit only
+/// (the command path owns the others, and polls them).
+pub fn card_irq_enable(regs: usize, on: bool) {
+    for reg in [STATUS_ENABLE, SIGNAL_ENABLE] {
+        let v = reg_read(regs, reg) & !INT_CARD;
+        reg_write(regs, reg, v | if on { INT_CARD } else { 0 });
+    }
+}
+
+/// The card at `regs` is asserting its interrupt.
+pub fn card_irq_pending(regs: usize) -> bool {
+    reg_read(regs, STATUS) & INT_CARD != 0
+}
 
 pub struct Sdhci {
     regs: usize,
@@ -99,11 +125,16 @@ impl Sdhci {
     }
 
     fn read(&self, off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((self.regs + off) as *const u32) }
+        reg_read(self.regs, off)
     }
 
     fn write(&self, off: usize, value: u32) {
-        unsafe { core::ptr::write_volatile((self.regs + off) as *mut u32, value) }
+        reg_write(self.regs, off, value)
+    }
+
+    /// The register window, for the card interrupt's handler.
+    pub fn regs(&self) -> usize {
+        self.regs
     }
 
     /// Until `bits` of the interrupt status are set: then cleared. An error
@@ -165,6 +196,10 @@ impl Host for Sdhci {
         self.write(HOST_CONTROL, control | if wide { HOST_4BIT } else { 0 });
     }
 
+    fn delay_ms(&mut self, ms: u32) {
+        crate::sleep_ms(u64::from(ms));
+    }
+
     fn command(&mut self, index: u8, arg: u32, response: Response, data: Option<Data>) -> Result<[u32; 4], Error> {
         let inhibit = match (&data, response) {
             (Some(_), _) | (_, Response::ShortBusy) => PRESENT_CMD_INHIBIT | PRESENT_DAT_INHIBIT,
@@ -184,8 +219,8 @@ impl Host for Sdhci {
             };
         let mut mode = 0;
         if let Some(d) = &data {
-            let blocks = (d.buf.len() / BLOCK) as u32;
-            self.write(BLOCK_SIZE, blocks << 16 | BLOCK as u32);
+            let blocks = (d.buf.len() / d.block) as u32;
+            self.write(BLOCK_SIZE, blocks << 16 | d.block as u32);
             cmd |= CMD_DATA;
             mode = MODE_BLOCK_COUNT | if blocks > 1 { MODE_MULTI } else { 0 } | if d.write { 0 } else { MODE_READ };
         }
@@ -203,13 +238,16 @@ impl Host for Sdhci {
         match data {
             Some(d) => {
                 let ready = if d.write { INT_WRITE_READY } else { INT_READ_READY };
-                for block in d.buf.chunks_mut(BLOCK) {
+                for block in d.buf.chunks_mut(d.block) {
                     self.wait_status(ready)?;
+                    // A byte-mode SDIO transfer may end short of a word.
                     for word in block.chunks_mut(4) {
                         if d.write {
-                            self.write(BUFFER, u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+                            let mut w = [0u8; 4];
+                            w[..word.len()].copy_from_slice(word);
+                            self.write(BUFFER, u32::from_le_bytes(w));
                         } else {
-                            word.copy_from_slice(&self.read(BUFFER).to_le_bytes());
+                            word.copy_from_slice(&self.read(BUFFER).to_le_bytes()[..word.len()]);
                         }
                     }
                 }

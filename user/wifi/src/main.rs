@@ -2,9 +2,10 @@
 //!
 //! - `wifi daemon [NIC]` drives the radio: an Intel AX201 or AX200 when
 //!   `/dev/pci` has one and no NIC is named, else a MediaTek MT7601U when
-//!   `/dev/usb` has one (their firmware from `wifi-firmware fetch`),
-//!   else the simulated one on NIC (default `/dev/net1`, the test boots'
-//!   second NIC, `src/wifi_sim.rs`).
+//!   `/dev/usb` has one, else a Broadcom CYW43455 or CYW43438 (the
+//!   Raspberry Pi's) when `/dev/sdio` has one (their firmware from
+//!   `wifi-firmware fetch`), else the simulated one on NIC (default
+//!   `/dev/net1`, the test boots' second NIC, `src/wifi_sim.rs`).
 //!   It listens on the unix socket `wifid` for the commands below, one per
 //!   connection: a line in, the answer out, then the connection ends.
 //! - `wifi scan`: a scan of the 2.4 GHz channels; prints what answered.
@@ -20,7 +21,8 @@
 //! While associated, the link is a virtual NIC of `/dev/tap` for netd
 //! (`tapN` in `/net/ifaddrs`, its address from the network's DHCP): the
 //! daemon carries its Ethernet frames as 802.11 data frames, encrypted
-//! with CCMP on a WPA2 network.
+//! with CCMP on a WPA2 network; a FullMAC radio (Broadcom's) does that
+//! itself and takes the Ethernet frames.
 //!
 //! A network is one line: `BSSID CHANNEL RSSI SECURITY SSID`, the strongest
 //! first (`02:00:5e:00:01:01 1 -40 open myos-open`); bytes of the SSID
@@ -32,13 +34,16 @@
 
 extern crate alloc;
 
+mod broadcom;
+mod devs;
+mod frame;
 mod intel;
 mod mediatek;
-mod frame;
 mod mlme;
 mod pci;
 mod radio;
 mod rsn;
+mod sdio;
 mod tap;
 mod unix;
 mod usb;
@@ -49,7 +54,7 @@ use alloc::vec::Vec;
 use frame::{Bss, Security};
 use mlme::{Link, Refused};
 use myos_user::{exit_code, heap_init, monotonic_ns, poll, write, Heap, PollFd, POLLIN};
-use radio::{Radio, Sim};
+use radio::{FullMac, Radio, Seen, Sim};
 use tap::Tap;
 use unix::Conv;
 
@@ -70,6 +75,8 @@ const CHANNELS: core::ops::RangeInclusive<u8> = 1..=13;
 /// How long a scan listens on each channel after its probe request, in
 /// ms: beacons come every 100 TU (102.4 ms), so one is heard too.
 const DWELL_MS: u64 = 120;
+/// How often a FullMAC radio without an interrupt line is looked at, ms.
+const LOOK_MS: i32 = 20;
 
 fn usage() -> ! {
     write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID [PASSPHRASE] | status | disconnect\n");
@@ -85,21 +92,22 @@ fn main() -> ! {
     }
 }
 
-/// A network a scan heard.
-struct Seen {
-    bss: Bss,
-    rssi: i8,
+/// The radio found: one the daemon scans and joins with, or one whose
+/// firmware does.
+enum Found {
+    Soft(Box<dyn Radio>),
+    Full(Box<dyn FullMac>),
 }
 
 /// The radio: NIC's simulated one when named, else an Intel one when
-/// there is one, else a MediaTek one, else the simulated one on
-/// `/dev/net1`.
-fn open_radio(nic: Option<&[u8]>) -> Option<Box<dyn Radio>> {
+/// there is one, else a MediaTek one, else a Broadcom one, else the
+/// simulated one on `/dev/net1`.
+fn open_radio(nic: Option<&[u8]>) -> Option<Found> {
     if nic.is_none()
         && let Some((dir, chip)) = intel::find()
     {
         return match intel::Intel::open(&dir, chip) {
-            Ok(r) => Some(Box::new(r)),
+            Ok(r) => Some(Found::Soft(Box::new(r))),
             Err(f) => {
                 write(&intel::why(chip, &f));
                 None
@@ -110,28 +118,76 @@ fn open_radio(nic: Option<&[u8]>) -> Option<Box<dyn Radio>> {
         && let Some((dir, chip)) = mediatek::find()
     {
         return match mediatek::Mediatek::open(&dir, chip) {
-            Ok(r) => Some(Box::new(r)),
+            Ok(r) => Some(Found::Soft(Box::new(r))),
             Err(f) => {
                 write(&mediatek::why(chip, &f));
                 None
             }
         };
     }
-    Some(Box::new(Sim::open(nic.unwrap_or(b"/dev/net1"))?))
+    if nic.is_none()
+        && let Some((dir, chip)) = broadcom::find_radio()
+    {
+        return match broadcom::Broadcom::open(&dir, chip) {
+            Ok(r) => Some(Found::Full(Box::new(r))),
+            Err(f) => {
+                write(&broadcom::why(chip, &f));
+                None
+            }
+        };
+    }
+    Some(Found::Soft(Box::new(Sim::open(nic.unwrap_or(b"/dev/net1"))?)))
 }
 
 fn daemon(nic: Option<&[u8]>) -> ! {
-    let Some(mut radio) = open_radio(nic) else {
+    let Some(radio) = open_radio(nic) else {
         write(b"wifi: no radio\n");
         exit_code(1);
     };
-    let radio = &mut *radio;
     let mut cmd = Vec::from(b"announce " as &[u8]);
     cmd.extend_from_slice(unix::NAME);
     let Some(listener) = Conv::new(&cmd) else {
         write(b"wifi: the socket wifid is taken\n");
         exit_code(1);
     };
+    match radio {
+        Found::Soft(mut r) => daemon_softmac(&mut *r, listener),
+        Found::Full(mut r) => daemon_fullmac(&mut *r, listener),
+    }
+}
+
+/// A command's line and `connect`'s passphrase line, read from `conn`.
+fn command(conn: &Conv) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut buf = [0u8; 192];
+    let n = conn.read(&mut buf, 2000);
+    let (line, passphrase) = match buf[..n].iter().position(|&c| c == b'\n') {
+        Some(i) => (buf[..i].trim_ascii(), buf[i + 1..n].strip_suffix(b"\n").unwrap_or(&buf[i + 1..n])),
+        None => (buf[..n].trim_ascii(), &[][..]),
+    };
+    let (cmd, arg) = match line.iter().position(|&c| c == b' ') {
+        Some(i) => (&line[..i], line[i + 1..].trim_ascii()),
+        None => (line, &[][..]),
+    };
+    (cmd.to_vec(), arg.to_vec(), passphrase.to_vec())
+}
+
+/// The link's NIC follows the link: opened when a link comes, closed
+/// when it goes.
+fn keep_tap(tap: &mut Option<Tap>, linked: bool, mac: [u8; 6]) {
+    match (linked, tap.is_some()) {
+        (true, false) => {
+            *tap = Tap::open(mac);
+            if tap.is_none() {
+                write(b"wifi: no virtual NIC for the link (/dev/tap)\n");
+            }
+        }
+        (false, true) => tap.take().unwrap().close(),
+        _ => {}
+    }
+}
+
+/// The daemon on a radio it scans and joins with.
+fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
     let mut seen: Vec<Seen> = Vec::new();
     let mut link: Option<Link> = None;
     // The link's NIC, there while `link` is.
@@ -197,32 +253,22 @@ fn daemon(nic: Option<&[u8]>) -> ! {
             }
         }
         while let Some(conn) = listener.accept() {
-            let mut buf = [0u8; 192];
-            let n = conn.read(&mut buf, 2000);
-            // The command line, then for `connect` the passphrase's line.
-            let (line, passphrase) = match buf[..n].iter().position(|&c| c == b'\n') {
-                Some(i) => (buf[..i].trim_ascii(), buf[i + 1..n].strip_suffix(b"\n").unwrap_or(&buf[i + 1..n])),
-                None => (buf[..n].trim_ascii(), &[][..]),
-            };
-            let (cmd, arg) = match line.iter().position(|&c| c == b' ') {
-                Some(i) => (&line[..i], line[i + 1..].trim_ascii()),
-                None => (line, &[][..]),
-            };
+            let (cmd, arg, passphrase) = command(&conn);
             // Another network, or none: netd lets go of the old link's
             // NIC (and its lease) first.
-            if matches!(cmd, b"connect" | b"disconnect") {
+            if matches!(&cmd[..], b"connect" | b"disconnect") {
                 if let Some(t) = tap.take() {
                     t.close();
                 }
             }
-            let reply = match cmd {
+            let reply = match &cmd[..] {
                 b"scan" => {
                     seen = scan(radio);
                     listing(&seen)
                 }
                 b"list" => listing(&seen),
-                b"connect" => connect(radio, &mut seen, &mut link, arg, passphrase),
-                b"status" => status(link.as_ref()),
+                b"connect" => connect(radio, &mut seen, &mut link, &arg, &passphrase),
+                b"status" => status(link.as_ref().map(|l| (&l.bss, l.aid))),
                 b"disconnect" => {
                     if let Some(l) = link.take() {
                         mlme::leave(radio, &l);
@@ -238,15 +284,115 @@ fn daemon(nic: Option<&[u8]>) -> ! {
                 radio.set_channel(l.bss.channel);
             }
         }
-        match (&link, tap.is_some()) {
-            (Some(_), false) => {
-                tap = Tap::open(radio.mac());
-                if tap.is_none() {
-                    write(b"wifi: no virtual NIC for the link (/dev/tap)\n");
+        keep_tap(&mut tap, link.is_some(), radio.mac());
+    }
+}
+
+/// The daemon on a radio whose firmware scans, joins and encrypts: the
+/// link's Ethernet frames go between it and the NIC as they are.
+fn daemon_fullmac(radio: &mut dyn FullMac, listener: Conv) -> ! {
+    let mut seen: Vec<Seen> = Vec::new();
+    let mut link: Option<Bss> = None;
+    let mut tap: Option<Tap> = None;
+    let mut frame = [0u8; 2048];
+    loop {
+        let mut fds = Vec::from([PollFd { fd: listener.data as i32, events: POLLIN, revents: 0 }]);
+        if let Some(fd) = radio.fd() {
+            fds.push(PollFd { fd: fd as i32, events: POLLIN, revents: 0 });
+        }
+        if let Some(t) = &tap {
+            fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
+        }
+        poll(&mut fds, if radio.pending() { 0 } else if radio.fd().is_some() { -1 } else { LOOK_MS });
+        radio.service();
+        // The access point letting the station go ends the link.
+        if link.is_some() && !radio.up() {
+            link = None;
+        }
+        while let Some(eth) = radio.recv() {
+            if let (Some(_), Some(t)) = (&link, &tap) {
+                t.send(&eth);
+            }
+        }
+        if let (Some(t), Some(_)) = (&tap, &link) {
+            while let Some(n) = t.recv(&mut frame) {
+                radio.send(&frame[..n]);
+            }
+        }
+        while let Some(conn) = listener.accept() {
+            let (cmd, arg, passphrase) = command(&conn);
+            if matches!(&cmd[..], b"connect" | b"disconnect") {
+                if let Some(t) = tap.take() {
+                    t.close();
                 }
             }
-            (None, true) => tap.take().unwrap().close(),
-            _ => {}
+            let reply = match &cmd[..] {
+                b"scan" => match radio.scan() {
+                    Ok(s) => {
+                        seen = s;
+                        listing(&seen)
+                    }
+                    Err(why) => error(why.as_bytes()),
+                },
+                b"list" => listing(&seen),
+                b"connect" => connect_fullmac(radio, &mut seen, &mut link, &arg, &passphrase),
+                // The firmware keeps the association: no aid to show.
+                b"status" => status(link.as_ref().map(|b| (b, 0))),
+                b"disconnect" => {
+                    if link.take().is_some() {
+                        radio.leave();
+                    }
+                    status(None)
+                }
+                _ => Vec::from(b"error: unknown command\n" as &[u8]),
+            };
+            conn.write(&reply);
+            conn.close();
+        }
+        keep_tap(&mut tap, link.is_some(), radio.mac());
+    }
+}
+
+/// An `error: WHY` line.
+fn error(why: &[u8]) -> Vec<u8> {
+    let mut e = Vec::from(b"error: " as &[u8]);
+    e.extend_from_slice(why);
+    e.push(b'\n');
+    e
+}
+
+/// The strongest network `ssid` in `seen` (the strongest first), or the
+/// error that there is none.
+fn pick(seen: &[Seen], ssid: &[u8]) -> Result<Bss, Vec<u8>> {
+    seen.iter().find(|s| s.bss.ssid == ssid).map(|s| s.bss.clone()).ok_or_else(|| {
+        let mut e = Vec::from(b"no network " as &[u8]);
+        ssid_text(&mut e, ssid);
+        error(&e)
+    })
+}
+
+/// The pairwise master key for `bss` from `passphrase`: none on an open
+/// network; the error when the network needs one the user did not give,
+/// gave wrongly formed, or is secured another way.
+fn pmk_for(bss: &Bss, passphrase: &[u8]) -> Result<Option<[u8; 32]>, Vec<u8>> {
+    let mut e = Vec::new();
+    match bss.security {
+        Security::Open => Ok(None),
+        Security::Wpa2Psk if passphrase.is_empty() => {
+            ssid_text(&mut e, &bss.ssid);
+            e.extend_from_slice(b" is wpa2-psk: connect SSID PASSPHRASE");
+            Err(error(&e))
+        }
+        Security::Wpa2Psk => match wpa::psk(passphrase, &bss.ssid) {
+            Some(pmk) => Ok(Some(pmk)),
+            None => Err(error(b"a passphrase is 8 to 63 printable ASCII characters, or 64 hex digits")),
+        },
+        _ => {
+            ssid_text(&mut e, &bss.ssid);
+            e.extend_from_slice(b" is ");
+            e.extend_from_slice(bss.security.name());
+            e.extend_from_slice(b": only open and wpa2-psk networks so far");
+            Err(error(&e))
         }
     }
 }
@@ -262,7 +408,7 @@ fn connect(
     passphrase: &[u8],
 ) -> Vec<u8> {
     if ssid.is_empty() {
-        return Vec::from(b"error: connect SSID\n" as &[u8]);
+        return error(b"connect SSID");
     }
     if let Some(l) = link.take() {
         mlme::leave(radio, &l);
@@ -270,35 +416,13 @@ fn connect(
     if !seen.iter().any(|s| s.bss.ssid == ssid) {
         *seen = scan(radio);
     }
-    // `seen` is the strongest first.
-    let mut e = Vec::from(b"error: " as &[u8]);
-    let Some(bss) = seen.iter().find(|s| s.bss.ssid == ssid).map(|s| s.bss.clone()) else {
-        e.extend_from_slice(b"no network ");
-        ssid_text(&mut e, ssid);
-        e.push(b'\n');
-        return e;
+    let bss = match pick(seen, ssid) {
+        Ok(bss) => bss,
+        Err(e) => return e,
     };
-    let pmk = match bss.security {
-        Security::Open => None,
-        Security::Wpa2Psk if passphrase.is_empty() => {
-            ssid_text(&mut e, ssid);
-            e.extend_from_slice(b" is wpa2-psk: connect SSID PASSPHRASE\n");
-            return e;
-        }
-        Security::Wpa2Psk => match wpa::psk(passphrase, &bss.ssid) {
-            Some(pmk) => Some(pmk),
-            None => {
-                e.extend_from_slice(b"a passphrase is 8 to 63 printable ASCII characters, or 64 hex digits\n");
-                return e;
-            }
-        },
-        _ => {
-            ssid_text(&mut e, ssid);
-            e.extend_from_slice(b" is ");
-            e.extend_from_slice(bss.security.name());
-            e.extend_from_slice(b": only open and wpa2-psk networks so far\n");
-            return e;
-        }
+    let pmk = match pmk_for(&bss, passphrase) {
+        Ok(pmk) => pmk,
+        Err(e) => return e,
     };
     let rsn = if pmk.is_some() { &wpa::RSN_PSK_CCMP[..] } else { &[][..] };
     let joined = mlme::join(radio, bss, rsn).and_then(|mut l| {
@@ -313,10 +437,11 @@ fn connect(
         }
         Ok(l)
     });
+    let mut e = Vec::from(b"error: " as &[u8]);
     match joined {
         Ok(l) => {
             *link = Some(l);
-            return status(link.as_ref());
+            return status(link.as_ref().map(|l| (&l.bss, l.aid)));
         }
         Err(Refused::Silent(step)) => {
             e.extend_from_slice(b"no answer to the ");
@@ -343,19 +468,57 @@ fn connect(
     e
 }
 
+/// `connect` on a FullMAC radio: the firmware joins (and, given the
+/// pairwise master key, runs the 4-way handshake).
+fn connect_fullmac(
+    radio: &mut dyn FullMac,
+    seen: &mut Vec<Seen>,
+    link: &mut Option<Bss>,
+    ssid: &[u8],
+    passphrase: &[u8],
+) -> Vec<u8> {
+    if ssid.is_empty() {
+        return error(b"connect SSID");
+    }
+    if link.take().is_some() {
+        radio.leave();
+    }
+    if !seen.iter().any(|s| s.bss.ssid == ssid) {
+        match radio.scan() {
+            Ok(s) => *seen = s,
+            Err(why) => return error(why.as_bytes()),
+        }
+    }
+    let bss = match pick(seen, ssid) {
+        Ok(bss) => bss,
+        Err(e) => return e,
+    };
+    let pmk = match pmk_for(&bss, passphrase) {
+        Ok(pmk) => pmk,
+        Err(e) => return e,
+    };
+    match radio.join(&bss, pmk.as_ref()) {
+        Ok(()) => {
+            *link = Some(bss);
+            status(link.as_ref().map(|b| (b, 0)))
+        }
+        Err(why) => error(why.as_bytes()),
+    }
+}
+
 /// `associated BSSID CHANNEL SSID aid N`, or `disconnected`.
-fn status(link: Option<&Link>) -> Vec<u8> {
-    let Some(l) = link else {
+fn status(link: Option<(&Bss, u16)>) -> Vec<u8> {
+    let Some((bss, aid)) = link else {
         return Vec::from(b"disconnected\n" as &[u8]);
     };
     let mut out = Vec::from(b"associated " as &[u8]);
-    mac_text(&mut out, l.bss.bssid);
+    mac_text(&mut out, bss.bssid);
     out.push(b' ');
-    dec(&mut out, i64::from(l.bss.channel));
+    dec(&mut out, i64::from(bss.channel));
     out.push(b' ');
-    ssid_text(&mut out, &l.bss.ssid);
+    ssid_text(&mut out, &bss.ssid);
     out.extend_from_slice(b" aid ");
-    dec(&mut out, i64::from(l.aid));
+    dec(&mut out, i64::from(aid));
     out.push(b'\n');
     out
 }

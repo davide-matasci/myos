@@ -286,6 +286,20 @@ rpi_firmware() {
 		grep -Eq '^power usb (on|off)$' /proc/firmware
 }
 t -t smoke,rpi_firmware rpi_firmware rpi_firmware
+# /dev/sdio (docs/raspberry-pi.md "SDIO"): the SDIO cards the sdmmc module
+# brought up, for drivers that are programs; each says what it is. QEMU's
+# boards have none (the Pi 3's Wi-Fi controller is probed and finds no
+# card); a Raspberry Pi's Wi-Fi chip is one.
+sdio() {
+	[ -d /dev/sdio ] || { ls /dev; return 1; }
+	for d in /dev/sdio/*/; do
+		[ -e "$d/info" ] || continue
+		cat "$d/info"
+		grep -Eq '^id [0-9a-f]{4}:[0-9a-f]{4}$' "$d/info" && grep -Eq '^functions [1-7]$' "$d/info" &&
+			grep -Eq '^irq (on|off|none)$' "$d/info" || return 1
+	done
+}
+t -t smoke,sdmmc,sdio sdio sdio
 # A full filesystem: the write that fills it gives what fit, the next says
 # ENOSPC, natively and under the Linux layer (apk on a full /data stopped
 # with "I/O error", the generic failure's errno), as does a pwrite into a

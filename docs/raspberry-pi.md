@@ -15,8 +15,10 @@ What should work: the four cores, the GIC-400, the generic timer, the
 serial console, the HDMI framebuffer the firmware sets up (`docs/fb.md`),
 everything that runs from the initramfs, and USB (`docs/usb.md`): a
 keyboard on the HDMI console, a mouse, memory sticks, hubs, through the
-VL805 xHCI controller behind the BCM2711's PCIe bridge, and the SD card
-(below). What does not (yet): Ethernet (GENET); Wi-Fi. The Pi has no RTC: its wall
+VL805 xHCI controller behind the BCM2711's PCIe bridge, the SD card
+(below) and Wi-Fi (the CYW43455 as `/dev/sdio`, driven by the `wifi`
+daemon: "Broadcom's radios" in `docs/wifi.md`). What does not (yet):
+Ethernet (GENET). The Pi has no RTC: its wall
 clock counts from the epoch at boot until `date` or `settimeofday` sets it.
 
 ## Building the image
@@ -107,12 +109,41 @@ behind the controller's driver:
   registers as Linux's `bcm2835` MMC driver and QEMU's model use them.
   Its divisors assume the highest core clock, 400 MHz (250 MHz with
   `enable_uart=1`); its pins stay as the firmware set them. The Pi 3's
-  SDHCI controller (`brcm,bcm2835-sdhci`) is its Wi-Fi's and is left
-  alone.
+  SDHCI controller (`brcm,bcm2835-sdhci`) is its Wi-Fi's: an SDIO card,
+  below.
 
 The CPU moves the data (no DMA) and the module polls for completion, a
 single card per controller at the default speed (25 MHz, 4-bit bus);
 DMA, interrupts and the faster modes are issue #549.
+
+### SDIO: `/dev/sdio`
+
+An SDIO card is not a disk: the module brings it up (the `sdio` crate,
+`modules/sdmmc/sdio`: CMD5 for its functions and voltage, the relative
+address, the CCCR for the 4-bit bus and high speed, the CIS for what it
+is; host-tested against a model, `cargo test -p sdio`) and hands it to a
+driver that is a program as `/dev/sdio/N`, the way `/dev/pci` hands over
+a PCI function. The Pi 3's and Pi 4's Arasan SDHCI (`brcm,bcm2835-sdhci`,
+the tree's `mmcnr`) carries the Wi-Fi chip (CYW43438 on the Pi 3B,
+CYW43455 on the 3B+ and 4), whose `WL_REG_ON` the module raises through
+the firmware's GPIO expander first (`rpi_firmware`: `WL_ON`, line 1, held
+low then high; `/proc/firmware` shows it; QEMU's firmware has no
+expander and the controller no card). A slot whose SD card does not
+answer is tried as SDIO too (QEMU's `sdhci-pci` with an SDIO model, one
+day). Untried on hardware so far, like the rest of the Pi 4.
+
+| File | What |
+|------|------|
+| `info` | `id MMMM:PPPP` (the CIS's manufacturer and product: `02d0:a9bf` a CYW43455, `02d0:a9a6` a CYW43438), `functions N`, `bus 1\|4`, `clock HZ`, `controller sdhci mmio 0x...`, `block F N` for each function with a block size, `irq on\|off\|none` (the card's interrupt at the controller; `none`: no interrupt line), `held` while a program drives it |
+| `ctl` | held by one program at a time (root only) from its `open` to its last close; reads as `info`; takes `blocksize F N` (function F's block size, into its FBR, for block-mode transfers) and `irq on` / `irq off`. The files below are there while it is held; letting it go masks the interrupt |
+| `fN` | function N's registers, the file position the register address (17 bits): a read or write of one byte is a CMD52, of more a CMD53 with the address incrementing (byte mode up to 512 bytes, block mode for a whole number of the function's blocks, more than one; 64 KiB at most) |
+| `fNfifo` | the same at a fixed address (a FIFO) |
+| `irq` | a read waits for the card's interrupt and returns how many came since the last read (8 bytes, little endian), `poll` says one is pending; the interrupt stays masked at the controller from the one that fired until a write to `irq` (a byte at least), once the driver quietened the card. The card's own enables (the CCCR's `IENx`) are the driver's, through `f0` |
+
+The CPU moves every transfer through the controller's buffer, so a program
+reaches no memory through the card. The `wifi` daemon drives the Pi's chip
+this way (`docs/wifi.md`, "Broadcom's radios"). The `sdio` test checks
+each card's `info`.
 
 ## The VideoCore firmware
 
@@ -154,10 +185,12 @@ The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
 `target/rpi3/u-boot.log` (the PL011). What works: the four cores, the
 generic timer, the serial console, the framebuffer the firmware sets up,
 everything that runs from the initramfs, power-off and reboot, the SD
-card (above) and USB (the DWC2 controller, below: a keyboard, a mouse, a
-stick). What does not (yet): Ethernet (the LAN9514 behind the USB hub
-is a class driver to write); Wi-Fi. It has no RTC either: the wall clock
-counts from the epoch at boot.
+card (above), USB (the DWC2 controller, below: a keyboard, a mouse, a
+stick) and, untried like the Pi 4's, Wi-Fi (the 3 B's CYW43438 or the
+3 B+'s CYW43455 as `/dev/sdio`, driven by the `wifi` daemon: "Broadcom's
+radios" in `docs/wifi.md`). What does not (yet): Ethernet (the LAN9514
+behind the USB hub is a class driver to write). It has no RTC either: the
+wall clock counts from the epoch at boot.
 
 ### USB: the DWC2 controller
 

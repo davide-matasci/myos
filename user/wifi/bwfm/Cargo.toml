@@ -1,0 +1,11 @@
+[package]
+name = "bwfm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# Ported from OpenBSD's bwfm(4): its notices are in LICENSE.
+license = "ISC"
+description = "Broadcom/Cypress FullMAC (bwfm) SDIO Wi-Fi driver logic for the wifi daemon: the chip's cores, firmware download, SDPCM and BCDC, scan, join, Ethernet frames (no_std, host-testable)."
+
+[lib]
+test = true

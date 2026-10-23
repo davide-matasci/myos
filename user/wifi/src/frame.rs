@@ -94,7 +94,12 @@ pub fn parse_bss(f: &[u8], channel: u8) -> Option<Bss> {
     }
     let bssid: [u8; 6] = f[16..22].try_into().ok()?;
     let cap = u16::from_le_bytes([f[HDR + 10], f[HDR + 11]]);
-    let ies = &f[HDR + FIXED..];
+    Some(bss_of(bssid, cap, &f[HDR + FIXED..], channel))
+}
+
+/// The network `bssid` with capabilities `cap` and elements `ies`, heard
+/// on `channel` (a beacon's, or what a radio's own scan reports).
+pub fn bss_of(bssid: [u8; 6], cap: u16, ies: &[u8], channel: u8) -> Bss {
     let ssid = ie(ies, 0).unwrap_or(&[]);
     let channel = ie(ies, 3).and_then(|ds| ds.first().copied()).unwrap_or(channel);
     let rsn = ie(ies, 48);
@@ -105,7 +110,7 @@ pub fn parse_bss(f: &[u8], channel: u8) -> Option<Bss> {
         None => Security::Open,
     };
     let rsn = rsn.map(|b| [&[48, b.len() as u8][..], b].concat()).unwrap_or_default();
-    Some(Bss { bssid, ssid: ssid.to_vec(), channel, security, rsn })
+    Bss { bssid, ssid: ssid.to_vec(), channel, security, rsn }
 }
 
 /// Whether an RSN element offers PSK key management (suite 00-0f-ac:2).

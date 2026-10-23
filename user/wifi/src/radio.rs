@@ -1,7 +1,10 @@
 //! The radio a scan and an association go through: tuned to a channel, it
-//! sends and hears 802.11 frames. The simulated one is the test boots';
-//! Intel's (the AX201, the AX200) is `intel.rs`.
+//! sends and hears 802.11 frames ([`Radio`]: the test boots' simulated
+//! one, Intel's in `intel.rs`, MediaTek's in `mediatek.rs`); or one whose
+//! firmware does all of that and carries Ethernet frames ([`FullMac`]:
+//! Broadcom's in `broadcom.rs`).
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::frame::Bss;
@@ -46,6 +49,38 @@ pub trait Radio {
     fn scan(&mut self) -> Option<Vec<Heard>> {
         None
     }
+}
+
+/// A network a scan heard, at its strongest.
+pub struct Seen {
+    pub bss: Bss,
+    pub rssi: i8,
+}
+
+/// A radio whose firmware keeps the network's state (a FullMAC): it
+/// scans, joins, keeps the keys and carries Ethernet frames; the daemon
+/// asks and waits. An error is the text of what went wrong.
+pub trait FullMac {
+    /// The station's own address.
+    fn mac(&self) -> [u8; 6];
+    /// Every channel scanned: the networks heard, the strongest first.
+    fn scan(&mut self) -> Result<Vec<Seen>, String>;
+    /// Join `bss`, with `pmk` on a WPA2-PSK network: back once the link
+    /// is up (the keys in place), or why it did not come up.
+    fn join(&mut self, bss: &Bss, pmk: Option<&[u8; 32]>) -> Result<(), String>;
+    fn leave(&mut self);
+    /// The link is up (after [`FullMac::service`]).
+    fn up(&self) -> bool;
+    /// Serve the radio: its interrupt, the firmware's frames and events.
+    fn service(&mut self);
+    fn send(&mut self, eth: &[u8]) -> bool;
+    /// An Ethernet frame from the network, if one is waiting.
+    fn recv(&mut self) -> Option<Vec<u8>>;
+    /// The fd a `poll` waits on for the radio's interrupt; `None` when
+    /// the radio has no interrupt line and is looked at now and then.
+    fn fd(&self) -> Option<usize>;
+    /// Frames are waiting that a `poll` would not show.
+    fn pending(&self) -> bool;
 }
 
 /// A frame a radio's own scan heard.
