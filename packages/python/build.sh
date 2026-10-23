@@ -112,13 +112,14 @@ build_arch() {
 
   # What the app carries: the interpreter and the library, without the
   # test suite, IDLE, Tk, turtle and ensurepip (no pip without ssl), the
-  # optimized .pyc sets (the plain ones stay: the app's directory is not
-  # written at run time), the headers, libpython, the manuals and the
-  # scripts beside the interpreter.
+  # .pyc files (half the files and bytes of the library: the interpreter
+  # writes them into the app's directory on the first import), the
+  # headers, libpython, the manuals and the scripts beside the
+  # interpreter.
   rm -rf "$lib"/test "$lib"/idlelib "$lib"/tkinter "$lib"/turtledemo "$lib"/turtle.py \
     "$lib"/ensurepip "$lib"/config-"$MINOR"* "$out/usr/include" "$out/usr/share" \
     "$out/usr/lib/pkgconfig" "$out/usr/lib"/libpython*
-  find "$lib" -name '*.opt-[12].pyc' -delete
+  find "$lib" -name __pycache__ -type d -prune -exec rm -rf {} +
   find "$out/usr/bin" -mindepth 1 ! -name "python$MINOR" -delete
   "${arch}-unknown-myos-strip" -s "$out/usr/bin/python$MINOR"
   echo "python -> $out/usr/bin/python$MINOR ($(du -h "$out/usr/bin/python$MINOR" | cut -f1)), library $(du -sh "$lib" | cut -f1)"
