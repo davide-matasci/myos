@@ -1,14 +1,12 @@
-//! A firmware file for the model of the AX201 the driver's tests run
-//! against (`tests/ax201`): shaped as Intel's
-//! iwlwifi-QuZ-a0-hr-b0-77.ucode (its header, its records, the API and
-//! capability bits, command versions and limits the driver looks at), but
-//! its sections are myos's own bytes, which the model checks the driver
-//! copied where the context information says. Nothing of Intel's is in it.
+//! A firmware file for the model of the AX201 and AX200 the driver's tests
+//! run against (`tests/model`): shaped as Intel's
+//! iwlwifi-QuZ-a0-hr-b0-77.ucode and iwlwifi-cc-a0-77.ucode, which agree in
+//! all of it the driver looks at (their header, their records, the API and
+//! capability bits, command versions and limits), but its sections are
+//! myos's own bytes, which the model checks the driver copied where the
+//! context information says. Nothing of Intel's is in it.
 
 use alloc::vec::Vec;
-
-/// The file's name, as the daemon looks for it.
-pub const NAME: &str = "iwlwifi-QuZ-a0-hr-b0-77.ucode";
 
 /// A section: where it loads in the device, and its length; its bytes are
 /// [`byte`] of its index.

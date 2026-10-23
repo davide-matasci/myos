@@ -1,21 +1,25 @@
-//! The driver (what the `wifi` daemon runs on an AX201) against a model of
-//! the device (`ax201/`): its bring-up with MSI and MSI-X, a scan, joining
-//! an access point and leaving it, with the model's checks on everything
-//! it does.
+//! The driver (what the `wifi` daemon runs on an AX201 or AX200) against a
+//! model of the device (`model/`), each radio's: its bring-up with MSI and
+//! MSI-X, a scan, joining an access point and leaving it, with the model's
+//! checks on everything it does.
 
-mod ax201;
+mod model;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use iwx::chip::{self, Chip};
 use iwx::dev::{Dev, Device, Dma, Peer};
 use iwx::fw::Firmware;
 use iwx::hw::Bus;
 use iwx::msg::{self, Channel};
 use iwx::sta::Beacon;
 
-use ax201::device::{Ax201, Irq, IrqMode, MAC};
+use model::device::{self as hw, Hardware, Irq, IrqMode, MAC};
+
+/// Each radio the driver takes, and the model of it.
+const RADIOS: [(&Chip, &Hardware); 2] = [(&chip::AX201, &hw::AX201), (&chip::AX200, &hw::AX200)];
 
 /// The interrupt as the driver waits for it: the rises counted.
 #[derive(Default)]
@@ -47,7 +51,7 @@ impl Irq for Sink {
 /// The driver's platform: the model's registers, heap buffers at made-up
 /// bus addresses mapped into the model, its interrupt.
 struct Host {
-    dev: Arc<Mutex<Ax201>>,
+    dev: Arc<Mutex<hw::Device>>,
     rises: Arc<Rises>,
     next: u64,
     start: Instant,
@@ -93,7 +97,7 @@ impl Device for Host {
 
 /// The model with the firmware's time running, and the driver's host.
 struct Rig {
-    dev: Arc<Mutex<Ax201>>,
+    dev: Arc<Mutex<hw::Device>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -103,10 +107,11 @@ impl Drop for Rig {
     }
 }
 
-fn rig(msix: bool) -> (Rig, Host) {
+fn rig(radio: &'static Hardware, msix: bool) -> (Rig, Host) {
     let rises = Arc::new(Rises::default());
     let mode = if msix { IrqMode::Msix } else { IrqMode::Msi };
-    let dev = Arc::new(Mutex::new(Ax201::new(Box::new(Sink { rises: rises.clone(), mode, level: false }))));
+    let sink = Box::new(Sink { rises: rises.clone(), mode, level: false });
+    let dev = Arc::new(Mutex::new(hw::Device::new(radio, sink)));
     let stop = Arc::new(AtomicBool::new(false));
     let (d, s) = (dev.clone(), stop.clone());
     std::thread::spawn(move || {
@@ -131,11 +136,20 @@ fn firmware() -> &'static [u8] {
 fn brought_up_with_msi_and_msix() {
     let file = firmware();
     let fw = Firmware::parse(file).unwrap();
-    for msix in [false, true] {
-        let (r, host) = rig(msix);
-        let mut dev = Dev::new(host, msix).unwrap();
-        dev.load(&fw).unwrap_or_else(|e| panic!("load (MSI-X {msix}): {e:?}, {:?}", failed(&r)));
-        let info = dev.init(&fw).unwrap_or_else(|e| panic!("init (MSI-X {msix}): {e:?}, {:?}", failed(&r)));
+    for (chip, radio) in RADIOS {
+        for msix in [false, true] {
+            brought_up(&fw, chip, radio, msix);
+        }
+    }
+}
+
+fn brought_up(fw: &Firmware, chip: &'static Chip, radio: &'static Hardware, msix: bool) {
+    let (r, host) = rig(radio, msix);
+    let mut dev = Dev::new(host, msix, chip).unwrap();
+    let what = format!("{} (MSI-X {msix})", chip.name);
+    dev.load(fw).unwrap_or_else(|e| panic!("load {what}: {e:?}, {:?}", failed(&r)));
+    let info = dev.init(fw).unwrap_or_else(|e| panic!("init {what}: {e:?}, {:?}", failed(&r)));
+    {
         assert_eq!(failed(&r), None);
         assert_eq!((info.mac, info.alpha2, info.tx_chains, info.rx_chains), (MAC, *b"ZZ", 3, 3));
         // 2.4 GHz 1-13 active; 5 GHz UNII-1 and -3 active, UNII-2A and
@@ -143,6 +157,21 @@ fn brought_up_with_msi_and_msix() {
         assert_eq!(info.channels.len(), 13 + 4 + 4 + 12 + 5);
         assert!(info.channels.iter().any(|c| c.number == 52 && c.ghz5 && c.passive));
     }
+}
+
+#[test]
+fn told_the_wrong_radio() {
+    // An AX200 the driver takes for integrated: its latency tolerance goes
+    // to the periphery, which the discrete radio does not take it from.
+    static INTEGRATED_AX200: Chip = Chip { integrated: true, ..chip::AX200 };
+    let fw = Firmware::parse(firmware()).unwrap();
+    let (r, host) = rig(&hw::AX200, false);
+    let mut dev = Dev::new(host, false, &INTEGRATED_AX200).unwrap();
+    assert!(dev.load(&fw).is_err());
+    assert!(failed(&r).unwrap().contains("LTR_LONG_VAL_AD"), "{:?}", failed(&r));
+    // And the MAC is checked before anything starts.
+    let (_, host) = rig(&hw::AX201, false);
+    assert!(Dev::new(host, false, &chip::AX200).is_err());
 }
 
 #[test]
@@ -155,15 +184,15 @@ fn not_the_simulated_firmware() {
     file[at] ^= 0xff;
     let file: &'static [u8] = Box::leak(file.into_boxed_slice());
     let fw = Firmware::parse(file).unwrap();
-    let (r, host) = rig(false);
-    let mut dev = Dev::new(host, false).unwrap();
+    let (r, host) = rig(&hw::AX201, false);
+    let mut dev = Dev::new(host, false, &chip::AX201).unwrap();
     assert!(dev.load(&fw).is_err());
     assert!(failed(&r).unwrap().contains("not the simulated firmware"), "{:?}", failed(&r));
 }
 
 #[test]
 fn a_register_it_does_not_have() {
-    let (r, mut host) = rig(false);
+    let (r, mut host) = rig(&hw::AX201, false);
     host.write32(0x1234, 1);
     assert!(failed(&r).unwrap().contains("register 0x1234"));
 }
@@ -183,11 +212,20 @@ fn scan(dev: &mut Dev<Host>, fw: &Firmware, info: &iwx::dev::Info) -> Vec<msg::M
 }
 
 #[test]
-fn scan_join_send_leave() {
+fn ax201_scan_join_send_leave() {
+    scan_join_send_leave(&chip::AX201, &hw::AX201);
+}
+
+#[test]
+fn ax200_scan_join_send_leave() {
+    scan_join_send_leave(&chip::AX200, &hw::AX200);
+}
+
+fn scan_join_send_leave(chip: &'static Chip, radio: &'static Hardware) {
     let file = firmware();
     let fw = Firmware::parse(file).unwrap();
-    let (r, host) = rig(true);
-    let mut dev = Dev::new(host, true).unwrap();
+    let (r, host) = rig(radio, true);
+    let mut dev = Dev::new(host, true, chip).unwrap();
     dev.load(&fw).unwrap();
     let info = dev.init(&fw).unwrap();
     let heard = scan(&mut dev, &fw, &info);

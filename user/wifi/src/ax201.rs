@@ -56,7 +56,7 @@ impl Ax201 {
         let fw = Firmware::parse(file).map_err(|_| Failed::BadFirmware)?;
         let pci = Pci::open(dir).map_err(Failed::Pci)?;
         let (msix, irq) = (pci.msix, pci.irq_fd());
-        let mut dev = Dev::new(pci, msix).map_err(Failed::Driver)?;
+        let mut dev = Dev::new(pci, msix, &iwx::chip::AX201).map_err(Failed::Driver)?;
         dev.load(&fw).map_err(Failed::Driver)?;
         let info = dev.init(&fw).map_err(Failed::Driver)?;
         Ok(Ax201 { dev, fw, info, irq, beacons: Vec::new(), peer: None })
