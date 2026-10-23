@@ -376,6 +376,11 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
     add(&mut entries, "etc/rc.local", read(&manifest_dir.join("etc/rc.local")));
     // How many ttys init starts a login on (docs/tty.md).
     add(&mut entries, "etc/ttys", read(&manifest_dir.join("etc/ttys")));
+    // The names resolved without a lookup and the services known by name
+    // (mlibc's resolver reads them; libgloss knows localhost and the DNS
+    // port itself, docs/sockets-curl.md).
+    add(&mut entries, "etc/hosts", read(&manifest_dir.join("etc/hosts")));
+    add(&mut entries, "etc/services", read(&manifest_dir.join("etc/services")));
     add(&mut entries, "etc/dropbear/.keep", Some(b"\n".to_vec()));
 
     // The `linux` launcher of the Linux compatibility layer (native, always

@@ -76,7 +76,11 @@ headers in `sysdeps/myos/include`. `times` and `setpriority` are `ENOSYS`
 (no CPU accounting, no priorities: libgloss says the same), `getpriority`
 is 0. Signal numbers are the kernel's (newlib's BSD layout) in both libcs;
 `errno` values and `struct stat` layouts are each libc's own, the shared
-C being compiled against each libc's headers; a signal fd's records,
+C being compiled against each libc's headers. mlibc's resolver is its
+own: `/etc/hosts` for `localhost` (libgloss knows the name itself), then
+DNS to the nameserver of `/etc/resolv.conf`, or without that file the
+first `dns=` of `/net/ndb` as libgloss (`patch.sh`); `/etc/services`
+names the DNS port it looks up. A signal fd's records,
 16 bytes from the kernel (newlib's `struct signalfd_siginfo`), are
 widened to mlibc's Linux-sized struct by the shared read (`evfd.c`).
 

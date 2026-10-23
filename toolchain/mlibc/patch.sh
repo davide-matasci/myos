@@ -261,6 +261,45 @@ if "myos: the stream's error indicator" not in s:
     print("patched stdio.cpp: a failed fwrite sets the error indicator")
 PY
 
+# The resolver's nameserver: /etc/resolv.conf as upstream, and without that
+# file the first dns= of /net/ndb (netd's, from its lease), as libgloss's
+# resolver (toolchain/newlib/libgloss/myos/netdb.c).
+python3 - "$SRC/options/posix/generic/resolv_conf.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "myos: without the file" not in s:
+    old = """\tauto file = fopen("/etc/resolv.conf", "r");
+\tif (!file)
+\t\treturn frg::null_opt;
+"""
+    new = """\tauto file = fopen("/etc/resolv.conf", "r");
+\tif (!file) {
+\t\t// myos: without the file, the first dns= of /net/ndb (netd's, from its
+\t\t// lease), as libgloss's resolver.
+\t\tfile = fopen("/net/ndb", "r");
+\t\tif (!file)
+\t\t\treturn frg::null_opt;
+\t\tchar ndb[1024];
+\t\tsize_t n = fread(ndb, 1, sizeof ndb - 1, file);
+\t\tfclose(file);
+\t\tndb[n] = '\\0';
+\t\tchar *dns = strstr(ndb, "dns=");
+\t\tif (!dns)
+\t\t\treturn frg::null_opt;
+\t\tdns += 4;
+\t\tstruct nameserver_data ret;
+\t\tret.name = frg::string<MemoryAllocator>(dns, strcspn(dns, " \\t\\n"), getAllocator());
+\t\treturn ret;
+\t}
+"""
+    assert s.count(old) == 1, "resolv_conf.cpp: the open not found"
+    s = s.replace(old, new)
+    s = s.replace("#include <ctype.h>\n", "#include <ctype.h>\n#include <string.h>\n", 1)
+    open(path, "w").write(s)
+    print("patched resolv_conf.cpp: /net/ndb's dns= without /etc/resolv.conf")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose
