@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "sdmmc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "SD card kernel module: /dev/mmcblkN over an SDHCI controller or the Raspberry Pi 3's sdhost."
+
+[[bin]]
+name = "sdmmc"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+sdio-host = "0.9"
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

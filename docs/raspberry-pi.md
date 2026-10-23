@@ -15,8 +15,8 @@ What should work: the four cores, the GIC-400, the generic timer, the
 serial console, the HDMI framebuffer the firmware sets up (`docs/fb.md`),
 everything that runs from the initramfs, and USB (`docs/usb.md`): a
 keyboard on the HDMI console, a mouse, memory sticks, hubs, through the
-VL805 xHCI controller behind the BCM2711's PCIe bridge. What does not
-(yet): the SD card; Ethernet (GENET); Wi-Fi. The Pi has no RTC: its wall
+VL805 xHCI controller behind the BCM2711's PCIe bridge, and the SD card
+(below). What does not (yet): Ethernet (GENET); Wi-Fi. The Pi has no RTC: its wall
 clock counts from the epoch at boot until `date` or `settimeofday` sets it.
 
 ## Building the image
@@ -88,6 +88,32 @@ there, whatever the firmware's "Limit RAM to 3 GB" setting, and it
 cleans and invalidates the caches around each hand-over (`dma_sync`,
 `docs/pci-acpi-smp.md` "DMA").
 
+## The SD card
+
+The `sdmmc` module (`modules/sdmmc`) makes the card `/dev/mmcblk0`, a
+disk like any other (its partitions `/dev/mmcblk0/pN`, `docs/install.md`).
+Its card layer brings the card up and moves the blocks (the SD Physical
+Layer Specification's commands and registers, from the `sdio-host` crate)
+behind the controller's driver:
+
+- the Pi 4's EMMC2 (`brcm,bcm2711-emmc2`) is a standard SDHCI controller,
+  the driver QEMU's `sdhci-pci` checks on every arch (the `sdmmc` test);
+  untested on the Pi 4 itself. Every register access is 32 bits wide (the
+  Broadcom controllers lose narrower writes), and with no base clock in
+  its capabilities the divisors assume 250 MHz, so the card never runs
+  faster than asked.
+- the Pi 3's slot is on the BCM2835's own SD host controller
+  (`brcm,bcm2835-sdhost`), which Broadcom does not document: its
+  registers as Linux's `bcm2835` MMC driver and QEMU's model use them.
+  Its divisors assume the highest core clock, 400 MHz (250 MHz with
+  `enable_uart=1`); its pins stay as the firmware set them. The Pi 3's
+  SDHCI controller (`brcm,bcm2835-sdhci`) is its Wi-Fi's and is left
+  alone.
+
+The CPU moves the data (no DMA) and the module polls for completion, a
+single card per controller at the default speed (25 MHz, 4-bit bus);
+DMA, interrupts and the faster modes are issue #549.
+
 ## Raspberry Pi 3
 
 A Raspberry Pi 3 (BCM2837, four Cortex-A53) has no UEFI firmware: its
@@ -99,16 +125,16 @@ checked there, by CI too (the smoke tests it can run, `docs/testing.md`
 
 ```sh
 cargo run -- rpi3        # builds the boot files and boots QEMU raspi3b
-cargo run -- rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,fileio,libc,heap_mini
+cargo run -- rpi3 test --tags smoke --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini
                          # CI's boot test of it
 ```
 
 The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
 `target/rpi3/u-boot.log` (the PL011). What works: the four cores, the
 generic timer, the serial console, the framebuffer the firmware sets up,
-everything that runs from the initramfs, power-off and reboot. What does
-not (yet): USB (the DWC2 controller), so no keyboard, disk or Ethernet;
-the SD card (as a disk: U-Boot reads it); Wi-Fi. It has no RTC either:
+everything that runs from the initramfs, power-off and reboot, and the SD
+card (above). What does not (yet): USB (the DWC2 controller), so no
+keyboard, stick or Ethernet; Wi-Fi. It has no RTC either:
 the wall clock counts from the epoch at boot.
 
 `boot/rpi3/build.sh` (which `cargo run -- rpi3` runs) builds the boot
@@ -162,5 +188,7 @@ armstub=armstub8-myos.bin
 
 The myos disk goes on a USB stick (`sudo dd if=target/rpi3/myos.img
 of=/dev/sdX bs=4M conv=fsync`), which U-Boot boots when the SD card has
-no `EFI/BOOT` of its own. The console is the mini UART on GPIO 14 and
-15 (the same pins as the Pi 4's above), at 115200 8N1.
+no `EFI/BOOT` of its own. myos itself then runs from the initramfs: it
+sees the SD card (`/dev/mmcblk0`), not the stick (no USB driver yet), so
+`/boot` and `/data` are not mounted. The console is the mini UART on
+GPIO 14 and 15 (the same pins as the Pi 4's above), at 115200 8N1.
