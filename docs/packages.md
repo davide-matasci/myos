@@ -250,9 +250,11 @@ The image has the same header's fields in `/lib/myos-release`
   for its arch, serves `target/packages/` on the host's 127.0.0.1:8765 (the
   guest reaches it as `http://10.0.2.2:8765` on QEMU's user network;
   `index.txt` and `packages.txt` there are the arch's) and installs
-  **every package of the build** as its first test (`install_packages` in
+  **every package of the build** as its first test when a `pkg` test is
+  selected (`install_packages` in
   `user/tests/run.sh`: first one package with dependencies alone, checking
-  they came with it, then all of them) into `/tmp/apps` (`MYOS_APPS`: the
+  they came with it, then all of them; in CI that is the `pkg` boot of a
+  machine, `docs/testing.md` "In CI") into `/tmp/apps` (`MYOS_APPS`: the
   test disk's 64 MiB data partition is too small for os-test); the tests
   that use one (git and coreutils in `heap`, os-test with `make`, the
   packages' own `test.sh`, which `run.sh` finds in the apps) run it with

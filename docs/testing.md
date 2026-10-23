@@ -28,7 +28,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | tag | the tests that |
 |---|---|
 | `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
-| `pkg` | need the packages of this build installed as apps (`packages`, the first test, installs them from the mirror; every package's own test has it) |
+| `pkg` | need the packages of this build installed as apps (`packages`, the first test of a run that has one, installs them from the mirror; every package's own test has it; in CI the `pkg` boot's) |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
 | `install` | change the boot disk: `get-myos --upgrade` (Limine made stale first) and `--install` on the scratch disk; when they passed, the launcher boots the upgraded disk again, which must come up from slot `b`, and then the disk `--install --local` made, from its slot a (`docs/install.md`) |
@@ -224,22 +224,37 @@ and writes the boot job's matrix. A path selects tags:
 | a port's or a package's directory | its tests (its name), those of the ports built on it or needing it (`PORT_DEPS`, `PORT_RDEPS`) and what it implements (netd: `netfs`; mkfs.ext2: `ext2`; get-myos: `install`, `pkg`) |
 | `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`, sdmmc also `sdmmc` and `sdio`; the USB modules: `usb`; virtio_net: `virtio_net`, `netfs`; pl061: `irq`); `modules/abi`, `acpi` and `pci_enum`: everything |
 | `linux-compat/` | `linux` |
-| `kernel/src/arch/<arch>` | everything on that arch's machines, `smoke` on the others |
-| `kernel/`, `toolchain/`, `src/`, `build.rs`, `scripts/`, `.github/`, `etc/`, `user/init`, `user/tests`, anything else | everything |
+| `kernel/src/arch/<arch>` | everything on that arch's machines, variants too; the tags (`smoke` at least) on the other arches' primary machines |
+| `kernel/src/iommu/`, `kernel/src/limine_boot.rs`, `src/`, `boot/`, `.github/`, `scripts/ci-*` | everything on every machine: what differs between an arch's machines |
+| `kernel/`, `toolchain/`, `build.rs`, `scripts/`, `etc/`, `user/init`, `user/tests`, anything else | everything on the primary machines, `smoke` on the variants |
 | documentation (`*.md`, `docs/`, `licenses/`) | nothing: no boot |
 
 `smoke` is always in. A push to master, the daily run, a dispatch with
-`full_boot` and a pull request labelled `ci:full` run everything. The image
-carries the Linux layer (`linux_compat`) when a `linux` test runs.
+`full_boot` and a pull request labelled `ci:full` run everything on every
+machine. The image carries the Linux layer (`linux_compat`) when a
+`linux` test runs.
 
-The selected tests run on every machine (bios, uefi, bios with AMD's
-IOMMU (`bios-amd`: its light boot only, the long groups exercise nothing
-the unit changes), aarch64, aarch64 with GICv3, riscv64; the Raspberry Pi
-3, below, runs its own) in parallel boots: the long tests' groups (`ostest`,
-`alpine`: the curated os-test list, the apk installs) each in a boot of
-their own, whole (their tests build on each other), and one boot with
-everything else, so a full run is three boots of ten minutes per machine
-instead of one of thirty. Each boot
+The machines are bios, uefi, bios with AMD's IOMMU (`bios-amd`: its light
+boot only, the long groups exercise nothing the unit changes), aarch64,
+aarch64 with GICv3 and riscv64 (the Raspberry Pi 3, below, runs its own).
+Each arch has a primary machine (uefi, aarch64-gicv3, riscv64), the one a
+pull request's selection boots on; the others are variants of it, in the
+firmware, the IOMMU or the interrupt controller, and boot the smoke set
+for a change that selects everything, nothing for one that selects tags:
+what sets them apart is exercised by the machine-specific paths of the
+table (everything on every machine) and by master's runs. A pull request
+that touches the kernel thus boots 16 times instead of 19, one that
+touches a port 4 times instead of 7.
+
+A machine's selection runs in parallel boots: the long tests' groups
+(`ostest` and `alpine`: the curated os-test list and the apk installs,
+whose tests build on each other; `pkg`: the packages' install from the
+mirror, the packages' and get-myos's tests on it and the `install` tests
+of the boot disk, a boot of 13 minutes on riscv64 that the light boot
+no longer carries) each in a boot of their own, whole, and one light
+boot with everything else (9 minutes on riscv64), so a full run is four
+boots of at most a quarter of an hour per machine instead of one of
+thirty. Each boot
 gets a budget from what it runs (riscv64 half as much again); a
 selection without `net` tests skips the mirror, one without `alpine-disk`
 tests the Alpine disk, which a boot that needs it restores from the
