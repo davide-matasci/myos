@@ -50,9 +50,11 @@ compiled against newlib does (mlibc's own default shows less:
 
 A port: `PORT_LIBC=mlibc` and `mlibc` in `PORT_DEPS`; a build script
 that uses `myos_write_cross_cc` sources its `port.env` first, and the cc
-it gets compiles and links against mlibc. CI caches mlibc like a port
-(`scripts/ci-registry.sh`, package `mlibc`): the job of a port built on
-it builds it when the registry lacks it, as any dependency.
+it gets compiles and links against mlibc. In CI mlibc is a port like any
+other (kind `port`, not `toolchain`: no job of its own in the workflow):
+the ports job builds and caches it (`scripts/ci-registry.sh`, package
+`mlibc`), and the job of a port built on it builds it itself when the
+registry lacks it, as any dependency.
 
 ## The sysdeps
 
