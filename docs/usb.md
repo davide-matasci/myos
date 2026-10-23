@@ -1,6 +1,6 @@
 # USB
 
-Four modules give myos a USB bus: `xhci` drives the host controller and
+Five modules give myos a USB bus: `xhci` drives the host controller and
 publishes the bus, `usb_hub` makes the devices behind hubs reachable,
 `usb_hid` feeds mice and tablets to the console's pointer
 (`/dev/console/mouse`, `docs/tty.md`) and keyboards to its keyboard
@@ -8,11 +8,13 @@ input, and
 `usb_storage` turns memory sticks and disk enclosures into `/dev/sdX/`
 (`data`, the whole disk, `p<N>` per GPT partition, and `info`: the
 disk's size, its `/proc/usb` device and vendor:product, and the vendor
-and model its INQUIRY answer gives). A device plugged
+and model its INQUIRY answer gives); `usbdev` hands what none of them
+takes to programs, as `/dev/usb` (a USB Wi-Fi adapter's driver runs in
+the wifi daemon, `docs/wifi.md`). A device plugged
 in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries a
-controller, a hub, a mouse and two sticks (one plugged in by a test),
-and a test plugs in a keyboard.
+controller, a hub, a mouse, two sticks (one plugged in by a test) and a
+serial adapter, and a test plugs in a keyboard.
 
 | Module | What |
 |--------|------|
@@ -20,6 +22,7 @@ and a test plugs in a keyboard.
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
 | `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service; boot keyboards (3/1/1): the boot report's keys into the console's `keyboard` service, its Caps Lock LED from the console |
+| `modules/usbdev` | Every interface the others leave: `/dev/usb/<id>/`, its control, bulk and interrupt transfers as files for a driver that runs as a program |
 
 ## How the modules reach each other
 
@@ -170,6 +173,44 @@ disk: its name in `/dev`, the label `usb_storage` hands the host through
 port path (parent and port, up to the root) says where a disk is plugged
 in.
 
+## `/dev/usb`
+
+`usbdev` registers its driver last (it is loaded after `usb_hid`), so the
+host offers it the interfaces the kernel's drivers passed on, and it takes
+them all: a vendor-class device (a Wi-Fi adapter, a serial adapter) gets
+a directory named after its `/proc/usb` id, `/dev/usb/002/`:
+
+- `info`: `id VVVV:PPPP`, `class CC:SS:PP`, `speed low|full|high|super`,
+  a line per interface taken (`if0 ff:ff:ff`) and per bulk or interrupt
+  endpoint (`ep81 bulk in 64`: the address in hex, the type, the
+  direction, the max packet size), then `held` while a program drives
+  the device.
+- `ctl`: one program holds it at a time, root only, from its `open` to
+  its last close (a second `open` fails). It reads as `info`; a write of
+  `clear 81` recovers a stalled endpoint (`CLEAR_FEATURE(ENDPOINT_HALT)`).
+  The files below are only there while it is held.
+- `ep0`: control transfers. A write is one: the 8-byte setup packet
+  (`bmRequestType`, `bRequest`, `wValue`, `wIndex`, `wLength`, little
+  endian), then an OUT transfer's data. An IN transfer's data is the
+  next read. A transfer that fails (a stall, a timeout) fails the write.
+- `epXX`, one per bulk or interrupt endpoint. An OUT endpoint's write is
+  one transfer, of up to a second. An IN endpoint's file, once opened,
+  has a transfer queued (`transfer_start`, a page at most for bulk) and
+  the module keeps one queued while the device is held, so a `poll`
+  before the first read sees what comes; a read returns one completed
+  transfer whole (a short one as it came) or waits for one, and `poll`
+  says one is there. Four completed transfers wait to be read; more are
+  dropped until the reader catches up.
+
+When the device is pulled out every file's I/O fails (a read: end of
+file) and a waiting reader wakes; its directory goes when `ctl` is let
+go. Closing `ctl` drops what was not read; a transfer still queued then
+completes into nothing.
+
+The module is loaded at boot, unlike `pcidev`: a USB device reaches only
+the buffers the controller gives it, never the memory of the program
+that drives it, so `/dev/usb` needs no IOMMU.
+
 ## Testing
 
 The launcher gives every boot `qemu-xhci`, a `usb-hub` on its `port=1`
@@ -191,11 +232,18 @@ clicks through the monitor (`user/c/host.sh mouse`: `mouse_move`,
 `sendkey` (QEMU types on the keyboard added last), checks
 `/dev/console/kbd`'s events, a line typed on tty9 with Caps Lock and a
 held key's repeats, that the console's own keyboard's interrupt count did
-not move, and the unplug. A boot in a
+not move, and the unplug. A test boot has a `usb-serial` (QEMU's FTDI
+FT232, vendor class) on the hub's second port too, whose line is a UDP
+chardev sending to its own port on the host's loopback (5555): what goes
+out on its bulk OUT endpoint comes back on its bulk IN one. `kernel.sh`'s
+`usbdev` test finds it in `/dev/usb`, holds its `ctl`, reads its device
+descriptor through `ep0` and loops a string through `ep02` and `ep81`
+(after the two status bytes the FTDI puts first). A boot in a
 window (`cargo run` without a test) has a `usb-tablet` there instead,
 which follows the host's pointer without grabbing it (the monitor's
 `mouse_move` is relative, so the tests use the mouse). The boot markers
-`[ OK ] xhci`, `usb_hub`, `usb_storage`, `usb_hid` cover the modules' init.
+`[ OK ] xhci`, `usb_hub`, `usb_storage`, `usb_hid`, `usbdev` cover the
+modules' init.
 
 ## Limits
 
@@ -211,7 +259,13 @@ which follows the host's pointer without grabbing it (the monitor's
 - No isochronous transfers, no streams, no MSI for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at
-  a time; a control transfer's data stage is 1 KiB at most.
+  a time; a control transfer's data stage is 1 KiB at most. A bulk IN
+  endpoint whose transfers are queued (`transfer_start`) has a page of
+  its own instead, so a transfer waiting for data holds nothing else.
+- `/dev/usb`: 8 devices, 4 interfaces and 16 endpoints each; an IN
+  endpoint's transfer is a page (bulk) or a packet of up to 64 bytes
+  (interrupt), and four completed ones wait to be read. No isochronous
+  endpoints; one program per device.
 - Keyboards through the boot protocol only: six keys at once (more is
   ErrorRollOver), no media or system keys (they are another interface,
   in the report protocol, which `usb_hid` does not take), and only the

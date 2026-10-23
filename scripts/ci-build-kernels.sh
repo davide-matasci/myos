@@ -280,6 +280,9 @@ HELLO_OK_ELFS=(
   target/usb_hid-x86_64-unknown-none
   target/usb_hid-aarch64-unknown-none-softfloat
   target/usb_hid-riscv64imac-unknown-none-elf
+  target/usbdev-x86_64-unknown-none
+  target/usbdev-aarch64-unknown-none-softfloat
+  target/usbdev-riscv64imac-unknown-none-elf
   target/pcidev-x86_64-unknown-none
   target/pcidev-aarch64-unknown-none-softfloat
   target/pcidev-riscv64imac-unknown-none-elf
