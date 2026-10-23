@@ -275,6 +275,17 @@ sdmmc() {
 	[ "$(dd if=$d/data bs=512 skip=8388608 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 }
 t -t blk,sdmmc,smoke sdmmc sdmmc
+# The Raspberry Pi's firmware (modules/rpi_firmware): /proc/firmware has
+# what it answers through the mailbox: the revisions, the core clock (the
+# sdhost's), the USB controller's power. A board without the mailbox has
+# no /proc/firmware, and nothing to check.
+rpi_firmware() {
+	[ -e /proc/firmware ] || return 0
+	cat /proc/firmware
+	grep -q '^firmware 0x' /proc/firmware && grep -Eq '^clock core [1-9][0-9]* Hz$' /proc/firmware &&
+		grep -Eq '^power usb (on|off)$' /proc/firmware
+}
+t -t smoke,rpi_firmware rpi_firmware rpi_firmware
 # A full filesystem: the write that fills it gives what fit, the next says
 # ENOSPC, natively and under the Linux layer (apk on a full /data stopped
 # with "I/O error", the generic failure's errno), as does a pwrite into a
@@ -495,7 +506,9 @@ platform() {
 	! grep '^dma ' /proc/platform | grep -Evq '^dma (pci [0-9a-f:.]*|mmio 0x[0-9a-f]*)( 0x[0-9a-f]* 0x[0-9a-f]*( bus 0x[0-9a-f]*)?)* (non)?coherent$' || return 1
 	if grep -q 'dma=noncoherent' /proc/cmdline; then
 		! grep -q '^dma .* coherent$' /proc/platform || return 1
-	else
+	elif ! grep -q '^model Raspberry Pi' /proc/platform; then
+		# QEMU's boards mark their devices coherent; a Raspberry Pi's are
+		# not (its tree says nothing, and the kernel takes that for not).
 		! grep -q '^dma .* noncoherent$' /proc/platform || return 1
 	fi
 	! grep -q 'differs' /proc/platform
@@ -562,13 +575,16 @@ fat_space() {
 }
 t -t fat fat_space fat_space
 
-# USB (docs/usb.md): every boot has an xHCI controller with a hub on its
-# first port and a memory stick behind the hub, the same FAT volume as
-# /dev/vda/data. The stick is enumerated on the USB thread after the modules
-# load, so the test waits for /dev/sdb/data (sda is the virtio-scsi disk:
-# the kernel hands out the sd letters to both); /proc/usb lists the hub and
-# the stick with their drivers, the stick's line naming its disk; the volume
-# mounts and reads.
+# USB (docs/usb.md): every boot has a USB controller (the virt boards'
+# xHCI, the Raspberry Pi 3's DWC2) with a hub on its first port and a
+# memory stick behind the hub, the same FAT volume as /dev/vda/data. The
+# stick is enumerated on the USB thread after the modules load, so the
+# test waits for its /dev/$USB_DISK/data: sdb where sda is the virtio-scsi
+# disk (the kernel hands out the sd letters to both), sda on the Pi 3,
+# which has no other; /proc/usb lists the hub and the stick with their
+# drivers, the stick's line naming its disk; the volume mounts and reads.
+export USB_DISK=sda
+grep -q ' virtio_scsi ' /dev/sda/info 2>/dev/null && USB_DISK=sdb
 wait_for() {
 	n=$1
 	shift
@@ -579,11 +595,11 @@ wait_for() {
 	done
 }
 usb_disk() {
-	wait_for 30 test -e /dev/sdb/data || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/$USB_DISK/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
 	grep -q ' hub ' /proc/usb || return 1
-	grep -q ':usb_storage sdb$' /proc/usb || return 1
-	mkdir -p /tmp/usb && mount /dev/sdb/data /tmp/usb fat || return 1
+	grep -q ":usb_storage $USB_DISK$" /proc/usb || return 1
+	mkdir -p /tmp/usb && mount /dev/$USB_DISK/data /tmp/usb fat || return 1
 	[ "$(cat /tmp/usb/msg)" = fat-msg ]
 }
 t -t usb,blk usb_disk usb_disk
@@ -635,8 +651,8 @@ disk_info() {
 		grep -Eq '^vda [0-9]+ virtio_blk (pci|mmio) ' /dev/vda/info &&
 		grep -Eq '^sda 1048576 virtio_scsi (pci|mmio) [^ ]+ target 0:0 vendor "QEMU" model "QEMU HARDDISK"$' /dev/sda/info ||
 		{ cat /dev/*/info; return 1; }
-	id=$(grep ':usb_storage sdb$' /proc/usb | cut -d' ' -f1)
-	grep -Eq "^sdb [0-9]+ usb_storage usb $id [0-9a-f]{4}:[0-9a-f]{4} " /dev/sdb/info || { cat /dev/sdb/info /proc/usb; return 1; }
+	id=$(grep ":usb_storage $USB_DISK$" /proc/usb | cut -d' ' -f1)
+	grep -Eq "^$USB_DISK [0-9]+ usb_storage usb $id [0-9a-f]{4}:[0-9a-f]{4} " /dev/$USB_DISK/info || { cat /dev/$USB_DISK/info /proc/usb; return 1; }
 }
 t -t blk disk_info disk_info
 
@@ -646,12 +662,12 @@ t -t blk disk_info disk_info
 # removed (README, VFS). The stick of usb_disk is the disk.
 mount_rules() {
 	umount /tmp/usb && ! [ -e /tmp/usb/msg ] || return 1
-	mount /dev/sdb/data /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
-	mount /dev/sdb/data /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
-	mount /dev/sdb/data /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
-	umount /mnt && mkdir -p /tmp/a/b && mount /dev/sdb/data /tmp/a/b fat || return 1
-	grep -q '^/dev/sdb/data /tmp/a/b fat ' /proc/mounts || return 1
-	mount /dev/sdb/data /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
+	mount /dev/$USB_DISK/data /tmp/none fat 2>&1 | grep -q 'no such directory' || return 1
+	mount /dev/$USB_DISK/data /mnt fat && [ "$(cat /mnt/msg)" = fat-msg ] || return 1
+	mount /dev/$USB_DISK/data /tmp/usb fat 2>&1 | grep -q 'already mounted' || return 1
+	umount /mnt && mkdir -p /tmp/a/b && mount /dev/$USB_DISK/data /tmp/a/b fat || return 1
+	grep -q "^/dev/$USB_DISK/data /tmp/a/b fat " /proc/mounts || return 1
+	mount /dev/$USB_DISK/data /tmp/a/b fat 2>&1 | grep -q 'already a mount point' || return 1
 	! mv /tmp/a /tmp/c 2>/dev/null || return 1
 	exec 4< /tmp/a/b/msg
 	umount /tmp/a/b 2>&1 | grep -q busy || return 1
@@ -725,16 +741,16 @@ usb_hub_replug() {
 	! grep -q ' /tmp/usb ' /proc/mounts || umount /tmp/usb || return 1
 	echo "HOST tests hub-unplug" >&3
 	# The stick goes first (a detach takes the children first), the hub after.
-	wait_for 30 sh -c '! test -e /dev/sdb/data' || { cat /proc/usb; return 1; }
+	wait_for 30 sh -c '! test -e /dev/$USB_DISK/data' || { cat /proc/usb; return 1; }
 	wait_for 30 sh -c '! grep -q " hub " /proc/usb' || { cat /proc/usb; return 1; }
 	echo "HOST tests hub-plug" >&3
 	wait_for 30 grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
 	sleep 2
 	echo "HOST tests hub-disk" >&3
-	wait_for 30 test -e /dev/sdb/data || { cat /proc/usb; return 1; }
+	wait_for 30 test -e /dev/$USB_DISK/data || { cat /proc/usb; return 1; }
 	cat /proc/usb
-	grep -q 'port 1 .*:usb_storage sdb$' /proc/usb || return 1
-	/bin/sbase/dd if=/dev/sdb/data of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
+	grep -q "port 1 .*:usb_storage $USB_DISK$" /proc/usb || return 1
+	/bin/sbase/dd if=/dev/$USB_DISK/data of=/tmp/usb-sdb.bin bs=512 count=1 2>/dev/null || return 1
 	[ "$(/bin/sbase/wc -c < /tmp/usb-sdb.bin)" -eq 512 ]
 }
 t -t usb usb_hub_replug usb_hub_replug

@@ -1975,6 +1975,266 @@ pub struct UsbDriverOps {
     pub disconnect: unsafe extern "C" fn(dev: u32, intf: u8),
 }
 
+// ---- The USB core and its host controller drivers (docs/usb.md) -----------
+//
+// The `usb` module owns the bus: the devices, their enumeration, the class
+// drivers, the hubs' children, `/proc/usb` and the [`UsbHostOps`] service
+// above. A host controller module (`xhci`, `dwc2`) registers each
+// controller it drives with it ([`UsbCoreOps::controller_register`], the
+// service [`USB_CORE_SERVICE`]) and does what only its hardware knows
+// ([`UsbHcdOps`]): the root ports, the per-device state the controller
+// keeps and the transfers. The core calls a controller's table from its
+// own thread and from the class drivers' callers, one call per device at a
+// time (it holds the device's lock across the call); the controller calls
+// the core's from any context, its interrupt handler included.
+
+/// The name the core publishes its [`UsbCoreOps`] under.
+pub const USB_CORE_SERVICE: &str = "usbcore";
+/// [`UsbCoreOps::version`].
+pub const USB_CORE_VERSION: u32 = 1;
+/// [`UsbHcdOps::version`].
+pub const USB_HCD_VERSION: u32 = 1;
+/// [`UsbHcdOps::transfer_take`]: the transfer has not completed yet.
+pub const USB_EPENDING: i32 = -115;
+
+/// Where a new device hangs and how it is reached
+/// ([`UsbHcdOps::device_new`]).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct UsbDevicePath {
+    /// `USB_SPEED_*`.
+    pub speed: u8,
+    /// The root port (1-based) the device is under.
+    pub root_port: u8,
+    /// Hubs above it.
+    pub depth: u8,
+    /// Its port on its hub, or the root port for a device on one.
+    pub port: u8,
+    /// The address the core gives it (1 to 127; every device of a
+    /// controller has its own).
+    pub address: u8,
+    /// A low- or full-speed device behind a high-speed hub: the port of
+    /// that hub (its transaction translator's), 0 for no translator.
+    pub tt_port: u8,
+    /// The hubs' ports from the root, 4 bits per tier (xHCI's route
+    /// string).
+    pub route: u32,
+    /// The controller's handle of its hub, 0 for a device on a root port.
+    pub parent: u32,
+    /// The controller's handle of the hub whose transaction translator it
+    /// goes through, 0 for none.
+    pub tt_hub: u32,
+}
+
+/// A root port's state ([`UsbHcdOps::port_status`]).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct UsbPortStatus {
+    /// A device is attached.
+    pub connected: u8,
+    /// The port is enabled: the device answers at `speed`.
+    pub enabled: u8,
+    /// `USB_SPEED_*` of the attached device, once the port is enabled.
+    pub speed: u8,
+}
+
+/// A host controller, for the core ([`UsbCoreOps::controller_register`]).
+/// `ctrl` is the value the driver registered the controller with (its own
+/// index); `dev` a handle [`UsbHcdOps::device_new`] returned. The calls that
+/// wait (a reset, a transfer) run in task context; `device_abort` may be
+/// called while another call on the device is in flight, the rest never
+/// overlap on one device.
+#[repr(C)]
+pub struct UsbHcdOps {
+    pub version: u32,
+    /// The driver's name (`/proc/usb`).
+    pub name: StrRef,
+    /// Root ports of the controller.
+    pub ports: unsafe extern "C" fn(ctrl: usize) -> u8,
+    /// Root port `port` (0-based): its state into `*out`, its change bits
+    /// acknowledged. 0 ok.
+    pub port_status: unsafe extern "C" fn(ctrl: usize, port: u8, out: *mut UsbPortStatus) -> i32,
+    /// Reset root port `port`, so its device answers at address 0 (a USB 3
+    /// port whose link trained is left as it is): 0 once the port is
+    /// enabled, negative otherwise.
+    pub port_reset: unsafe extern "C" fn(ctrl: usize, port: u8) -> i32,
+    /// Look at the controller's events now (the core's thread, every pass):
+    /// nonzero when the controller has no interrupt and wants to be asked
+    /// every few milliseconds.
+    pub poll: unsafe extern "C" fn(ctrl: usize) -> i32,
+    /// What `/proc/usb` says of the controller after its ports (the
+    /// interrupt, event counts): into `buf`, at most `len` bytes; the
+    /// length written.
+    pub describe: unsafe extern "C" fn(ctrl: usize, buf: *mut u8, len: usize) -> usize,
+    /// A device at `path`, its default control endpoint ready at the
+    /// speed's default max packet size, nothing sent to it yet: the
+    /// controller's handle for it (positive), or negative.
+    pub device_new: unsafe extern "C" fn(ctrl: usize, path: *const UsbDevicePath) -> i32,
+    /// Give the device its address (`path.address`), the controller's way
+    /// (xHCI's Address Device, or a SET_ADDRESS the driver sends). 0 ok.
+    pub device_address: unsafe extern "C" fn(ctrl: usize, dev: u32) -> i32,
+    /// The device's control endpoint takes `max_packet` bytes a packet (its
+    /// device descriptor said so). 0 ok.
+    pub device_ep0: unsafe extern "C" fn(ctrl: usize, dev: u32, max_packet: u16) -> i32,
+    /// The `n` endpoints of the configuration about to be set (isochronous
+    /// ones are not among them). 0 ok.
+    pub device_configure: unsafe extern "C" fn(ctrl: usize, dev: u32, eps: *const UsbEndpoint, n: usize) -> i32,
+    /// The device is a hub ([`UsbHostOps::hub_configure`]'s arguments). 0 ok.
+    pub device_hub: unsafe extern "C" fn(ctrl: usize, dev: u32, ports: u8, tt_think: u8, multi_tt: u8) -> i32,
+    /// The device is going: every transfer in flight on it fails with
+    /// [`USB_EGONE`] now, its waiters woken, and none starts from here on.
+    /// Called with no lock held, while a transfer may be in flight.
+    pub device_abort: unsafe extern "C" fn(ctrl: usize, dev: u32),
+    /// Forget the device (after `device_abort`, nothing in flight): its
+    /// controller state and memory.
+    pub device_free: unsafe extern "C" fn(ctrl: usize, dev: u32),
+    /// [`UsbHostOps::control`] on the device.
+    pub control: unsafe extern "C" fn(
+        ctrl: usize,
+        dev: u32,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        data: *mut u8,
+        len: u16,
+    ) -> i32,
+    /// [`UsbHostOps::bulk`] on the device.
+    pub bulk: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8, data: *mut u8, len: usize, timeout_ms: u32) -> i32,
+    /// Queue one IN transfer on an interrupt or bulk `endpoint` (a bulk one
+    /// of [`USB_ASYNC_BULK_MAX`] bytes at most) into `data` (one per
+    /// endpoint at a time; the core keeps the buffer until `transfer_take`
+    /// reports it done). When it completes, the driver calls
+    /// [`UsbCoreOps::wake`]. 0, or negative.
+    pub transfer_start: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8, data: *mut u8, len: usize) -> i32,
+    /// The queued transfer on `endpoint`: [`USB_EPENDING`] while it runs;
+    /// else its result (the bytes, now in the buffer, or a `USB_E*` error)
+    /// and the endpoint takes another.
+    pub transfer_take: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8) -> i32,
+    /// The controller's side of recovering a stalled endpoint (the core
+    /// sends the CLEAR_FEATURE). 0 ok.
+    pub clear_halt: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8) -> i32,
+}
+
+/// The core, for the host controller drivers (the [`USB_CORE_SERVICE`]
+/// table). `port_change` and `wake` are safe from an interrupt handler.
+#[repr(C)]
+pub struct UsbCoreOps {
+    pub version: u32,
+    /// A controller `ops` drives, known to it as `ctrl`: the core's index
+    /// for it (what `port_change` and `wake` take), or negative. The core's
+    /// thread scans its root ports from here on.
+    pub controller_register: unsafe extern "C" fn(ops: *const UsbHcdOps, ctrl: usize) -> i32,
+    /// Root port `port` (0-based) of the core's controller `index` changed.
+    pub port_change: unsafe extern "C" fn(index: u32, port: u8),
+    /// Something completed on the core's controller `index` (a queued
+    /// interrupt transfer): its thread looks.
+    pub wake: unsafe extern "C" fn(index: u32),
+}
+
+impl UsbCoreOps {
+    pub fn controller_register(&self, ops: &'static UsbHcdOps, ctrl: usize) -> i32 {
+        unsafe { (self.controller_register)(ops, ctrl) }
+    }
+
+    pub fn port_change(&self, index: u32, port: u8) {
+        unsafe { (self.port_change)(index, port) }
+    }
+
+    pub fn wake(&self, index: u32) {
+        unsafe { (self.wake)(index) }
+    }
+}
+
+unsafe impl Sync for UsbHcdOps {}
+unsafe impl Sync for UsbCoreOps {}
+
+// ---- The Raspberry Pi's firmware (docs/raspberry-pi.md) ---------------------
+//
+// The `rpi_firmware` module talks to the VideoCore firmware through its
+// mailbox property interface and publishes a [`RpiFirmwareOps`] table as
+// the service [`RPI_FIRMWARE_SERVICE`]: a driver asks it to power a device
+// domain on (the USB controller) or for a clock's rate.
+
+/// The name the module publishes its [`RpiFirmwareOps`] under.
+pub const RPI_FIRMWARE_SERVICE: &str = "rpi_firmware";
+/// [`RpiFirmwareOps::version`].
+pub const RPI_FIRMWARE_VERSION: u32 = 1;
+
+/// Property tags ([`RpiFirmwareOps::property`]): the firmware's and board's
+/// revisions, a device's power state (`RPI_POWER_*`: `state` bit 0 on, bit 1
+/// wait for it), a clock's rate (`RPI_CLOCK_*`) in Hz.
+pub const RPI_TAG_FIRMWARE_REVISION: u32 = 0x0000_0001;
+pub const RPI_TAG_BOARD_REVISION: u32 = 0x0001_0002;
+pub const RPI_TAG_GET_POWER_STATE: u32 = 0x0002_0001;
+pub const RPI_TAG_SET_POWER_STATE: u32 = 0x0002_8001;
+pub const RPI_TAG_GET_CLOCK_RATE: u32 = 0x0003_0002;
+/// The power domains the firmware switches.
+pub const RPI_POWER_SD_CARD: u32 = 0;
+pub const RPI_POWER_UART0: u32 = 1;
+pub const RPI_POWER_UART1: u32 = 2;
+pub const RPI_POWER_USB_HCD: u32 = 3;
+/// The clocks it reports.
+pub const RPI_CLOCK_EMMC: u32 = 1;
+pub const RPI_CLOCK_UART: u32 = 2;
+pub const RPI_CLOCK_ARM: u32 = 3;
+pub const RPI_CLOCK_CORE: u32 = 4;
+
+/// The firmware, for the drivers (the [`RPI_FIRMWARE_SERVICE`] table).
+/// Task context only: a call waits for the firmware's answer.
+#[repr(C)]
+pub struct RpiFirmwareOps {
+    pub version: u32,
+    /// Run the property tags in `tags` (`words` of them: each a tag id, its
+    /// value buffer's size in bytes, a request code of 0 and the buffer,
+    /// as the mailbox property interface lays them out, without the
+    /// message header and end tag) and write the firmware's answer over
+    /// them (the response code of each, bit 31 set, with the length it
+    /// filled, and the values). 0, or negative when the firmware refused
+    /// the message, did not answer, or `tags` does not fit.
+    pub property: unsafe extern "C" fn(tags: *mut u32, words: usize) -> i32,
+}
+
+impl RpiFirmwareOps {
+    /// [`RpiFirmwareOps::property`] on `tags`.
+    pub fn property(&self, tags: &mut [u32]) -> i32 {
+        unsafe { (self.property)(tags.as_mut_ptr(), tags.len()) }
+    }
+
+    /// One tag with `values` of 4 bytes each (at most 5), in and out: the
+    /// values the firmware answered, `None` when it did not or the tag
+    /// failed.
+    pub fn tag<const N: usize>(&self, tag: u32, values: [u32; N]) -> Option<[u32; N]> {
+        let mut buf = [0u32; 8];
+        if N > 5 {
+            return None;
+        }
+        buf[0] = tag;
+        buf[1] = (N * 4) as u32;
+        buf[3..3 + N].copy_from_slice(&values);
+        if self.property(&mut buf[..3 + N]) < 0 || buf[2] & 0x8000_0000 == 0 {
+            return None;
+        }
+        let mut out = [0u32; N];
+        out.copy_from_slice(&buf[3..3 + N]);
+        Some(out)
+    }
+
+    /// Power domain `device` (`RPI_POWER_*`) on, waiting until it is:
+    /// whether it is on now.
+    pub fn power_on(&self, device: u32) -> bool {
+        self.tag(RPI_TAG_SET_POWER_STATE, [device, 3]).is_some_and(|[_, state]| state & 1 != 0 && state & 2 == 0)
+    }
+
+    /// The rate of clock `clock` (`RPI_CLOCK_*`) in Hz, `None` when the
+    /// firmware does not know it.
+    pub fn clock_rate(&self, clock: u32) -> Option<u32> {
+        self.tag(RPI_TAG_GET_CLOCK_RATE, [clock, 0]).map(|[_, rate]| rate).filter(|&r| r != 0)
+    }
+}
+
+unsafe impl Sync for RpiFirmwareOps {}
+
 // ---- The pointer (docs/tty.md) ---------------------------------------------
 //
 // The console module owns `/dev/console/mouse` and publishes a

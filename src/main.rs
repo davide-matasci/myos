@@ -439,44 +439,67 @@ fn usb_hot_img_path() -> PathBuf {
 /// FAT volume as `/dev/vda/data`, in its own file since QEMU locks images). A
 /// second stick's drive is defined but plugged into root port 2 only by the
 /// hot-plug test, through the monitor (`user/tests/host.sh usb-plug`).
+/// A QEMU USB bus the test devices go on: its name, and the port prefix
+/// of the devices plugged in by the tests and the launcher besides the
+/// hub (the hub is on port 1 of every bus). The host scripts get both
+/// (`MYOS_USB_BUS`, `MYOS_USB_PORT`, `boot_test::handle_host_request`).
+#[derive(Clone, Copy)]
+pub struct UsbBus {
+    pub name: &'static str,
+    pub port: &'static str,
+}
+
+/// The virt boards' `qemu-xhci`: the devices on root ports of their own.
+pub const XHCI_USB: UsbBus = UsbBus { name: "xhci.0", port: "" };
+/// The Raspberry Pi 3's DWC2 has one root port: everything hangs from the
+/// hub on it.
+pub const RPI3_USB: UsbBus = UsbBus { name: "usb-bus.0", port: "1." };
+
 fn add_usb(cmd: &mut Command) {
+    cmd.arg("-device").arg("qemu-xhci,id=xhci");
+    add_usb_devices(cmd, XHCI_USB);
+}
+
+/// The hub on port 1 of `bus`, the stick behind it (`/dev/sdb/data`, the
+/// FAT volume of `/dev/vda/data` in its own image file) and the drive of
+/// the stick `user/tests/host.sh usb-plug` plugs in.
+fn add_usb_devices(cmd: &mut Command, bus: UsbBus) {
     let fat = fat_img_path();
     for dest in [usb_img_path(), usb_hot_img_path()] {
         std::fs::copy(&fat, &dest).unwrap_or_else(|e| panic!("copy {} to {}: {e}", fat.display(), dest.display()));
     }
-    cmd.arg("-device").arg("qemu-xhci,id=xhci");
-    cmd.arg("-device").arg("usb-hub,bus=xhci.0,port=1,id=usbhub");
+    cmd.arg("-device").arg(format!("usb-hub,bus={},port=1,id=usbhub", bus.name));
     cmd.arg("-drive")
         .arg(format!("if=none,id=usb0,format=raw,file={}", usb_img_path().display()));
-    cmd.arg("-device").arg("usb-storage,bus=xhci.0,port=1.1,drive=usb0,id=usbdisk");
+    cmd.arg("-device").arg(format!("usb-storage,bus={},port=1.1,drive=usb0,id=usbdisk", bus.name));
     cmd.arg("-drive")
         .arg(format!("if=none,id=usbhot,format=raw,file={}", usb_hot_img_path().display()));
 }
 
-/// The pointer, on the USB bus of [`add_usb`] (`/dev/console/mouse`,
-/// docs/tty.md): a `usb-mouse` in the test boots, where the host moves it
-/// through the monitor (`mouse_move` is relative, `user/tests/host.sh
-/// mouse`); a `usb-tablet` in a window, which follows the host's pointer
-/// without grabbing it.
-fn add_pointer(cmd: &mut Command, test: bool) {
+/// The pointer, on USB bus `bus` (`/dev/console/mouse`, docs/tty.md): a
+/// `usb-mouse` in the test boots, where the host moves it through the
+/// monitor (`mouse_move` is relative, `user/tests/host.sh mouse`); a
+/// `usb-tablet` in a window, which follows the host's pointer without
+/// grabbing it.
+fn add_pointer(cmd: &mut Command, bus: UsbBus, test: bool) {
     let dev = if test { "usb-mouse" } else { "usb-tablet" };
-    cmd.arg("-device").arg(format!("{dev},bus=xhci.0,port=3,id=usbpointer"));
+    cmd.arg("-device").arg(format!("{dev},bus={},port={}3,id=usbpointer", bus.name, bus.port));
 }
 
-/// A USB serial adapter (QEMU's FTDI FT232) on the hub of [`add_usb`] in
-/// the test boots: a vendor-class device no kernel driver takes, which
-/// `usbdev` lists in `/dev/usb` for the test to drive
-/// (`user/tests/kernel.sh` usbdev). Its line loops back: a UDP chardev
-/// sending to its own port, so what the guest writes to the bulk OUT
-/// endpoint comes back on the bulk IN one.
-fn add_usb_serial(cmd: &mut Command, test: bool) {
+/// A USB serial adapter (QEMU's FTDI FT232) on the hub of `bus`
+/// ([`add_usb_devices`]) in the test boots: a vendor-class device no
+/// kernel driver takes, which `usbdev` lists in `/dev/usb` for the test
+/// to drive (`user/tests/kernel.sh` usbdev). Its line loops back: a UDP
+/// chardev sending to its own port, so what the guest writes to the bulk
+/// OUT endpoint comes back on the bulk IN one.
+fn add_usb_serial(cmd: &mut Command, bus: UsbBus, test: bool) {
     if !test {
         return;
     }
     cmd.arg("-chardev").arg(format!(
         "udp,id=usbserial,host=127.0.0.1,port={USB_SERIAL_PORT},localaddr=127.0.0.1,localport={USB_SERIAL_PORT}"
     ));
-    cmd.arg("-device").arg("usb-serial,bus=xhci.0,port=1.2,chardev=usbserial,always-plugged=on,id=usbserial");
+    cmd.arg("-device").arg(format!("usb-serial,bus={},port=1.2,chardev=usbserial,always-plugged=on,id=usbserial", bus.name));
 }
 
 /// The UDP port of [`add_usb_serial`]'s loop, on the host's loopback.
@@ -620,8 +643,8 @@ fn run_bios(bios_path: &str) {
         .arg("-boot")
         .arg("menu=off");
     add_virtio_blk_x86(&mut cmd);
-    add_pointer(&mut cmd, false);
-    add_usb_serial(&mut cmd, false);
+    add_pointer(&mut cmd, XHCI_USB, false);
+    add_usb_serial(&mut cmd, XHCI_USB, false);
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
@@ -656,8 +679,8 @@ fn run_uefi(uefi_path: &str) {
         .arg("-nic")
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
-    add_pointer(&mut cmd, false);
-    add_usb_serial(&mut cmd, false);
+    add_pointer(&mut cmd, XHCI_USB, false);
+    add_usb_serial(&mut cmd, XHCI_USB, false);
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
@@ -771,8 +794,8 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
         .arg("menu=off")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
-    add_pointer(&mut cmd, true);
-    add_usb_serial(&mut cmd, true);
+    add_pointer(&mut cmd, XHCI_USB, true);
+    add_usb_serial(&mut cmd, XHCI_USB, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
@@ -841,8 +864,8 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
         .arg("none")
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
-    add_pointer(&mut cmd, true);
-    add_usb_serial(&mut cmd, true);
+    add_pointer(&mut cmd, XHCI_USB, true);
+    add_usb_serial(&mut cmd, XHCI_USB, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
@@ -999,8 +1022,8 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // The keyboard in every boot too: the boot tests type on it through
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
-    add_pointer(&mut cmd, ci);
-    add_usb_serial(&mut cmd, ci);
+    add_pointer(&mut cmd, XHCI_USB, ci);
+    add_usb_serial(&mut cmd, XHCI_USB, ci);
     // And a virtio mouse in the test boots, which `user/c/test.sh
     // virtio_mouse` moves (`host.sh mouse virtio`).
     if ci {
@@ -1136,6 +1159,11 @@ fn qemu_rpi3(test: bool) -> Command {
         .arg(format!("if=sd,format=raw,file={}", disk.display()))
         .arg("-serial")
         .arg(format!("file:{}", out.join("u-boot.log").display()));
+    // The USB devices of the virt boards, behind a hub on the one root
+    // port (`RPI3_USB`): the `usb_disk`, `mouse` and `usb_keyboard` tests.
+    add_usb_devices(&mut cmd, RPI3_USB);
+    add_pointer(&mut cmd, RPI3_USB, test);
+    add_usb_serial(&mut cmd, RPI3_USB, test);
     if test {
         cmd.args(["-serial", "stdio"]).arg("-monitor").arg(boot_test::monitor_arg());
     } else {
@@ -1622,8 +1650,8 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     // The keyboard in every boot too: the boot tests type on it through
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
-    add_pointer(&mut cmd, ci);
-    add_usb_serial(&mut cmd, ci);
+    add_pointer(&mut cmd, XHCI_USB, ci);
+    add_usb_serial(&mut cmd, XHCI_USB, ci);
     // And a virtio mouse in the test boots, which `user/c/test.sh
     // virtio_mouse` moves (`host.sh mouse virtio`).
     if ci {

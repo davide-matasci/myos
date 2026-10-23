@@ -259,6 +259,9 @@ HELLO_OK_ELFS=(
   target/acpi-x86_64-unknown-none
   target/acpi-aarch64-unknown-none-softfloat
   target/acpi-riscv64imac-unknown-none-elf
+  target/rpi_firmware-x86_64-unknown-none
+  target/rpi_firmware-aarch64-unknown-none-softfloat
+  target/rpi_firmware-riscv64imac-unknown-none-elf
   target/virtio_blk-x86_64-unknown-none
   target/virtio_blk-aarch64-unknown-none-softfloat
   target/virtio_blk-riscv64imac-unknown-none-elf
@@ -271,9 +274,15 @@ HELLO_OK_ELFS=(
   target/sdmmc-x86_64-unknown-none
   target/sdmmc-aarch64-unknown-none-softfloat
   target/sdmmc-riscv64imac-unknown-none-elf
+  target/usb-x86_64-unknown-none
+  target/usb-aarch64-unknown-none-softfloat
+  target/usb-riscv64imac-unknown-none-elf
   target/xhci-x86_64-unknown-none
   target/xhci-aarch64-unknown-none-softfloat
   target/xhci-riscv64imac-unknown-none-elf
+  target/dwc2-x86_64-unknown-none
+  target/dwc2-aarch64-unknown-none-softfloat
+  target/dwc2-riscv64imac-unknown-none-elf
   target/usb_hub-x86_64-unknown-none
   target/usb_hub-aarch64-unknown-none-softfloat
   target/usb_hub-riscv64imac-unknown-none-elf

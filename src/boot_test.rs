@@ -172,7 +172,7 @@ pub struct Outcome {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 39] = [
+const BOOT_MARKERS: [&str; 40] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -196,6 +196,7 @@ const BOOT_MARKERS: [&str; 39] = [
     "[ OK ] netmac",
     "[ OK ] nvme",
     "[ OK ] sdmmc",
+    "[ OK ] usb",
     "[ OK ] xhci",
     "[ OK ] usb_hub",
     "[ OK ] usb_storage",
@@ -237,7 +238,7 @@ impl Board {
 }
 
 /// [`BOOT_MARKERS`] that need no device a Raspberry Pi 3 lacks under QEMU.
-const RPI3_MARKERS: [&str; 25] = [
+const RPI3_MARKERS: [&str; 31] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -249,7 +250,13 @@ const RPI3_MARKERS: [&str; 25] = [
     "[ OK ] smp",
     "[ OK ] urandom",
     "[ OK ] hello",
+    "[ OK ] rpi_firmware",
     "[ OK ] sdmmc",
+    "[ OK ] usb",
+    "[ OK ] dwc2",
+    "[ OK ] usb_hub",
+    "[ OK ] usb_storage",
+    "[ OK ] usb_hid",
     "[ OK ] boot modules",
     "[ OK ] fork",
     "[ OK ] fork exec",
@@ -305,7 +312,11 @@ fn tail(text: &str, n: usize) -> String {
 /// the middle of an echo (`roo[ OK ] linux\nt`, `P[ OK ] linux\nassword:`).
 /// A status line still arriving, its tag or its text without the newline
 /// yet, is left out too: it would read as typed text and garble the login
-/// (riscv64-light on master, 2026-10-16).
+/// (riscv64-light on master, 2026-10-16). A character of the prompt can
+/// even land inside the status line, before its newline (`[ OK ] linuxP\n
+/// assword:`, the Pi 3's rc.local loading the layer as getty prompts): it
+/// goes with the line, and the prompt is matched without it
+/// ([`password_prompt`]).
 fn after_boot(text: &str) -> String {
     let text = text.rsplit_once("[ OK ] fork exec").map(|(_, t)| t).unwrap_or(text);
     let mut out = String::with_capacity(text.len());
@@ -324,6 +335,13 @@ fn after_boot(text: &str) -> String {
         }
     }
     out
+}
+
+/// getty asks for the password: the prompt, less a first letter a status
+/// line may have taken ([`after_boot`]); nothing else on the console ends
+/// so.
+fn password_prompt(text: &str) -> bool {
+    after_boot(text).contains("assword:")
 }
 
 const STATUS_TAGS: [&str; 4] = ["[ OK ] ", "[ FAIL ] ", "[ WARN ] ", "[ INFO ] "];
@@ -427,6 +445,17 @@ fn power_off(stdin: &mut ChildStdin, serial: &Shared, child: &mut Child) -> bool
     }
 }
 
+/// The board of the boot under test (`run`), for its host scripts: the
+/// QEMU USB bus their devices go on.
+static BOARD: std::sync::OnceLock<Board> = std::sync::OnceLock::new();
+
+fn usb_bus() -> crate::UsbBus {
+    match BOARD.get() {
+        Some(Board::Rpi3) => crate::RPI3_USB,
+        _ => crate::XHCI_USB,
+    }
+}
+
 /// A host request from the guest, `HOST <port> <args>`: the port's
 /// host-side script (`PORT_HOST`, docs/testing.md) runs on the host with the
 /// arguments, in the background, its messages on our stderr. The guest test
@@ -450,6 +479,8 @@ fn handle_host_request(req: &str, ports: &[crate::ports::Port]) {
             .args(&args)
             .current_dir(repo_root())
             .env("MYOS_QEMU_MONITOR", monitor_socket())
+            .env("MYOS_USB_BUS", usb_bus().name)
+            .env("MYOS_USB_PORT", usb_bus().port)
             .status();
         match status {
             Ok(s) if s.success() => {}
@@ -554,6 +585,7 @@ fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
 /// The outcome: every test passed (a crash, a stall or the budget running out
 /// ends the launcher at once instead).
 pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow: bool) -> Outcome {
+    let _ = BOARD.set(board);
     let mut stdin = child.stdin.take().expect("qemu stdin");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let mut stdout = child.stdout.take().expect("qemu stdout");
@@ -629,11 +661,11 @@ pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow
         }
         send(&mut stdin, b"\n");
         let soon = Instant::now() + ECHO_WAIT;
-        if wait_for(&serial, soon.min(login_deadline), |t| after_boot(t).contains("Password:")) {
+        if wait_for(&serial, soon.min(login_deadline), password_prompt) {
             break;
         }
     }
-    if !wait_for(&serial, login_deadline, |t| after_boot(t).contains("Password:")) {
+    if !wait_for(&serial, login_deadline, password_prompt) {
         fail(&serial, &mut child, "no password prompt after `root`");
     }
     send(&mut stdin, b"\n");
@@ -795,6 +827,11 @@ mod tests {
         assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[ O", "login: "), "roo");
         assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[", "login: "), "roo");
         assert!(after_boot("[ OK ] fork exec\nlogin: root\nP[ OK ] linux\nassword: ").contains("Password: "));
+        // The prompt's letter taken into the status line (the Pi 3 boot,
+        // 2026-10-23): the prompt still counts.
+        assert!(password_prompt("[ OK ] fork exec\nlogin: root\n[ OK ] linuxP\nassword: "));
+        assert!(password_prompt("[ OK ] fork exec\nlogin: root\nPassword: "));
+        assert!(!password_prompt("[ OK ] fork exec\nlogin: root\n"));
         assert!(at_prompt("[ OK ] fork exec\n$ [ WARN ] rc: some"));
     }
 }

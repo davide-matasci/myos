@@ -13,11 +13,14 @@ const MODULES: &[(&str, &str)] = &[
     ("hello", "hello"),
     ("pci_enum", "pci_enum"),
     ("acpi", "acpi"),
+    ("rpi_firmware", "rpi_firmware"),
     ("virtio_blk", "virtio_blk"),
     ("virtio_scsi", "virtio_scsi"),
     ("nvme", "nvme"),
     ("sdmmc", "sdmmc"),
+    ("usb", "usb"),
     ("xhci", "xhci"),
+    ("dwc2", "dwc2"),
     ("usb_hub", "usb_hub"),
     ("usb_storage", "usb_storage"),
     ("usb_hid", "usb_hid"),
@@ -225,8 +228,8 @@ fn nested_elf(
     if target.contains("x86_64")
         && matches!(
             bin,
-            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc"
-                | "linux" | "xhci" | "usb_hub" | "usb_storage" | "usb_hid" | "usbdev" | "pcidev" | "pl061" | "tap"
+            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "rpi_firmware" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc"
+                | "linux" | "usb" | "xhci" | "dwc2" | "usb_hub" | "usb_storage" | "usb_hid" | "usbdev" | "pcidev" | "pl061" | "tap"
         )
     {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");

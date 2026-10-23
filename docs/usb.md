@@ -1,7 +1,8 @@
 # USB
 
-Five modules give myos a USB bus: `xhci` drives the host controller and
-publishes the bus, `usb_hub` makes the devices behind hubs reachable,
+Six modules give myos a USB bus: `usb`, the core, owns the devices and
+publishes the bus; `xhci` and `dwc2` drive the host controllers (PCI
+xHCI; the Raspberry Pi 3's) and register them with the core; `usb_hub` makes the devices behind hubs reachable,
 `usb_hid` feeds mice and tablets to the console's pointer
 (`/dev/console/mouse`, `docs/tty.md`) and keyboards to its keyboard
 input, and
@@ -18,7 +19,9 @@ serial adapter, and a test plugs in a keyboard.
 
 | Module | What |
 |--------|------|
-| `modules/xhci` | The xHCI controller (PCI class `0C/03`, interface `30`): rings, interrupter, device slots, enumeration, root-port hot-plug, the `UsbHostOps` service, `/proc/usb` |
+| `modules/usb` | The core: the device table, enumeration (descriptors, configuration), the class drivers and the interfaces offered to them, hubs' children and their route strings, root-port hot-plug on its own kernel thread, the `UsbHostOps` service, `/proc/usb`; the host controllers' `UsbCoreOps` service |
+| `modules/xhci` | The xHCI controller driver (PCI class `0C/03`, interface `30`): rings, interrupter, device slots and contexts, the transfers; registered with the core as a `UsbHcdOps` |
+| `modules/dwc2` | The DWC2 controller driver (the Raspberry Pi 3's, from the device tree): host channels, the port, split transactions; the same `UsbHcdOps` (`docs/raspberry-pi.md`) |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
 | `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service; boot keyboards (3/1/1): the boot report's keys into the console's `keyboard` service, its Caps Lock LED from the console |
@@ -28,36 +31,55 @@ serial adapter, and a test plugs in a keyboard.
 
 Modules call only the `KernelApi`, never each other, so ABI 21 added a
 **service registry**: `service_register(name, table)` publishes a
-`#[repr(C)]` function table, `service_lookup(name)` finds it. The host
+`#[repr(C)]` function table, `service_lookup(name)` finds it. The core
 publishes [`UsbHostOps`](../modules/abi/src/lib.rs) as `usb`; a class
 driver looks it up in its `module_init` and registers a `UsbDriverOps`
 (`probe`, `disconnect`) with `driver_register`. A lookup counts as a
-registration, so a class driver stays loaded while the host may call it;
-the host stays loaded because of its service, its thread and its interrupt
-(`rmmod` refuses all three).
+registration, so a class driver stays loaded while the core may call it;
+the core stays loaded because of its services and its thread (`rmmod`
+refuses both).
 
-The host enumerates on **its own kernel thread** (`thread_spawn`, another
+The core also publishes `UsbCoreOps` as `usbcore`, for the **host
+controller drivers**: a controller module (`xhci`; `dwc2` for the
+Raspberry Pi 3's) brings its controllers up and registers each with
+`controller_register`, handing the core a `UsbHcdOps` table, the
+controller's part of the bus: its root ports (`ports`, `port_status`,
+`port_reset`), the per-device state the controller keeps (`device_new`
+for a slot or an address record, `device_address`, `device_ep0`,
+`device_configure`, `device_hub`, `device_abort`, `device_free`) and the
+transfers (`control`, `bulk`, `transfer_start` and `transfer_take`,
+`clear_halt`). The core calls a controller's table one call per device at
+a time, holding the device's lock across it; the controller's interrupt
+handler calls the core's `port_change` and `wake`, which only flag and
+wake the thread. A controller without an interrupt says so from `poll`
+(every pass of the thread), which then runs every 20 ms. Adding a
+controller type is a module that implements `UsbHcdOps`; the core, the
+class drivers and `/proc/usb` are the same above every one, and
+controllers of several types run side by side.
+
+The core enumerates on **its own kernel thread** (`thread_spawn`, another
 ABI 21 entry): resets, descriptor reads and `SET_CONFIGURATION` take
-milliseconds and wait on completions, which the interrupt handler cannot
+milliseconds and wait on completions, which an interrupt handler cannot
 do. Every driver hook (`probe`, `disconnect`, the completion callback of
 `transfer_start`) runs on that thread too, so a hub's `probe` may reset
 its ports and enumerate its children synchronously through `hub_attach`.
 Transfers started by a class driver from another context (a `blk_read`
 from a user task) run there: a device's table entry is behind a
-`myos_abi::SleepLock` the transfer holds until its completion (the
-thread holds it while it enumerates the device), the command ring and
-the bulk bounce buffer are locked, and the completions are atomics
-outside the entry's lock, which the interrupt handler fills and `wake`s
-(the last ABI 21 entry) the waiter with. The host holds no device lock
-across a driver hook: `probe`, `disconnect` and a completion callback
-call back in. A device pulled out has its waiters failed (`USB_EGONE`)
-before `detach` waits for its lock, so the lock comes free at once; a
-transfer with a callback gets the error in its callback, and the entry's
-completion records are reset with it, so the next device in the entry
-starts clean.
-Without an interrupt (`pci_irq_enable` failed) the bus still works: a
-waiter polls the event ring every 2 ms, the thread every second.
+`myos_abi::SleepLock` the transfer holds until the controller driver
+returns (the thread holds it while it enumerates the device). The core
+holds no device lock across a driver hook: `probe`, `disconnect` and a
+completion callback call back in. A device pulled out has its transfers
+in flight failed by the controller (`device_abort`, `USB_EGONE`) before
+`detach` waits for its lock, so the lock comes free at once; a queued
+transfer gets the error in its callback (`transfer_take` hands it over),
+and the controller's records are reset with the device (`device_free`),
+so the next device in the entry starts clean.
 
+In `xhci`, the command ring and the bulk bounce buffer are locked, and the
+completions are atomics outside the device's lock, which the interrupt
+handler fills and `wake`s (the last ABI 21 entry) the waiter with.
+Without an interrupt (`pci_irq_enable` failed) the bus still works: a
+waiter polls the event ring every 2 ms, the core's thread every 20 ms.
 The controller itself is reached as `&Controller` from every context:
 its command ring and bulk bounce buffer are each behind a `SleepLock`,
 the event ring belongs to whoever holds its busy flag (the handler, or a
@@ -68,9 +90,10 @@ go: on aarch64 and riscv64 the interrupt is a level INTx line, which
 would fire again at once and, on the CPU whose waiter it interrupted,
 never let that waiter finish (`hc::process_events`).
 The locks nest in one order: a class driver's own slot lock (a disk's),
-then the host's device entry, then the command ring or the bounce
-buffer. The host never holds a device lock across a driver hook, so the
-reverse never happens, and the interrupt handler holds none.
+then the core's device entry, then the controller's (xhci's device entry,
+then its command ring or bounce buffer). The core never holds a device
+lock across a driver hook, so the reverse never happens, and the
+interrupt handler holds none.
 
 ## Enumeration
 
@@ -78,31 +101,34 @@ A root port's connect event (or the initial scan) wakes the thread: it
 debounces 100 ms, resets a USB 2 port (a USB 3 link trains itself), reads
 the port speed, and runs the enumeration every new device goes through:
 
-1. `Enable Slot`; the slot's output device context goes into the DCBAA.
-2. `Address Device` with an input context naming the route string (the
-   port at every hub tier, 4 bits each), the speed, the root port, the
+1. `device_new` with the device's path: the route string (the port at
+   every hub tier, 4 bits each), the speed, the root port, the
    transaction translator (a low/full-speed device behind a high-speed
-   hub: that hub's slot and port) and endpoint 0 with the speed's default
-   max packet size.
+   hub: that hub and port) and the address the core gives it (xHCI:
+   `Enable Slot`, the slot's output device context into the DCBAA,
+   endpoint 0's ring at the speed's default max packet size).
+2. `device_address` (xHCI: `Address Device` with the input context; a
+   controller without that command sends `SET_ADDRESS`).
 3. The device descriptor, 8 bytes first: a full-speed device may use
-   another max packet size for endpoint 0 (`Evaluate Context` then).
+   another max packet size for endpoint 0 (`device_ep0`; xHCI:
+   `Evaluate Context`).
 4. The first configuration descriptor: its interfaces (alternate setting
    0) and their endpoints; isochronous endpoints are skipped.
-5. `Configure Endpoint` for every endpoint (one transfer ring each),
-   `SET_CONFIGURATION`.
+5. `device_configure` with every endpoint (xHCI: `Configure Endpoint`,
+   one transfer ring each), `SET_CONFIGURATION`.
 6. Every interface is offered to the class drivers in registration order
    until one takes it; a driver registered later is offered the unclaimed
    interfaces of every device.
 
-A hub's `probe` reads the hub descriptor, tells the host the port count
-(`hub_configure`: the slot context's hub fields), powers the ports, and for
+A hub's `probe` reads the hub descriptor, tells the core the port count
+(`hub_configure`; xHCI: the slot context's hub fields), powers the ports, and for
 every connected port resets it and calls `hub_attach(hub, port, speed)`,
 which runs the same six steps as the hub's child (depth + 1 in the route
 string). Its status-change endpoint then reports connects and disconnects;
 `hub_detach(hub, port)` tears a child down: its own children first (a
 nested hub), its waiters failed with `USB_EGONE` (a callback transfer's
-callback runs with it), its drivers' `disconnect`, `Disable Slot`, its
-memory back to the module's pool.
+callback runs with it), its drivers' `disconnect`, `device_free` (xHCI:
+`Disable Slot`, its memory back to the module's pool).
 
 `usb_hid` claims an interface of class 3 whose HID report descriptor
 (`GET_DESCRIPTOR` of the interface, type `0x22`) has an X and a Y axis of
@@ -162,12 +188,12 @@ controller 0 ports 8 irq on events 86 irqs 83
 0x004 parent 0x000 port 2 super 46f4:0001 class 00 if0=08/06/50:usb_storage sdc
 ```
 
-a line per controller (its root ports, whether its interrupt is on, the
-events and interrupts seen), then one per device: the id (controller in
+a line per controller (its root ports, then what its driver says: whether
+its interrupt is on, the events and interrupts seen), then one per device: the id (controller in
 the high byte), the parent hub (0: a root port) and port, the speed,
 vendor:product, the device class and each interface's class/subclass/
 protocol with the driver that took it and what the driver made of it (a
-disk: its name in `/dev`, the label `usb_storage` hands the host through
+disk: its name in `/dev`, the label `usb_storage` hands the core through
 `interface_label` once the disk is registered; a pointer `mouse` or
 `tablet`), a hub its port count. The
 port path (parent and port, up to the root) says where a disk is plugged
@@ -242,20 +268,24 @@ descriptor through `ep0` and loops a string through `ep02` and `ep81`
 window (`cargo run` without a test) has a `usb-tablet` there instead,
 which follows the host's pointer without grabbing it (the monitor's
 `mouse_move` is relative, so the tests use the mouse). The boot markers
-`[ OK ] xhci`, `usb_hub`, `usb_storage`, `usb_hid`, `usbdev` cover the
+`[ OK ] usb`, `xhci`, `usb_hub`, `usb_storage`, `usb_hid`, `usbdev` cover the
 modules' init.
 
 ## Limits
 
-- Two controllers, 32 devices each, hubs five deep, 8 hubs, 8 disks and 8
-  HID devices, pointers and keyboards together (the class modules'
-  tables).
+- Four controllers (two xHCI ones), 32 devices each, hubs five deep, 8
+  hubs, 8 disks and 8 HID devices, pointers and keyboards together (the
+  class modules' tables); four interrupt transfers queued per device.
 - A pointer's report descriptor is read up to 512 bytes and its reports
   up to 64; no horizontal wheel, no buttons past the fifth. One pointer
   per interface: the reports of a composite device's other collections (a
   keyboard's) are skipped.
-- PCI controllers only: a SoC's `snps,dwc3` from the device tree would need
-  an `irq_register` for non-PCI interrupts (not in the ABI yet).
+- Controllers: xHCI on PCI, the Raspberry Pi 3's DWC2 from the device
+  tree; a SoC's `snps,dwc3` would be another controller module. The DWC2
+  takes 8 transfers at once (its channels), a queued transfer (an
+  interrupt endpoint's report, a bulk IN endpoint's page) holding one
+  for as long as it is queued; its split transactions are untested (QEMU
+  has no high-speed hub).
 - No isochronous transfers, no streams, no MSI for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at

@@ -51,11 +51,16 @@ entry:
 	b.ne	at_el2
 
 	// EL3 (a Pi): what its firmware leaves to the stub. The counter's
-	// frequency (the 19.2 MHz crystal), the A53's SMP coherency bit
+	// frequency (the 19.2 MHz crystal) where nothing set it (a Pi's
+	// resets to 0; QEMU's model counts at its own 62.5 MHz whatever is
+	// written here, and has it set), the A53's SMP coherency bit
 	// (CPUECTLR_EL1.SMPEN) and the lower levels' access to it (ACTLR_EL3:
 	// CPUACTLR, CPUECTLR, L2CTLR, L2ECTLR, L2ACTLR).
+	mrs	x0, cntfrq_el0
+	cbnz	x0, cntfrq_set
 	ldr	x0, =19200000
 	msr	cntfrq_el0, x0
+cntfrq_set:
 	mov	x0, #0x73
 	msr	actlr_el3, x0
 	mrs	x0, s3_1_c15_c2_1

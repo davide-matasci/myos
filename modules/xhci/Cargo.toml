@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "xHCI USB host controller kernel module: the USB bus service for the class driver modules (usb_hub, usb_storage, usb_hid)."
+description = "xHCI USB host controller driver kernel module: its controllers, registered with the usb module (the USB core)."
 
 [[bin]]
 name = "xhci"

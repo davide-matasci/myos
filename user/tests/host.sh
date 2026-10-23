@@ -21,15 +21,20 @@
 # duplicate-id error on the first plug is harmless and ignored.
 set -u
 
+# The QEMU USB bus and the port prefix of the devices besides the hub, as
+# the launcher names them (`src/main.rs` `UsbBus`): the virt boards' xHCI
+# has root ports for every device, the Raspberry Pi 3 one, with the hub.
+BUS="${MYOS_USB_BUS:-xhci.0}"
+PORT="${MYOS_USB_PORT:-}"
 IMG="target/usb-hot.img"
 DRV="drive_add 0 if=none,id=usbhot,format=raw,file=${IMG}"
-ADD="device_add usb-storage,bus=xhci.0,port=2,drive=usbhot,id=usbhot"
+ADD="device_add usb-storage,bus=${BUS},port=${PORT}2,drive=usbhot,id=usbhot"
 DEL="device_del usbhot"
 # The hub and the stick behind it, as the launcher defines them.
-HUB_ADD="device_add usb-hub,bus=xhci.0,port=1,id=usbhub"
+HUB_ADD="device_add usb-hub,bus=${BUS},port=1,id=usbhub"
 HUB_DEL="device_del usbhub"
 DISK_DRV="drive_add 0 if=none,id=usb0,format=raw,file=target/usb.img"
-DISK_ADD="device_add usb-storage,bus=xhci.0,port=1.1,drive=usb0,id=usbdisk"
+DISK_ADD="device_add usb-storage,bus=${BUS},port=1.1,drive=usb0,id=usbdisk"
 
 # Send one or more monitor commands over a single connection; print any
 # QEMU error so a flaky command is not mistaken for a kernel fault.
