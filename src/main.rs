@@ -86,8 +86,10 @@ const X86_CPU: &str = "qemu64,+x2apic";
 /// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM
 /// path of `kernel/src/arch/x86/pci.rs`) with Intel's IOMMU (`kernel/src/
 /// iommu/vtd.rs`: `/dev/pci`'s devices confined, the edu test's DMA
-/// outside its buffer refused), or `$MYOS_X86_MACHINE` (`pc`: PCI through
-/// port 0xCF8, no MCFG, no IOMMU, QEMU's default machine).
+/// outside its buffer refused), with AMD's instead under
+/// `$MYOS_X86_IOMMU=amd` (`iommu/amdvi.rs`; CI's `bios-amd` machine), or
+/// `$MYOS_X86_MACHINE` (`pc`: PCI through port 0xCF8, no MCFG, no IOMMU,
+/// QEMU's default machine).
 fn x86_machine(cmd: &mut Command) {
     match std::env::var("MYOS_X86_MACHINE").as_deref() {
         Ok(machine) if !machine.is_empty() && machine != "q35" => {
@@ -96,10 +98,35 @@ fn x86_machine(cmd: &mut Command) {
         _ => {
             cmd.arg("-machine").arg("q35");
             // `intremap=on`: the unit remaps interrupts too, each message
-            // through an entry naming its sender (`iommu/vtd.rs`).
-            cmd.arg("-device").arg("intel-iommu,intremap=on");
+            // through an entry of its sender's (`iommu/vtd.rs`,
+            // `iommu/amdvi.rs`).
+            if std::env::var("MYOS_X86_IOMMU").as_deref() == Ok("amd") && x86_amd_iommu_dma_remap() {
+                // QEMU 10.1 and later translate an emulated device's DMA
+                // through the AMD unit only when asked to.
+                cmd.arg("-device").arg("amd-iommu,intremap=on,dma-remap=on");
+            } else {
+                cmd.arg("-device").arg("intel-iommu,intremap=on");
+            }
         }
     }
+}
+
+/// Whether this host's `qemu-system-x86_64` has the AMD unit's `dma-remap`
+/// property (QEMU 10.1 and later), the unit the kernel's driver is tested
+/// with: an older one (Ubuntu 24.04's 8.2) translates a DMA through it
+/// but refuses one to an unmapped page without logging it, so the pcidev
+/// test's fault count would stay. Without the property the boot keeps
+/// Intel's unit, said once here.
+fn x86_amd_iommu_dma_remap() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let out = Command::new("qemu-system-x86_64").args(["-device", "amd-iommu,help"]).output();
+        let has = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("dma-remap"));
+        if !has {
+            eprintln!("note: qemu-system-x86_64's amd-iommu has no dma-remap (QEMU 10.1): the boot keeps Intel's unit");
+        }
+        has
+    })
 }
 
 fn main() {
@@ -316,6 +343,27 @@ fn add_nvme(cmd: &mut Command) {
     }
 }
 
+/// The SD card: QEMU's SDHCI controller on PCI with a card (`/dev/mmcblk0/`,
+/// the `sdmmc` module), sparse and recreated every boot. Past 2 GiB, so it
+/// is a high-capacity card (addressed by block; the Pi 3's boot disk is a
+/// standard-capacity one, addressed by byte).
+const SDCARD_BYTES: u64 = 4 << 30;
+
+fn sdcard_img_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/sdcard.img")
+}
+
+fn add_sdcard(cmd: &mut Command) {
+    let img = sdcard_img_path();
+    let _ = std::fs::remove_file(&img);
+    std::fs::File::create(&img)
+        .and_then(|f| f.set_len(SDCARD_BYTES))
+        .unwrap_or_else(|e| panic!("write {}: {e}", img.display()));
+    cmd.arg("-device").arg("sdhci-pci");
+    cmd.arg("-drive").arg(format!("if=none,id=mmc0,format=raw,file={}", img.display()));
+    cmd.arg("-device").arg("sd-card,drive=mmc0");
+}
+
 /// After a boot: an ext2 filesystem the guest left on the scratch disk must
 /// be one e2fsprogs finds clean (`e2fsck -fn`; skipped without e2fsprogs).
 fn fsck_scratch_disk() -> bool {
@@ -449,6 +497,7 @@ fn add_virtio_blk_x86(cmd: &mut Command) {
     cmd.arg("-device").arg("virtio-blk-pci,drive=vd1");
     add_virtio_scsi(cmd, "virtio-scsi-pci");
     add_nvme(cmd);
+    add_sdcard(cmd);
     add_usb(cmd);
 }
 
@@ -466,6 +515,7 @@ fn add_virtio_blk_aarch64(cmd: &mut Command) {
     cmd.arg("-device").arg("virtio-blk-device,drive=vd1");
     add_virtio_scsi(cmd, "virtio-scsi-device");
     add_nvme(cmd);
+    add_sdcard(cmd);
     add_usb(cmd);
 }
 

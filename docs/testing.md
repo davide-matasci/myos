@@ -154,8 +154,8 @@ and `user/c/host.sh mouse` moves and clicks the test boots' `usb-mouse`
 ## On the host
 
 `src/boot_test.rs` starts QEMU with the serial console on its stdio
-(`src/main.rs` sets up the machine (x86: `q35` with Intel's IOMMU,
-aarch64: `virt` with an SMMUv3, riscv64: `virt` with the RISC-V IOMMU
+(`src/main.rs` sets up the machine (x86: `q35` with Intel's IOMMU, or
+AMD's under `MYOS_X86_IOMMU=amd`, aarch64: `virt` with an SMMUv3, riscv64: `virt` with the RISC-V IOMMU
 where QEMU is 9.2 or later, `docs/pci-acpi-smp.md`), the disks, the network with the port
 forwards, the simulated Wi-Fi radio and its access points
 (`src/wifi_sim.rs`, `docs/wifi.md`), unless `net` is skipped the package
@@ -221,7 +221,7 @@ and writes the boot job's matrix. A path selects tags:
 | changed | selects |
 |---|---|
 | a port's or a package's directory | its tests (its name), those of the ports built on it or needing it (`PORT_DEPS`, `PORT_RDEPS`) and what it implements (netd: `netfs`; mkfs.ext2: `ext2`; get-myos: `install`, `pkg`) |
-| `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`; the USB ones: `usb`; virtio_net: `virtio_net`, `netfs`; pl061: `irq`); `modules/abi`, `acpi` and `pci_enum`: everything |
+| `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`, sdmmc also `sdmmc`; the USB ones: `usb`; virtio_net: `virtio_net`, `netfs`; pl061: `irq`); `modules/abi`, `acpi` and `pci_enum`: everything |
 | `linux-compat/` | `linux` |
 | `kernel/src/arch/<arch>` | everything on that arch's machines, `smoke` on the others |
 | `kernel/`, `toolchain/`, `src/`, `build.rs`, `scripts/`, `.github/`, `etc/`, `user/init`, `user/tests`, anything else | everything |
@@ -231,8 +231,10 @@ and writes the boot job's matrix. A path selects tags:
 `full_boot` and a pull request labelled `ci:full` run everything. The image
 carries the Linux layer (`linux_compat`) when a `linux` test runs.
 
-The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
-GICv3, riscv64; the Raspberry Pi 3, below, runs its own) in parallel boots: the long tests' groups (`ostest`,
+The selected tests run on every machine (bios, uefi, bios with AMD's
+IOMMU (`bios-amd`: its light boot only, the long groups exercise nothing
+the unit changes), aarch64, aarch64 with GICv3, riscv64; the Raspberry Pi
+3, below, runs its own) in parallel boots: the long tests' groups (`ostest`,
 `alpine`: the curated os-test list, the apk installs) each in a boot of
 their own, whole (their tests build on each other), and one boot with
 everything else, so a full run is three boots of ten minutes per machine
@@ -246,11 +248,12 @@ latest-stable moves) or makes on a miss.
 
 The Raspberry Pi 3 (QEMU `raspi3b`, `myos rpi3 test`) boots once
 whenever an aarch64 machine does, with a fixed selection: the `smoke`
-tests it can run. It has no disk but the SD card it boots from (no
-driver for it yet), no network, PCI or USB, so the tests that need a
-disk (`blk`, `boot_rc`, `fstab_mount`, `fileio`) or a socket (`libc`,
-`heap_mini`: issue #538) are skipped, and its boot checks the markers it
-can print (`boot_test::Board::Rpi3`). The build job builds its boot files
+tests it can run. It has no disk but the SD card it boots from (`sdmmc`
+checks it, on the sdhost), no network, PCI or USB, so the tests that
+need the scratch disk (`partitions`, `ext2_disk`, `fstab_mount`,
+`fileio`), the network (`boot_rc`: the rc.local's dropbear) or a socket
+(`libc`, `heap_mini`: issue #538) are skipped, and its boot checks the
+markers it can print (`boot_test::Board::Rpi3`). The build job builds its boot files
 (`boot/rpi3/build.sh`, U-Boot cached by its pin) and packs them with the
 rest.
 

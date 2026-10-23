@@ -11,11 +11,11 @@ everything, documentation nothing. `smoke` (the quick basics) is always
 in. A push to master, the daily run, a dispatch with full_boot and a pull
 request labelled `ci:full` run everything.
 
-The selected tests run on every machine (bios, uefi, aarch64, aarch64 with
-GICv3, riscv64; a change under kernel/src/arch/<arch> runs everything on
-that arch's machines and the smoke set on the others), and the Raspberry
-Pi 3 boots its smoke tests whenever an aarch64 machine boots, in parallel
-boots:
+The selected tests run on every machine (bios, uefi, bios with AMD's
+IOMMU, aarch64, aarch64 with GICv3, riscv64; a change under
+kernel/src/arch/<arch> runs everything on that arch's machines and the
+smoke set on the others), and the Raspberry Pi 3 boots its smoke tests
+whenever an aarch64 machine boots, in parallel boots:
 the long tests' groups (`ostest`, `alpine`: each a boot of its own, whole,
 as its tests build on each other) and one boot with the rest. Each boot
 gets a budget from what it runs, and says whether it needs the Alpine
@@ -39,22 +39,29 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The boot machines: id, the launcher's arch word, the arch, the GIC version.
+# The boot machines: id, the launcher's arch word, the arch, the variant
+# (aarch64: the GIC version, `MYOS_AARCH64_GIC`; x86_64: the IOMMU,
+# `MYOS_X86_IOMMU`). The AMD IOMMU machine boots the light tests only: the
+# long groups exercise nothing the unit changes.
 MACHINES = [
     ("bios", "", "x86_64", ""),
     ("uefi", "uefi", "x86_64", ""),
+    ("bios-amd", "", "x86_64", "amd"),
     ("aarch64", "aarch64", "aarch64", ""),
     ("aarch64-gicv3", "aarch64", "aarch64", "3"),
     ("riscv64", "riscv64", "riscv64", ""),
 ]
 # The Raspberry Pi 3 (QEMU raspi3b, `myos rpi3 test`, docs/raspberry-pi.md):
-# no disk but the SD card it boots from (no driver for it yet), no network,
-# PCI or USB. One boot of the smoke tests it can run, whenever an aarch64
-# machine boots: the tests that need a disk (`blk`, `boot_rc`,
-# `fstab_mount`, `fileio`'s scratch disk) and the ones that open a socket
+# no disk but the SD card it boots from (`sdmmc` checks it), no network, PCI
+# or USB. One boot of the smoke tests it can run, whenever an aarch64
+# machine boots: the tests that need the scratch disk (`partitions`,
+# `ext2_disk`, `fstab_mount`, `fileio`), the ones that need the network
+# (`boot_rc`: the rc.local's dropbear) and the ones that open a socket
 # (`libc`'s resolver, `heap_mini`'s ping and socket stages: they wait for a
 # netd the board does not have, issue #538) stay out.
-RPI3_ARGS = "rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,fileio,libc,heap_mini --budget 20"
+RPI3_ARGS = (
+    "rpi3 test --tags smoke --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini --budget 20"
+)
 # The long tests' groups, each a boot of its own (a `heavy` test outside
 # them, the heavy smoke, stays with the rest).
 HEAVY_GROUPS = ["ostest", "alpine"]
@@ -71,6 +78,7 @@ MODULE_TAGS = {
     "virtq": {"blk", "virtio_net"},
     "virtio_blk": {"blk"},
     "nvme": {"blk"},
+    "sdmmc": {"blk", "sdmmc"},
     "virtio_scsi": {"blk"},
     "xhci": {"usb"},
     "usb_hub": {"usb"},
@@ -244,11 +252,13 @@ def shards(mid, names, tests, tags_arg):
     def boot(shard, selection, budget, disk):
         args = (arch_word + " " if arch_word else "") + "test " + selection + f" --budget {int(BUDGETS[budget] * slow)}"
         out.append({
-            "id": f"{mid}-{shard}", "machine": mid, "arch": machine[2], "args": args, "gic": machine[3],
+            "id": f"{mid}-{shard}", "machine": mid, "arch": machine[2], "args": args,
+            "gic": machine[3] if machine[2] == "aarch64" else "",
+            "iommu": machine[3] if machine[2] == "x86_64" else "",
             "alpine": "true" if disk else "false", "required": True,
         })
 
-    groups = [g for g in HEAVY_GROUPS if any(g in tests[n] for n in names)]
+    groups = [] if machine[3] == "amd" else [g for g in HEAVY_GROUPS if any(g in tests[n] for n in names)]
     light = {n for n in names if not any(g in tests[n] for g in HEAVY_GROUPS)}
     skip = ",".join(HEAVY_GROUPS)
     if light:
@@ -325,7 +335,7 @@ def main(argv):
         boots += shards(mid, names, tests, None if machine_all else tags_arg)
     if any(b["arch"] == "aarch64" for b in boots):
         boots.append({
-            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "",
+            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "", "iommu": "",
             "alpine": "false", "required": True,
         })
 

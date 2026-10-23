@@ -171,7 +171,7 @@ pub struct Outcome {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 38] = [
+const BOOT_MARKERS: [&str; 39] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -194,6 +194,7 @@ const BOOT_MARKERS: [&str; 38] = [
     "[ OK ] tap",
     "[ OK ] netmac",
     "[ OK ] nvme",
+    "[ OK ] sdmmc",
     "[ OK ] xhci",
     "[ OK ] usb_hub",
     "[ OK ] usb_storage",
@@ -220,7 +221,7 @@ pub enum Board {
     /// scratch and FAT disks.
     Virt,
     /// QEMU's Raspberry Pi 3 (`raspi3b`, `cargo run -- rpi3 test`): no
-    /// virtio, PCI or USB devices, no disks but the SD card it boots from
+    /// virtio, PCI or USB devices, no disk but the SD card it boots from
     /// ([`RPI3_MARKERS`]).
     Rpi3,
 }
@@ -235,7 +236,7 @@ impl Board {
 }
 
 /// [`BOOT_MARKERS`] that need no device a Raspberry Pi 3 lacks under QEMU.
-const RPI3_MARKERS: [&str; 24] = [
+const RPI3_MARKERS: [&str; 25] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -247,6 +248,7 @@ const RPI3_MARKERS: [&str; 24] = [
     "[ OK ] smp",
     "[ OK ] urandom",
     "[ OK ] hello",
+    "[ OK ] sdmmc",
     "[ OK ] boot modules",
     "[ OK ] fork",
     "[ OK ] fork exec",

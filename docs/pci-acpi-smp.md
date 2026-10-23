@@ -5,7 +5,7 @@
 | Component | Location | Why |
 |-----------|----------|-----|
 | PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
-| virtio-blk, virtio-scsi, NVMe | `modules/virtio_blk`, `modules/virtio_scsi`, `modules/nvme` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules. The virtio modules are the `virtio-drivers` crate over the module ABI (`modules/virtio`: its `Hal`, PCI and virtio-mmio probing) |
+| virtio-blk, virtio-scsi, NVMe, SD cards | `modules/virtio_blk`, `modules/virtio_scsi`, `modules/nvme`, `modules/sdmmc` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules. The virtio modules are the `virtio-drivers` crate over the module ABI (`modules/virtio`: its `Hal`, PCI and virtio-mmio probing) |
 | USB: xHCI host, hub and mass storage | `modules/xhci`, `modules/usb_hub`, `modules/usb_storage` | The host publishes the USB bus as a service the class drivers look up; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
@@ -362,33 +362,47 @@ it so that:
   (`last BB:SS.F read|write ADDRESS reason R`).
 
 A device's interrupts are messages it writes too (MSIs, to the local
-APIC's address). On x86_64 the unit remaps them (`intremap N/256` on its
-`/proc/iommu` line, the entries given out; `queued` there: it invalidates
-through its queue): the address of each message a function is given names
-an entry of the unit's interrupt remapping table (the *remappable* format,
-`arch/x86/interrupts.rs`; the I/O APIC's pins the same way, `ioapic.rs`),
-and the entry carries the vector and verifies the sender's bus, device and
-function, so a function raises its own vector and no other's; with the
-table in place a message in the plain format is refused too (`GCMD.CFI`
-clear). A refused message is recorded like a DMA (reason 0x20 and up,
-0x26 another function's entry, the address its handle). QEMU's unit lets
-plain-format messages through (hardware refuses them), so `pcidev_smoke`
-checks the entry instead: the device's message rewritten to another handle
-is refused and counted, its own arrives again afterwards. On aarch64 and
-riscv64 the devices' interrupts are INTx lines, which carry no address:
-nothing to remap (the SMMUv3's and the RISC-V IOMMU's MSI translation stay
-unused). AMD-Vi (the IVRS table) is not driven: issue #539.
+APIC's address). On x86_64 the unit remaps them: each message a function
+is given names an entry of an interrupt remapping table that holds the
+vector and answers to that function only, so a function raises its own
+vector and no other's (`iommu/x86.rs` knows both units' message formats;
+`arch/x86/interrupts.rs` programs the devices' messages, `ioapic.rs` the
+I/O APIC's pins the same way). VT-d names the entry in the message's
+address (the *remappable* format), in one table per unit (`intremap
+N/256` on its `/proc/iommu` line, the entries given out; `queued` there:
+it invalidates through its queue) whose entry verifies the sender's bus,
+device and function, and refuses a plain-format message once the table is
+in place (`GCMD.CFI` clear). AMD-Vi names it in the message's data (bits
+10:0), in a table of the device's own (`intremap N table(s)` on its line):
+a device without one has its interrupts aborted. A refused message is
+recorded like a DMA on VT-d (reason 0x20 and up, 0x26 another function's
+entry, the address its handle); QEMU's AMD unit logs none. QEMU's units
+let plain-format messages through (hardware refuses them), so
+`pcidev_smoke` checks the entry instead: the device's message rewritten
+to the next entry is not delivered (and counted, on VT-d), its own arrives
+again afterwards. On aarch64 and riscv64 the devices' interrupts are INTx
+lines, which carry no address: nothing to remap (the SMMUv3's and the
+RISC-V IOMMU's MSI translation stay unused), and a DMA to the interrupt
+controller's registers (where a forged message would land) is refused
+like any other, which the smoke checks too.
 
 | Arch | Unit | Where it is described |
 |---|---|---|
 | x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the queue where the unit has one (`ECAP.QI`; the registers otherwise; whole: the context cache, the IOTLB, the interrupt entry cache), interrupt remapping (`ECAP.IR` and the DMAR's `INTR_REMAP` flag; a table of 256 entries per unit, one per message or I/O APIC pin routed, extended interrupt mode where the unit has it, `ECAP.EIM`, and the BSP runs in x2APIC mode), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
+| x86_64 (AMD) | AMD-Vi (`iommu/amdvi.rs`, specification revision 3): a flat device table (a 32-byte entry per device id, for the buses with a function on them), *passthrough* for every function (mode 0: no table walked) and a 4-level page table of AMD's format for one a program holds (a domain id each); the command buffer for invalidations (an entry, a domain's pages, an interrupt table, everything where the unit has `IASup`), each batch ended by a completion wait; the event log for the refused DMAs, its interrupt the MSI of the unit's own PCI function (class 08.06, claimed by the kernel); an interrupt remapping table per device (4-byte entries, no guest mode) | the ACPI IVRS table: each IVHD's registers, own device id and device entries (all, select, range, the I/O APIC as a special device) |
 | aarch64 | Arm SMMUv3 (`iommu/smmuv3.rs`): a linear stream table, one entry per requester id, *bypass* for every function (no table walked) and a *stage-2* entry (VMSAv8, 4 KiB granule, a VMID per domain) for one a program holds; the command queue for invalidations and syncs, the event queue (its interrupt, which the SMMU pulses, taken edge-triggered) for the refused DMAs; the tables and queues written back for a unit that does not snoop (`IDR0.COHACC` clear) | the IORT's SMMUv3 node (registers, the event and global error GSIVs) and the root complex node's ID mapping to it, or the tree's `arm,smmu-v3` node and the PCIe host's `iommu-map`: a `platform::Iommu` component, `/proc/platform`'s `iommu smmuv3 ...` line |
 | riscv64 | the RISC-V IOMMU (`iommu/riscv.rs`, specification 1.0): a three-level device directory, one 64-byte context per device id (32 bytes for a unit without MSI translation), *bare* for every function of a populated bus (no table walked) and a *second-stage* context (a G-stage table in the CPU's Sv39x4 or Sv48x4 format, a GSCID per domain) for one a program holds; the command queue for invalidations and fences, the fault queue for the refused DMAs, read when `/proc/iommu` is (the PCI unit signals it by MSI only, which the riscv64 kernel does not take) | a PCI function of class 08.06 (system peripheral, IOMMU), its registers in BAR 0, claimed by the kernel so `/dev/pci` cannot hand it out; nothing from the tree |
 
 QEMU's `q35` carries the unit (`-device intel-iommu,intremap=on`, 39-bit,
 3-level, both superpage sizes, snooping walks, queued invalidation,
-interrupt remapping), every x86 boot of the launcher and
-of CI, QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
+interrupt remapping), every x86 boot of the launcher and of CI, or AMD's
+under `MYOS_X86_IOMMU=amd` (`-device amd-iommu,intremap=on,dma-remap=on`;
+CI's `bios-amd` machine; the boot line `[ OK ] iommu: amd-vi, 1 unit(s),
+256 device ids, 4-level tables, interrupts remapped`) on a QEMU of 10.1
+or later: it translates an emulated device's DMA through the unit only
+with `dma-remap=on`, and an older one (Ubuntu 24.04's 8.2) refuses a DMA
+to an unmapped page without logging it, so the launcher keeps Intel's
+unit there and says so once, QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
 snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
 `[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
 boot line, and the riscv64 `virt` the RISC-V IOMMU (`-device

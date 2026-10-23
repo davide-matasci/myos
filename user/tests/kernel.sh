@@ -243,6 +243,38 @@ scsi_disk() {
 	[ "$(dd if=$d bs=512 skip=2048 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 }
 t -t blk scsi_disk scsi_disk
+# The SD card (modules/sdmmc): the launcher gives every virt boot QEMU's
+# SDHCI controller on PCI with a 4 GiB card, a high-capacity one (addressed
+# by block). It reads and writes one block and several (more than one
+# command's worth), past 2 GiB too, and ends where its CSD says. The Pi 3's
+# card is its boot disk, on the sdhost and of standard capacity (addressed
+# by byte): init mounted its ESP on /boot, which has the loader U-Boot
+# started, and it ends where its CSD says (it is not written to).
+sdmmc() {
+	d=/dev/mmcblk0
+	[ -e $d/data ] || { ls /dev; return 1; }
+	if grep -q ' sdhost ' $d/info; then
+		grep -q "^$d/p2 /boot fat " /proc/mounts && [ -s /boot/EFI/BOOT/BOOTAA64.EFI ] ||
+			{ cat $d/info /proc/partitions /proc/mounts; return 1; }
+		read -r _ size _ < $d/info
+		n=$((size / 512))
+		[ "$(dd if=$d/data bs=512 skip=$((n - 1)) count=1 2> /dev/null | wc -c)" -eq 512 ] || { echo "last block"; return 1; }
+		[ "$(dd if=$d/data bs=512 skip=$n count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
+		return 0
+	fi
+	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}"$' $d/info ||
+		{ cat $d/info; return 1; }
+	seq 40000 > /tmp/sd.seq && dd if=/tmp/sd.seq of=/tmp/sd.in bs=512 count=300 2> /dev/null || return 1
+	for at in 1:1 4000:300 5242880:300; do
+		lba=${at%:*} n=${at#*:}
+		dd if=/tmp/sd.in of=$d/data bs=512 seek=$lba count=$n conv=notrunc 2> /dev/null || { echo "write $at"; return 1; }
+		dd if=$d/data of=/tmp/sd.out bs=512 skip=$lba count=$n 2> /dev/null || { echo "read $at"; return 1; }
+		dd if=/tmp/sd.in of=/tmp/sd.want bs=512 count=$n 2> /dev/null && cmp /tmp/sd.want /tmp/sd.out || { echo "at $at"; return 1; }
+	done
+	[ "$(dd if=$d/data bs=512 skip=8388607 count=1 2> /dev/null | wc -c)" -eq 512 ] || { echo "last block"; return 1; }
+	[ "$(dd if=$d/data bs=512 skip=8388608 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
+}
+t -t blk,sdmmc,smoke sdmmc sdmmc
 # A full filesystem: the write that fills it gives what fit, the next says
 # ENOSPC, natively and under the Linux layer (apk on a full /data stopped
 # with "I/O error", the generic failure's errno), as does a pwrite into a
@@ -1234,10 +1266,21 @@ sec_cap() {
 		"$SEC ns /bin:read,exec -- /bin/etc/at_smoke capro 3< /tmp/sec/cap"
 }
 # A Linux program is held to the same policy (the layer's file calls): it
-# sees alice's file as her, not bob's.
+# sees alice's file as her, not bob's. Tagged linux too, so a Linux layer
+# change selects it without the other sec tests: it loads their policy
+# and writes alice's file itself then, and puts the default back after,
+# as sec_net does.
 sec_linux() {
-	sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/alice/f || return 1
-	! sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/bob/note
+	own=
+	[ -f /tmp/sec/policy ] || {
+		sec_setup && sec_as alice /bin/custom/sh -c 'echo hi > /tmp/sec/home/alice/f' || return 1
+		own=1
+	}
+	rc=0
+	sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/alice/f || rc=1
+	! sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/bob/note || rc=1
+	[ -z "$own" ] || sec_restore
+	return $rc
 }
 # The policy as it was: the users' processes are gone, alice and bob too.
 sec_restore() {

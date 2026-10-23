@@ -192,10 +192,11 @@ pub(crate) fn kernel_main() -> ! {
     console::status_ok("urandom");
     // Every driver and filesystem is a module, loaded from the initramfs in
     // the order of /lib/modules/boot.list (console, hello, pci_enum, acpi,
-    // virtio_blk, nvme, xhci, usb_hub, usb_storage, usb_hid,
-    // usbdev, virtio_net, tap, netfs, fat, ext2). More can follow at runtime with `insmod` from /lib/modules
-    // (pcidev, the userspace PCI drivers' module, and pl061, a GPIO
-    // controller's interrupt domain, ship but are not loaded).
+    // virtio_blk, nvme, xhci, usb_hub, usb_storage, usb_hid, usbdev,
+    // virtio_net, tap, netfs, fat, ext2). More can follow at runtime with
+    // `insmod` from /lib/modules (pcidev, the userspace PCI drivers' module,
+    // and pl061, a GPIO controller's interrupt domain, ship but are not
+    // loaded).
     modules::load_boot_modules();
     // /msg lives on rootfs; /ok mounts /dev/vda/data as fat at /tmp/fat.
     let _ = fs::register("rootfs", "msg", MSG_OK);

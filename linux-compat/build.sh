@@ -38,6 +38,13 @@ RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 "$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
+# The ISA the riscv64 Linux binaries are built for, Alpine's (rv64gc, hard
+# float), said outright: clang's default for a Linux target follows the host
+# distribution, and Ubuntu 26.04's targets RVA23, whose vector instructions
+# QEMU's default `rv64` CPU lacks (musl's `_start_c`, zeroing its auxv array
+# with them, then dies of an illegal instruction before `main`).
+RISCV64_ISA=(-march=rv64gc -mabi=lp64d)
+
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
 CRT_TAG=llvmorg-19.1.7
 CRT_BASE_JSDELIVR="https://cdn.jsdelivr.net/gh/llvm/llvm-project@$CRT_TAG/compiler-rt/lib/builtins"
@@ -81,8 +88,10 @@ C
   local obj="$ROOT/target/linux-compat/crt-obj-$arch"
   rm -rf "$obj"
   mkdir -p "$obj"
+  local cc=(clang --target="$arch-linux-musl")
+  [[ "$arch" == riscv64 ]] && cc+=("${RISCV64_ISA[@]}")
   for f in "${CRT_C[@]}" fe_stubs.c; do
-    clang --target="$arch-linux-musl" -O2 -fPIC -nostdinc \
+    "${cc[@]}" -O2 -fPIC -nostdinc \
       -isystem "$(clang -print-resource-dir)/include" -isystem "$prefix/include" \
       -c "$CRT_SRC/$f" -o "$obj/${f%.c}.o"
   done
@@ -92,6 +101,7 @@ C
 tarball="$ROOT/target/linux-compat/musl-$MUSL_VERSION.tar.gz"
 for arch in "${ARCHES[@]}"; do
   cc=(clang --target="$arch-linux-musl")
+  [[ "$arch" == riscv64 ]] && cc+=("${RISCV64_ISA[@]}")
   prefix="$ROOT/target/linux-compat/musl-$MUSL_VERSION-$arch"
 
   # musl (static and shared) for the Linux-side test binaries.
