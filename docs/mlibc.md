@@ -89,8 +89,9 @@ widened to mlibc's Linux-sized struct by the shared read (`evfd.c`).
 ## Testing
 
 `user/c-mlibc/test.sh` runs every test of `user/c/test.sh` on the mlibc
-builds of the same smokes, as `mlibc_<name>` with the `mlibc` tag
-(`docs/testing.md`; the tests that run no smoke program, and `ctor_tcc`,
+builds of the same smokes, as `mlibc_<name>` with the `mlibc` tag and
+the newlib test's name as a tag, so that a selection or a skip by that
+name takes both (`docs/testing.md`; the tests that run no smoke program, and `ctor_tcc`,
 whose program tcc links against newlib, are not repeated):
 
 ```sh
