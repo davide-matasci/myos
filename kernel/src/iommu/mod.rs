@@ -12,10 +12,11 @@
 //! verifies the function it came from, so the device raises its own vector
 //! and no other's.
 //!
-//! The units are the platform's: Intel VT-d on x86_64 (`vtd`, the ACPI
-//! DMAR table), Arm's SMMUv3 on aarch64 (`smmuv3`, the IORT or the device
-//! tree through `platform`), the RISC-V IOMMU on riscv64 (`riscv`, a PCI
-//! function of its own class); a board without one leaves `/dev/pci`
+//! The units are the platform's: Intel VT-d or AMD-Vi on x86_64 (`vtd`,
+//! the ACPI DMAR table; `amdvi`, the IVRS; `x86` picks the one the
+//! firmware describes), Arm's SMMUv3 on aarch64 (`smmuv3`, the IORT or the
+//! device tree through `platform`), the RISC-V IOMMU on riscv64 (`riscv`,
+//! a PCI function of its own class); a board without one leaves `/dev/pci`
 //! unconfined, which `/proc/iommu` says (`none`). Kernel drivers need
 //! nothing from here.
 
@@ -25,9 +26,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 #[cfg(target_arch = "x86_64")]
+mod amdvi;
+#[cfg(target_arch = "x86_64")]
 mod vtd;
 #[cfg(target_arch = "x86_64")]
-use vtd as backend;
+mod x86;
+#[cfg(target_arch = "x86_64")]
+use x86 as backend;
 #[cfg(target_arch = "aarch64")]
 mod smmuv3;
 #[cfg(target_arch = "aarch64")]
@@ -50,9 +55,9 @@ pub struct Fault {
     /// The unit's reason code (VT-d: 0x5 a write to no mapping, 0x6 a
     /// read, 0x20 and up an interrupt message refused, 0x26 one from
     /// another function than its entry's, the address then the handle it
-    /// named; SMMUv3: the event type, 0x10 a
-    /// translation fault; RISC-V: the cause, 21 a read's guest-page fault,
-    /// 23 a write's).
+    /// named; AMD-Vi: the event code, 0x2 an I/O page fault; SMMUv3: the
+    /// event type, 0x10 a translation fault; RISC-V: the cause, 21 a
+    /// read's guest-page fault, 23 a write's).
     pub reason: u8,
     pub read: bool,
 }
@@ -101,20 +106,22 @@ pub fn detach(bus: u8, slot: u8, func: u8) {
     backend::detach(bus, slot, func)
 }
 
-/// An interrupt remapping entry for PCI function `bus:slot.func`'s message
-/// that raises `vector` on the BSP: its handle for the message's address
-/// (remappable format), or `None` where messages are not remapped (they go
-/// to the LAPIC as they are).
+/// The MSI message (address, data) with which PCI function `bus:slot.func`
+/// raises `vector` on the BSP through the unit's interrupt remapping (an
+/// entry of its own that holds the vector and answers to this function
+/// only), or `None` where messages are not remapped (they go to the LAPIC
+/// as they are).
 #[cfg(target_arch = "x86_64")]
-pub fn remap_msi(bus: u8, slot: u8, func: u8, vector: u8) -> Option<u16> {
-    vtd::remap(vtd::Source::Pci(bus, slot, func), vector, false)
+pub fn remap_msi(bus: u8, slot: u8, func: u8, vector: u8) -> Option<(u32, u32)> {
+    x86::remap_msi(bus, slot, func, vector)
 }
 
-/// The same for an I/O APIC pin (`level`: its trigger mode), for the
-/// pin's redirection entry.
+/// The same for an I/O APIC pin (`level`: its trigger mode): its
+/// redirection entry's high dword, and the bits of the low one beside the
+/// mask, polarity and trigger bits.
 #[cfg(target_arch = "x86_64")]
-pub fn remap_ioapic(vector: u8, level: bool) -> Option<u16> {
-    vtd::remap(vtd::Source::IoApic, vector, level)
+pub fn remap_ioapic(vector: u8, level: bool) -> Option<(u32, u32)> {
+    x86::remap_ioapic(vector, level)
 }
 
 /// `/proc/iommu`: the units, the domains and what they map, the refused

@@ -463,3 +463,117 @@ pub fn iort_smmuv3() -> Option<IortSmmu> {
     }
     None
 }
+
+/// The IVRS table: the IOMMUs of an AMD platform (AMD-Vi),
+/// `kernel/src/iommu/amdvi.rs`.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct Ivrs {
+    t: Table,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn ivrs() -> Option<Ivrs> {
+    let t = find(b"IVRS")?;
+    (t.len() >= 48).then_some(Ivrs { t })
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Ivrs {
+    /// Each I/O virtualization hardware definition (IVHD, type 0x10, 0x11
+    /// or 0x40; a unit is described once per type the firmware emits):
+    /// its registers, its own device id, and its device entries.
+    pub fn units(&self) -> impl Iterator<Item = Ivhd> + '_ {
+        let mut off = 48;
+        core::iter::from_fn(move || loop {
+            let typ = self.t.u8(off)?;
+            let len = self.t.u16(off + 2)? as usize;
+            if len < 24 || off + len > self.t.len() {
+                return None;
+            }
+            let here = off;
+            off += len;
+            let header = match typ {
+                0x10 => 24,
+                0x11 | 0x40 => 40,
+                _ => continue,
+            };
+            if len < header {
+                continue;
+            }
+            return Some(Ivhd {
+                base: self.t.u64(here + 8)?,
+                devid: self.t.u16(here + 4)?,
+                entries: &self.t.bytes[here + header..here + len],
+            });
+        })
+    }
+}
+
+/// An IOMMU of the IVRS.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct Ivhd {
+    /// Its registers' physical address.
+    pub base: u64,
+    /// Its own PCI function's device id (`bus << 8 | slot << 3 | func`).
+    pub devid: u16,
+    entries: &'static [u8],
+}
+
+/// A device entry of an IVHD: every device is the unit's, one device id,
+/// a range of them, or a special device (`variety` 1 the I/O APIC, 2 an
+/// HPET) by the device id its interrupts come from.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub enum IvhdEntry {
+    All,
+    Select(u16),
+    Range(u16, u16),
+    Special { variety: u8, devid: u16 },
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Ivhd {
+    /// The device entries (section 5.2.2): 4 bytes for a type below 64
+    /// (1 all, 2 select, 3 the start of a range that the next entry, type
+    /// 4, ends), 8 for one below 128 (66 and 70 a select, 67 and 71 a
+    /// range start, by alias or extended data; 72 a special device), a
+    /// variable length above (the ACPI HID entry, type 240: the length of
+    /// its unique id at byte 21, plus 22). An entry of another kind is
+    /// skipped.
+    pub fn entries(&self) -> impl Iterator<Item = IvhdEntry> + '_ {
+        let e = self.entries;
+        let u16_at = |off: usize| u16::from_le_bytes([e[off], e[off + 1]]);
+        let mut off = 0;
+        core::iter::from_fn(move || loop {
+            if off + 4 > e.len() {
+                return None;
+            }
+            let typ = e[off];
+            let len = match typ {
+                0..64 => 4,
+                64..128 => 8,
+                240 => usize::from(*e.get(off + 21)?) + 22,
+                _ => return None,
+            };
+            if off + len > e.len() {
+                return None;
+            }
+            let here = off;
+            off += len;
+            match typ {
+                1 => return Some(IvhdEntry::All),
+                2 | 66 | 70 => return Some(IvhdEntry::Select(u16_at(here + 1))),
+                // The next entry ends the range.
+                3 | 67 | 71 if off + 4 <= e.len() && e[off] == 4 => {
+                    let end = u16_at(off + 1);
+                    off += 4;
+                    return Some(IvhdEntry::Range(u16_at(here + 1), end));
+                }
+                72 => return Some(IvhdEntry::Special { variety: e[here + 7], devid: u16_at(here + 5) }),
+                _ => {}
+            }
+        })
+    }
+}

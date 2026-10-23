@@ -464,12 +464,11 @@ fn msi_address() -> Option<u32> {
 
 /// The message (address, data) a PCI function sends to raise `vector` on
 /// the BSP: through the IOMMU's interrupt remapping where there is one
-/// (the remappable format: bit 4, the entry's handle in bits 19:5 and 2,
-/// no data), else the LAPIC's address and the vector.
+/// (an entry of the function's own, named the unit's way), else the
+/// LAPIC's address and the vector.
 fn msi_message(bus: u8, slot: u8, func: u8, vector: u8) -> Option<(u32, u32)> {
-    if let Some(handle) = crate::iommu::remap_msi(bus, slot, func, vector) {
-        let handle = u32::from(handle);
-        return Some((0xFEE0_0000 | (handle & 0x7fff) << 5 | (handle >> 15) << 2 | 1 << 4, 0));
+    if let Some(message) = crate::iommu::remap_msi(bus, slot, func, vector) {
+        return Some(message);
     }
     Some((msi_address()?, u32::from(vector)))
 }

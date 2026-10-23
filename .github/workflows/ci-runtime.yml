@@ -242,6 +242,9 @@ jobs:
           # The aarch64 boots' GIC version (2 when unset): the launcher
           # dumps the matching device tree into the ESP before each boot.
           MYOS_AARCH64_GIC: ${{ matrix.gic }}
+          # The x86 boots' IOMMU (Intel's when unset, `amd` on the
+          # bios-amd machine).
+          MYOS_X86_IOMMU: ${{ matrix.iommu }}
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:
