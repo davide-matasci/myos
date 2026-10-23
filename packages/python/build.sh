@@ -121,6 +121,10 @@ build_arch() {
     "$lib"/ensurepip "$lib"/config-"$MINOR"* "$out/usr/include" "$out/usr/share" \
     "$out/usr/lib/pkgconfig" "$out/usr/lib"/libpython*
   find "$lib" -name __pycache__ -type d -prune -exec rm -rf {} +
+  # lib-dynload is empty (every module is built in), and a package carries
+  # files only: a placeholder keeps the directory, which the interpreter
+  # looks for at startup (it warns on stderr without it).
+  : >"$lib/lib-dynload/.keep"
   find "$out/usr/bin" -mindepth 1 ! -name "python$MINOR" -delete
   "${arch}-unknown-myos-strip" -s "$out/usr/bin/python$MINOR"
   echo "python -> $out/usr/bin/python$MINOR ($(du -h "$out/usr/bin/python$MINOR" | cut -f1)), library $(du -sh "$lib" | cut -f1)"
