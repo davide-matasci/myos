@@ -306,7 +306,11 @@ fn tail(text: &str, n: usize) -> String {
 /// the middle of an echo (`roo[ OK ] linux\nt`, `P[ OK ] linux\nassword:`).
 /// A status line still arriving, its tag or its text without the newline
 /// yet, is left out too: it would read as typed text and garble the login
-/// (riscv64-light on master, 2026-10-16).
+/// (riscv64-light on master, 2026-10-16). A character of the prompt can
+/// even land inside the status line, before its newline (`[ OK ] linuxP\n
+/// assword:`, the Pi 3's rc.local loading the layer as getty prompts): it
+/// goes with the line, and the prompt is matched without it
+/// ([`password_prompt`]).
 fn after_boot(text: &str) -> String {
     let text = text.rsplit_once("[ OK ] fork exec").map(|(_, t)| t).unwrap_or(text);
     let mut out = String::with_capacity(text.len());
@@ -325,6 +329,13 @@ fn after_boot(text: &str) -> String {
         }
     }
     out
+}
+
+/// getty asks for the password: the prompt, less a first letter a status
+/// line may have taken ([`after_boot`]); nothing else on the console ends
+/// so.
+fn password_prompt(text: &str) -> bool {
+    after_boot(text).contains("assword:")
 }
 
 const STATUS_TAGS: [&str; 4] = ["[ OK ] ", "[ FAIL ] ", "[ WARN ] ", "[ INFO ] "];
@@ -630,11 +641,11 @@ pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow
         }
         send(&mut stdin, b"\n");
         let soon = Instant::now() + ECHO_WAIT;
-        if wait_for(&serial, soon.min(login_deadline), |t| after_boot(t).contains("Password:")) {
+        if wait_for(&serial, soon.min(login_deadline), password_prompt) {
             break;
         }
     }
-    if !wait_for(&serial, login_deadline, |t| after_boot(t).contains("Password:")) {
+    if !wait_for(&serial, login_deadline, password_prompt) {
         fail(&serial, &mut child, "no password prompt after `root`");
     }
     send(&mut stdin, b"\n");
@@ -796,6 +807,11 @@ mod tests {
         assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[ O", "login: "), "roo");
         assert_eq!(typed_after("[ OK ] fork exec\nmyos login: roo[", "login: "), "roo");
         assert!(after_boot("[ OK ] fork exec\nlogin: root\nP[ OK ] linux\nassword: ").contains("Password: "));
+        // The prompt's letter taken into the status line (the Pi 3 boot,
+        // 2026-10-23): the prompt still counts.
+        assert!(password_prompt("[ OK ] fork exec\nlogin: root\n[ OK ] linuxP\nassword: "));
+        assert!(password_prompt("[ OK ] fork exec\nlogin: root\nPassword: "));
+        assert!(!password_prompt("[ OK ] fork exec\nlogin: root\n"));
         assert!(at_prompt("[ OK ] fork exec\n$ [ WARN ] rc: some"));
     }
 }
