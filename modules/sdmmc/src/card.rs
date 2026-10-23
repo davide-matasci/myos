@@ -14,19 +14,7 @@ const CLOCK_IDENT: u32 = 400_000;
 /// The default-speed clock every card takes.
 const CLOCK_DATA: u32 = 25_000_000;
 
-/// What a command answers, as a controller is told it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Response {
-    None,
-    /// 48 bits, CRC and index checked (R1, R6, R7).
-    Short,
-    /// 48 bits without a CRC (R3, the OCR).
-    ShortNoCrc,
-    /// R1 with the card busy on DAT0 after it (R1b).
-    ShortBusy,
-    /// 136 bits (R2: the CID, the CSD).
-    Long,
-}
+pub use sdio::{Bus as Host, Data, Error, Response};
 
 /// The response of the `sdio-host` command types.
 pub trait Kind {
@@ -49,37 +37,6 @@ impl Kind for R6 {
 }
 impl Kind for R7 {
     const RESPONSE: Response = Response::Short;
-}
-
-/// The data a command moves: whole blocks, read into `buf` or written
-/// from it.
-pub struct Data<'a> {
-    pub buf: &'a mut [u8],
-    pub write: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// No response, or no data, in time.
-    Timeout,
-    /// A CRC, index or end-bit error, or the controller's own.
-    Bus,
-    /// The card says the command failed (its status's error bits).
-    Card,
-}
-
-/// A controller with one card slot.
-pub trait Host {
-    /// Its name in the disk's description (`sdhci`, `sdhost`).
-    fn name(&self) -> &'static str;
-    /// The bus clock: at most `hz`.
-    fn set_clock(&mut self, hz: u32);
-    /// The 4-bit bus (else 1-bit).
-    fn set_wide(&mut self, wide: bool);
-    /// Send command `index` with `arg` and wait for its response: the
-    /// response's bits, `[31:0]` first, a long one's whole 128 (the CRC's
-    /// byte as 0); `data`'s blocks moved after it.
-    fn command(&mut self, index: u8, arg: u32, response: Response, data: Option<Data>) -> Result<[u32; 4], Error>;
 }
 
 /// A card that came up.
@@ -180,7 +137,7 @@ impl Card {
             (true, false) => common_cmd::write_single_block(addr),
             (true, true) => common_cmd::write_multiple_blocks(addr),
         };
-        let done = host.command(cmd.cmd, cmd.arg, Response::Short, Some(Data { buf, write })).and_then(checked);
+        let done = host.command(cmd.cmd, cmd.arg, Response::Short, Some(Data { buf, write, block: BLOCK })).and_then(checked);
         if blocks > 1 {
             // Stopped even after an error: the card must leave the data
             // state for the next command.
