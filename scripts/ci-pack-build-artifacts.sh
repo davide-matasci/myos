@@ -31,6 +31,7 @@ files=(
   target/sdmmc-*
   target/usb-*
   target/xhci-*
+  target/dwc2-*
   target/usb_hub-*
   target/usb_storage-*
   target/usb_hid-*
@@ -80,7 +81,7 @@ required=(
   "${image_files[@]}"
   "${rpi3_files[@]}"
 )
-for m in console hello pci_enum acpi rpi_firmware virtio_blk virtio_scsi nvme sdmmc usb xhci usb_hub usb_storage usb_hid pcidev pl061 virtio_net tap netfs fat ext2 linux; do
+for m in console hello pci_enum acpi rpi_firmware virtio_blk virtio_scsi nvme sdmmc usb xhci dwc2 usb_hub usb_storage usb_hid pcidev pl061 virtio_net tap netfs fat ext2 linux; do
   for t in x86_64-unknown-none aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     required+=("target/${m}-${t}")
   done

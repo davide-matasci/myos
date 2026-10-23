@@ -280,6 +280,9 @@ HELLO_OK_ELFS=(
   target/xhci-x86_64-unknown-none
   target/xhci-aarch64-unknown-none-softfloat
   target/xhci-riscv64imac-unknown-none-elf
+  target/dwc2-x86_64-unknown-none
+  target/dwc2-aarch64-unknown-none-softfloat
+  target/dwc2-riscv64imac-unknown-none-elf
   target/usb_hub-x86_64-unknown-none
   target/usb_hub-aarch64-unknown-none-softfloat
   target/usb_hub-riscv64imac-unknown-none-elf

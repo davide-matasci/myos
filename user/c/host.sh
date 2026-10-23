@@ -165,7 +165,7 @@ PY
 usb_kbd() {
   local cmd
   case "$1" in
-    plug) cmd="device_add usb-kbd,bus=xhci.0,port=4,id=usbkbd" ;;
+    plug) cmd="device_add usb-kbd,bus=${MYOS_USB_BUS:-xhci.0},port=${MYOS_USB_PORT:-}4,id=usbkbd" ;;
     unplug) cmd="device_del usbkbd" ;;
     *) echo "host.sh: usb-kbd plug|unplug: $1" >&2; return 2 ;;
   esac

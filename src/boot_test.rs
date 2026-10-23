@@ -236,7 +236,7 @@ impl Board {
 }
 
 /// [`BOOT_MARKERS`] that need no device a Raspberry Pi 3 lacks under QEMU.
-const RPI3_MARKERS: [&str; 27] = [
+const RPI3_MARKERS: [&str; 31] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -251,6 +251,10 @@ const RPI3_MARKERS: [&str; 27] = [
     "[ OK ] rpi_firmware",
     "[ OK ] sdmmc",
     "[ OK ] usb",
+    "[ OK ] dwc2",
+    "[ OK ] usb_hub",
+    "[ OK ] usb_storage",
+    "[ OK ] usb_hid",
     "[ OK ] boot modules",
     "[ OK ] fork",
     "[ OK ] fork exec",
@@ -439,6 +443,17 @@ fn power_off(stdin: &mut ChildStdin, serial: &Shared, child: &mut Child) -> bool
     }
 }
 
+/// The board of the boot under test (`run`), for its host scripts: the
+/// QEMU USB bus their devices go on.
+static BOARD: std::sync::OnceLock<Board> = std::sync::OnceLock::new();
+
+fn usb_bus() -> crate::UsbBus {
+    match BOARD.get() {
+        Some(Board::Rpi3) => crate::RPI3_USB,
+        _ => crate::XHCI_USB,
+    }
+}
+
 /// A host request from the guest, `HOST <port> <args>`: the port's
 /// host-side script (`PORT_HOST`, docs/testing.md) runs on the host with the
 /// arguments, in the background, its messages on our stderr. The guest test
@@ -462,6 +477,8 @@ fn handle_host_request(req: &str, ports: &[crate::ports::Port]) {
             .args(&args)
             .current_dir(repo_root())
             .env("MYOS_QEMU_MONITOR", monitor_socket())
+            .env("MYOS_USB_BUS", usb_bus().name)
+            .env("MYOS_USB_PORT", usb_bus().port)
             .status();
         match status {
             Ok(s) if s.success() => {}
@@ -566,6 +583,7 @@ fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
 /// The outcome: every test passed (a crash, a stall or the budget running out
 /// ends the launcher at once instead).
 pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow: bool) -> Outcome {
+    let _ = BOARD.set(board);
     let mut stdin = child.stdin.take().expect("qemu stdin");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let mut stdout = child.stdout.take().expect("qemu stdout");

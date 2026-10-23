@@ -1,8 +1,8 @@
 # USB
 
-Five modules give myos a USB bus: `usb`, the core, owns the devices and
-publishes the bus; `xhci` drives the host controllers and registers them
-with the core; `usb_hub` makes the devices behind hubs reachable,
+Six modules give myos a USB bus: `usb`, the core, owns the devices and
+publishes the bus; `xhci` and `dwc2` drive the host controllers (PCI
+xHCI; the Raspberry Pi 3's) and register them with the core; `usb_hub` makes the devices behind hubs reachable,
 `usb_hid` feeds mice and tablets to the console's pointer
 (`/dev/console/mouse`, `docs/tty.md`) and keyboards to its keyboard
 input, and
@@ -19,6 +19,7 @@ and a test plugs in a keyboard.
 |--------|------|
 | `modules/usb` | The core: the device table, enumeration (descriptors, configuration), the class drivers and the interfaces offered to them, hubs' children and their route strings, root-port hot-plug on its own kernel thread, the `UsbHostOps` service, `/proc/usb`; the host controllers' `UsbCoreOps` service |
 | `modules/xhci` | The xHCI controller driver (PCI class `0C/03`, interface `30`): rings, interrupter, device slots and contexts, the transfers; registered with the core as a `UsbHcdOps` |
+| `modules/dwc2` | The DWC2 controller driver (the Raspberry Pi 3's, from the device tree): host channels, the port, split transactions; the same `UsbHcdOps` (`docs/raspberry-pi.md`) |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
 | `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service; boot keyboards (3/1/1): the boot report's keys into the console's `keyboard` service, its Caps Lock LED from the console |
@@ -232,9 +233,11 @@ modules' init.
   up to 64; no horizontal wheel, no buttons past the fifth. One pointer
   per interface: the reports of a composite device's other collections (a
   keyboard's) are skipped.
-- xHCI controllers on PCI only (the Raspberry Pi 3's DWC2 is under way);
-  a SoC's `snps,dwc3` from the device tree would be another controller
-  module.
+- Controllers: xHCI on PCI, the Raspberry Pi 3's DWC2 from the device
+  tree; a SoC's `snps,dwc3` would be another controller module. The DWC2
+  takes 8 transfers at once (its channels), a queued interrupt transfer
+  holding one; its split transactions are untested (QEMU has no
+  high-speed hub).
 - No isochronous transfers, no streams, no MSI for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at

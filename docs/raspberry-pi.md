@@ -153,10 +153,40 @@ cargo run -- rpi3 test --tags smoke --skip partitions,ext2_disk,fstab_mount,file
 The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
 `target/rpi3/u-boot.log` (the PL011). What works: the four cores, the
 generic timer, the serial console, the framebuffer the firmware sets up,
-everything that runs from the initramfs, power-off and reboot, and the SD
-card (above). What does not (yet): USB (the DWC2 controller), so no
-keyboard, stick or Ethernet; Wi-Fi. It has no RTC either:
-the wall clock counts from the epoch at boot.
+everything that runs from the initramfs, power-off and reboot, the SD
+card (above) and USB (the DWC2 controller, below: a keyboard, a mouse, a
+stick). What does not (yet): Ethernet (the LAN9514 behind the USB hub
+is a class driver to write); Wi-Fi. It has no RTC either: the wall clock
+counts from the epoch at boot.
+
+### USB: the DWC2 controller
+
+The Pi 3's USB is Synopsys's DesignWare USB 2.0 OTG core
+(`brcm,bcm2708-usb`, one root port, 8 host channels, interrupt GPU 9),
+driven as a host by the `dwc2` module (`modules/dwc2`), a controller
+driver of the USB core (`docs/usb.md`: the `UsbHcdOps` the core calls,
+everything above it the same as on xHCI). It powers the controller
+through the firmware (`rpi_firmware`, above) when that module is there,
+resets the core, selects the UTMI+ PHY and host mode, sizes and flushes
+the FIFOs and turns buffer DMA on. A transfer takes a channel: its
+registers say the device, the endpoint, the packets and where in memory
+(`HCDMA`, a bounce page of the module's, the Pi's DMA not seeing the
+caches), the channel halts into its record (`HCINT`) and the handler
+wakes the waiter; the stages of a control transfer, a NAKed interrupt
+endpoint's retry (asked again after its interval from the core's thread,
+`poll`) and the halves of a split transaction run in task context. A low-
+or full-speed device behind a high-speed hub (every keyboard and mouse on
+a real Pi 3, behind the LAN9514's hub) goes through split transactions
+(`HCSPLT`: the hub's address and port; a start half, then the complete
+half until the translator has the answer), one packet per transaction
+set; QEMU's hub is full-speed and the root port takes it natively, so
+the split path is not exercised by CI. Data toggles are kept per
+endpoint, from the packets each transfer moved. Bulk goes through a
+64 KiB bounce buffer, a control transfer's data stage is 1 KiB at most.
+
+`cargo run -- rpi3` attaches QEMU's hub to the root port with the stick
+and the mouse behind it, as the virt boards have them on their xHCI; the
+`usb_disk`, `mouse` and `usb_keyboard` tests run in the Pi 3 CI boot.
 
 `boot/rpi3/build.sh` (which `cargo run -- rpi3` runs) builds the boot
 files into `target/rpi3`:

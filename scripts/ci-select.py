@@ -52,15 +52,21 @@ MACHINES = [
     ("riscv64", "riscv64", "riscv64", ""),
 ]
 # The Raspberry Pi 3 (QEMU raspi3b, `myos rpi3 test`, docs/raspberry-pi.md):
-# no disk but the SD card it boots from (`sdmmc` checks it), no network, PCI
-# or USB. One boot of the smoke tests it can run, whenever an aarch64
-# machine boots: the tests that need the scratch disk (`partitions`,
-# `ext2_disk`, `fstab_mount`, `fileio`), the ones that need the network
-# (`boot_rc`: the rc.local's dropbear) and the ones that open a socket
-# (`libc`'s resolver, `heap_mini`'s ping and socket stages: they wait for a
-# netd the board does not have, issue #538) stay out.
+# no disk but the SD card it boots from (`sdmmc` checks it), no network or
+# PCI; its USB (the dwc2 module) carries QEMU's hub with the stick, the
+# mouse and the keyboard the tests plug in. One boot of the smoke tests it
+# can run and the USB tests of its devices, whenever an aarch64 machine
+# boots: the tests that need the scratch disk (`partitions`, `ext2_disk`,
+# `fstab_mount`, `fileio`), the ones that need the network (`boot_rc`: the
+# rc.local's dropbear), the ones that open a socket (`libc`'s resolver,
+# `heap_mini`'s ping and socket stages: they wait for a netd the board does
+# not have, issue #538), the other pointers' (`ps2_mouse`, `virtio_mouse`,
+# `xev_pointer`: a package's) and the USB tests of a root port of their
+# own (`usb_hotplug`, `usb_hotplug_busy_reuse`, `usb_hub_replug`) stay out.
 RPI3_ARGS = (
-    "rpi3 test --tags smoke --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini --budget 20"
+    "rpi3 test --tags smoke,usb_disk,mouse,usb_keyboard"
+    " --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini,ps2_mouse,virtio_mouse,xev_pointer"
+    " --budget 20"
 )
 # The long tests' groups, each a boot of its own (a `heavy` test outside
 # them, the heavy smoke, stays with the rest).
@@ -83,6 +89,7 @@ MODULE_TAGS = {
     "virtio_scsi": {"blk"},
     "usb": {"usb"},
     "xhci": {"usb"},
+    "dwc2": {"usb"},
     "usb_hub": {"usb"},
     "usb_storage": {"usb"},
     "usb_hid": {"usb", "mouse"},

@@ -6,7 +6,7 @@
 |-----------|----------|-----|
 | PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
 | virtio-blk, virtio-scsi, NVMe, SD cards | `modules/virtio_blk`, `modules/virtio_scsi`, `modules/nvme`, `modules/sdmmc` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules. The virtio modules are the `virtio-drivers` crate over the module ABI (`modules/virtio`: its `Hal`, PCI and virtio-mmio probing) |
-| USB: the core, the xHCI host, hub and mass storage | `modules/usb`, `modules/xhci`, `modules/usb_hub`, `modules/usb_storage` | The core publishes the USB bus as a service the class drivers look up and the controller drivers register with; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
+| USB: the core, the xHCI and DWC2 hosts, hub and mass storage | `modules/usb`, `modules/xhci`, `modules/dwc2`, `modules/usb_hub`, `modules/usb_storage` | The core publishes the USB bus as a service the class drivers look up and the controller drivers register with; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |

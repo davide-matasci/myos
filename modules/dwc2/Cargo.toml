@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "dwc2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "DWC2 USB host controller driver kernel module (the Raspberry Pi 3's): its controller, registered with the usb module (the USB core)."
+
+[[bin]]
+name = "dwc2"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

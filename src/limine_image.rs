@@ -41,6 +41,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "sdmmc",
     "usb",
     "xhci",
+    "dwc2",
     "usb_hub",
     "usb_storage",
     "usb_hid",
