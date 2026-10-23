@@ -10,7 +10,8 @@ stops short of the root, so a library at `/lib` would not be found.
 `sys.platform` is `myos`. The library is sources only: the
 `.pyc` files would double the app's files and bytes (and the time its
 install takes), so the interpreter writes them into the app's directory
-on the first import instead.
+on the first import instead; a `python313.zip` would cut both the install
+and the first imports (issue #573).
 
 CPython's own build system builds it, cross: `host-myos.myos.patch` teaches
 `configure` and `config.sub` the `*-unknown-myos` host (configure accepts a
