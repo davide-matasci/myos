@@ -1204,10 +1204,21 @@ sec_cap() {
 		"$SEC ns /bin:read,exec -- /bin/etc/at_smoke capro 3< /tmp/sec/cap"
 }
 # A Linux program is held to the same policy (the layer's file calls): it
-# sees alice's file as her, not bob's.
+# sees alice's file as her, not bob's. Tagged linux too, so a Linux layer
+# change selects it without the other sec tests: it loads their policy
+# and writes alice's file itself then, and puts the default back after,
+# as sec_net does.
 sec_linux() {
-	sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/alice/f || return 1
-	! sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/bob/note
+	own=
+	[ -f /tmp/sec/policy ] || {
+		sec_setup && sec_as alice /bin/custom/sh -c 'echo hi > /tmp/sec/home/alice/f' || return 1
+		own=1
+	}
+	rc=0
+	sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/alice/f || rc=1
+	! sec_as alice linux /bin/linux/linux-smoke mtime /tmp/sec/home/bob/note || rc=1
+	[ -z "$own" ] || sec_restore
+	return $rc
 }
 # The policy as it was: the users' processes are gone, alice and bob too.
 sec_restore() {

@@ -736,7 +736,10 @@ There are no separate Linux jobs.
 
 `linux-compat/build.sh` builds musl (static and shared) with clang for each
 target (and skips itself when its outputs match its stamp,
-`target/.myos-linux-compat-version`). On aarch64/riscv64 musl's `long double` is 128-bit and needs
+`target/.myos-linux-compat-version`); the riscv64 binaries are built for
+Alpine's ISA, `rv64gc` with hard float, named explicitly because clang's
+default for a Linux target follows the host distribution (Ubuntu 26.04's
+emits RVA23 vector instructions, which QEMU's default CPU lacks). On aarch64/riscv64 musl's `long double` is 128-bit and needs
 compiler-rt's quad-float builtins: the script fetches those sources (pinned
 LLVM tag) and links them into `libc.so`. The static smoke test is not linked
 against them, so it (and the launcher) avoid `printf`.
