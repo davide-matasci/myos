@@ -185,7 +185,7 @@ fn arm(i: usize) {
     // The report's bytes: the atomics are contiguous, and the host writes
     // them only before `status_done` runs.
     let report = REPORTS[i][0].as_ptr();
-    let r = unsafe { (host().interrupt_start)(hub.dev, hub.status_ep, report, hub.report_len, status_done, i as *mut c_void) };
+    let r = unsafe { (host().transfer_start)(hub.dev, hub.status_ep, report, hub.report_len, status_done, i as *mut c_void) };
     if r < 0 && r != USB_EGONE {
         status_fail(api(), "usb_hub: status endpoint");
     }

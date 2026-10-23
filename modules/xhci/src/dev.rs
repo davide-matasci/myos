@@ -12,8 +12,8 @@
 use core::sync::atomic::Ordering;
 
 use myos_abi::{
-    SleepLock, USB_EGONE, USB_EIO, USB_EPENDING, USB_ETIMEDOUT, USB_SPEED_FULL, USB_SPEED_HIGH, USB_SPEED_LOW,
-    USB_SPEED_SUPER, UsbDevicePath, UsbEndpoint,
+    SleepLock, USB_ASYNC_BULK_MAX, USB_EGONE, USB_EIO, USB_EPENDING, USB_ETIMEDOUT, USB_SPEED_FULL, USB_SPEED_HIGH,
+    USB_SPEED_LOW, USB_SPEED_SUPER, UsbDevicePath, UsbEndpoint,
 };
 use xhci::context::{
     Device32Byte, Device64Byte, DeviceHandler, EndpointType, Input32Byte, Input64Byte, InputHandler,
@@ -222,6 +222,7 @@ fn new_endpoint(dma: i32, dev: &mut Device, address: u8, kind: u8, max_packet: u
         bounce: unsafe { dev.out.add(int_bounce(dci)) },
         bounce_phys: dev.out_phys + int_bounce(dci) as u64,
         bounce_len: 64,
+        own_bounce: false,
         queued: false,
         user: core::ptr::null_mut(),
         user_len: 0,
@@ -329,13 +330,23 @@ pub fn bulk(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut 
     done_bytes as i32
 }
 
-/// Queue an interrupt IN transfer (the core's `interrupt_start`): its
-/// completion wakes the core, which asks [`interrupt_take`].
-pub fn interrupt_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize) -> i32 {
+/// Queue an interrupt or bulk IN transfer (the core's `transfer_start`):
+/// its completion wakes the core, which asks [`transfer_take`]. A bulk
+/// endpoint gets a page of its own to bounce through the first time.
+pub fn transfer_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize) -> i32 {
     let slot = dev.slot;
     let Some(ep) = dev.endpoint_by_address(address) else {
         return USB_EIO;
     };
+    if address & 0x80 == 0 || !matches!(ep.kind, 2 | 3) {
+        return USB_EIO;
+    }
+    if ep.kind == 2 && !ep.own_bounce {
+        let Some((phys, va)) = dma::page(c.dma) else {
+            return USB_EIO;
+        };
+        (ep.bounce, ep.bounce_phys, ep.bounce_len, ep.own_bounce) = (va, phys, USB_ASYNC_BULK_MAX, true);
+    }
     if len > ep.bounce_len {
         return USB_EIO;
     }
@@ -359,10 +370,10 @@ pub fn interrupt_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, 
     0
 }
 
-/// The queued transfer on `address` (the core's `interrupt_take`):
+/// The queued transfer on `address` (the core's `transfer_take`):
 /// `USB_EPENDING` while it runs; else its result, its data copied out and
 /// its record released.
-pub fn interrupt_take(c: &Controller, s: &Slot, dev: &mut Device, address: u8) -> i32 {
+pub fn transfer_take(c: &Controller, s: &Slot, dev: &mut Device, address: u8) -> i32 {
     let Some(ep) = dev.endpoint_by_address(address) else {
         return USB_EIO;
     };
@@ -602,6 +613,9 @@ pub fn device_free(c: &Controller, hdev: u32) {
     }
     for ep in dev.eps.into_iter().flatten() {
         dma::free(c.dma, ep.ring.phys, ep.ring.trbs as *mut u8);
+        if ep.own_bounce {
+            dma::free(c.dma, ep.bounce_phys, ep.bounce);
+        }
     }
     dma::free(c.dma, dev.input_phys, dev.input);
     dma::free(c.dma, dev.out_phys, dev.out);

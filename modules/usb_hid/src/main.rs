@@ -16,7 +16,7 @@
 //! lock LEDs change (Caps Lock), the keyboard is told with an output report.
 //!
 //! The device reports on its interrupt IN endpoint: one transfer is always
-//! queued (`interrupt_start`) and its completion, on the host's USB
+//! queued (`transfer_start`) and its completion, on the host's USB
 //! thread, hands the changes on and queues the next. Like the hub driver,
 //! everything here runs on that thread, so the table's lock is never
 //! contended.
@@ -232,7 +232,7 @@ fn arm(i: usize) {
     // The report's bytes: the atomics are contiguous, and the host writes
     // them only before `report_done` runs.
     let buf = REPORTS[i][0].as_ptr();
-    let r = unsafe { (host().interrupt_start)(p.dev, p.ep, buf, p.len, report_done, i as *mut c_void) };
+    let r = unsafe { (host().transfer_start)(p.dev, p.ep, buf, p.len, report_done, i as *mut c_void) };
     if r < 0 && r != USB_EGONE {
         status_fail(api(), "usb_hid: report endpoint");
     }

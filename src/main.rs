@@ -463,6 +463,25 @@ fn add_pointer(cmd: &mut Command, test: bool) {
     cmd.arg("-device").arg(format!("{dev},bus=xhci.0,port=3,id=usbpointer"));
 }
 
+/// A USB serial adapter (QEMU's FTDI FT232) on the hub of [`add_usb`] in
+/// the test boots: a vendor-class device no kernel driver takes, which
+/// `usbdev` lists in `/dev/usb` for the test to drive
+/// (`user/tests/kernel.sh` usbdev). Its line loops back: a UDP chardev
+/// sending to its own port, so what the guest writes to the bulk OUT
+/// endpoint comes back on the bulk IN one.
+fn add_usb_serial(cmd: &mut Command, test: bool) {
+    if !test {
+        return;
+    }
+    cmd.arg("-chardev").arg(format!(
+        "udp,id=usbserial,host=127.0.0.1,port={USB_SERIAL_PORT},localaddr=127.0.0.1,localport={USB_SERIAL_PORT}"
+    ));
+    cmd.arg("-device").arg("usb-serial,bus=xhci.0,port=1.2,chardev=usbserial,always-plugged=on,id=usbserial");
+}
+
+/// The UDP port of [`add_usb_serial`]'s loop, on the host's loopback.
+const USB_SERIAL_PORT: u16 = 5555;
+
 fn add_virtio_blk_x86(cmd: &mut Command) {
     write_empty_blk_image();
     let fat = fat_img_path();
@@ -602,6 +621,7 @@ fn run_bios(bios_path: &str) {
         .arg("menu=off");
     add_virtio_blk_x86(&mut cmd);
     add_pointer(&mut cmd, false);
+    add_usb_serial(&mut cmd, false);
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
@@ -637,6 +657,7 @@ fn run_uefi(uefi_path: &str) {
         .arg("none");
     add_virtio_blk_x86(&mut cmd);
     add_pointer(&mut cmd, false);
+    add_usb_serial(&mut cmd, false);
     add_persistent_disk(&mut cmd, "virtio-blk-pci");
     add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
@@ -751,6 +772,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
     add_pointer(&mut cmd, true);
+    add_usb_serial(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
@@ -820,6 +842,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
         .arg("-no-reboot");
     add_virtio_blk_x86(&mut cmd);
     add_pointer(&mut cmd, true);
+    add_usb_serial(&mut cmd, true);
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
@@ -977,6 +1000,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
     add_pointer(&mut cmd, ci);
+    add_usb_serial(&mut cmd, ci);
     // And a virtio mouse in the test boots, which `user/c/test.sh
     // virtio_mouse` moves (`host.sh mouse virtio`).
     if ci {
@@ -1599,6 +1623,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     // the monitor (`/dev/console/kbd`, docs/tty.md).
     cmd.arg("-device").arg("virtio-keyboard-device");
     add_pointer(&mut cmd, ci);
+    add_usb_serial(&mut cmd, ci);
     // And a virtio mouse in the test boots, which `user/c/test.sh
     // virtio_mouse` moves (`host.sh mouse virtio`).
     if ci {

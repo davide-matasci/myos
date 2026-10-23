@@ -45,7 +45,7 @@ pub struct Interface {
     pub label_len: u8,
 }
 
-/// An interrupt transfer a class driver queued (`interrupt_start`): its
+/// A transfer a class driver queued (`transfer_start`): its
 /// endpoint and the callback run when the controller reports it done.
 #[derive(Clone, Copy)]
 pub struct Callback {
@@ -153,16 +153,16 @@ pub fn control(c: &Controller, dev: &Device, request_type: u8, request: u8, valu
     unsafe { (c.ops.control)(c.ctx, dev.hdev, request_type, request, value, index, data, len) }
 }
 
-/// Queue an interrupt IN transfer (the host's `interrupt_start`): the
+/// Queue an interrupt or bulk IN transfer (the host's `transfer_start`): the
 /// controller takes it, the callback waits for its completion.
-pub fn interrupt_start(c: &Controller, dev: &mut Device, endpoint: u8, data: *mut u8, len: usize, done: UsbCompletion, ctx: *mut c_void) -> i32 {
+pub fn transfer_start(c: &Controller, dev: &mut Device, endpoint: u8, data: *mut u8, len: usize, done: UsbCompletion, ctx: *mut c_void) -> i32 {
     if dev.callbacks.iter().flatten().any(|cb| cb.endpoint == endpoint) {
         return USB_EIO;
     }
     let Some(free) = dev.callbacks.iter().position(|cb| cb.is_none()) else {
         return USB_EIO;
     };
-    let r = unsafe { (c.ops.interrupt_start)(c.ctx, dev.hdev, endpoint, data, len) };
+    let r = unsafe { (c.ops.transfer_start)(c.ctx, dev.hdev, endpoint, data, len) };
     if r < 0 {
         return r;
     }
@@ -180,7 +180,7 @@ fn take_completion(c: &Controller, s: &Slot) -> Option<(UsbCompletion, *mut c_vo
         let Some(Callback { endpoint, done, ctx }) = *cb else {
             continue;
         };
-        let r = unsafe { (c.ops.interrupt_take)(c.ctx, dev.hdev, endpoint) };
+        let r = unsafe { (c.ops.transfer_take)(c.ctx, dev.hdev, endpoint) };
         if r == USB_EPENDING {
             continue;
         }

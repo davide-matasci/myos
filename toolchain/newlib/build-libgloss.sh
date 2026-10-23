@@ -160,9 +160,6 @@ fi
 # this a source edit under toolchain/newlib/libgloss/myos/ never reaches
 # libgloss.a (pwdgrp.c sat stale here for a week, shipping a getpwent()
 # that returned NULL — the os-test setpwent regression).
-# Cache-bust: netd ctl taken + accept-arm-only (PR #164 riscv64 SSH).
-# Cache-bust: pollselect infinite-wait gettimeofday yield (dropbear/netd).
-# Cache-bust: sleep.c (SYS_NANOSLEEP) + pollselect sleeping between scans.
 for src_f in "$ROOT"/toolchain/newlib/libgloss/myos/*.c "$ROOT"/toolchain/newlib/libgloss/myos/*.h; do
   cp "$src_f" "$PORT/"
 done
@@ -171,9 +168,17 @@ mkdir -p "$PORT/sys" "$PORT/net"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/sys/*.h "$PORT/sys/"
 cp "$ROOT"/toolchain/newlib/libgloss/myos/net/*.h "$PORT/net/"
 
-for f in myos_raw syscalls stubs posix_stubs posix_extra misc_stubs more_stubs signal ioctl environ initfini getline dirent at basename dirname time pwdgrp mmap shm mount termios ttyctl socket inet netdb ifaddrs statvfs mntent pollselect pty evfd search sleep uio pthread syslog reboot; do
-  "$CC" -ffreestanding -fPIC -O2 -I"$PORT" -isystem "$inc" \
+# newlib's own part of libgloss: its hooks, its threads, what its libc lacks.
+LIBMYOS="$ROOT/toolchain/libmyos"
+for f in hooks posix_stubs posix_extra misc_stubs more_stubs signal environ initfini getline dirent basename dirname inet netdb search pthread syslog; do
+  "$CC" -ffreestanding -fPIC -O2 -I"$LIBMYOS" -I"$PORT" -isystem "$inc" \
     -c "$PORT/${f}.c" -o "$out/obj/${f}.o"
+done
+# The C both libcs share (toolchain/libmyos, docs/mlibc.md), compiled against
+# newlib's headers; its files export their public names (libmyos/libc.h).
+for f in myos_raw fdio proc sigtramp at time pwdgrp mmap shm mount termios ttyctl socket ifaddrs statvfs pollselect pty evfd sleep uio reboot ioctl mntent random; do
+  "$CC" -ffreestanding -fPIC -O2 -I"$LIBMYOS" -I"$PORT" -isystem "$inc" \
+    -c "$LIBMYOS/${f}.c" -o "$out/obj/${f}.o"
 done
 
 # POSIX regex (regcomp/regexec/regerror/regfree + engine), glob and

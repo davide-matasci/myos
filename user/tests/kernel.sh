@@ -601,6 +601,36 @@ usb_disk() {
 }
 t -t usb,blk usb_disk usb_disk
 
+# /dev/usb (docs/usb.md): the USB serial adapter the launcher puts on the
+# hub (QEMU's FTDI, vendor class) is no kernel driver's, so usbdev lists it.
+# Holding its ctl brings the endpoint files; a control transfer through ep0
+# reads its device descriptor; its line loops back, so the bytes written
+# to the bulk OUT endpoint come back on the bulk IN one, after the FTDI's
+# two status bytes. A second holder is refused, and the endpoint files go
+# with the first.
+usbdev() {
+	wait_for 30 sh -c 'grep -lq "^id 0403:6001$" /dev/usb/*/info' || { ls /dev/usb; cat /proc/usb; return 1; }
+	d=$(grep -l '^id 0403:6001$' /dev/usb/*/info) && d=${d%/info}
+	grep -q '^ep81 bulk in 64$' $d/info && grep -q '^ep02 bulk out 64$' $d/info || { cat $d/info; return 1; }
+	! [ -e $d/ep0 ] || { echo "ep0 before ctl is held"; return 1; }
+	exec 4<$d/ctl || return 1
+	{ ! sh -c ": < $d/ctl" 2>/dev/null && [ -e $d/ep0 ] && grep -q '^held$' $d/info; } || { echo "ctl not held"; exec 4<&-; return 1; }
+	# GET_DESCRIPTOR(device): its 18 bytes, idVendor and idProduct at 8.
+	printf '\200\006\000\001\000\000\022\000' > $d/ep0 || { echo "control failed"; exec 4<&-; return 1; }
+	/bin/sbase/dd if=$d/ep0 of=/tmp/usbdev.desc bs=64 count=1 2>/dev/null
+	printf '\003\004\001\140' > /tmp/usbdev.id
+	{ [ "$(wc -c < /tmp/usbdev.desc)" -eq 18 ] \
+		&& /bin/sbase/dd if=/tmp/usbdev.desc bs=1 skip=8 count=4 2>/dev/null | cmp -s - /tmp/usbdev.id; } \
+		|| { echo "not its descriptor"; exec 4<&-; return 1; }
+	rm -f /tmp/usbdev.desc /tmp/usbdev.id
+	printf myos-usb > $d/ep02 || { echo "bulk out failed"; exec 4<&-; return 1; }
+	got=$(/bin/sbase/dd if=$d/ep81 bs=4096 count=1 2>/dev/null | /bin/sbase/dd bs=1 skip=2 2>/dev/null)
+	exec 4<&-
+	[ "$got" = myos-usb ] || { echo "looped back: $got"; return 1; }
+	! [ -e $d/ep0 ] && ! grep -q '^held$' $d/info || { echo "still held"; return 1; }
+}
+t -t usb,usbdev usbdev usbdev
+
 # Every disk says what it is in /dev/<disk>/info: its name, its size and
 # its driver's description (where it is, model, serial). The launcher's
 # NVMe controllers have serials, the virtio-scsi disk is QEMU's 1 MiB
