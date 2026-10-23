@@ -40,6 +40,7 @@ ENV CI=true \
 #     ELFs (newlib/ports) + kernel/user EE linking.
 #   - gcc g++ make autoconf automake libtool texinfo bison flex pkg-config:
 #     host builds + configure-based GNU ports (newlib, git, vim, lynx, tcc...).
+#   - meson ninja-build: mlibc's build system (toolchain/mlibc).
 #   - zstd rsync xorriso: sysroot packaging + fetch, iso.yml ISO image.
 #   - git curl wget file patch bc ca-certificates python3: source fetch, SSL,
 #     checkout sync, wire-myos.py / port patching.
@@ -49,6 +50,9 @@ ENV CI=true \
 #   - e2fsprogs: the ext2 host tests and the boots' scratch-disk e2fsck.
 #   - dosfstools, mtools: the FAT host tests (fatvol) and the boots'
 #     fsck.fat of the FAT test disk.
+#   - gcc-aarch64-linux-gnu libssl-dev libgnutls28-dev: U-Boot for the
+#     Raspberry Pi 3 boot (boot/rpi3/build.sh; a clang build of it crashes);
+#     device-tree-compiler: its fdtput fills the Pi's device tree in.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
@@ -61,6 +65,7 @@ RUN apt-get update \
         gcc g++ make \
         autoconf automake libtool \
         texinfo bison flex \
+        meson ninja-build \
         pkg-config \
         zstd rsync \
         xorriso \
@@ -68,6 +73,8 @@ RUN apt-get update \
         openssh-client \
         e2fsprogs \
         dosfstools mtools \
+        gcc-aarch64-linux-gnu libssl-dev libgnutls28-dev \
+        device-tree-compiler \
         sudo \
         ca-certificates \
         python3 \

@@ -33,7 +33,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-riscv` for riscv64 (`qemu-system-misc` before Ubuntu 26.04), `qemu-efi-aarch64`, `qemu-efi-riscv64`); CI runs Ubuntu 26.04's QEMU 10.2; the riscv64 boot has its IOMMU only with QEMU 9.2 or later (`-device riscv-iommu-pci`; 24.04's 8.2 boots without it, and the launcher says so once)
 - `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23)
 - `make` — newlib build
-- `meson`, `ninja-build` — mlibc build (`docs/mlibc.md`)
+- `meson`, `ninja-build` — mlibc build (`toolchain/mlibc`, `docs/mlibc.md`)
 - `git` — fetching upstream port sources
 - `gh` — GitHub CLI (CI registry pulls)
 - `libc6-dev` — host CRT (`Scrt1.o`) for the Limine host tool
@@ -60,7 +60,7 @@ ones CI already built takes about a minute: see "Fast local setup" in
 On macOS (Homebrew):
 
 ```sh
-brew install qemu llvm lld texinfo coreutils
+brew install qemu llvm lld texinfo coreutils meson ninja
 # Homebrew's llvm is keg-only (no ld.lld on PATH) — the newlib/ports cross
 # wrappers exec ld.lld, so prepend it:
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"   # /usr/local/opt/llvm/bin on Intel

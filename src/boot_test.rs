@@ -212,6 +212,56 @@ const BOOT_MARKERS: [&str; 37] = [
     "[ OK ] rc started",
 ];
 
+/// The board a test boot runs on: what it prints before the login prompt,
+/// and whether it has the test disks the host checks afterwards.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Board {
+    /// QEMU's PCs and `virt` boards: every device of [`BOOT_MARKERS`], the
+    /// scratch and FAT disks.
+    Virt,
+    /// QEMU's Raspberry Pi 3 (`raspi3b`, `cargo run -- rpi3 test`): no
+    /// virtio, PCI or USB devices, no disks but the SD card it boots from
+    /// ([`RPI3_MARKERS`]).
+    Rpi3,
+}
+
+impl Board {
+    fn markers(self) -> &'static [&'static str] {
+        match self {
+            Board::Virt => &BOOT_MARKERS,
+            Board::Rpi3 => &RPI3_MARKERS,
+        }
+    }
+}
+
+/// [`BOOT_MARKERS`] that need no device a Raspberry Pi 3 lacks under QEMU.
+const RPI3_MARKERS: [&str; 24] = [
+    "Hello from myos",
+    "[ OK ] heap",
+    "[ OK ] dma pages",
+    "[ OK ] platform",
+    "[ OK ] interrupts",
+    "task a",
+    "task b",
+    "[ OK ] scheduler",
+    "[ OK ] smp",
+    "[ OK ] urandom",
+    "[ OK ] hello",
+    "[ OK ] boot modules",
+    "[ OK ] fork",
+    "[ OK ] fork exec",
+    "[ OK ] alloc",
+    "[ OK ] user",
+    "[ OK ] msg",
+    "[ OK ] devnull",
+    "[ OK ] tmp",
+    "[ OK ] tmpops",
+    "[ OK ] proc",
+    "[ OK ] tty",
+    "[ OK ] signal",
+    "[ OK ] rc started",
+];
+
 /// The kernel reporting a crash: a CPU exception, a user fault it printed,
 /// a panic. Ends the run at once instead of waiting out the budget.
 const FATAL_MARKERS: [&str; 3] = ["exception:", "user panic", "[ WARN ] user fault"];
@@ -500,7 +550,7 @@ fn fail_stalled(serial: &Shared, child: &mut Child, why: &str) -> ! {
 /// stdio. Does not return: exits the process with the result.
 /// The outcome: every test passed (a crash, a stall or the budget running out
 /// ends the launcher at once instead).
-pub fn run(mut child: Child, mode: &Mode, linux_compat: bool, slow: bool) -> Outcome {
+pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow: bool) -> Outcome {
     let mut stdin = child.stdin.take().expect("qemu stdin");
     let mut stderr = child.stderr.take().expect("qemu stderr");
     let mut stdout = child.stdout.take().expect("qemu stdout");
@@ -654,10 +704,10 @@ pub fn run(mut child: Child, mode: &Mode, linux_compat: bool, slow: bool) -> Out
     // The ext2 tests leave a filesystem on the scratch disk, the FAT test
     // wrote to the FAT disk: e2fsprogs and dosfstools must find them clean
     // (`src/main.rs`), the power-off having unmounted them.
-    let disk_ok = crate::fsck_scratch_disk() & crate::fsck_fat_disk();
+    let disk_ok = board != Board::Virt || crate::fsck_scratch_disk() & crate::fsck_fat_disk();
 
     let text = snapshot(&serial);
-    let missing: Vec<&str> = BOOT_MARKERS.iter().copied().filter(|m| !text.contains(m)).collect();
+    let missing: Vec<&str> = board.markers().iter().copied().filter(|m| !text.contains(m)).collect();
     let failed: Vec<&str> = results.iter().filter(|r| !r.passed).map(|r| r.name.as_str()).collect();
     let (passed, total) = done.unwrap_or((0, 0));
     eprintln!();

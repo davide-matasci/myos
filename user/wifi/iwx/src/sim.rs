@@ -1,5 +1,5 @@
-//! A firmware file for the simulated AX201 of the test boots (the
-//! launcher's device model, `src/ax201_sim.rs`): shaped as Intel's
+//! A firmware file for the model of the AX201 the driver's tests run
+//! against (`tests/ax201`): shaped as Intel's
 //! iwlwifi-QuZ-a0-hr-b0-77.ucode (its header, its records, the API and
 //! capability bits, command versions and limits the driver looks at), but
 //! its sections are myos's own bytes, which the model checks the driver

@@ -148,7 +148,7 @@ else (`arch::apply_platform`). Two sources fill it, in this order:
 | CPUs | MADT enabled LAPIC / x2APIC / GICC entries | `/cpus` children |
 | Interrupt controller | MADT: LAPIC address; GICD (with the GIC version) + GICC → GICv2, GICD + GICR → GICv3 | the nodes of the arch's drivers ("Interrupt controllers" above: the GICs, the Raspberry Pi 3's two, `docs/raspberry-pi.md`, the PLIC) |
 | Console UART | SPCR: interface type (16550 or PL011 / SBSA), address, GSIV | the one `/chosen` `stdout-path` names (through `/aliases`), else the first `arm,pl011`, else the first `ns16550a` / `ns16550` / `snps,dw-apb-uart` / `brcm,bcm2835-aux-uart` (the Pi's mini UART); + `interrupts` |
-| RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: no RTC, no wall clock) |
+| RTC | — | `arm,pl031`, `google,goldfish-rtc` (optional: without one the wall clock counts from the epoch at boot until `settimeofday` sets it) |
 | Timers | GTDT: EL1 physical and virtual timer INTIDs | `/cpus` `timebase-frequency` (riscv64 `time` CSR rate) |
 | PCIe host bridge | MCFG: ECAM base, bus range | `pci-host-ecam-generic`: `reg` (the ECAM window), `bus-range`; `brcm,bcm2711-pcie` (aarch64, the Raspberry Pi 4's): `reg` (its registers, below) |
 | PCIe MMIO windows, INTx routing | — (in AML) | `ranges` (the 32-bit entry on aarch64, the 64-bit one on riscv64; CPU and bus address, which may differ), `interrupt-map` / `interrupt-map-mask` |

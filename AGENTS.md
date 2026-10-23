@@ -180,7 +180,9 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   installs) each in a boot of its own; the Alpine roots the Linux layer
   tests mount (rustc, Python, an X client) come from a disk made once and
   cached. The Linux layer's musl pieces are built and
-  cached like a port (`linux-compat`) in every run.
+  cached like a port (`linux-compat`) in every run. The Raspberry Pi 3
+  (QEMU `raspi3b`) boots its smoke tests whenever an aarch64 machine does
+  (`docs/testing.md`).
 - **Everything** runs on a push to master, daily, on a dispatch of
   `ci.yml` with `full_boot: true` and on a pull request labelled
   `ci:full`; a `linux` test in the selection puts the layer in the image
