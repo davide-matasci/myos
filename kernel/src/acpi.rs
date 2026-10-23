@@ -315,6 +315,12 @@ pub fn dmar() -> Option<Dmar> {
 
 #[cfg(target_arch = "x86_64")]
 impl Dmar {
+    /// The platform supports interrupt remapping (the table's `INTR_REMAP`
+    /// flag).
+    pub fn intr_remap(&self) -> bool {
+        self.t.u8(37).is_some_and(|f| f & 1 != 0)
+    }
+
     /// Each DMA remapping hardware unit (DRHD): its registers, whether it
     /// translates for every function no other unit's scope names
     /// (`INCLUDE_PCI_ALL`), and its scopes.

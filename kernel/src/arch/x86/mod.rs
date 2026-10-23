@@ -120,6 +120,17 @@ pub fn msi_vector() -> Option<(u32, u32)> {
     interrupts::alloc_msi()
 }
 
+/// The local APICs run in x2APIC mode (32-bit ids).
+pub fn x2apic_mode() -> bool {
+    interrupts::x2apic_mode()
+}
+
+/// Write the I/O APIC pins routed so far again: interrupt remapping came
+/// on, their entries take the remappable format now.
+pub fn ioapic_refresh() {
+    ioapic::refresh();
+}
+
 /// Brief halt until the next interrupt (idle loop).
 pub fn wait_interrupt() {
     unsafe {

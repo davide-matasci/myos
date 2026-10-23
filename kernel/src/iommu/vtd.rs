@@ -13,19 +13,28 @@
 //! points a function's context entry at a table of its own; [`map`] puts
 //! pages in it, one-to-one too, so a bus address stays a physical one.
 //!
-//! Invalidation goes through the registers (not the queue), whole: the
-//! context cache and the IOTLB after a context entry changes, the IOTLB
-//! after a mapping does, the write buffer first where the unit wants it
-//! (`CAP.RWBF`). A unit whose page walks do not snoop the caches
-//! (`ECAP.C` clear) reads the tables from memory: their lines are flushed
-//! after each write. A refused DMA raises the unit's fault event (an MSI
-//! to a device vector): the handler reads the fault recording registers
-//! and hands each to `iommu::record`.
+//! Invalidation goes through the queue (descriptors in memory, a wait
+//! descriptor writing its status when they are done; the registers on a
+//! unit without a queue), whole: the context cache and the IOTLB after a
+//! context entry changes, the IOTLB after a mapping does, the write buffer
+//! first where the unit wants it (`CAP.RWBF`). A unit whose page walks do
+//! not snoop the caches (`ECAP.C` clear) reads the tables from memory:
+//! their lines are flushed after each write. A refused DMA raises the
+//! unit's fault event (an MSI to a device vector): the handler reads the
+//! fault recording registers and hands each to `iommu::record`.
+//!
+//! Interrupts are messages too (chapter 5). A unit that remaps them
+//! (`ECAP.IR`, the DMAR's `INTR_REMAP`) gets an interrupt remapping table:
+//! each message a PCI function or the I/O APIC sends names an entry
+//! ([`remap`], the remappable format), which holds the vector and the
+//! destination and verifies the sender's source id, so a function raises
+//! its own vectors and no other's; a message in the compatibility format
+//! (no entry) is refused. The unit's own fault event is not remapped.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use spin::Mutex;
 
@@ -44,13 +53,45 @@ const FECTL: usize = 0x38;
 const FEDATA: usize = 0x3C;
 const FEADDR: usize = 0x40;
 const FEUADDR: usize = 0x44;
+const IQT: usize = 0x88;
+const IQA: usize = 0x90;
+const IRTA: usize = 0xB8;
 
 const GCMD_TE: u32 = 1 << 31;
 const GCMD_SRTP: u32 = 1 << 30;
 const GCMD_WBF: u32 = 1 << 27;
+const GCMD_QIE: u32 = 1 << 26;
+const GCMD_IRE: u32 = 1 << 25;
+const GCMD_SIRTP: u32 = 1 << 24;
 const GSTS_TES: u32 = 1 << 31;
 const GSTS_RTPS: u32 = 1 << 30;
 const GSTS_WBFS: u32 = 1 << 27;
+const GSTS_QIES: u32 = 1 << 26;
+const GSTS_IRES: u32 = 1 << 25;
+const GSTS_IRTPS: u32 = 1 << 24;
+/// `ECAP`: queued invalidation, interrupt remapping, extended interrupt
+/// mode (32-bit APIC ids in the remapping table).
+const ECAP_QI: u64 = 1 << 1;
+const ECAP_IR: u64 = 1 << 3;
+const ECAP_EIM: u64 = 1 << 4;
+/// The invalidation queue: 256 descriptors of 16 bytes (`IQA` size 0), and
+/// the descriptors used (chapter 6.5.2): the context cache and the IOTLB
+/// whole, the interrupt entry cache whole, a wait that writes its status.
+const QI_ENTRIES: u32 = 256;
+const QI_CC_GLOBAL: [u64; 2] = [0x1 | 0b01 << 4, 0];
+const QI_IOTLB_GLOBAL: [u64; 2] = [0x2 | 0b01 << 4 | 1 << 6 | 1 << 7, 0];
+const QI_IEC_GLOBAL: [u64; 2] = [0x4, 0];
+const QI_WAIT_STATUS: u64 = 0x5 | 1 << 5;
+/// The interrupt remapping table: 256 entries of 16 bytes (`IRTA` size 7,
+/// 2^(7+1)), its extended interrupt mode bit; an entry: present, the
+/// trigger mode in bit 4, the vector from bit 16, the destination from bit
+/// 32 (an 8-bit APIC id in bits 47:40 without extended mode); the source
+/// id in the second word, verified whole (`SVT` 1, `SQ` 0).
+const IRT_ENTRIES: u16 = 256;
+const IRTA_SIZE: u64 = 7;
+const IRTA_EIME: u64 = 1 << 11;
+const IRTE_P: u64 = 1;
+const IRTE_SVT_RID: u64 = 1 << 18;
 const CCMD_ICC: u64 = 1 << 63;
 const CCMD_GLOBAL: u64 = 1 << 61;
 const IOTLB_IVT: u64 = 1 << 63;
@@ -99,6 +140,26 @@ struct Unit {
     gcmd: u32,
     /// The IOTLB registers' offset (`ECAP.IRO`).
     iro: usize,
+    /// The unit snoops the caches on its walks: no flushing.
+    coherent: bool,
+    /// The invalidation queue (0: register-based invalidation), the page
+    /// after it holding the wait descriptors' status, and its tail.
+    iq: u64,
+    iq_tail: AtomicU32,
+    /// The interrupt remapping table (0: interrupts not remapped), the
+    /// entries given out, whether it takes 32-bit APIC ids.
+    irt: u64,
+    irt_used: u16,
+    eime: bool,
+    /// The I/O APIC's source id, from the unit's scope of that kind.
+    ioapic: Option<u16>,
+}
+
+/// Who an interrupt comes from: a PCI function, or the I/O APIC.
+#[derive(Clone, Copy)]
+pub enum Source {
+    Pci(u8, u8, u8),
+    IoApic,
 }
 
 /// A function's own domain.
@@ -185,11 +246,41 @@ fn command(u: &Unit, bit: u32, done: u32, on: bool) -> bool {
     false
 }
 
+/// Queue `descs` and a wait for them: true once the unit has done them
+/// (the wait's status written), false when it has not within [`SPINS`].
+fn queue(u: &Unit, descs: &[[u64; 2]]) -> bool {
+    let q = mm::hhdm(u.iq) as *mut [u64; 2];
+    let status = u.iq + PAGE;
+    let mut tail = u.iq_tail.load(Ordering::Relaxed);
+    // The status the wait writes: never 0, which it is cleared to first.
+    let seq = tail + 1;
+    unsafe { (mm::hhdm(status) as *mut u32).write_volatile(0) };
+    let wait = [QI_WAIT_STATUS | u64::from(seq) << 32, status];
+    for d in descs.iter().chain(core::iter::once(&wait)) {
+        unsafe { q.add(tail as usize).write_volatile(*d) };
+        tail = (tail + 1) % QI_ENTRIES;
+    }
+    u.iq_tail.store(tail, Ordering::Relaxed);
+    tables_written(u.coherent, q as usize, PAGE as usize);
+    write64(u.regs + IQT, u64::from(tail) << 4);
+    for _ in 0..SPINS {
+        if unsafe { (mm::hhdm(status) as *const u32).read_volatile() } == seq {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
 /// Drop everything the unit cached: the write buffer where it has one,
 /// the context entries, the translations.
 fn invalidate(u: &Unit) {
     if u.cap & (1 << 4) != 0 {
         command(u, GCMD_WBF, GSTS_WBFS, false);
+    }
+    if u.iq != 0 {
+        queue(u, &[QI_CC_GLOBAL, QI_IOTLB_GLOBAL]);
+        return;
     }
     write64(u.regs + CCMD, CCMD_ICC | CCMD_GLOBAL);
     for _ in 0..SPINS {
@@ -205,6 +296,10 @@ fn invalidate(u: &Unit) {
 fn invalidate_iotlb(u: &Unit) {
     if u.cap & (1 << 4) != 0 {
         command(u, GCMD_WBF, GSTS_WBFS, false);
+    }
+    if u.iq != 0 {
+        queue(u, &[QI_IOTLB_GLOBAL]);
+        return;
     }
     write64(u.regs + u.iro + 8, IOTLB_IVT | IOTLB_GLOBAL);
     for _ in 0..SPINS {
@@ -236,10 +331,13 @@ unsafe extern "C" fn fault_handler(ctx: *mut core::ffi::c_void) {
                 continue;
             }
             let lo = read64(rec);
+            let reason = (hi >> 32) as u8;
             super::record(Fault {
                 sid: hi as u16,
-                addr: lo & !0xfff,
-                reason: (hi >> 32) as u8,
+                // A refused interrupt message (reason 0x20 and up): the
+                // entry's handle it named, where a DMA has its address.
+                addr: if reason >= 0x20 { lo >> 48 } else { lo & !0xfff },
+                reason,
                 read: (hi >> 62) & 1 != 0,
             });
             write32(rec + 12, FRCD_F);
@@ -408,6 +506,12 @@ pub fn init() {
             .scopes()
             .map(|s| Scope { kind: s.kind, start_bus: s.start_bus, path: s.path().collect() })
             .collect();
+        // The I/O APIC's scope (kind 3): one path step, its pseudo bus,
+        // device and function being its source id.
+        let ioapic = d
+            .scopes()
+            .find(|s| s.kind == 3)
+            .and_then(|s| s.path().next().map(|(dev, func)| u16::from(s.start_bus) << 8 | u16::from(dev) << 3 | u16::from(func)));
         units.push((
             Unit {
                 base: d.base,
@@ -418,6 +522,13 @@ pub fn init() {
                 root: 0,
                 gcmd: 0,
                 iro: ((ecap >> 8) & 0x3ff) as usize * 16,
+                coherent: ecap & 1 != 0,
+                iq: 0,
+                iq_tail: AtomicU32::new(0),
+                irt: 0,
+                irt_used: 0,
+                eime: false,
+                ioapic,
             },
             ecap,
         ));
@@ -447,9 +558,10 @@ pub fn init() {
         crate::console::status_warn("iommu: vt-d identity domain: out of memory, left off");
         return;
     }
+    let intr_remap = dmar.intr_remap();
     let mut st = State { units: Vec::new(), levels, super_shift, identity, top, domains: Vec::new(), max_did, coherent };
     let aw = if levels == 4 { 2u64 } else { 1 };
-    for (i, (mut u, _)) in units.into_iter().enumerate() {
+    for (i, (mut u, ecap)) in units.into_iter().enumerate() {
         // The root table: every bus a context table, every function in it
         // the identity domain.
         u.root = mm::alloc_frame();
@@ -472,6 +584,34 @@ pub fn init() {
         if !command(&u, GCMD_SRTP, GSTS_RTPS, true) {
             crate::console::status_warn(&alloc::format!("iommu: vt-d unit at 0x{:x}: no root table", u.base));
             continue;
+        }
+        // The invalidation queue (the registers serve a unit without one),
+        // which interrupt remapping needs for its entry cache.
+        if ecap & ECAP_QI != 0
+            && let Some((iq, _)) = mm::alloc_contiguous_pages(2, mm::ANYWHERE)
+        {
+            write64(u.regs + IQT, 0);
+            write64(u.regs + IQA, iq);
+            if command(&u, GCMD_QIE, GSTS_QIES, true) {
+                u.gcmd |= GCMD_QIE;
+                u.iq = iq;
+            }
+        }
+        // Interrupt remapping: an empty table, so that every message not
+        // remapped through an entry of its own is refused (compatibility
+        // format interrupts stay off, `GCMD.CFI`). The entries come with
+        // the devices' interrupts (`remap`).
+        if u.iq != 0 && intr_remap && ecap & ECAP_IR != 0 {
+            let irt = mm::alloc_frame();
+            let eime = crate::arch::x2apic_mode() && ecap & ECAP_EIM != 0;
+            write64(u.regs + IRTA, irt | if eime { IRTA_EIME } else { 0 } | IRTA_SIZE);
+            if command(&u, GCMD_SIRTP, GSTS_IRTPS, true) && queue(&u, &[QI_IEC_GLOBAL]) && command(&u, GCMD_IRE, GSTS_IRES, true) {
+                u.gcmd |= GCMD_IRE;
+                u.irt = irt;
+                u.eime = eime;
+            } else {
+                crate::console::status_warn(&alloc::format!("iommu: vt-d unit at 0x{:x}: interrupt remapping stays off", u.base));
+            }
         }
         invalidate(&u);
         // The fault event: an MSI to a device vector on the BSP.
@@ -496,8 +636,9 @@ pub fn init() {
     if st.units.is_empty() {
         return;
     }
+    let remapping = st.units.iter().any(|u| u.irt != 0);
     crate::console::status_ok(&alloc::format!(
-        "iommu: vt-d, {} unit(s), {}-level tables, {} superpages, memory to 0x{:x}",
+        "iommu: vt-d, {} unit(s), {}-level tables, {} superpages, memory to 0x{:x}{}",
         st.units.len(),
         levels,
         match super_shift {
@@ -505,9 +646,55 @@ pub fn init() {
             21 => "2 MiB",
             _ => "no",
         },
-        top
+        top,
+        if remapping { ", interrupts remapped" } else { "" }
     ));
     *STATE.lock() = Some(st);
+    // The I/O APIC pins routed before this (the console's) in the
+    // remappable format now.
+    if remapping {
+        crate::arch::ioapic_refresh();
+    }
+}
+
+/// An interrupt remapping table entry for `source`'s interrupt that raises
+/// `vector` on the BSP (`level`: the trigger mode of an I/O APIC pin): its
+/// handle, which the message or the pin's entry names in the remappable
+/// format. The entry verifies the source id, so a function can raise its
+/// own vectors and no other's. `None` when no unit remaps for the source
+/// (its messages pass as they are), or the table is full.
+pub fn remap(source: Source, vector: u8, level: bool) -> Option<u16> {
+    let mut guard = STATE.lock();
+    let st = guard.as_mut()?;
+    let (ui, sid) = match source {
+        Source::Pci(bus, slot, func) => (unit_for(st, bus, slot, func)?, Some(u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func))),
+        Source::IoApic => {
+            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
+            (ui, st.units[ui].ioapic)
+        }
+    };
+    let u = &mut st.units[ui];
+    if u.irt == 0 || u.irt_used >= IRT_ENTRIES {
+        return None;
+    }
+    let idx = u.irt_used;
+    u.irt_used += 1;
+    let apic = crate::smp::cpu_hw_id(0);
+    // Without extended interrupt mode the entry names the BSP in 8 bits.
+    if !u.eime && apic > 0xff {
+        return None;
+    }
+    let dest = if u.eime { apic << 32 } else { apic << 40 };
+    let lo = IRTE_P | u64::from(level) << 4 | u64::from(vector) << 16 | dest;
+    let hi = sid.map_or(0, |s| u64::from(s) | IRTE_SVT_RID);
+    let e = unsafe { (mm::hhdm(u.irt) as *mut u64).add(usize::from(idx) * 2) };
+    unsafe {
+        e.add(1).write_volatile(hi);
+        e.write_volatile(lo);
+    }
+    tables_written(u.coherent, e as usize, 16);
+    queue(u, &[QI_IEC_GLOBAL]);
+    Some(idx)
 }
 
 pub fn attach(bus: u8, slot: u8, func: u8) -> Option<u32> {
@@ -576,7 +763,13 @@ pub fn text() -> String {
             21 => write!(s, "2M"),
             _ => write!(s, "none"),
         };
-        let _ = writeln!(s, " scopes {}{}", u.scopes.len(), if u.include_all { " all" } else { "" });
+        let _ = write!(s, " scopes {}{}", u.scopes.len(), if u.include_all { " all" } else { "" });
+        let _ = writeln!(
+            s,
+            "{}{}",
+            if u.iq != 0 { " queued" } else { "" },
+            if u.irt != 0 { alloc::format!(" intremap {}/{}", u.irt_used, IRT_ENTRIES) } else { String::new() }
+        );
     }
     let _ = writeln!(s, "domain {} identity 0x0-0x{:x}", IDENTITY_DID, st.top);
     for d in &st.domains {

@@ -450,12 +450,28 @@ fn pci_cap(bus: u8, slot: u8, func: u8, id: u32) -> Option<u8> {
     None
 }
 
+/// The local APICs run in x2APIC mode.
+pub fn x2apic_mode() -> bool {
+    X2APIC.load(Ordering::Relaxed)
+}
+
 /// The BSP's MSI message address. It names the destination in 8 bits: a
-/// BSP with a larger x2APIC id would need interrupt remapping to be
-/// reached.
+/// BSP with a larger x2APIC id needs interrupt remapping to be reached.
 fn msi_address() -> Option<u32> {
     let apic_id = crate::smp::cpu_hw_id(0) as u32;
     (apic_id <= 0xFF).then_some(0xFEE0_0000 | (apic_id << 12))
+}
+
+/// The message (address, data) a PCI function sends to raise `vector` on
+/// the BSP: through the IOMMU's interrupt remapping where there is one
+/// (the remappable format: bit 4, the entry's handle in bits 19:5 and 2,
+/// no data), else the LAPIC's address and the vector.
+fn msi_message(bus: u8, slot: u8, func: u8, vector: u8) -> Option<(u32, u32)> {
+    if let Some(handle) = crate::iommu::remap_msi(bus, slot, func, vector) {
+        let handle = u32::from(handle);
+        return Some((0xFEE0_0000 | (handle & 0x7fff) << 5 | (handle >> 15) << 2 | 1 << 4, 0));
+    }
+    Some((msi_address()?, u32::from(vector)))
 }
 
 /// A fresh device vector and the MSI message address that raises it on the
@@ -480,17 +496,18 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     if offset.saturating_add(16) > size {
         return None;
     }
-    let address = msi_address()?;
-    let vector = u32::from(alloc_vector()?);
+    let vector = alloc_vector()?;
+    let (address, data) = msi_message(bus, slot, func, vector)?;
     let entry = va + offset as usize;
     unsafe {
         // Mask the entry while programming it (vector control bit 0).
         core::ptr::write_volatile((entry + 12) as *mut u32, 1);
         core::ptr::write_volatile(entry as *mut u32, address);
         core::ptr::write_volatile((entry + 4) as *mut u32, 0);
-        core::ptr::write_volatile((entry + 8) as *mut u32, vector);
+        core::ptr::write_volatile((entry + 8) as *mut u32, data);
         core::ptr::write_volatile((entry + 12) as *mut u32, 0);
     }
+    let vector = u32::from(vector);
     // Message control (cap+2): bit 15 MSI-X enable, bit 14 function mask.
     let w0 = cfg(cap);
     let ctrl = ((w0 >> 16) as u16 | 0x8000) & !0x4000;
@@ -504,8 +521,8 @@ pub fn pci_msi_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
     let write = |off: u8, v: u32| crate::pci::cfg_write32(bus, slot, func, off, v);
     let cap = pci_cap(bus, slot, func, 0x05)?;
-    let address = msi_address()?;
-    let vector = u32::from(alloc_vector()?);
+    let vector = alloc_vector()?;
+    let (address, message) = msi_message(bus, slot, func, vector)?;
     // Message control (cap+2): bit 0 enable, bits 4..6 the vectors enabled
     // (0: one), bit 7 a 64-bit address (the data then at cap+12, not +8).
     let w0 = cfg(cap);
@@ -517,10 +534,10 @@ pub fn pci_msi_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     } else {
         cap.wrapping_add(8)
     };
-    write(data, (cfg(data) & 0xFFFF_0000) | vector);
+    write(data, (cfg(data) & 0xFFFF_0000) | message);
     let ctrl = (ctrl & !0x70) | 1;
     write(cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
-    Some(vector)
+    Some(u32::from(vector))
 }
 
 extern "x86-interrupt" fn spurious(_frame: InterruptStackFrame) {}
