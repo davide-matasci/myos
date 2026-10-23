@@ -259,6 +259,9 @@ HELLO_OK_ELFS=(
   target/acpi-x86_64-unknown-none
   target/acpi-aarch64-unknown-none-softfloat
   target/acpi-riscv64imac-unknown-none-elf
+  target/rpi_firmware-x86_64-unknown-none
+  target/rpi_firmware-aarch64-unknown-none-softfloat
+  target/rpi_firmware-riscv64imac-unknown-none-elf
   target/virtio_blk-x86_64-unknown-none
   target/virtio_blk-aarch64-unknown-none-softfloat
   target/virtio_blk-riscv64imac-unknown-none-elf

@@ -670,6 +670,7 @@ AP stacks are too small for nested timer/IPI frames).
 - `/proc/mounts` — existing
 - `/proc/cpuinfo` — online CPUs, hw ids, schedule counts
 - `/proc/platform` — the board description and where each component came from (above)
+- `/proc/firmware` — on a Raspberry Pi, what the VideoCore firmware says of the board: the firmware's and board's revisions, the clocks, the USB controller's power (`docs/raspberry-pi.md`)
 - `/proc/usb` — the controllers (ports, interrupt, event counts) and the USB devices: id, parent hub and port, speed, vendor:product, each interface's class triple and the driver that took it (`docs/usb.md`)
 - `/proc/pci` — full BDF list from `pci_enum` (hex IDs + class/subclass names and a small QEMU/virt device table). Write `rescan` to re-enumerate and refresh the node (gone devices disappear); the kernel then calls every module's `module_rescan`, and the block drivers (virtio-blk, virtio-scsi, NVMe) bring up the disks that appeared since boot, leaving the known ones alone. virtio-net probes once at load (netd binds the one `/dev/net0`). No ACPI/QEMU hotplug IRQ yet: a hot-added disk shows up after a rescan.
 - `/proc/acpi/info`, `tables`, `s5` — from `acpi` module (honest stubs if no RSDP)

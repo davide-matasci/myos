@@ -236,7 +236,7 @@ impl Board {
 }
 
 /// [`BOOT_MARKERS`] that need no device a Raspberry Pi 3 lacks under QEMU.
-const RPI3_MARKERS: [&str; 26] = [
+const RPI3_MARKERS: [&str; 27] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -248,6 +248,7 @@ const RPI3_MARKERS: [&str; 26] = [
     "[ OK ] smp",
     "[ OK ] urandom",
     "[ OK ] hello",
+    "[ OK ] rpi_firmware",
     "[ OK ] sdmmc",
     "[ OK ] usb",
     "[ OK ] boot modules",

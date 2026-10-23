@@ -13,6 +13,7 @@ const MODULES: &[(&str, &str)] = &[
     ("hello", "hello"),
     ("pci_enum", "pci_enum"),
     ("acpi", "acpi"),
+    ("rpi_firmware", "rpi_firmware"),
     ("virtio_blk", "virtio_blk"),
     ("virtio_scsi", "virtio_scsi"),
     ("nvme", "nvme"),
@@ -225,7 +226,7 @@ fn nested_elf(
     if target.contains("x86_64")
         && matches!(
             bin,
-            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc"
+            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "rpi_firmware" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc"
                 | "linux" | "usb" | "xhci" | "usb_hub" | "usb_storage" | "usb_hid" | "pcidev" | "pl061" | "tap"
         )
     {

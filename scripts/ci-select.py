@@ -79,6 +79,7 @@ MODULE_TAGS = {
     "virtio_blk": {"blk"},
     "nvme": {"blk"},
     "sdmmc": {"blk", "sdmmc"},
+    "rpi_firmware": {"rpi_firmware"},
     "virtio_scsi": {"blk"},
     "usb": {"usb"},
     "xhci": {"usb"},

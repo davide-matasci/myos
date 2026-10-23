@@ -275,6 +275,17 @@ sdmmc() {
 	[ "$(dd if=$d/data bs=512 skip=8388608 count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 }
 t -t blk,sdmmc,smoke sdmmc sdmmc
+# The Raspberry Pi's firmware (modules/rpi_firmware): /proc/firmware has
+# what it answers through the mailbox: the revisions, the core clock (the
+# sdhost's), the USB controller's power. A board without the mailbox has
+# no /proc/firmware, and nothing to check.
+rpi_firmware() {
+	[ -e /proc/firmware ] || return 0
+	cat /proc/firmware
+	grep -q '^firmware 0x' /proc/firmware && grep -Eq '^clock core [1-9][0-9]* Hz$' /proc/firmware &&
+		grep -Eq '^power usb (on|off)$' /proc/firmware
+}
+t -t smoke,rpi_firmware rpi_firmware rpi_firmware
 # A full filesystem: the write that fills it gives what fit, the next says
 # ENOSPC, natively and under the Linux layer (apk on a full /data stopped
 # with "I/O error", the generic failure's errno), as does a pwrite into a

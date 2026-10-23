@@ -114,6 +114,27 @@ The CPU moves the data (no DMA) and the module polls for completion, a
 single card per controller at the default speed (25 MHz, 4-bit bus);
 DMA, interrupts and the faster modes are issue #549.
 
+## The VideoCore firmware
+
+The GPU's firmware owns the board's power domains and clocks; the ARM
+asks it through the **mailbox property interface** (`brcm,bcm2835-mbox`,
+channel 8): a buffer of tags in memory the firmware reads and answers in
+place, handed over by its bus address (the GPU's uncached alias of
+memory, what the tree's `dma-ranges` give the `dma_alloc` of the
+mailbox's node). The `rpi_firmware` module (`modules/rpi_firmware`) does
+that and publishes it as the service `rpi_firmware` (a `RpiFirmwareOps`
+table, `modules/abi`): `property` runs a tag list, and the helpers
+`power_on` (a domain: the USB controller's, `RPI_POWER_USB_HCD`) and
+`clock_rate` (`RPI_CLOCK_CORE`, `RPI_CLOCK_EMMC`, ...) wrap the common
+tags. The `dwc2` module powers the USB controller through it. What the
+firmware says of the board is in `/proc/firmware`: the firmware's and
+board's revisions, the EMMC, UART, ARM and core clocks, and whether the
+USB controller is powered. QEMU's `raspi3b` models the property channel
+(the clocks it reports are the firmware's defaults), so the module's path
+is checked by the Pi 3's CI boot (`rpi_firmware` test). A board without
+the mailbox has no firmware to talk to: the module says `rpi_firmware
+none` and publishes nothing.
+
 ## Raspberry Pi 3
 
 A Raspberry Pi 3 (BCM2837, four Cortex-A53) has no UEFI firmware: its

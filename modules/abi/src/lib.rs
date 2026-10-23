@@ -2139,6 +2139,92 @@ impl UsbCoreOps {
 unsafe impl Sync for UsbHcdOps {}
 unsafe impl Sync for UsbCoreOps {}
 
+// ---- The Raspberry Pi's firmware (docs/raspberry-pi.md) ---------------------
+//
+// The `rpi_firmware` module talks to the VideoCore firmware through its
+// mailbox property interface and publishes a [`RpiFirmwareOps`] table as
+// the service [`RPI_FIRMWARE_SERVICE`]: a driver asks it to power a device
+// domain on (the USB controller) or for a clock's rate.
+
+/// The name the module publishes its [`RpiFirmwareOps`] under.
+pub const RPI_FIRMWARE_SERVICE: &str = "rpi_firmware";
+/// [`RpiFirmwareOps::version`].
+pub const RPI_FIRMWARE_VERSION: u32 = 1;
+
+/// Property tags ([`RpiFirmwareOps::property`]): the firmware's and board's
+/// revisions, a device's power state (`RPI_POWER_*`: `state` bit 0 on, bit 1
+/// wait for it), a clock's rate (`RPI_CLOCK_*`) in Hz.
+pub const RPI_TAG_FIRMWARE_REVISION: u32 = 0x0000_0001;
+pub const RPI_TAG_BOARD_REVISION: u32 = 0x0001_0002;
+pub const RPI_TAG_GET_POWER_STATE: u32 = 0x0002_0001;
+pub const RPI_TAG_SET_POWER_STATE: u32 = 0x0002_8001;
+pub const RPI_TAG_GET_CLOCK_RATE: u32 = 0x0003_0002;
+/// The power domains the firmware switches.
+pub const RPI_POWER_SD_CARD: u32 = 0;
+pub const RPI_POWER_UART0: u32 = 1;
+pub const RPI_POWER_UART1: u32 = 2;
+pub const RPI_POWER_USB_HCD: u32 = 3;
+/// The clocks it reports.
+pub const RPI_CLOCK_EMMC: u32 = 1;
+pub const RPI_CLOCK_UART: u32 = 2;
+pub const RPI_CLOCK_ARM: u32 = 3;
+pub const RPI_CLOCK_CORE: u32 = 4;
+
+/// The firmware, for the drivers (the [`RPI_FIRMWARE_SERVICE`] table).
+/// Task context only: a call waits for the firmware's answer.
+#[repr(C)]
+pub struct RpiFirmwareOps {
+    pub version: u32,
+    /// Run the property tags in `tags` (`words` of them: each a tag id, its
+    /// value buffer's size in bytes, a request code of 0 and the buffer,
+    /// as the mailbox property interface lays them out, without the
+    /// message header and end tag) and write the firmware's answer over
+    /// them (the response code of each, bit 31 set, with the length it
+    /// filled, and the values). 0, or negative when the firmware refused
+    /// the message, did not answer, or `tags` does not fit.
+    pub property: unsafe extern "C" fn(tags: *mut u32, words: usize) -> i32,
+}
+
+impl RpiFirmwareOps {
+    /// [`RpiFirmwareOps::property`] on `tags`.
+    pub fn property(&self, tags: &mut [u32]) -> i32 {
+        unsafe { (self.property)(tags.as_mut_ptr(), tags.len()) }
+    }
+
+    /// One tag with `values` of 4 bytes each (at most 5), in and out: the
+    /// values the firmware answered, `None` when it did not or the tag
+    /// failed.
+    pub fn tag<const N: usize>(&self, tag: u32, values: [u32; N]) -> Option<[u32; N]> {
+        let mut buf = [0u32; 8];
+        if N > 5 {
+            return None;
+        }
+        buf[0] = tag;
+        buf[1] = (N * 4) as u32;
+        buf[3..3 + N].copy_from_slice(&values);
+        if self.property(&mut buf[..3 + N]) < 0 || buf[2] & 0x8000_0000 == 0 {
+            return None;
+        }
+        let mut out = [0u32; N];
+        out.copy_from_slice(&buf[3..3 + N]);
+        Some(out)
+    }
+
+    /// Power domain `device` (`RPI_POWER_*`) on, waiting until it is:
+    /// whether it is on now.
+    pub fn power_on(&self, device: u32) -> bool {
+        self.tag(RPI_TAG_SET_POWER_STATE, [device, 3]).is_some_and(|[_, state]| state & 1 != 0 && state & 2 == 0)
+    }
+
+    /// The rate of clock `clock` (`RPI_CLOCK_*`) in Hz, `None` when the
+    /// firmware does not know it.
+    pub fn clock_rate(&self, clock: u32) -> Option<u32> {
+        self.tag(RPI_TAG_GET_CLOCK_RATE, [clock, 0]).map(|[_, rate]| rate).filter(|&r| r != 0)
+    }
+}
+
+unsafe impl Sync for RpiFirmwareOps {}
+
 // ---- The pointer (docs/tty.md) ---------------------------------------------
 //
 // The console module owns `/dev/console/mouse` and publishes a

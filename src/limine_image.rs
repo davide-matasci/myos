@@ -34,6 +34,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "hello",
     "pci_enum",
     "acpi",
+    "rpi_firmware",
     "virtio_blk",
     "virtio_scsi",
     "nvme",
