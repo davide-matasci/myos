@@ -64,6 +64,10 @@ fn snapshot<R>(f: impl FnOnce(&TaskTable) -> R) -> R {
     let flags = irq_save();
     irq_off();
     let tasks = TASKS.lock();
+    // The reader's own running stretch counts up to now: a task asking for
+    // its CPU time (`clock_gettime`, `getrusage`) would otherwise see it
+    // unchanged until its next tick, however long it has computed since.
+    acct::charge(current_slot());
     let r = f(&tasks);
     drop(tasks);
     irq_restore(flags);

@@ -6,8 +6,9 @@
 //! itself is charged to nobody, but counted as the CPU's idle time. So a
 //! task's time is the time a CPU spent running it: a task halting in
 //! `block_until` (it stays the CPU's current task) is charged only up to the
-//! halt. Plain atomics per slot and per CPU: the scheduler charges without
-//! taking TASKS.
+//! halt. A reading (`info::snapshot`) charges the reader first, so a task's
+//! own time is current; another running task's lags by up to a tick. Plain
+//! atomics per slot and per CPU: the scheduler charges without taking TASKS.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

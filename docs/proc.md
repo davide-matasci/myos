@@ -130,7 +130,9 @@ A CPU charges the time since its last charge to its current task on every
 `schedule` (a tick, a switch) and before it halts; the halt itself is idle
 time, charged to nobody. A task alone on its CPU is so charged at each tick,
 and a task halting in `block_until` (it stays the CPU's current task) only up
-to the halt. A reading lags a running task by up to a tick (10 ms).
+to the halt. A reading charges the reader first (a task's own CPU time, from
+`clock_gettime` or `getrusage`, is current) and lags another running task by
+up to a tick (10 ms).
 
 An ending thread hands its time to its process, and `wait` adds the reaped
 child's (its own children's included) to the parent's `children`.
