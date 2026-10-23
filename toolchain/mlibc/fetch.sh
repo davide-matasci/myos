@@ -36,8 +36,9 @@ done
 
 # compiler-rt's builtins (build.sh picks each arch's): the IEEE binary128
 # (`long double` on aarch64 and riscv64) arithmetic, conversions and
-# compares, the double and float ones of riscv64 (soft-float) and the
-# complex multiplications; the headers they include.
+# compares, the double and float ones of riscv64 (soft-float), the
+# complex multiplications and the 128-bit integer divisions; the headers
+# they include.
 CRT_FILES=(
   addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c
   extenddftf2.c extendsftf2.c trunctfdf2.c trunctfsf2.c
@@ -51,7 +52,8 @@ CRT_FILES=(
   floatsisf.c floatdisf.c floatunsisf.c floatundisf.c
   truncdfsf2.c extendsfdf2.c
   muldc3.c mulsc3.c multc3.c
-  int_lib.h int_types.h int_util.h int_endianness.h int_math.h
+  udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
+  int_lib.h int_types.h int_util.h int_endianness.h int_math.h int_div_impl.inc
   fp_lib.h fp_mode.h fp_add_impl.inc fp_div_impl.inc fp_mul_impl.inc
   fp_extend.h fp_extend_impl.inc fp_trunc.h fp_trunc_impl.inc
   fp_fixint_impl.inc fp_fixuint_impl.inc fp_compare_impl.inc
