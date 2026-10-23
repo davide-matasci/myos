@@ -265,6 +265,10 @@ def shards(mid, names, tests, tags_arg):
             "id": f"{mid}-{shard}", "machine": mid, "arch": machine[2], "args": args,
             "gic": machine[3] if machine[2] == "aarch64" else "",
             "iommu": machine[3] if machine[2] == "x86_64" else "",
+            # The x86 boots run on the runner's CPU through KVM (`/dev/kvm`,
+            # which GitHub's Linux runners expose and the boot job's container
+            # takes): the light list in 400 s instead of 670 to 950 under TCG.
+            "accel": "kvm" if machine[2] == "x86_64" else "",
             "alpine": "true" if disk else "false", "required": True,
         })
 
@@ -345,7 +349,7 @@ def main(argv):
         boots += shards(mid, names, tests, None if machine_all else tags_arg)
     if any(b["arch"] == "aarch64" for b in boots):
         boots.append({
-            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "", "iommu": "",
+            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "", "iommu": "", "accel": "",
             "alpine": "false", "required": True,
         })
 

@@ -16,6 +16,14 @@ scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full|test args...]   # the
 A boot without `test` is a normal boot to the login prompt (what the ISO
 is for).
 
+QEMU emulates the guest's CPU (TCG) unless told otherwise. On a host with
+`/dev/kvm`, `MYOS_X86_ACCEL=kvm` runs the x86 boots on the host's CPU
+instead (`-accel kvm`, the interrupt controllers split between KVM and
+QEMU for the IOMMU's interrupt remapping; the CPU model stays QEMU's
+`qemu64`, so the guest sees the same CPU either way): the light list
+takes about 400 s instead of 670 to 950. CI does so for its x86 boots
+(below); aarch64 and riscv64 stay under TCG on an x86 host.
+
 ## Selecting tests
 
 Every test carries **tags**: what it needs, what it covers, and its own
@@ -264,6 +272,11 @@ need the scratch disk (`partitions`, `ext2_disk`, `fstab_mount`,
 and its boot checks the markers it can print (`boot_test::Board::Rpi3`). The build job builds its boot files
 (`boot/rpi3/build.sh`, U-Boot cached by its pin) and packs them with the
 rest.
+
+The x86 boots (bios, uefi, bios-amd) run under KVM: the plan says so
+(`accel`), the boot job's container takes the runner's `/dev/kvm` (GitHub's
+Linux runners have it), and the launcher boots with `-accel kvm` as above.
+The other arches run under TCG, on x86 runners.
 
 The plan is in the run's summary;
 `scripts/ci-select.py --changed PATH...` prints it locally for any set of
