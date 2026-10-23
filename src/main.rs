@@ -22,7 +22,7 @@ mod wifi_net;
 mod wifi_sim;
 mod release;
 
-use boot_test::{Mode, Selection};
+use boot_test::{Board, Mode, Selection};
 
 use limine_image::{
     DiskFile, fetch_limine, limine_conf, limine_esp_files, limine_version,
@@ -139,10 +139,7 @@ fn main() {
             exit(2);
         }
         ("rpi4", None) => println!("{}", build_rpi4_image().display()),
-        ("rpi3", Some(_)) => {
-            eprintln!("error: the Raspberry Pi 3 boot is not a test boot (no disks, no network: docs/raspberry-pi.md)");
-            exit(2);
-        }
+        ("rpi3", Some(mode)) => run_test_rpi3(mode),
         ("rpi3", None) => run_rpi3(),
         ("riscv64", Some(mode)) => run_test_riscv64(mode),
         ("riscv64", None) => run_riscv64(),
@@ -813,7 +810,7 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     limine_image::copy_sparse(image, &disk);
     let linux = linux_compat_enabled();
     let slow = name.starts_with("riscv64");
-    let outcome = boot_test::run(spawn(&disk), &mode, linux, slow);
+    let outcome = boot_test::run(spawn(&disk), Board::Virt, &mode, linux, slow);
     let mut ok = outcome.ok;
     let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
     // The installed disk is kept before the next boot makes a new scratch disk.
@@ -823,11 +820,11 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     }
     if ok && ran("boot_upgrade") {
         eprintln!("boot test: the upgraded disk boots again");
-        ok = boot_test::run(spawn(&disk), &Mode::Reboot { app: ran("apps_data") }, linux, slow).ok;
+        ok = boot_test::run(spawn(&disk), Board::Virt, &Mode::Reboot { app: ran("apps_data") }, linux, slow).ok;
     }
     if ok && ran("boot_install_local") {
         eprintln!("boot test: the disk get-myos --install made boots");
-        ok = boot_test::run(spawn(&installed), &Mode::Installed, linux, slow).ok;
+        ok = boot_test::run(spawn(&installed), Board::Virt, &Mode::Installed, linux, slow).ok;
     }
     exit(if ok { 0 } else { 1 })
 }
@@ -990,6 +987,28 @@ fn build_rpi_image(image: &Path) {
 /// `target/rpi3/u-boot.log`. The boot files for a real Pi 3 stay in
 /// `target/rpi3`.
 fn run_rpi3() {
+    let status = qemu_rpi3(false).status().expect("failed to start qemu-system-aarch64");
+    exit(status.code().unwrap_or(1));
+}
+
+/// The boot test on the Raspberry Pi 3 ([`run_rpi3`]): the selection's
+/// tests the board can run (it has no disk but its SD card, no network, no
+/// PCI or USB: `docs/testing.md`).
+fn run_test_rpi3(mode: Mode) -> ! {
+    let child = qemu_rpi3(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start qemu-system-aarch64");
+    let ok = boot_test::run(child, Board::Rpi3, &mode, linux_compat_enabled(), true).ok;
+    exit(if ok { 0 } else { 1 })
+}
+
+/// The Raspberry Pi 3's boot files (`boot/rpi3/build.sh`, the boot disk,
+/// the firmware's part done) and the QEMU command that boots them: the
+/// console on stdio, a monitor for the boot test (`test`).
+fn qemu_rpi3(test: bool) -> Command {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let out = manifest.join("target/rpi3");
     let status = Command::new(manifest.join("boot/rpi3/build.sh")).status().expect("run boot/rpi3/build.sh");
@@ -1030,22 +1049,23 @@ fn run_rpi3() {
     let mut cmd = Command::new("qemu-system-aarch64");
     // The screen (the firmware's framebuffer, `/dev/fb`) where there is a
     // desktop to show it on.
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+    if test || (std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()) {
         cmd.args(["-display", "none"]);
     }
-    let status = cmd
-        .args(["-M", "raspi3b"])
+    cmd.args(["-M", "raspi3b"])
         .args(["-device", &loader(&stub_path, 0)])
         .args(["-device", &loader(&out.join("u-boot.bin"), UBOOT_AT)])
         .args(["-device", &loader(&dtb, DTB_AT)])
         .arg("-drive")
         .arg(format!("if=sd,format=raw,file={}", disk.display()))
         .arg("-serial")
-        .arg(format!("file:{}", out.join("u-boot.log").display()))
-        .args(["-serial", "mon:stdio"])
-        .status()
-        .expect("failed to start qemu-system-aarch64");
-    exit(status.code().unwrap_or(1));
+        .arg(format!("file:{}", out.join("u-boot.log").display()));
+    if test {
+        cmd.args(["-serial", "stdio"]).arg("-monitor").arg(boot_test::monitor_arg());
+    } else {
+        cmd.args(["-serial", "mon:stdio"]);
+    }
+    cmd
 }
 
 /// The Limine release's files (`target/limine-v<version>`, which build.rs

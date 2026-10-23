@@ -164,12 +164,14 @@ fn wall_ns(now: u64) -> Option<i64> {
 }
 
 /// The RTC's Unix nanoseconds at monotonic `now`, reading the RTC when the
-/// offset is not known yet or is due for a check.
+/// offset is not known yet or is due for a check. A board without one (a
+/// Raspberry Pi) counts from the epoch at boot, as if its RTC read the
+/// monotonic clock: the wall clock runs, and `settimeofday` sets it.
 fn rtc_wall_ns(now: u64) -> Option<i64> {
     let valid = WALL_VALID.load(Ordering::Relaxed);
     let due = now.saturating_sub(RTC_READ_AT_NS.load(Ordering::Relaxed)) >= RTC_TTL_NS;
     if !valid || due {
-        let rtc = read_rtc_seconds()?;
+        let rtc = read_rtc_seconds().unwrap_or((now / 1_000_000_000) as i64);
         RTC_READ_AT_NS.store(now, Ordering::Relaxed);
         let offset = WALL_OFFSET_NS.load(Ordering::Relaxed);
         let wall_secs = (now as i64).wrapping_add(offset) / 1_000_000_000;

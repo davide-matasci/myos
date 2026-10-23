@@ -16,7 +16,8 @@ serial console, the HDMI framebuffer the firmware sets up (`docs/fb.md`),
 everything that runs from the initramfs, and USB (`docs/usb.md`): a
 keyboard on the HDMI console, a mouse, memory sticks, hubs, through the
 VL805 xHCI controller behind the BCM2711's PCIe bridge. What does not
-(yet): the SD card; Ethernet (GENET); Wi-Fi; the RTC (the Pi has none).
+(yet): the SD card; Ethernet (GENET); Wi-Fi. The Pi has no RTC: its wall
+clock counts from the epoch at boot until `date` or `settimeofday` sets it.
 
 ## Building the image
 
@@ -93,10 +94,13 @@ A Raspberry Pi 3 (BCM2837, four Cortex-A53) has no UEFI firmware: its
 GPU firmware starts an ARM stub and a kernel from the SD card, and myos
 uses [U-Boot](https://u-boot.org/) as that kernel, which runs Limine as
 a UEFI application. QEMU models the board (`raspi3b`), so this boot is
-checked there; **untested on hardware so far**.
+checked there, by CI too (the smoke tests it can run, `docs/testing.md`
+"In CI"); **untested on hardware so far**.
 
 ```sh
 cargo run -- rpi3        # builds the boot files and boots QEMU raspi3b
+cargo run -- rpi3 test --tags smoke --skip blk,boot_rc,fstab_mount,fileio,libc,heap_mini
+                         # CI's boot test of it
 ```
 
 The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
@@ -104,7 +108,8 @@ The console is on stdio (the kernel's, the mini UART); U-Boot's goes to
 generic timer, the serial console, the framebuffer the firmware sets up,
 everything that runs from the initramfs, power-off and reboot. What does
 not (yet): USB (the DWC2 controller), so no keyboard, disk or Ethernet;
-the SD card (as a disk: U-Boot reads it); Wi-Fi.
+the SD card (as a disk: U-Boot reads it); Wi-Fi. It has no RTC either:
+the wall clock counts from the epoch at boot.
 
 `boot/rpi3/build.sh` (which `cargo run -- rpi3` runs) builds the boot
 files into `target/rpi3`:

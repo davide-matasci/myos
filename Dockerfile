@@ -49,6 +49,9 @@ ENV CI=true \
 #   - e2fsprogs: the ext2 host tests and the boots' scratch-disk e2fsck.
 #   - dosfstools, mtools: the FAT host tests (fatvol) and the boots'
 #     fsck.fat of the FAT test disk.
+#   - gcc-aarch64-linux-gnu libssl-dev libgnutls28-dev: U-Boot for the
+#     Raspberry Pi 3 boot (boot/rpi3/build.sh; a clang build of it crashes);
+#     device-tree-compiler: its fdtput fills the Pi's device tree in.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
@@ -68,6 +71,8 @@ RUN apt-get update \
         openssh-client \
         e2fsprogs \
         dosfstools mtools \
+        gcc-aarch64-linux-gnu libssl-dev libgnutls28-dev \
+        device-tree-compiler \
         sudo \
         ca-certificates \
         python3 \

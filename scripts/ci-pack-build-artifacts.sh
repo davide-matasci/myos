@@ -45,6 +45,16 @@ files=(
 if [[ -f target/virt.dtb ]]; then
   files+=(target/virt.dtb)
 fi
+# The Raspberry Pi 3's boot files (boot/rpi3/build.sh, the build job's
+# step): the rpi3 boot needs no cross compiler then.
+rpi3_files=(
+  target/rpi3/armstub8-myos.bin
+  target/rpi3/armstub8.sha256
+  target/rpi3/u-boot.bin
+  target/rpi3/u-boot.version
+  target/rpi3/bcm2710-rpi-3-b.dtb
+)
+files+=("${rpi3_files[@]}")
 if [[ -d target/ovmf ]]; then
   files+=(target/ovmf)
 fi
@@ -65,6 +75,7 @@ required=(
   target/aarch64-unknown-none-softfloat/debug/kernel
   target/riscv64imac-unknown-none-elf/debug/kernel
   "${image_files[@]}"
+  "${rpi3_files[@]}"
 )
 for m in console hello pci_enum acpi virtio_blk virtio_scsi nvme xhci usb_hub usb_storage usb_hid pcidev pl061 virtio_net tap netfs fat ext2 linux; do
   for t in x86_64-unknown-none aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
