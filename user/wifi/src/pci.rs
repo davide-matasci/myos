@@ -1,6 +1,6 @@
 //! A PCI function driven through `/dev/pci/BB:SS.F` (modules/pcidev,
 //! docs/pci-acpi-smp.md): its registers (BAR0), DMA buffers and interrupt
-//! for the AX201's driver (the `iwx` crate).
+//! for the Intel radios' driver (the `iwx` crate).
 
 use alloc::vec::Vec;
 
