@@ -1,8 +1,8 @@
 //! `wifi`: the Wi-Fi daemon and its command (issue #495, `docs/wifi.md`).
 //!
 //! - `wifi daemon [NIC]` drives the radio: an Intel AX201 or AX200 when
-//!   `/dev/pci` has one and no NIC is named (its firmware from
-//!   `wifi-firmware fetch`),
+//!   `/dev/pci` has one and no NIC is named, else a MediaTek MT7601U when
+//!   `/dev/usb` has one (their firmware from `wifi-firmware fetch`),
 //!   else the simulated one on NIC (default `/dev/net1`, the test boots'
 //!   second NIC, `src/wifi_sim.rs`).
 //!   It listens on the unix socket `wifid` for the commands below, one per
@@ -33,6 +33,7 @@
 extern crate alloc;
 
 mod intel;
+mod mediatek;
 mod frame;
 mod mlme;
 mod pci;
@@ -40,6 +41,7 @@ mod radio;
 mod rsn;
 mod tap;
 mod unix;
+mod usb;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -90,7 +92,8 @@ struct Seen {
 }
 
 /// The radio: NIC's simulated one when named, else an Intel one when
-/// there is one, else the simulated one on `/dev/net1`.
+/// there is one, else a MediaTek one, else the simulated one on
+/// `/dev/net1`.
 fn open_radio(nic: Option<&[u8]>) -> Option<Box<dyn Radio>> {
     if nic.is_none()
         && let Some((dir, chip)) = intel::find()
@@ -99,6 +102,17 @@ fn open_radio(nic: Option<&[u8]>) -> Option<Box<dyn Radio>> {
             Ok(r) => Some(Box::new(r)),
             Err(f) => {
                 write(&intel::why(chip, &f));
+                None
+            }
+        };
+    }
+    if nic.is_none()
+        && let Some((dir, chip)) = mediatek::find()
+    {
+        return match mediatek::Mediatek::open(&dir, chip) {
+            Ok(r) => Some(Box::new(r)),
+            Err(f) => {
+                write(&mediatek::why(chip, &f));
                 None
             }
         };

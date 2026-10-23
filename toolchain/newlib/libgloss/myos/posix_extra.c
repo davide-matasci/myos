@@ -13,9 +13,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/lock.h>
-#include <sys/random.h>
 #include <unistd.h>
 
+#include "libmyos.h"
 #include "myos_syscalls.h"
 
 void *memalign(size_t align, size_t size); /* newlib malloc.h */
@@ -198,41 +198,6 @@ int daemon(int nochdir, int noclose) {
     return 0;
 }
 
-/* getrandom(2) from /dev/urandom (the kernel's generator, docs/testing.md
- * `urandom`): never blocks, so GRND_NONBLOCK and GRND_RANDOM change nothing. */
-ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
-    if ((flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)) != 0) {
-        errno = EINVAL;
-        return -1;
-    }
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
-    size_t got = 0;
-    while (got < buflen) {
-        ssize_t n = read(fd, (char *)buf + got, buflen - got);
-        if (n < 0) {
-            if (errno == EINTR && got == 0) {
-                continue;
-            }
-            int e = errno;
-            close(fd);
-            if (got > 0) {
-                return (ssize_t)got;
-            }
-            errno = e;
-            return -1;
-        }
-        if (n == 0) {
-            break;
-        }
-        got += (size_t)n;
-    }
-    close(fd);
-    return (ssize_t)got;
-}
-
 /* getentropy(2), the stub newlib's getentropy() and arc4random call:
  * `buflen` bytes (256 at most) of the kernel's randomness, all of them or
  * an error. */
@@ -243,7 +208,7 @@ int _getentropy(void *buf, size_t buflen) {
     }
     size_t got = 0;
     while (got < buflen) {
-        ssize_t n = getrandom((char *)buf + got, buflen - got, 0);
+        ssize_t n = __myos_getrandom((char *)buf + got, buflen - got, 0);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;

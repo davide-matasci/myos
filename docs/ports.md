@@ -32,6 +32,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 |-----|---------|---------|
 | `PORT_NAME` | the directory name | registry package, stamp and matrix name (`user/c` is `c-smokes`, `user/std` is `std-hello`, `toolchain/std` is `sysroot`) |
 | `PORT_KIND` | `port` | `port` (cross-built by a script), `user` (a Rust crate built by `kernel/build.rs`), `c` (the C smokes), `std` (the `std` demos), `toolchain` (newlib, the sysroot: built before everything else, by their own CI jobs; `build.rs` leaves them to the ports' scripts) |
+| `PORT_LIBC` | `newlib` | the C library a `port` or `c` port is built against: `newlib` (with libgloss, `target/newlib-<arch>`) or `mlibc` (`target/mlibc-<arch>`, `docs/mlibc.md`); `myos_write_cross_cc` and `scripts/build-c-smokes.sh` link against it (a build script that uses the cc sources its `port.env`). An `mlibc` port names `mlibc` in `PORT_DEPS` |
 | `PORT_CORE` | `0` | `1` for what a boot needs (the shell, getty, init's helpers, the CI smokes) |
 | `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`, the Rust ports need `sysroot`): the build loops order by them, and the CI ports job builds a dependency itself when the registry does not have it (`sysroot` means: wait for the sysroot job's artifact). Build order only: a runtime need is `PORT_RDEPS` |
 | `PORT_RDEPS` | | packages this one needs on the running system (`st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`): the `deps` field of the package index, which `get-myos` installs first (`docs/packages.md`). Only a package with files can be one (an image port is always there); `cargo run -- packages` refuses an unknown name or a loop |
@@ -113,8 +114,10 @@ from the initramfs.
 Patches (`*.myos.patch`) and compat files (`myos_compat.h`, `myos_stubs.c`)
 are for what myos genuinely lacks: a kernel feature (job control, timer
 signals, rlimits, `/var`), a declaration newlib's headers leave out, or
-build glue. A function several ports would stub belongs in libgloss
-(`toolchain/newlib/libgloss/myos`), implemented over the existing
+build glue. A function several ports would stub belongs in the libc: in
+the C both libcs share (`toolchain/libmyos`, `docs/mlibc.md`) when it is
+the kernel's interface, in libgloss (`toolchain/newlib/libgloss/myos`)
+when it is newlib's alone, implemented over the existing
 primitives; a workaround for a gap that has since been filled is removed
 (the audit that trimmed them is in the history of this file's ports).
 

@@ -11,32 +11,6 @@
 void sync(void) {
 }
 
-int ttyname_r(int fd, char *buf, size_t len) {
-    char name[MYOS_TTY_PATH];
-    int master;
-
-    if (myos_tty_dir(fd, name, sizeof name - 5, &master) != 0 || master) {
-        return ENOTTY;
-    }
-    strcat(name, "/data");
-    if (strlen(name) >= len) {
-        return ERANGE;
-    }
-    strcpy(buf, name);
-    return 0;
-}
-
-char *ttyname(int fd) {
-    static char name[MYOS_TTY_PATH];
-    int rc = ttyname_r(fd, name, sizeof name);
-
-    if (rc != 0) {
-        errno = rc;
-        return NULL;
-    }
-    return name;
-}
-
 char *getpass(const char *prompt) {
     static char buf[128];
     size_t i = 0;

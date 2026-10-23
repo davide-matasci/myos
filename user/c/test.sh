@@ -1,66 +1,70 @@
-# The C smokes: ptys (openpty round trip through the line discipline, EIO
-# once the slave closes) and /dev/urandom (non-zero, distinct, changing).
-t -t tty pty /bin/etc/pty_smoke 2
+# The C smokes (user/c), built against newlib: $SMOKES names their
+# directory, so that user/c-mlibc/test.sh runs the same functions on the
+# mlibc builds of the same programs (/bin/etc/mlibc).
+SMOKES=/bin/etc
+# ptys (openpty round trip through the line discipline, EIO once the slave
+# closes) and /dev/urandom (non-zero, distinct, changing).
+t -t tty pty $SMOKES/pty_smoke 2
 # More pty pairs at once than the kernel once had (four), their names and
 # inodes distinct, a closed pair's index used again (pty_smoke.c).
-t -t tty ptys /bin/etc/pty_smoke 4
+t -t tty ptys $SMOKES/pty_smoke 4
 # Writers faster than their reader: a write into a full pty waits for room,
 # also on the reader's CPU (pty_smoke.c).
-t -t tty pty_flood /bin/etc/pty_smoke 5
+t -t tty pty_flood $SMOKES/pty_smoke 5
 # A session's claim on a pair ends with its leader: the next session leader
 # with its pid does not hold it, the next claim goes through (pty_smoke.c).
-t pty_reclaim /bin/etc/pty_smoke 6
-t -t smoke urandom /bin/etc/urandom_smoke
+t pty_reclaim $SMOKES/pty_smoke 6
+t -t smoke urandom $SMOKES/urandom_smoke
 # The tty: the line editor's keys and ^C, driven through a pty (tty_smoke.c).
-t -t tty,console tty /bin/etc/tty_smoke
+t -t tty,console tty $SMOKES/tty_smoke
 # AF_UNIX over /net/unix: socketpair, listen/accept/connect with a forked
 # client, a transfer larger than the buffers, 60000 bytes ahead of the reader,
 # 48 conversations at once, EOF, names (unix_smoke.c).
-t -t netfs unix /bin/etc/unix_smoke
+t -t netfs unix $SMOKES/unix_smoke
 # /dev/fb: the geometry in ctl, a MAP_SHARED mapping of data that is the
 # framebuffer itself (shared with read/write and a forked child), a
 # MAP_PRIVATE one that is a copy, and the screen handed to a program and back
 # by `text`, the last close of ctl and its holder's exit (fb_smoke.c).
-t -t console,fb fb /bin/etc/fb_smoke
+t -t console,fb fb $SMOKES/fb_smoke
 # The text console's UTF-8: box-drawing, block and braille characters drawn
 # in one cell each, one without a glyph a single '?', a wide one two cells,
 # a combining mark none; 256 colors and RGB (fb_smoke.c).
-t -t console,fb fb_text /bin/etc/fb_smoke text
+t -t console,fb fb_text $SMOKES/fb_smoke text
 # poll: timeouts, waking on pipe and unix socket events (not before),
 # POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
-t -t events poll /bin/etc/poll_smoke
+t -t events poll $SMOKES/poll_smoke
 # Event counters and timers (docs/events.md): eventfd counts, EAGAIN,
 # EINVAL, the semaphore mode, a read woken by a child's write, status; a
 # one-shot and a periodic timerfd, gettime, disarm, an absolute time
 # (evfd_smoke.c).
-t -t events evfd /bin/etc/evfd_smoke
+t -t events evfd $SMOKES/evfd_smoke
 # Wait sets (docs/events.md): epoll over pipes and an event counter, a
 # timeout, a child's write ending a wait, EPOLLET, EPOLLONESHOT, the
 # errors, a member gone with its fd, a set in a set, the set shared with a
 # fork (epoll_smoke.c).
-t -t events epoll /bin/etc/epoll_smoke
+t -t events epoll $SMOKES/epoll_smoke
 # Signal fds (docs/events.md): a blocked signal read instead of delivered,
 # one outside the mask delivered, EAGAIN, a child's kill ending a read, the
 # mask changed, the fd in a wait set (sigfd_smoke.c).
-t -t events sigfd /bin/etc/sigfd_smoke
+t -t events sigfd $SMOKES/sigfd_smoke
 # /dev/pci: a userspace driver for QEMU's edu device: its registers mapped
 # uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
 # copy through a buffer of /dev/pci, and where the board has an IOMMU a DMA
 # outside the buffer refused (pcidev_smoke.c). The module is not loaded at
 # boot (root opts in, docs/pci-acpi-smp.md): the test loads it.
 pcidev_test() {
-	{ grep -q '^pcidev$' /proc/modules || insmod /lib/modules/pcidev; } && /bin/etc/pcidev_smoke
+	{ grep -q '^pcidev$' /proc/modules || insmod /lib/modules/pcidev; } && $SMOKES/pcidev_smoke
 }
 t -t pcidev pcidev pcidev_test
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).
-t -t tap tap /bin/etc/tap_smoke
+t -t tap tap $SMOKES/tap_smoke
 # netd's virtual NICs: a program on /dev/tap is a router 10.0.9.1 (DHCP,
 # ARP, UDP echo); netd leases 10.0.9.2 on it beside net0, which keeps the
 # default route, sends a socket connected there from that address, and lets
 # go of the NIC with its program (multihome_smoke.c).
-t -t tap,netfs multihome /bin/etc/multihome_smoke
+t -t tap,netfs multihome $SMOKES/multihome_smoke
 # The same after the wall clock went years ahead and back (sbase_date
 # does that): netd's timers run on the monotonic clock, so it still looks
 # for virtual NICs once a second (it used to wait for the wall clock to
@@ -71,22 +75,22 @@ multihome_clock() {
 	# netd's idle wait is at most a second: it sees the date.
 	sleep 2
 	/bin/sbase/date -u $(/bin/sbase/date -u -d $((now + 60)) +%m%d%H%M%Y) || return 1
-	/bin/etc/multihome_smoke
+	$SMOKES/multihome_smoke
 }
 t -t tap,netfs multihome_clock multihome_clock
 # readv/writev over a pipe, a socketpair and a nonblocking socket that
 # fills mid-writev (uio_smoke.c).
-t -t fs uio /bin/etc/uio_smoke
+t -t fs uio $SMOKES/uio_smoke
 # POSIX threads: the API on one thread, then threads contending for a
 # mutex and a condition variable, errno, keys, stdio and malloc per thread,
 # flockfile, readdir_r, 150 threads started and joined, read-write locks,
 # barriers, spin locks, a CLOCK_MONOTONIC condition wait, cancellation, and
 # forks while other threads keep malloc and stdio busy (pthread_smoke.c).
-t -t sched pthread /bin/etc/pthread_smoke
+t -t sched pthread $SMOKES/pthread_smoke
 # netfs conversations: a connect to 127.0.0.1 nobody listens on is refused
 # at once, and 200 sockets closed right after socket() leak none
 # (netconv_smoke.c).
-t -t netfs netconv /bin/etc/netconv_smoke
+t -t netfs netconv $SMOKES/netconv_smoke
 # netd's loopback interface: getifaddrs and if_nametoindex; UDP over
 # 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
 # unconnect, ECONNREFUSED after a datagram to a closed port, the host's
@@ -94,14 +98,14 @@ t -t netfs netconv /bin/etc/netconv_smoke
 # bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's);
 # a UDP socket passed by exec (bare datagrams to read(), then the socket
 # calls) (loopback_smoke.c).
-t -t netfs loopback /bin/etc/loopback_smoke
+t -t netfs loopback $SMOKES/loopback_smoke
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
 # setsid: its own session, no controlling terminal; SIGINT ends a child
 # spinning without syscalls; fork shares the pages copy-on-write: each
 # side's stores are its own, two forks deep; the shell exec'd from a larger
 # image gets an empty heap (child_smoke.c).
-t -t sched child /bin/etc/child_smoke
+t -t sched child $SMOKES/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without
 # a lookup, a name no server knows failing in bounded time), and the soft
@@ -110,17 +114,17 @@ t -t sched child /bin/etc/child_smoke
 # blocking read cut short, the default action); CLOCK_MONOTONIC and
 # CLOCK_BOOTTIME since boot, going on when the wall clock is set back
 # (issue #317), clock_getres (libc_smoke.c).
-t -t smoke libc /bin/etc/libc_smoke
+t -t smoke libc $SMOKES/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
 # symlink, lstat does not (at_smoke.c).
-t -t fs at /bin/etc/at_smoke
+t -t fs at $SMOKES/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
 # fds are gone after exec; one read gives a file's bytes up to the count or
 # its end; a rename does not wait for a process reading the console; lseek
 # and ftello past 2 GiB (fileio_smoke.c; on ext2 in mkfs.ext2's test).
-t -t fs,smoke fileio /bin/etc/fileio_smoke
+t -t fs,smoke fileio $SMOKES/fileio_smoke
 # MAP_SHARED mappings of a file are the file: stores read back with read()
 # and survive munmap, close and a child's exit, write() shows in them, a
 # second mapping and a forked child share them, read() lands in them,
@@ -128,32 +132,32 @@ t -t fs,smoke fileio /bin/etc/fileio_smoke
 # copied at its first store (from userspace, the kernel or a forked child),
 # and a fault maps the cached pages after it (mmap_smoke.c; on ext2 in
 # mkfs.ext2's test).
-t -t mm mmap /bin/etc/mmap_smoke
+t -t mm mmap $SMOKES/mmap_smoke
 # Shared memory: shm_open segments shared by name with a forked child and
 # living past shm_unlink for their holders, a memfd shared with a forked
 # and an exec'd child, anonymous MAP_SHARED mappings shared with a forked
 # child, System V segments by id and by key, no leftover in /dev/shm
 # (shm_smoke.c).
-t -t mm,fs shm /bin/etc/shm_smoke
+t -t mm,fs shm $SMOKES/shm_smoke
 # A write to a pty whose master is open but never read blocks, and a signal
 # ends it: the writer stays killable (fault_smoke.c; a CPU fault from
 # userspace is contained the same way, but a test cannot fault on purpose:
 # the host treats the kernel's `user fault` line as a failure).
-t -t mm fault /bin/etc/fault_smoke
+t -t mm fault $SMOKES/fault_smoke
 # A JIT's pattern from two threads: one makes a range of pages not touched
 # yet executable with mprotect while the other reads them, then code
 # written into every page runs. A page the reader faulted in while mprotect
 # walked the range used to keep the old protection, and its first fetch
 # killed the process (jit_smoke.c, issue #492).
-t -t mm,sched jit /bin/etc/jit_smoke
+t -t mm,sched jit $SMOKES/jit_smoke
 # Constructors run before main, by priority, with environ set up;
 # destructors at exit, after the atexit handlers (ctor_smoke.c).
-t -t exec ctor /bin/etc/ctor_smoke
+t -t exec ctor $SMOKES/ctor_smoke
 # Idle-pull balancing: a forked child inherits its parent's home CPU and,
 # while the parent keeps that CPU busy, an idle CPU takes it: the two end
 # up with different homes (sched_smoke.c; nothing to check with one CPU
 # for user tasks).
-t -t sched sched /bin/etc/sched_smoke
+t -t sched sched $SMOKES/sched_smoke
 # The same for a program tcc builds in the guest: its own linker bounds
 # .init_array and .fini_array, and it links crti.o and crtn.o. main returns
 # 3, and the destructor turns it into 0 if the constructor ran.
@@ -173,7 +177,7 @@ t -t exec ctor_tcc ctor_tcc
 # and the smoke checks the four press and release events (kbd_smoke.c).
 kbd_events() {
 	: > /tmp/kbd.out
-	/bin/etc/kbd_smoke >> /tmp/kbd.out 2>&1 &
+	$SMOKES/kbd_smoke >> /tmp/kbd.out 2>&1 &
 	pid=$!
 	i=0
 	while [ $i -lt 30 ] && ! grep -q -e ready -e "FAIL ]" /tmp/kbd.out 2>/dev/null; do
@@ -227,7 +231,7 @@ t -t console kbd_burst kbd_burst
 # once it is ready.
 mouse_smoke_run() {
 	: > /tmp/mouse.out
-	/bin/etc/mouse_smoke >> /tmp/mouse.out 2>&1 &
+	$SMOKES/mouse_smoke >> /tmp/mouse.out 2>&1 &
 	pid=$!
 	i=0
 	while [ $i -lt 30 ] && ! grep -q -e ready -e "FAIL ]" /tmp/mouse.out 2>/dev/null; do
@@ -284,7 +288,7 @@ t -t console,mouse virtio_mouse virtio_mouse_events
 # session (kbd_smoke intr, which reads only /dev/zero) gets SIGINT.
 ctrl_c() {
 	echo 'screen 9' > /dev/console/ctl || return 1
-	/bin/etc/kbd_smoke intr /dev/tty9/data &
+	$SMOKES/kbd_smoke intr /dev/tty9/data &
 	pid=$!
 	sleep 1
 	echo "HOST c-smokes sendkey ctrl-c" >&3
@@ -409,7 +413,7 @@ t -t console,usb,keyboard usb_keyboard usb_keyboard
 # checks that a second listener on its port is refused.)
 net_listen() {
 	: > /tmp/listen.out
-	/bin/etc/tcp_listen_smoke >> /tmp/listen.out 2>&1 &
+	$SMOKES/tcp_listen_smoke >> /tmp/listen.out 2>&1 &
 	pid=$!
 	echo "HOST c-smokes tcp-ping 2323" >&3
 	# netd's table (/net/convs) names the listener while it is up.

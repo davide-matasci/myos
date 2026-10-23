@@ -32,6 +32,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <reent.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -945,6 +946,12 @@ int pthread_detach(pthread_t t) {
 
 void pthread_yield(void) {
     myos_syscall0(SYS_YIELD);
+}
+
+/* POSIX's name for it (<sched.h>; mlibc has its own). */
+int sched_yield(void) {
+    myos_syscall0(SYS_YIELD);
+    return 0;
 }
 
 /* ---- newlib's locks (build.sh: --enable-newlib-retargetable-locking) ----
