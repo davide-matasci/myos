@@ -344,7 +344,9 @@ Its driver (`mtw::mt76x2`) is a port of Linux's mt76x2u (and the mt76x02
 and mt76 code it calls) at 20 MHz. Its registers are reached by `MULTI`
 vendor requests (the USB configuration's and the EEPROM's by their own),
 its MCU's commands carry a sequence number and are answered on the
-second bulk IN endpoint (read for up to 1.5 s), and a frame goes out
+second bulk IN endpoint (read for up to 1.5 s; a calibration left
+unanswered is no failure, as Linux takes it, the tuning itself is), and
+a frame goes out
 after a TXINFO and a 20-byte TXWI, its header padded to 4 bytes, the
 management frames on the voice endpoint, one frame a transfer coming in
 (receive aggregation off).

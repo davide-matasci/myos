@@ -318,6 +318,20 @@ fn periodic_calibration() {
 }
 
 #[test]
+fn a_calibration_unanswered_is_not_a_failure() {
+    // The MCU slow on a calibration (its answer never comes, the driver
+    // waits its 1.5 s): the channel is tuned all the same, as Linux takes
+    // it; the tuning itself unanswered is a failure.
+    let mut dev = up();
+    dev.usb.0.unanswered = Some(CAL_RXDCOC);
+    dev.set_chan(6).unwrap();
+    assert_eq!(dev.usb.0.tuned, Some((6, true)));
+    let p = Peer { bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x06], channel: 6, rates: vec![0x82, 0x84], ht_mcs: None, short_preamble: false, short_slot: false };
+    dev.joining(&p).unwrap();
+    assert!(dev.usb.0.calibrations().iter().any(|c| c.0 == CAL_TX_SHAPING), "the other calibrations still run");
+}
+
+#[test]
 fn radar_channel() {
     // Tuned for joining on a radar channel: none of the channel's own
     // calibrations, which send.

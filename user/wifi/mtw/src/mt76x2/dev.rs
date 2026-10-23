@@ -104,7 +104,8 @@ pub struct Dev<U: Usb> {
     chan: u8,
     cal: Cal,
     /// The access point's table entry while associated (0xff: none), the
-    /// rates frames to it go at, its preamble, its signal averaged.
+    /// rates frames to it go at, its preamble, its signal averaged (in
+    /// 1/1024 dBm, negated: mac80211's EWMA of the signal).
     wcid: u8,
     amrr: Option<Amrr>,
     short_preamble: bool,
@@ -349,8 +350,14 @@ impl<U: Usb> Dev<U> {
             f(fr.frame, dbm);
         });
         for s in ap {
-            // mac80211's EWMA of the signal, weight 1/8.
-            self.avg_rssi = Some(self.avg_rssi.map_or(s, |a| a - a / 8 + s / 8));
+            // mac80211's EWMA of the signal (DECLARE_EWMA(signal, 10, 8): 10
+            // fractional bits, weight 1/8; in dBm's integers it would stick
+            // within 7 dB of a change), of the frames that have one (a
+            // signal of -128 is none: mt76_rx_signal's).
+            if s > -128 {
+                let v = -s << 10;
+                self.avg_rssi = Some(self.avg_rssi.map_or(v, |a| ((a << 3) - a + v) >> 3));
+            }
         }
     }
 
@@ -996,18 +1003,21 @@ impl<U: Usb> Dev<U> {
         self.set_bw()?;
         self.rmw(EXT_CCA_CFG, EXT_CCA_MASK, EXT_CCA_20)?;
         self.mcu_set_channel(chan, scan)?;
-        self.mcu_init_gain(chan, self.cal.mcu_gain, true)?;
+        // The MCU's gain and calibrations: a command it does not answer in
+        // time is not a failure of the channel (mt76x2u_phy_set_channel
+        // ignores their results; the tuning's alone counts).
+        let _ = self.mcu_init_gain(chan, self.cal.mcu_gain, true);
         // LDPC received.
         if self.rev() >= REV_E3 {
             self.set(bbp(BBP_RXO, 13), 1 << 10)?;
         }
         if !self.cal.init_cal_done && self.ee16(EE_BT_RCAL_RESULT) as u8 != 0xff {
-            self.mcu_calibrate(CAL_R, 0)?;
+            let _ = self.mcu_calibrate(CAL_R, 0);
         }
-        self.mcu_calibrate(CAL_RXDCOC, u32::from(chan))?;
+        let _ = self.mcu_calibrate(CAL_RXDCOC, u32::from(chan));
         // The RX low-pass filter.
         if !self.cal.init_cal_done {
-            self.mcu_calibrate(CAL_RC, 0)?;
+            let _ = self.mcu_calibrate(CAL_RC, 0);
         }
         self.cal.init_cal_done = true;
         self.write(bbp(BBP_AGC, 61), 0xff64_a4e2)?;
@@ -1027,7 +1037,7 @@ impl<U: Usb> Dev<U> {
             self.rmw_field(TX_ALC_CFG_2, 0x3f, 0x38)?;
             if !radar(chan) {
                 let flag = u32::from(ghz5) | if self.ext_pa(ghz5) { 1 << 8 } else { 0 };
-                self.mcu_calibrate(CAL_TSSI, flag)?;
+                let _ = self.mcu_calibrate(CAL_TSSI, flag);
                 self.cal.tssi_cal_done = true;
             }
         }
@@ -1044,14 +1054,15 @@ impl<U: Usb> Dev<U> {
         if !mac_stopped {
             self.mac_stop_usb()?;
         }
+        // Their results are not looked at (mt76x2u_phy_channel_calibrate).
         if ghz5 {
-            self.mcu_calibrate(CAL_LC, 0)?;
+            let _ = self.mcu_calibrate(CAL_LC, 0);
         }
-        self.mcu_calibrate(CAL_TX_LOFT, u32::from(ghz5))?;
-        self.mcu_calibrate(CAL_TXIQ, u32::from(ghz5))?;
-        self.mcu_calibrate(CAL_RXIQC_FI, u32::from(ghz5))?;
-        self.mcu_calibrate(CAL_TEMP_SENSOR, 0)?;
-        self.mcu_calibrate(CAL_TX_SHAPING, 0)?;
+        let _ = self.mcu_calibrate(CAL_TX_LOFT, u32::from(ghz5));
+        let _ = self.mcu_calibrate(CAL_TXIQ, u32::from(ghz5));
+        let _ = self.mcu_calibrate(CAL_RXIQC_FI, u32::from(ghz5));
+        let _ = self.mcu_calibrate(CAL_TEMP_SENSOR, 0);
+        let _ = self.mcu_calibrate(CAL_TX_SHAPING, 0);
         if !mac_stopped {
             self.mac_resume()?;
         }
@@ -1368,7 +1379,7 @@ impl<U: Usb> Dev<U> {
             return Ok(());
         }
         if !self.cal.tssi_comp_pending {
-            self.mcu_tssi_comp(0, 1 << 0, [0; 2], [0; 2])?;
+            let _ = self.mcu_tssi_comp(0, 1 << 0, [0; 2], [0; 2]);
             self.cal.tssi_comp_pending = true;
             return Ok(());
         }
@@ -1379,12 +1390,12 @@ impl<U: Usb> Dev<U> {
         let txp = self.power_info(self.chan);
         let pa_mode = u8::from(self.ext_pa(self.chan > 14));
         let c = &txp.chain;
-        self.mcu_tssi_comp(pa_mode, 1 << 1, [c[0].tssi_slope, c[1].tssi_slope], [c[0].tssi_offset, c[1].tssi_offset])?;
+        let _ = self.mcu_tssi_comp(pa_mode, 1 << 1, [c[0].tssi_slope, c[1].tssi_slope], [c[0].tssi_offset, c[1].tssi_offset]);
         if pa_mode != 0 || self.cal.dpd_cal_done {
             return Ok(());
         }
         self.usb.delay_us(10_000);
-        self.mcu_calibrate(CAL_DPD, u32::from(self.chan))?;
+        let _ = self.mcu_calibrate(CAL_DPD, u32::from(self.chan));
         self.cal.dpd_cal_done = true;
         Ok(())
     }
@@ -1396,7 +1407,7 @@ impl<U: Usb> Dev<U> {
         if !self.cal.gain_init_done {
             return Ok(());
         }
-        let avg = self.avg_rssi.unwrap_or(-75);
+        let avg = self.avg_rssi.map_or(-75, |a| -(a >> 10));
         // mt76x02_get_rssi_gain_thresh and _low_ at 20 MHz.
         let low_gain = i8::from(avg > -68) + i8::from(avg > -82);
         let change = self.cal.low_gain < 0 || (self.cal.low_gain & 2) ^ (low_gain & 2) != 0;

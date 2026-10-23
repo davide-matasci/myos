@@ -26,9 +26,10 @@ pub struct Frame<'a> {
 }
 
 /// Each good frame in transfer `xfer` to `f`: the damaged ones (a bad
-/// FCS, ICV or MIC) are dropped, a header the MAC padded (L2PAD) is put
-/// back against its body. The daemon keeps the keys, so a protected frame
-/// comes as it was sent.
+/// FCS) are dropped, a header the MAC padded (L2PAD) is put back against
+/// its body. The daemon keeps the keys, so a protected frame comes as it
+/// was sent; the ICV and MIC flags of a MAC that has no key are not
+/// looked at (mt76x02_mac_process_rx does not).
 pub fn frames(xfer: &mut [u8], mut f: impl FnMut(Frame)) {
     let mut at = 0;
     while xfer.len() - at >= DMA_HDR_LEN + RXWI_LEN + FCE_INFO_LEN {
@@ -50,7 +51,7 @@ fn frame(buf: &mut [u8]) -> Option<Frame<'_>> {
     }
     let word = |at: usize| u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
     let (rxinfo, ctl) = (word(0), word(4));
-    if rxinfo & (RXINFO_CRCERR | RXINFO_ICVERR | RXINFO_MICERR) != 0 {
+    if rxinfo & RXINFO_CRCERR != 0 {
         return None;
     }
     let len = ((ctl >> RXWI_CTL_MPDU_LEN_SHIFT) & RXWI_CTL_MPDU_LEN) as usize;

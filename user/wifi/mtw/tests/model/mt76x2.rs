@@ -66,6 +66,8 @@ pub struct Device {
     /// The MCU commands taken: {command, payload}.
     pub commands: Vec<(u8, Vec<u8>)>,
     answers: VecDeque<Vec<u8>>,
+    /// A calibration the MCU takes but never answers (a slow one).
+    pub unanswered: Option<u32>,
     /// The channel the MCU last tuned to, and whether for a scan.
     pub tuned: Option<(u8, bool)>,
     pub sent: Vec<Sent>,
@@ -118,6 +120,7 @@ impl Device {
             blocks: 0,
             commands: Vec::new(),
             answers: VecDeque::new(),
+            unanswered: None,
             tuned: None,
             sent: Vec::new(),
             air: Air::dual_band(),
@@ -345,8 +348,9 @@ impl Device {
             CMD_CALIBRATION_OP | CMD_LOAD_CR | CMD_INIT_GAIN_OP => {}
             _ => panic!("model: MCU command {cmd}"),
         }
+        let answered = !(cmd == CMD_CALIBRATION_OP && self.unanswered == Some(w(0)));
         self.commands.push((cmd, body.to_vec()));
-        if seq != 0 {
+        if seq != 0 && answered {
             let rxfce = seq << RX_FCE_SEQ_SHIFT | EVT_CMD_DONE << RX_FCE_EVT_SHIFT;
             let mut a = rxfce.to_le_bytes().to_vec();
             a.extend_from_slice(&[0; 4]);
