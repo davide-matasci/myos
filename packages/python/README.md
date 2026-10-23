@@ -22,7 +22,7 @@ built against mlibc here (the `ports/zlib` build is newlib's). Not there:
 `_ssl` and `_hashlib` (LibreSSL is built against newlib; the hashes come
 from CPython's own `_sha2`, `_md5`, `_blake2`, `_sha3`), `sqlite3`,
 `ctypes` (no libffi), `curses`, `readline`, `bz2` and `lzma`, `tkinter`,
-and `pip` (no `ensurepip` without ssl). The test suite, IDLE and turtle
+and `pip` (no `ensurepip` without ssl); issue #571. The test suite, IDLE and turtle
 are left out of the app.
 
 `test.sh` runs the interpreter and the library through it: a thread, a
