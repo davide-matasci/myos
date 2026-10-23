@@ -22,9 +22,9 @@ use core::sync::atomic::{AtomicPtr, Ordering, compiler_fence};
 
 use myos_abi::{
     ABI_VERSION, ApiCell, DmaDevice, KernelApi, MmioDevice, RPI_FIRMWARE_SERVICE, RPI_FIRMWARE_VERSION,
-    RPI_POWER_USB_HCD, RpiFirmwareOps, StrRef, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE, USB_EIO, USB_EPENDING,
-    USB_HCD_VERSION, USB_SPEED_HIGH, UsbCoreOps, UsbDevicePath, UsbEndpoint, UsbHcdOps, UsbPortStatus, status_fail,
-    status_ok,
+    RPI_POWER_USB_HCD, RpiFirmwareOps, StrRef, USB_ASYNC_BULK_MAX, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE,
+    USB_EIO, USB_EPENDING, USB_HCD_VERSION, USB_SPEED_HIGH, Lock, UsbCoreOps, UsbDevicePath, UsbEndpoint, UsbHcdOps,
+    UsbPortStatus, status_fail, status_ok,
 };
 
 use hc::{Controller, Halt, PID_DATA0, PID_DATA1, PID_SETUP, Target};
@@ -34,8 +34,8 @@ use hc::{Controller, Halt, PID_DATA0, PID_DATA1, PID_SETUP, Target};
 const CONTROL_MAX: usize = 1024;
 const SETUP_BYTES: usize = 8;
 const CONTROL_DATA: usize = 64;
-/// An interrupt transfer's report at most (the channel's page).
-const INTERRUPT_MAX: usize = 4096;
+/// A queued transfer at most (the channel's page; [`USB_ASYNC_BULK_MAX`]).
+const QUEUED_MAX: usize = USB_ASYNC_BULK_MAX;
 /// How long a control transfer may take.
 const CONTROL_TIMEOUT_MS: u64 = 1000;
 
@@ -44,7 +44,7 @@ static API: ApiCell = ApiCell::new();
 static CORE: AtomicPtr<UsbCoreOps> = AtomicPtr::new(core::ptr::null_mut());
 /// The one controller, set by `module_init` and read by every context after.
 static CONTROLLER: AtomicPtr<Controller> = AtomicPtr::new(core::ptr::null_mut());
-static CONTROLLER_CELL: myos_abi::Lock<Option<Controller>> = myos_abi::Lock::new(None);
+static CONTROLLER_CELL: Lock<Option<Controller>> = Lock::new(None);
 
 pub fn api() -> &'static KernelApi {
     API.get()
@@ -157,8 +157,8 @@ static HCD_OPS: UsbHcdOps = UsbHcdOps {
     device_free,
     control,
     bulk,
-    interrupt_start,
-    interrupt_take,
+    transfer_start,
+    transfer_take,
     clear_halt,
 };
 
@@ -216,7 +216,7 @@ unsafe extern "C" fn poll(_ctrl: usize) -> i32 {
         }
         chan.retry_at.store(0, Ordering::Relaxed);
         if let Some(q) = queued(c, ch) {
-            hc::start(c, ch, &q.target, true, c.pages[ch].0, q.len, 1, q.pid, false);
+            start_queued(c, ch, &q, q.complete);
         }
     }
     i32::from(polled || waiting)
@@ -463,28 +463,35 @@ unsafe extern "C" fn bulk(_ctrl: usize, hdev: u32, endpoint: u8, data: *mut u8, 
     if result < 0 { result } else { done_bytes as i32 }
 }
 
-/// What a queued interrupt transfer on a channel is: kept in the channel's
-/// page after the report, so `poll` can start it again.
+/// What a queued transfer on a channel is (`transfer_start`), for the
+/// halts that continue it (`transfer_take`) and the retries `poll` starts.
 #[derive(Clone, Copy)]
 struct Queued {
     target: Target,
-    len: usize,
-    pid: u32,
+    /// The caller's buffer and its length; what the channel's page has so
+    /// far, and the next packet's PID.
     user: *mut u8,
+    len: usize,
+    moved: usize,
+    pid: u32,
     hdev: u32,
+    /// How long after a NAK the endpoint is asked again.
     interval_ns: u64,
+    /// Behind a transaction translator: the complete half is due.
+    complete: bool,
 }
 
-/// Where channel `ch`'s [`Queued`] lives: the end of its page.
-fn queued_slot(c: &Controller, ch: usize) -> *mut Queued {
-    unsafe { c.pages[ch].1.add(4096 - core::mem::size_of::<Queued>()).cast::<Queued>() }
-}
+// SAFETY: the pointer is the core's buffer, written on its thread only.
+unsafe impl Send for Queued {}
+
+/// The queued transfer of each channel (one whose `queued` flag is set).
+static QUEUED: [Lock<Option<Queued>>; hc::CHANNELS] = [const { Lock::new(None) }; hc::CHANNELS];
 
 fn queued(c: &Controller, ch: usize) -> Option<Queued> {
     if !c.chans[ch].queued.load(Ordering::Acquire) {
         return None;
     }
-    Some(unsafe { core::ptr::read_unaligned(queued_slot(c, ch)) })
+    *QUEUED[ch].lock()
 }
 
 /// A device's interrupt endpoint is asked again after its interval: frames
@@ -498,14 +505,31 @@ fn interval_ns(speed: u8, b_interval: u8) -> u64 {
     ms.max(1) * 1_000_000
 }
 
-/// Queue an interrupt IN transfer (the core's `interrupt_start`): a channel
-/// taken for as long as it is queued; its halts wake the core, which asks
-/// [`interrupt_take`].
-unsafe extern "C" fn interrupt_start(_ctrl: usize, hdev: u32, endpoint: u8, data: *mut u8, len: usize) -> i32 {
+/// The next transaction set of `q`: its bytes and packets (one packet
+/// behind a transaction translator, the rest otherwise).
+fn next_set(q: &Queued) -> (usize, usize) {
+    let mps = usize::from(q.target.max_packet).max(1);
+    let rest = q.len - q.moved;
+    let len = if q.target.tt.is_some() { rest.min(mps) } else { rest };
+    (len, len.div_ceil(mps).max(1))
+}
+
+/// Start the next set of `q` on channel `ch`, into the page after what
+/// came (`complete_split`: the set's complete half).
+fn start_queued(c: &Controller, ch: usize, q: &Queued, complete_split: bool) {
+    let (len, packets) = next_set(q);
+    hc::start(c, ch, &q.target, true, c.pages[ch].0 + q.moved as u64, len, packets, q.pid, complete_split);
+}
+
+/// Queue an IN transfer on an interrupt or bulk endpoint (the core's
+/// `transfer_start`; a page at most, an interrupt endpoint's one report):
+/// a channel taken for as long as it is queued; its halts wake the core,
+/// which asks [`transfer_take`].
+unsafe extern "C" fn transfer_start(_ctrl: usize, hdev: u32, endpoint: u8, data: *mut u8, len: usize) -> i32 {
     let Some(c) = controller() else {
         return USB_EGONE;
     };
-    if data.is_null() || len == 0 || len > INTERRUPT_MAX - core::mem::size_of::<Queued>() {
+    if data.is_null() || len == 0 || len > QUEUED_MAX {
         return USB_EIO;
     }
     let d = match dev::get(hdev) {
@@ -515,10 +539,10 @@ unsafe extern "C" fn interrupt_start(_ctrl: usize, hdev: u32, endpoint: u8, data
     let Some((t, ep)) = endpoint_target(&d, endpoint) else {
         return USB_EIO;
     };
-    if ep.kind != 3 || endpoint & 0x80 == 0 {
+    if !matches!(ep.kind, 2 | 3) || endpoint & 0x80 == 0 {
         return USB_EIO;
     }
-    if (0..c.channels).any(|ch| c.chans[ch].queued.load(Ordering::Acquire) && c.chans[ch].owner.load(Ordering::Relaxed) == hdev && queued(c, ch).is_some_and(|q| q.target.endpoint == endpoint)) {
+    if (0..c.channels).any(|ch| c.chans[ch].owner.load(Ordering::Relaxed) == hdev && queued(c, ch).is_some_and(|q| q.target.endpoint == endpoint)) {
         return USB_EIO;
     }
     let Some(ch) = hc::take(c, hdev) else {
@@ -526,76 +550,86 @@ unsafe extern "C" fn interrupt_start(_ctrl: usize, hdev: u32, endpoint: u8, data
     };
     let q = Queued {
         target: t,
-        len: len.min(usize::from(t.max_packet)),
-        pid: if ep.toggle { PID_DATA1 } else { PID_DATA0 },
         user: data,
+        len: if ep.kind == 3 { len.min(usize::from(t.max_packet)) } else { len },
+        moved: 0,
+        pid: if ep.toggle { PID_DATA1 } else { PID_DATA0 },
         hdev,
-        interval_ns: interval_ns(d.speed, ep.interval),
+        interval_ns: if ep.kind == 3 { interval_ns(d.speed, ep.interval) } else { 1_000_000 },
+        complete: false,
     };
-    unsafe { core::ptr::write_unaligned(queued_slot(c, ch), q) };
+    *QUEUED[ch].lock() = Some(q);
     c.chans[ch].queued.store(true, Ordering::Release);
-    hc::start(c, ch, &q.target, true, c.pages[ch].0, q.len, 1, q.pid, false);
+    start_queued(c, ch, &q, false);
     0
 }
 
-/// The queued transfer on `endpoint` (the core's `interrupt_take`):
-/// `USB_EPENDING` while it runs or waits to be asked again; else its
-/// result, its report copied out and its channel given back. The split
-/// transaction's complete half, and the retry of a NAK, are driven from
-/// here (the core asks after every halt).
-unsafe extern "C" fn interrupt_take(_ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
+/// The queued transfer on `endpoint` (the core's `transfer_take`):
+/// [`USB_EPENDING`] while it runs (a NAK, or a split transaction's next
+/// half, has its retry set up here), else its result, the bytes copied
+/// to the caller and the channel given back.
+unsafe extern "C" fn transfer_take(_ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
     let Some(c) = controller() else {
         return USB_EGONE;
     };
-    let Some(ch) = (0..c.channels).find(|&ch| {
-        let chan = &c.chans[ch];
-        chan.queued.load(Ordering::Acquire) && chan.owner.load(Ordering::Relaxed) == hdev && queued(c, ch).is_some_and(|q| q.target.endpoint == endpoint)
-    }) else {
+    let Some(ch) = (0..c.channels).find(|&ch| c.chans[ch].owner.load(Ordering::Relaxed) == hdev && queued(c, ch).is_some_and(|q| q.target.endpoint == endpoint)) else {
         return USB_EIO;
     };
     let chan = &c.chans[ch];
-    let Some(q) = queued(c, ch) else {
+    let Some(mut q) = queued(c, ch) else {
         return USB_EIO;
     };
     if !chan.done.load(Ordering::Acquire) {
         return USB_EPENDING;
     }
     let finish = |r: i32| {
+        *QUEUED[ch].lock() = None;
         hc::give_back(c, ch);
         r
+    };
+    let again = |q: Queued, retry_ns: u64| {
+        *QUEUED[ch].lock() = Some(q);
+        chan.done.store(false, Ordering::Release);
+        chan.retry_at.store(api().monotonic_ns() + retry_ns, Ordering::Release);
+        USB_EPENDING
     };
     if chan.aborted.load(Ordering::Acquire) {
         return finish(USB_EGONE);
     }
-    match hc::halt(c, ch, q.len, 1) {
+    let (set, packets) = next_set(&q);
+    match hc::halt(c, ch, set, packets) {
         Halt::Done { bytes, packets } => {
             if packets & 1 != 0 {
-                dev::set_toggle(q.hdev, endpoint, q.pid == PID_DATA0);
+                q.pid = if q.pid == PID_DATA0 { PID_DATA1 } else { PID_DATA0 };
             }
-            hc::sync_from(c, c.pages[ch].1, q.len);
+            q.moved += bytes;
+            q.complete = false;
+            // A short packet, or everything, ends the transfer; behind a
+            // translator the next packet is a set of its own.
+            if bytes == set && q.moved < q.len {
+                *QUEUED[ch].lock() = Some(q);
+                start_queued(c, ch, &q, false);
+                return USB_EPENDING;
+            }
+            dev::set_toggle(q.hdev, endpoint, q.pid == PID_DATA1);
+            hc::sync_from(c, c.pages[ch].1, q.moved);
             unsafe {
-                core::ptr::copy_nonoverlapping(c.pages[ch].1, q.user, bytes.min(q.len));
+                core::ptr::copy_nonoverlapping(c.pages[ch].1, q.user, q.moved);
             }
-            finish(bytes as i32)
+            finish(q.moved as i32)
         }
-        Halt::Nak => {
-            // Nothing yet: again after the endpoint's interval (`poll`).
-            chan.done.store(false, Ordering::Release);
-            chan.retry_at.store(api().monotonic_ns() + q.interval_ns, Ordering::Release);
-            USB_EPENDING
-        }
+        // Nothing yet: again after the endpoint's interval (`poll`).
+        Halt::Nak => again(Queued { complete: false, ..q }, q.interval_ns),
         Halt::Ack if q.target.tt.is_some() => {
             // The start half was taken: the complete half.
-            hc::start(c, ch, &q.target, true, c.pages[ch].0, q.len, 1, q.pid, true);
+            q.complete = true;
+            *QUEUED[ch].lock() = Some(q);
+            start_queued(c, ch, &q, true);
             USB_EPENDING
         }
-        Halt::Nyet => {
-            // The translator has no answer yet: the complete half again,
-            // next microframe.
-            chan.done.store(false, Ordering::Release);
-            chan.retry_at.store(api().monotonic_ns() + 125_000, Ordering::Release);
-            USB_EPENDING
-        }
+        // The translator has no answer yet: the complete half again, next
+        // microframe.
+        Halt::Nyet => again(Queued { complete: true, ..q }, 125_000),
         Halt::Ack => finish(USB_EIO),
         Halt::Error(e) => finish(e),
     }

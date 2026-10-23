@@ -250,8 +250,9 @@ latest-stable moves) or makes on a miss.
 The Raspberry Pi 3 (QEMU `raspi3b`, `myos rpi3 test`) boots once
 whenever an aarch64 machine does, with a fixed selection: the `smoke`
 tests it can run, and the USB tests of its devices (`usb_disk`, `mouse`,
-`usb_keyboard`: QEMU's hub on its one root port, the stick and the mouse
-behind it, the keyboard the test plugs in; the host scripts take the bus
+`usb_keyboard`, `usbdev`: QEMU's hub on its one root port, the stick, the
+mouse and the serial adapter behind it, the keyboard the test plugs in;
+the host scripts take the bus
 and the hub's port from `MYOS_USB_BUS` and `MYOS_USB_PORT`, which the
 launcher sets per board). It has no disk but the SD card it boots from
 (`sdmmc` checks it, on the sdhost), no network or PCI, so the tests that

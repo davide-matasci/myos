@@ -282,9 +282,10 @@ modules' init.
   keyboard's) are skipped.
 - Controllers: xHCI on PCI, the Raspberry Pi 3's DWC2 from the device
   tree; a SoC's `snps,dwc3` would be another controller module. The DWC2
-  takes 8 transfers at once (its channels), a queued interrupt transfer
-  holding one; its split transactions are untested (QEMU has no
-  high-speed hub).
+  takes 8 transfers at once (its channels), a queued transfer (an
+  interrupt endpoint's report, a bulk IN endpoint's page) holding one
+  for as long as it is queued; its split transactions are untested (QEMU
+  has no high-speed hub).
 - No isochronous transfers, no streams, no MSI for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at

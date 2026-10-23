@@ -55,7 +55,8 @@ MACHINES = [
 # no disk but the SD card it boots from (`sdmmc` checks it), no network or
 # PCI; its USB (the dwc2 module) carries QEMU's hub with the stick, the
 # mouse and the keyboard the tests plug in. One boot of the smoke tests it
-# can run and the USB tests of its devices, whenever an aarch64 machine
+# can run and the USB tests of its devices (`/dev/usb`'s serial adapter
+# among them), whenever an aarch64 machine
 # boots: the tests that need the scratch disk (`partitions`, `ext2_disk`,
 # `fstab_mount`, `fileio`), the ones that need the network (`boot_rc`: the
 # rc.local's dropbear), the ones that open a socket (`libc`'s resolver,
@@ -64,7 +65,7 @@ MACHINES = [
 # `xev_pointer`: a package's) and the USB tests of a root port of their
 # own (`usb_hotplug`, `usb_hotplug_busy_reuse`, `usb_hub_replug`) stay out.
 RPI3_ARGS = (
-    "rpi3 test --tags smoke,usb_disk,mouse,usb_keyboard"
+    "rpi3 test --tags smoke,usb_disk,mouse,usb_keyboard,usbdev"
     " --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini,ps2_mouse,virtio_mouse,xev_pointer"
     " --budget 20"
 )

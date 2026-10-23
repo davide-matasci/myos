@@ -150,7 +150,7 @@ pub struct Chan {
     pub done: AtomicBool,
     pub hcint: AtomicU32,
     pub tsiz: AtomicU32,
-    /// Queued by the core (`interrupt_start`): a halt wakes the core's
+    /// Queued by the core (`transfer_start`): a halt wakes the core's
     /// thread, not a waiter.
     pub queued: AtomicBool,
     /// Its transfer is to be tried again from `retry_at` (monotonic ns; 0:

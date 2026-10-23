@@ -184,9 +184,10 @@ the split path is not exercised by CI. Data toggles are kept per
 endpoint, from the packets each transfer moved. Bulk goes through a
 64 KiB bounce buffer, a control transfer's data stage is 1 KiB at most.
 
-`cargo run -- rpi3` attaches QEMU's hub to the root port with the stick
-and the mouse behind it, as the virt boards have them on their xHCI; the
-`usb_disk`, `mouse` and `usb_keyboard` tests run in the Pi 3 CI boot.
+`cargo run -- rpi3` attaches QEMU's hub to the root port with the stick,
+the mouse and (in a test boot) the serial adapter behind it, as the virt
+boards have them on their xHCI; the `usb_disk`, `mouse`, `usb_keyboard`
+and `usbdev` tests run in the Pi 3 CI boot.
 
 `boot/rpi3/build.sh` (which `cargo run -- rpi3` runs) builds the boot
 files into `target/rpi3`:
