@@ -25,6 +25,12 @@ fi
 "$ROOT/ports/zlib/fetch.sh"
 "$ROOT/toolchain/mlibc/build.sh"
 myos_ensure_llvm_bin
+# The binutils: newlib's build leaves <triple>-ar, -ranlib and -strip in
+# target/newlib-bin, wrappers over LLVM's (the plain names, else the Rust
+# sysroot's: the CI image has only the versioned ones), and GNU readelf
+# reads every arch's ELF.
+export PATH="$ROOT/target/newlib-bin:$PATH"
+READELF_BIN="$(command -v llvm-readelf 2>/dev/null || echo readelf)"
 
 JOBS="${MYOS_PYTHON_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 TARBALL="$ROOT/target/Python-${PYTHON_VERSION}.tar.xz"
@@ -81,7 +87,7 @@ build_arch() {
     "$build/cc" -O2 -DHAVE_UNISTD_H -DHAVE_STDARG_H -D_LARGEFILE64_SOURCE=1 \
       -Wno-deprecated-non-prototype -c "$ZSRC/$f.c" -o "$build/zlib/$f.o"
   done
-  llvm-ar rcs "$build/zlib/libz.a" "$build/zlib"/*.o
+  "${arch}-unknown-myos-ar" rcs "$build/zlib/libz.a" "$build/zlib"/*.o
   cp "$ZSRC/zlib.h" "$ZSRC/zconf.h" "$build/zlib/"
 
   # configure, told what it cannot find out (config.site) and kept off the
@@ -92,7 +98,7 @@ build_arch() {
   # app's files are taken from (at run time the interpreter finds the
   # library beside itself: /bin/custom/python3, /lib/python3.13).
   (cd "$build" && CONFIG_SITE="$HERE/config.site" CC="$build/cc" CPP="$build/cc -E" \
-    AR=llvm-ar RANLIB=llvm-ranlib READELF=llvm-readelf PKG_CONFIG=false \
+    AR="${arch}-unknown-myos-ar" RANLIB="${arch}-unknown-myos-ranlib" READELF="$READELF_BIN" PKG_CONFIG=false \
     ZLIB_CFLAGS="-I$build/zlib" ZLIB_LIBS="-L$build/zlib -lz" MODULE_BUILDTYPE=static \
     "$SRC/configure" --host="${arch}-unknown-myos" --build="$("$SRC/config.guess")" \
       --with-build-python="$BUILD_PYTHON" --prefix=/usr --disable-shared \
@@ -114,7 +120,7 @@ build_arch() {
     "$out/usr/lib/pkgconfig" "$out/usr/lib"/libpython*
   find "$lib" -name '*.opt-[12].pyc' -delete
   find "$out/usr/bin" -mindepth 1 ! -name "python$MINOR" -delete
-  llvm-strip -s "$out/usr/bin/python$MINOR"
+  "${arch}-unknown-myos-strip" -s "$out/usr/bin/python$MINOR"
   echo "python -> $out/usr/bin/python$MINOR ($(du -h "$out/usr/bin/python$MINOR" | cut -f1)), library $(du -sh "$lib" | cut -f1)"
 }
 
