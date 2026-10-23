@@ -1,11 +1,13 @@
-//! The AX201's radio (Intel Wi-Fi 6, 8086:06f0, issue #495): the `iwx`
-//! crate's driver over `/dev/pci`, its firmware from `wifi-firmware`. The
-//! firmware scans by itself (Radio::scan) and keeps the network joined
-//! (Radio::joining, associated, left); the daemon's frames go out as they
-//! are, encrypted by the daemon on a WPA2 network.
+//! Intel's Wi-Fi 6 radios (issue #495): the AX201 and the AX200, each as
+//! `iwx::chip` describes it, with the `iwx` crate's driver over
+//! `/dev/pci` and its firmware from `wifi-firmware`. The firmware scans by
+//! itself (Radio::scan) and keeps the network joined (Radio::joining,
+//! associated, left); the daemon's frames go out as they are, encrypted by
+//! the daemon on a WPA2 network.
 
 use alloc::vec::Vec;
 
+use iwx::chip::{CHIPS, Chip};
 use iwx::dev::{Dev, Error, Info, Peer};
 use iwx::fw::Firmware;
 use iwx::msg::{self, Channel};
@@ -16,16 +18,12 @@ use crate::frame::Bss;
 use crate::pci::{self, Pci};
 use crate::radio::{Heard, Radio, Rx};
 
-/// The PCI ids driven: the AX201s with a QuZ MAC (Comet Lake H, the
-/// ThinkPad T15p's, and Comet Lake LP), as OpenBSD's iwx.
-pub const IDS: &[(u16, u16)] = &[(0x8086, 0x06f0), (0x8086, 0x02f0)];
-const FIRMWARE: &[u8] = b"iwlwifi-QuZ-a0-hr-b0-77.ucode";
-/// Where `wifi-firmware fetch` keeps it by default.
+/// Where `wifi-firmware fetch` keeps the firmware by default.
 const FIRMWARE_DIRS: &[&[u8]] = &[b"/data/firmware/", b"/tmp/firmware/"];
 /// A scan of every channel takes a few seconds (110 ms per passive one).
 const SCAN_TIMEOUT_US: u64 = 15_000_000;
 
-pub struct Ax201 {
+pub struct Intel {
     dev: Dev<Pci>,
     fw: Firmware<'static>,
     info: Info,
@@ -45,21 +43,22 @@ pub enum Failed {
     Driver(Error),
 }
 
-impl Ax201 {
-    /// The radio at `/dev/pci` directory `dir`: held, its firmware loaded
-    /// and started, configured up to a scan.
-    pub fn open(dir: &[u8]) -> Result<Self, Failed> {
-        let file = FIRMWARE_DIRS.iter().find_map(|d| load(&[d, FIRMWARE].concat())).ok_or(Failed::NoFirmware)?;
+impl Intel {
+    /// The radio `chip` at `/dev/pci` directory `dir`: held, its firmware
+    /// loaded and started, configured up to a scan.
+    pub fn open(dir: &[u8], chip: &'static Chip) -> Result<Self, Failed> {
+        let name = chip.firmware.as_bytes();
+        let file = FIRMWARE_DIRS.iter().find_map(|d| load(&[d, name].concat())).ok_or(Failed::NoFirmware)?;
         // The daemon's for good: the firmware (its paging part) is the
         // device's as long as it runs.
         let file: &'static [u8] = file.leak();
         let fw = Firmware::parse(file).map_err(|_| Failed::BadFirmware)?;
         let pci = Pci::open(dir).map_err(Failed::Pci)?;
         let (msix, irq) = (pci.msix, pci.irq_fd());
-        let mut dev = Dev::new(pci, msix).map_err(Failed::Driver)?;
+        let mut dev = Dev::new(pci, msix, chip).map_err(Failed::Driver)?;
         dev.load(&fw).map_err(Failed::Driver)?;
         let info = dev.init(&fw).map_err(Failed::Driver)?;
-        Ok(Ax201 { dev, fw, info, irq, beacons: Vec::new(), peer: None })
+        Ok(Intel { dev, fw, info, irq, beacons: Vec::new(), peer: None })
     }
 
     /// Frame `m` heard: kept as its access point's latest beacon when it
@@ -75,9 +74,12 @@ impl Ax201 {
     }
 }
 
-/// The first AX201 in `/dev/pci`, if there is one.
-pub fn find() -> Option<Vec<u8>> {
-    pci::find(IDS).map(|(dir, _)| dir)
+/// The first of the radios in `/dev/pci`, if there is one: its directory
+/// and which it is.
+pub fn find() -> Option<(Vec<u8>, &'static Chip)> {
+    let ids: Vec<(u16, u16)> = CHIPS.iter().flat_map(|c| c.ids.iter().copied()).collect();
+    let (dir, id) = pci::find(&ids)?;
+    Some((dir, Chip::by_id(id)?))
 }
 
 fn load(path: &[u8]) -> Option<Vec<u8>> {
@@ -99,7 +101,7 @@ fn load(path: &[u8]) -> Option<Vec<u8>> {
     Some(data)
 }
 
-impl Radio for Ax201 {
+impl Radio for Intel {
     fn mac(&self) -> [u8; 6] {
         self.info.mac
     }
@@ -211,12 +213,12 @@ impl Radio for Ax201 {
     }
 }
 
-/// What to tell the user when the AX201 did not come up.
-pub fn why(f: &Failed) -> Vec<u8> {
-    let mut s = Vec::from(b"wifi: AX201: " as &[u8]);
+/// What to tell the user when the radio `chip` did not come up.
+pub fn why(chip: &Chip, f: &Failed) -> Vec<u8> {
+    let mut s = alloc::format!("wifi: {}: ", chip.name).into_bytes();
     match f {
         Failed::Pci(what) => s.extend_from_slice(what.as_bytes()),
-        Failed::NoFirmware => s.extend_from_slice(b"no firmware (wifi-firmware fetch)"),
+        Failed::NoFirmware => s.extend_from_slice(alloc::format!("no {} (wifi-firmware fetch)", chip.firmware).as_bytes()),
         Failed::BadFirmware => s.extend_from_slice(b"its firmware file is not one (wifi-firmware fetch)"),
         Failed::Driver(e) => s.extend_from_slice(alloc::format!("{e:?}").as_bytes()),
     }

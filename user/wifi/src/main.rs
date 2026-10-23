@@ -1,7 +1,8 @@
 //! `wifi`: the Wi-Fi daemon and its command (issue #495, `docs/wifi.md`).
 //!
-//! - `wifi daemon [NIC]` drives the radio: the AX201 when `/dev/pci` has
-//!   one and no NIC is named (its firmware from `wifi-firmware fetch`),
+//! - `wifi daemon [NIC]` drives the radio: an Intel AX201 or AX200 when
+//!   `/dev/pci` has one and no NIC is named (its firmware from
+//!   `wifi-firmware fetch`),
 //!   else the simulated one on NIC (default `/dev/net1`, the test boots'
 //!   second NIC, `src/wifi_sim.rs`).
 //!   It listens on the unix socket `wifid` for the commands below, one per
@@ -31,7 +32,7 @@
 
 extern crate alloc;
 
-mod ax201;
+mod intel;
 mod frame;
 mod mlme;
 mod pci;
@@ -88,16 +89,16 @@ struct Seen {
     rssi: i8,
 }
 
-/// The radio: NIC's simulated one when named, else the AX201 when there
-/// is one, else the simulated one on `/dev/net1`.
+/// The radio: NIC's simulated one when named, else an Intel one when
+/// there is one, else the simulated one on `/dev/net1`.
 fn open_radio(nic: Option<&[u8]>) -> Option<Box<dyn Radio>> {
     if nic.is_none()
-        && let Some(dir) = ax201::find()
+        && let Some((dir, chip)) = intel::find()
     {
-        return match ax201::Ax201::open(&dir) {
+        return match intel::Intel::open(&dir, chip) {
             Ok(r) => Some(Box::new(r)),
             Err(f) => {
-                write(&ax201::why(&f));
+                write(&intel::why(chip, &f));
                 None
             }
         };
