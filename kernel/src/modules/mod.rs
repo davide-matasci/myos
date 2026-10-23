@@ -156,7 +156,7 @@ static API: KernelApi = KernelApi {
 /// Modules that print their own `[ OK ]` line (only when they found a
 /// device, or with their own wording); the loader announces the others.
 const SELF_REPORTING: &[&str] =
-    &["console", "virtio_blk", "virtio_scsi", "nvme", "sdmmc", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage", "usb_hid", "pcidev", "pl061", "tap"];
+    &["console", "virtio_blk", "virtio_scsi", "nvme", "sdmmc", "virtio_net", "netfs", "pci_enum", "acpi", "xhci", "usb_hub", "usb_storage", "usb_hid", "usbdev", "pcidev", "pl061", "tap"];
 
 /// Load the boot modules: the names in the initramfs's `/lib/modules/boot.list`
 /// (one per line), each from `/lib/modules/<name>`, in that order. Called

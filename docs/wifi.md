@@ -2,16 +2,17 @@
 
 Wi-Fi is under way (issue #495): `wifi` is the daemon and its command
 (`user/wifi`). It scans, joins an open or WPA2-PSK network and carries
-netd's traffic over it, through the test boots' simulated radio or an
-Intel Wi-Fi 6 radio, a laptop's AX201 or an AX200 card (below, "Intel's
-radios"; neither yet tried on the hardware).
+netd's traffic over it, through the test boots' simulated radio, an
+Intel Wi-Fi 6 radio (a laptop's AX201 or an AX200 card: below, "Intel's
+radios") or a MediaTek MT7601U USB adapter, which any arch's USB port
+takes ("MediaTek's radios"); none yet tried on the hardware.
 
 ## `wifi`
 
 | Command | |
 |------|-|
-| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
-| `wifi scan` | a scan (the simulated radio's 2.4 GHz channels, every channel an Intel radio's regulatory domain allows); prints the networks that answered |
+| `wifi daemon [NIC]` | drives the radio: an AX201 or AX200 when `/dev/pci` has one and no `NIC` is named, else an MT7601U when `/dev/usb` has one, else the simulated one on `NIC` (default `/dev/net1`); listens on the unix socket `wifid` (`/net/unix`, `docs/sockets-unix.md`) |
+| `wifi scan` | a scan (the 2.4 GHz channels of the simulated radio and the MT7601U, every channel an Intel radio's regulatory domain allows); prints the networks that answered |
 | `wifi list` | what the last scan found |
 | `wifi connect SSID [PASSPHRASE]` | join the network `SSID`, the strongest the last scan heard (after a scan when it heard none): an open one, or a WPA2-PSK one with its passphrase (8 to 63 printable ASCII characters, or the PSK itself as 64 hex digits) |
 | `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
@@ -39,7 +40,8 @@ request and listens 120 ms for probe responses and beacons (every
 (`user/wifi/src/main.rs`; the frames: `frame.rs`). The radio is a trait
 (`radio.rs`): tuned to a channel, it sends and hears 802.11 frames, and
 says its address; a radio whose firmware scans by itself (Intel's)
-hands back the frames its scan heard instead.
+hands back the frames its scan heard instead, and a SoftMAC radio
+(MediaTek's) is tuned and listened to like the simulated one.
 
 Joining (`mlme.rs`) is open-system authentication, then association: a
 request and its answer each, sent again (three times, 300 ms apart) when
@@ -85,11 +87,12 @@ associated tunes the radio back to the link's channel when it is done.
 
 ## Firmware
 
-A real radio runs Intel's firmware (the AX201's is
+A real radio runs its maker's firmware (the AX201's is
 `iwlwifi-QuZ-a0-hr-b0-77.ucode`, the AX200's `iwlwifi-cc-a0-77.ucode`:
-`iwx::chip` names each). The images never carry it: its licence
-lets it be redistributed unmodified, but myos ships no third-party
-binaries. `wifi-firmware` gets it:
+`iwx::chip` names each; the MT7601U's MCU runs `mt7601u.bin`,
+`mtw::chip`'s). The images never carry it: Intel's and MediaTek's
+licences let it be redistributed unmodified, but myos ships no
+third-party binaries. `wifi-firmware` gets it:
 
 | Command | |
 |------|-|
@@ -223,6 +226,88 @@ signals), join `myos-open`, authenticate, associate and leave, and an
 AX200 the driver takes for integrated is refused. What the model cannot
 show is whether Intel's firmware agrees with that reading of it: the
 rest needs the hardware.
+
+## MediaTek's radios
+
+The MT7601U: an 802.11b/g/n USB adapter for 2.4 GHz with one antenna
+(the cheap "150 Mbps" dongles: ASUS USB-N10 v2, D-Link DWA-127 rev B1,
+Edimax EW-7711UAn V2, Xiaomi's and many unbranded ones), so a machine of
+any arch with a USB port can have Wi-Fi: a Raspberry Pi, a RISC-V board.
+Its ids and firmware are in `mtw::chip`, a table the MT7610U and MT7612U
+can join (they share the MAC; their RF and 5 GHz setup would be new:
+issue #553).
+
+It is a SoftMAC: its MCU calibrates the radio and takes the frames, the
+host does the rest, so the daemon scans (tuning to each channel and
+sending probe requests, as for the simulated radio), joins and encrypts,
+and the radio is told the network it joins (`Radio::joining`,
+`associated`, `left`). The daemon drives it (`user/wifi/src/mediatek.rs`)
+through `/dev/usb` (`docs/usb.md`; `user/wifi/src/usb.rs`): the first
+device there whose id is in the table, its `ctl` held, its registers
+read and written with vendor requests on `ep0` (a 32-bit register is two
+`WRITE_2`s), the frames heard read from its first bulk IN endpoint (a
+read is one transfer, which the MAC fills with up to 2 KiB of frames),
+the MCU's commands, the firmware and the management frames written to
+its first bulk OUT endpoint and the data frames to the next one (best
+effort; one per access category). `/dev/usb` is there at boot. The
+driver is the `mtw` crate (`user/wifi/mtw`), a port of OpenBSD's
+`mtw(4)` (if_mtw.c rev 1.13) to `no_std` Rust behind a `Usb` trait:
+
+| Module | |
+|------|-|
+| `chip.rs` | the radios: their USB ids, ASIC, firmware file and where it goes |
+| `fw.rs` | the firmware file: its header, interrupt vectors, instruction and data parts |
+| `reg.rs` | registers, vendor requests, the eFUSE ROM's words, the descriptors' flags, the MAC, baseband and RF defaults, the channels' RF settings, the legacy rates |
+| `usb.rs` | the `Usb` trait (vendor requests, bulk OUT) and which bulk endpoint is which |
+| `dev.rs` | the bring-up: the WLAN core powered, the firmware loaded and started, the eFUSE ROM read (address, calibration), the MAC, baseband and RF set up and calibrated; channels, joining, sending, leaving, stopping |
+| `rx.rs`, `tx.rs` | the frames as the endpoints carry them: an aggregated transfer's frames after their RXWI (signal, flags; a padded header put back), a frame to send after its TXD and TXWI (rate, ACK, the station's entry) |
+
+Bring-up (mtw_attachhook, mtw_init): the WLAN core and its oscillator
+on, the firmware written in 8 KiB blocks to the MCU's memory, its
+interrupt vectors last (a firmware already running, a daemon started
+again without the device reset, is kept), the eFUSE ROM read (the
+address, the frequency offset, each channel's transmit power, the rate
+groups' power, the LNA gain and signal offset), the MAC reset and given
+its defaults and address, the key tables cleared, the radio on, the RF
+banks and the baseband given their defaults, the RF calibrated by the
+MCU (frequency offset, temperature, VCO, RX DC), channel 1, then DMA,
+receive aggregation and a station's receive filter (frames to another
+station, control frames, duplicates and damaged ones dropped). A
+channel is its four RF registers, its transmit power, the LNA and a VCO
+calibration.
+
+The daemon's frames go out as they are, the MAC putting nothing in
+them (`TXD_WIV`: the IV is the frame's, CCMP being the daemon's): a
+management or group frame at 1 Mb/s, a data frame to the access point
+at 24 Mb/s OFDM (the hardware falling back to 6 on retries: there is no
+rate adaptation yet, issue #552) as the access point's entry in the
+station table, which association sets. A frame wanting an ACK gets the
+ACK's duration. The frames heard come up as the access point sent them
+(no key is in the MAC), with their signal in dBm from the ROM's offsets.
+Once associated: a long slot time, long preambles, 802.11g's basic
+rates, the BSSID; the beacon timer (TSF sync) stays off, since the
+station never sleeps.
+
+No test boot has the radio: QEMU has no USB Wi-Fi device. `cargo test
+-p mtw` (CI runs it) tests the encodings (the firmware header, the
+endpoints, aggregated receive transfers, the transmit descriptors), and
+runs the driver against a model of the MT7601U (`user/wifi/mtw/tests/model`,
+`radio.rs`): its registers behind the vendor requests, the eFUSE ROM,
+the RF and baseband windows (a temperature reading and the RX DC
+calibration finishing as the real ones do), the MCU taking a synthetic
+firmware file in blocks and starting on its vectors only when its code
+is where it belongs, its commands, and the bulk endpoints: frames out to
+the air on the channel the RF registers and VCO calibration tuned to,
+and back in aggregated as the MAC does, past its receive filter; the
+air is the Intel model's (the three access points). Every request and
+descriptor is checked against OpenBSD's mtwreg.h, and the first a real
+device would not take stops it with the reason (a frame sent with the
+MAC's transmit off, a data frame whose station entry is not its access
+point, the firmware written before the MCU's DMA is set up). The tests
+bring the radio up (the calibrations in order), keep a running
+firmware, refuse another chip, scan the three channels (each network at
+its signal), join `myos-open`, send to it and leave. `/dev/usb` itself
+is tested in the boots (`usbdev`, with a USB serial adapter: `docs/usb.md`).
 
 ## The simulated radio
 

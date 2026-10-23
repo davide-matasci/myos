@@ -21,6 +21,7 @@ const MODULES: &[(&str, &str)] = &[
     ("usb_hub", "usb_hub"),
     ("usb_storage", "usb_storage"),
     ("usb_hid", "usb_hid"),
+    ("usbdev", "usbdev"),
     ("pcidev", "pcidev"),
     ("pl061", "pl061"),
     ("tap", "tap"),
@@ -225,7 +226,7 @@ fn nested_elf(
         && matches!(
             bin,
             "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc"
-                | "linux" | "xhci" | "usb_hub" | "usb_storage" | "usb_hid" | "pcidev" | "pl061" | "tap"
+                | "linux" | "xhci" | "usb_hub" | "usb_storage" | "usb_hid" | "usbdev" | "pcidev" | "pl061" | "tap"
         )
     {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");

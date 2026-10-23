@@ -16,6 +16,7 @@ bench = false
 [dependencies]
 myos-user = { path = "../lib" }
 iwx = { path = "iwx" }
+mtw = { path = "mtw" }
 wpa = { path = "wpa" }
 
 [profile.dev]

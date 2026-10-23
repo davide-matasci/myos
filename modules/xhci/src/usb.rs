@@ -15,7 +15,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use myos_abi::{
-    Lock, SleepLock, USB_EGONE, USB_EIO, USB_ETIMEDOUT, USB_LABEL_MAX, USB_MAX_ENDPOINTS,
+    Lock, SleepLock, USB_ASYNC_BULK_MAX, USB_EGONE, USB_EIO, USB_ETIMEDOUT, USB_LABEL_MAX, USB_MAX_ENDPOINTS,
     USB_SPEED_FULL, USB_SPEED_HIGH, USB_SPEED_LOW, USB_SPEED_SUPER, UsbDeviceInfo, UsbDriverOps,
     UsbEndpoint, UsbInterfaceInfo,
 };
@@ -262,6 +262,7 @@ fn new_endpoint(dma: i32, dev: &mut Device, address: u8, kind: u8, max_packet: u
         bounce: unsafe { dev.out.add(int_bounce(dci)) },
         bounce_phys: dev.out_phys + int_bounce(dci) as u64,
         bounce_len: 64,
+        own_bounce: false,
         callback: None,
         user: core::ptr::null_mut(),
         user_len: 0,
@@ -369,12 +370,23 @@ pub fn bulk(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut 
     done_bytes as i32
 }
 
-/// Queue an interrupt IN transfer (the host's `interrupt_start`).
-pub fn interrupt_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize, done: myos_abi::UsbCompletion, ctx: *mut c_void) -> i32 {
+/// Queue an interrupt or bulk IN transfer (the host's `transfer_start`):
+/// a bulk endpoint gets a page of its own to bounce through the first
+/// time.
+pub fn transfer_start(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: *mut u8, len: usize, done: myos_abi::UsbCompletion, ctx: *mut c_void) -> i32 {
     let slot = dev.slot;
     let Some(ep) = dev.endpoint_by_address(address) else {
         return USB_EIO;
     };
+    if address & 0x80 == 0 || !matches!(ep.kind, 2 | 3) {
+        return USB_EIO;
+    }
+    if ep.kind == 2 && !ep.own_bounce {
+        let Some((phys, va)) = dma::page(c.dma) else {
+            return USB_EIO;
+        };
+        (ep.bounce, ep.bounce_phys, ep.bounce_len, ep.own_bounce) = (va, phys, USB_ASYNC_BULK_MAX, true);
+    }
     if len > ep.bounce_len {
         return USB_EIO;
     }
@@ -918,6 +930,9 @@ pub fn detach_id(c: &Controller, id: u32) {
     }
     for ep in dev.eps.into_iter().flatten() {
         dma::free(c.dma, ep.ring.phys, ep.ring.trbs as *mut u8);
+        if ep.own_bounce {
+            dma::free(c.dma, ep.bounce_phys, ep.bounce);
+        }
     }
     dma::free(c.dma, dev.input_phys, dev.input);
     dma::free(c.dma, dev.out_phys, dev.out);
