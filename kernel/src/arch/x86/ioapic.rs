@@ -5,7 +5,7 @@
 //! them. Without an MADT I/O APIC entry nothing is routed and the callers
 //! poll their device.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 /// The registers' virtual address (0: no I/O APIC).
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -15,6 +15,10 @@ static GSI_BASE: AtomicU32 = AtomicU32::new(0);
 static ENTRIES: AtomicU32 = AtomicU32::new(0);
 /// The vector each ISA IRQ was given (0: not routed).
 static ISA_VECTOR: [AtomicU8; 16] = [const { AtomicU8::new(0) }; 16];
+/// Each ISA IRQ's interrupt remapping handle plus one (0: none yet), and
+/// whether its pin is unmasked (for [`refresh`]).
+static ISA_HANDLE: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+static ISA_UNMASKED: [AtomicBool; 16] = [const { AtomicBool::new(false) }; 16];
 
 const IOREGSEL: usize = 0x00;
 const IOWIN: usize = 0x10;
@@ -112,7 +116,9 @@ pub fn route(irq: u8) -> Option<u32> {
 }
 
 /// Unmask ISA `irq`'s pin (after [`route`]): fixed delivery to the BSP's
-/// LAPIC, physical destination mode.
+/// LAPIC, physical destination mode; through the IOMMU's interrupt
+/// remapping where there is one (the entry in the remappable format: bit
+/// 48, the handle in bits 63:49 and 11).
 pub fn unmask(irq: u8) {
     let Some((reg, low)) = entry(irq) else {
         return;
@@ -121,8 +127,34 @@ pub fn unmask(irq: u8) {
     if vector == 0 {
         return;
     }
-    write(reg + 1, (crate::smp::cpu_hw_id(0) as u32) << 24);
-    write(reg, low | u32::from(vector));
+    ISA_UNMASKED[irq as usize].store(true, Ordering::SeqCst);
+    let handle = match ISA_HANDLE[irq as usize].load(Ordering::SeqCst) {
+        0 => crate::iommu::remap_ioapic(vector, low & RED_LEVEL != 0).inspect(|h| {
+            ISA_HANDLE[irq as usize].store(u32::from(*h) + 1, Ordering::SeqCst);
+        }),
+        h => Some((h - 1) as u16),
+    };
+    match handle {
+        Some(h) => {
+            let h = u32::from(h);
+            write(reg + 1, (h & 0x7fff) << 17 | 1 << 16);
+            write(reg, low | u32::from(vector) | (h >> 15) << 11);
+        }
+        None => {
+            write(reg + 1, (crate::smp::cpu_hw_id(0) as u32) << 24);
+            write(reg, low | u32::from(vector));
+        }
+    }
+}
+
+/// Write every unmasked pin's entry again: interrupt remapping came on
+/// after it was routed (the console's pin).
+pub fn refresh() {
+    for irq in 0..16u8 {
+        if ISA_UNMASKED[irq as usize].load(Ordering::SeqCst) {
+            unmask(irq);
+        }
+    }
 }
 
 fn outb(port: u16, value: u8) {

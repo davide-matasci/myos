@@ -9,11 +9,16 @@
 //!   it; no line when nobody does).
 //! - `ctl`: held by one program at a time (the driver; root only), from
 //!   its open on, and only on a function no kernel driver drives (its
-//!   open is refused then: the PCI claim, `KernelApi::pci_claim`). Reads as lines: each memory BAR (`barN PHYS SIZE`), the
+//!   open is refused then: the PCI claim, `KernelApi::pci_claim`). Reads as lines: each memory BAR (`barN ADDR SIZE`, the
+//!   address as the CPUs see it, `KernelApi::pci_bar_phys`: the host
+//!   bridge's window moves it on some boards), the
 //!   interrupt once routed (`irq msix|msi|intx`), the IOMMU domain the
 //!   function is confined to while held (`iommu N`: its DMA reaches the
 //!   buffers below and nothing else, `KernelApi::iommu_attach`; no line on
-//!   a board without an IOMMU, where it reaches all of memory) and each DMA buffer
+//!   a board without an IOMMU, where it reaches all of memory), whether
+//!   the device's DMA sees the caches (`dma coherent`, or `dma
+//!   noncoherent`: the buffers are then mapped non-cacheable, so the
+//!   program needs no cache maintenance) and each DMA buffer
 //!   (`dmaN BUS PAGES`, the address the device uses for it). Writes: `enable` (memory decoding
 //!   and bus mastering on), `disable` (off), `irq` (route the function's
 //!   interrupt to `irq`), `dma PAGES` (a physically contiguous, zeroed
@@ -27,9 +32,12 @@
 //! - `irq`: a read waits for the interrupt and returns how many came since
 //!   the last read (8 bytes, little endian); `poll` says one is pending.
 //!   A legacy INTx line stays masked (the command register's interrupt
-//!   disable) from the interrupt until a write to `irq`, once the driver
+//!   disable) from the interrupt until a write to `irq` (of a byte at
+//!   least: the kernel passes an empty one to no file), once the driver
 //!   has quietened the device; MSI and MSI-X need no write.
-//! - `dmaN`: the buffer, for `mmap(MAP_SHARED)`.
+//! - `dmaN`: the buffer, for `mmap(MAP_SHARED)`: cached memory, or
+//!   non-cacheable (`MYOS_MMAP_NOCACHE`) for a device whose DMA does not
+//!   see the caches.
 //!
 //! The files besides `info` and `ctl` are only there while `ctl` is held.
 //!
@@ -45,7 +53,8 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use myos_abi::{
     DmaDevice, status_ok, status_warn, ApiCell, KernelApi, Lock, ModuleVfsOps, VfsStatInfo, ABI_VERSION, MYOS_IRQ_INTX,
-    MYOS_IRQ_MSI, MYOS_MMAP_UNCACHED, MYOS_POLLIN, MYOS_READ_WAIT, PCI_OWNER_MAX,
+    MYOS_IRQ_MSI, MYOS_MMAP_NOCACHE, MYOS_MMAP_UNCACHED, MYOS_POLLIN, MYOS_READ_WAIT, PCI_OWNER_MAX,
+    DMA_TO_DEVICE,
 };
 
 const S_IFDIR: u32 = 0o040000;
@@ -101,12 +110,17 @@ struct Dev {
     class: u32,
     /// `ctl` is open.
     held: bool,
-    /// Memory BARs (`(phys, size)`, size 0: none), probed at the first hold.
+    /// Memory BARs (`(cpu address, size)`, size 0: none), probed at the
+    /// first hold.
     bars: [(u64, u64); 6],
     probed: bool,
     irq: Irq,
     /// The IOMMU domain while held, -1 without one.
     iommu: i32,
+    /// The function's DMA handle (`KernelApi::dma_attach`) from the first
+    /// hold on, -1 before, and whether its DMA sees the caches.
+    dma_dev: i32,
+    coherent: bool,
     dma: [Dma; MAX_DMA],
 }
 
@@ -289,6 +303,7 @@ fn ctl_text(d: &Dev) -> Text {
         t.dec(d.iommu as u64);
         t.push(b"\n");
     }
+    t.push(if d.coherent { b"dma coherent\n" } else { b"dma noncoherent\n" });
     for (i, b) in d.dma.iter().enumerate() {
         if b.used {
             t.push(b"dma");
@@ -303,9 +318,9 @@ fn ctl_text(d: &Dev) -> Text {
     t
 }
 
-/// The function's memory BARs: assigned and mapped for the kernel by
-/// `pci_bar_map` when the firmware left them unassigned, their physical
-/// address from configuration space.
+/// The function's memory BARs, each at the address the CPUs see it
+/// (`pci_bar_phys`: assigned when the firmware left it unassigned, the
+/// host bridge's window applied).
 fn probe_bars(d: &mut Dev) {
     let api = api();
     let mut i = 0;
@@ -313,11 +328,9 @@ fn probe_bars(d: &mut Dev) {
         let off = 0x10 + 4 * i as u8;
         let lo = api.pci_cfg_read32(d.bus, d.slot, d.func, off);
         let is64 = lo & 0x7 == 0x4;
-        let (mut va, mut size) = (0usize, 0u64);
-        if lo & 1 == 0 && api.pci_bar_map(d.bus, d.slot, d.func, i as u8, &mut va, &mut size) == 0 {
-            let lo = api.pci_cfg_read32(d.bus, d.slot, d.func, off);
-            let hi = if is64 { api.pci_cfg_read32(d.bus, d.slot, d.func, off + 4) } else { 0 };
-            d.bars[i] = ((u64::from(hi) << 32) | u64::from(lo & !0xF), size);
+        let (mut cpu, mut size) = (0u64, 0u64);
+        if lo & 1 == 0 && api.pci_bar_phys(d.bus, d.slot, d.func, i as u8, &mut cpu, &mut size) == 0 {
+            d.bars[i] = (cpu, size);
         }
         i += if is64 { 2 } else { 1 };
     }
@@ -389,15 +402,18 @@ fn dma_get(d: &mut Dev, pages: usize) -> bool {
             let b = d.dma[i];
             // SAFETY: dma_alloc returned this buffer's mapping.
             unsafe { core::ptr::write_bytes(b.va as *mut u8, 0, b.pages * PAGE) };
+            // The zeros reach a device that does not see the caches.
+            if !d.coherent {
+                api().dma_sync(d.dma_dev, b.va as *const u8, b.pages * PAGE, DMA_TO_DEVICE);
+            }
             i
         }
         None => {
             let Some(i) = d.dma.iter().position(|b| b.pages == 0) else {
                 return false;
             };
-            let dma = api().dma_attach(&DmaDevice::pci(d.bus, d.slot, d.func));
             let mut bus = 0;
-            let va = api().dma_alloc(dma, pages, &mut bus);
+            let va = api().dma_alloc(d.dma_dev, pages, &mut bus);
             if va.is_null() {
                 return false;
             }
@@ -553,6 +569,10 @@ unsafe extern "C" fn pci_open(path: *const u8, len: usize, _out: *mut u8, _out_c
     if !d.probed {
         probe_bars(d);
     }
+    if d.dma_dev < 0 {
+        d.dma_dev = api().dma_attach(&DmaDevice::pci(d.bus, d.slot, d.func));
+        d.coherent = api().dma_coherent(d.dma_dev).unwrap_or(true);
+    }
     // Confined to its own domain where there is an IOMMU: the buffers kept
     // from the last driver go in, nothing else.
     d.iommu = api().iommu_attach(d.bus, d.slot, d.func).unwrap_or(-1);
@@ -688,6 +708,9 @@ unsafe extern "C" fn pci_mmap(path: *const u8, len: usize, offset: usize, attrs:
             if offset >= b.pages * PAGE {
                 return 0;
             }
+            // A device that does not see the caches reads what the program
+            // writes only through a non-cacheable mapping.
+            unsafe { *attrs = if d.coherent { 0 } else { MYOS_MMAP_NOCACHE } };
             b.va as u64 - api().hhdm_offset() + offset as u64
         }
         _ => 0,
@@ -734,6 +757,8 @@ fn scan(devs: &mut [Option<Dev>; MAX_DEV]) -> usize {
                     probed: false,
                     irq: Irq::None,
                     iommu: -1,
+                    dma_dev: -1,
+                    coherent: true,
                     dma: [NO_DMA; MAX_DMA],
                 });
                 n += 1;

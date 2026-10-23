@@ -1,6 +1,6 @@
 //! The device's registers (BAR0 offsets) and internal ("periphery")
 //! addresses, from OpenBSD's if_iwxreg.h (notices in LICENSE). Only what the
-//! 22000 family (AX200/AX201) path up to a scan uses.
+//! 22000 family (AX200/AX201) uses.
 
 // Control and status registers.
 pub const HW_IF_CONFIG: u32 = 0x000;
@@ -86,8 +86,9 @@ pub const DRAM_INT_TBL_WRITE_POINTER: u32 = 1 << 28;
 pub const DRAM_INT_TBL_WRAP_CHECK: u32 = 1 << 27;
 pub const MAC_SHADOW_CTRL_VAL: u32 = 0x800f_ffff;
 
-/// HW_REV of a QuZ (the AX201's MAC), in the driver's form.
-pub const HW_REV_TYPE_QUZ: u32 = 0x354;
+/// A discrete radio's latency tolerance (an integrated one's is in the
+/// periphery, HPM_UMAC_LTR).
+pub const LTR_LONG_VAL_AD: u32 = 0x0d4;
 
 // The host bus window onto the device's memory and periphery.
 pub const HBUS_TARG_MEM_RADDR: u32 = 0x40c;

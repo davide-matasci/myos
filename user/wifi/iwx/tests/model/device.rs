@@ -101,8 +101,23 @@ impl Mem {
     }
 }
 
-/// HW_REV of an AX201's QuZ MAC, step B: 0x354 in the driver's form.
-pub const HW_REV_RAW: u32 = 0x351;
+/// The radio modelled: what differs between the parts the driver takes.
+pub struct Hardware {
+    pub name: &'static str,
+    /// HW_REV as the register reads.
+    pub hw_rev_raw: u32,
+    /// Integrated (CNVi): its latency tolerance in the periphery
+    /// (HPM_UMAC_LTR), a SoC configuration without DISCRETE; else a PCIe
+    /// card's: LTR_LONG_VAL_AD, DISCRETE.
+    pub integrated: bool,
+    /// The crystal latency the firmware must be told.
+    pub xtal_latency_us: u32,
+}
+
+/// The AX201: a QuZ MAC, step B (0x354 in the driver's form), integrated.
+pub const AX201: Hardware = Hardware { name: "AX201", hw_rev_raw: 0x351, integrated: true, xtal_latency_us: 500 };
+/// The AX200: a CC MAC, step A, discrete.
+pub const AX200: Hardware = Hardware { name: "AX200", hw_rev_raw: 0x340, integrated: false, xtal_latency_us: 0 };
 /// Its MAC address (locally administered), in the OTP words.
 pub const MAC: [u8; 6] = [0x02, 0x00, 0x5e, 0x00, 0x02, 0x01];
 /// The MSI-X vectors (the driver routes every cause to the first).
@@ -129,7 +144,8 @@ pub enum Cause {
     SwErr,
 }
 
-pub struct Ax201 {
+pub struct Device {
+    pub hw: &'static Hardware,
     pub mem: Mem,
     irq: Box<dyn Irq>,
     start: Instant,
@@ -145,6 +161,8 @@ pub struct Ax201 {
     mbox: u32,
     shadow: u32,
     ucode_gp1: u32,
+    /// LTR_LONG_VAL_AD.
+    ltr: u32,
     int_coalescing: u8,
     periodic: Option<Instant>,
     ctxt_ba: u64,
@@ -212,9 +230,10 @@ pub fn tbs(tfd: &[u8]) -> Vec<(u64, usize)> {
     (0..n.min(25)).map(|i| (le64(tfd, 4 + 10 * i), le16(tfd, 2 + 10 * i) as usize)).collect()
 }
 
-impl Ax201 {
-    pub fn new(irq: Box<dyn Irq>) -> Self {
-        let mut d = Ax201 {
+impl Device {
+    pub fn new(hw: &'static Hardware, irq: Box<dyn Irq>) -> Self {
+        let mut d = Device {
+            hw,
             mem: Mem::default(),
             irq,
             start: Instant::now(),
@@ -229,6 +248,7 @@ impl Ax201 {
             mbox: 0,
             shadow: 0,
             ucode_gp1: 0,
+            ltr: 0,
             int_coalescing: 0,
             periodic: None,
             ctxt_ba: 0,
@@ -269,6 +289,7 @@ impl Ax201 {
         self.gp_cntrl = 0;
         (self.gio, self.gio_chicken, self.hpet, self.link_pwr, self.mbox, self.shadow) = (0, 0, 0, 0, 0, 0);
         self.ucode_gp1 = 0;
+        self.ltr = 0;
         self.int_coalescing = 0;
         self.periodic = None;
         self.ctxt_ba = 0;
@@ -292,7 +313,7 @@ impl Ax201 {
         if self.failed.is_some() {
             return;
         }
-        eprintln!("ax201-sim: {what}");
+        eprintln!("{}: {what}", self.hw.name);
         self.failed = Some(what);
         if self.fw.is_some() {
             // The firmware's assert: its error id in the LMAC's log,
@@ -352,7 +373,8 @@ impl Ax201 {
             RESET => 0,
             // The radio is on (no kill switch).
             GP_CNTRL => self.gp_cntrl | if self.clock_ready() { GP_MAC_CLOCK_READY } else { 0 } | GP_HW_RF_KILL_SW,
-            HW_REV => HW_REV_RAW,
+            HW_REV => self.hw.hw_rev_raw,
+            LTR_LONG_VAL_AD => self.ltr,
             GIO => self.gio,
             GIO_CHICKEN => self.gio_chicken,
             DBG_HPET_MEM => self.hpet,
@@ -429,6 +451,7 @@ impl Ax201 {
             MBOX_SET => self.mbox = v,
             MAC_SHADOW_CTRL => self.shadow = v,
             UCODE_DRV_GP1_CLR => self.ucode_gp1 &= !v,
+            LTR_LONG_VAL_AD => self.ltr = v,
             CTXT_INFO_BA => self.ctxt_ba = self.ctxt_ba & !0xffff_ffff | u64::from(v),
             o if o == CTXT_INFO_BA + 4 => self.ctxt_ba = self.ctxt_ba & 0xffff_ffff | u64::from(v) << 32,
             DRAM_INT_TBL => {
@@ -581,12 +604,30 @@ impl Ax201 {
                     self.violation("the firmware started twice without a reset".into());
                     return;
                 }
-                if let Err(e) = super::firmware::start(self, self.ctxt_ba) {
+                if let Err(e) = self.boot_ltr().and_then(|()| super::firmware::start(self, self.ctxt_ba)) {
                     self.violation(e);
                 }
             }
             a => self.violation(format!("write of 0x{v:x} to periphery 0x{a:x}, which the device does not have")),
         }
+    }
+
+    /// The latency tolerance the self load needs set (the boot's
+    /// workaround, iwx_set_ltr): snoop and no-snoop both required, where
+    /// this radio takes it.
+    fn boot_ltr(&self) -> Result<(), String> {
+        const REQ: u32 = 1 << 31 | 1 << 15;
+        let umac = self.prph.get(&(HPM_UMAC_LTR & PRPH_MASK)).copied().unwrap_or(0);
+        let enabled = self.prph.get(&(HPM_MAC_LTR_CSR & PRPH_MASK)).copied().unwrap_or(0);
+        let (ltr, other) = if self.hw.integrated { (umac, self.ltr) } else { (self.ltr, umac | enabled) };
+        if ltr & REQ != REQ || other != 0 {
+            let place = if self.hw.integrated { "the periphery's HPM_UMAC_LTR" } else { "LTR_LONG_VAL_AD" };
+            return Err(format!("the self load started with the latency tolerance 0x{ltr:x}: the {} takes it in {place}", self.hw.name));
+        }
+        if self.hw.integrated && enabled != HPM_MAC_LRT_ENABLE_ALL {
+            return Err(format!("the self load started with HPM_MAC_LTR_CSR 0x{enabled:x}"));
+        }
+        Ok(())
     }
 
     /// Raise a cause: in CSR_INT for MSI and INTx, the MSI-X cause

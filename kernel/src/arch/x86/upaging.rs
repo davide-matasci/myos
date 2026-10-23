@@ -247,6 +247,12 @@ pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
     map_page_x86(aspace, va, pa, flags);
 }
 
+/// Memory at `pa` a device reads and writes without seeing the caches (a
+/// DMA buffer of such a device): uncached like registers (PAT UC).
+pub fn map_user_nocache_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    map_user_device_page(aspace, va, pa, w);
+}
+
 pub fn unmap_user_page(aspace: u64, va: u64) {
     let i4 = ((va >> 39) & 0x1ff) as usize;
     let i3 = ((va >> 30) & 0x1ff) as usize;

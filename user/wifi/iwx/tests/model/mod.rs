@@ -1,6 +1,7 @@
-//! A model of the AX201 for the driver's tests (`tests/ax201_model.rs`):
-//! the device the `iwx` crate drives, its registers, rings and interrupt
-//! (`device.rs`), the firmware behind them (`firmware.rs`: its self load
+//! A model of the AX201 and the AX200 for the driver's tests
+//! (`tests/radios.rs`): the device the `iwx` crate drives, its registers,
+//! rings and interrupt (`device.rs`, each radio's differences in its
+//! `Hardware`), the firmware behind them (`firmware.rs`: its self load
 //! of the synthetic file `iwx::sim`, the bring-up, the scan, joining a
 //! network, the station's frames) and the access points it hears
 //! (`air.rs`). Every command and descriptor the driver gives it is checked

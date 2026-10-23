@@ -97,7 +97,7 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; a BSP with an x2APIC id above 255 would need interrupt remapping, so it gets no MSI); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`) | vector |
 | aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
@@ -315,11 +315,11 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 
 | File | What |
 |------|------|
-| `ctl` | reads the memory BARs (`barN PHYS SIZE`), the interrupt once routed (`irq msix\|msi\|intx`), the IOMMU domain the function is confined to (`iommu N`; no line on a board without an IOMMU) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
+| `ctl` | reads the memory BARs (`barN ADDR SIZE`: the address as the CPUs see it, `KernelApi::pci_bar_phys`, ABI 52, where a board's PCI window moves bus addresses, a Raspberry Pi 4's), the interrupt once routed (`irq msix\|msi\|intx`), the IOMMU domain the function is confined to (`iommu N`; no line on a board without an IOMMU), whether the device's DMA sees the caches (`dma coherent` or `dma noncoherent`, `KernelApi::dma_coherent`) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
 | `config` | the 256 bytes of configuration space, read and written at any offset |
 | `barN` | a memory BAR, for `mmap(MAP_SHARED)`: uncached (x86 PCD\|PWT, aarch64 Device-nGnRE; riscv64 from the platform's attributes for the address), the module's `mmap` hook saying so (`MYOS_MMAP_UNCACHED`, ABI 46), and it stays so through `mprotect` |
-| `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq`, once the driver quietened its device |
-| `dmaN` | the buffer, for `mmap(MAP_SHARED)` (ordinary memory: a device whose DMA is not coherent, or a board whose PCI window moves BAR addresses, is not for `/dev/pci` yet, issue #513) |
+| `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq` (a byte at least: the kernel passes an empty write to no file), once the driver quietened its device |
+| `dmaN` | the buffer, for `mmap(MAP_SHARED)`: ordinary memory, cached, or non-cacheable for a device whose DMA does not see the caches (`dma noncoherent` in `ctl`, "DMA" above; the module's `mmap` hook says so, `MYOS_MMAP_NOCACHE`, ABI 52: x86 PCD\|PWT, aarch64 Normal non-cacheable, MAIR Attr3), so the program needs no cache maintenance; the module writes the zeros of a reused buffer back for such a device |
 
 Closing `ctl` (the driver's exit too) turns bus mastering and memory
 decoding off, so the device stops reaching memory and raising messages,
@@ -361,17 +361,33 @@ it so that:
   the domains with what they map, `faults N` and the last one
   (`last BB:SS.F read|write ADDRESS reason R`).
 
-MSIs are DMA writes too; they still pass as they are (interrupt remapping
-stays listed in issue #501).
+A device's interrupts are messages it writes too (MSIs, to the local
+APIC's address). On x86_64 the unit remaps them (`intremap N/256` on its
+`/proc/iommu` line, the entries given out; `queued` there: it invalidates
+through its queue): the address of each message a function is given names
+an entry of the unit's interrupt remapping table (the *remappable* format,
+`arch/x86/interrupts.rs`; the I/O APIC's pins the same way, `ioapic.rs`),
+and the entry carries the vector and verifies the sender's bus, device and
+function, so a function raises its own vector and no other's; with the
+table in place a message in the plain format is refused too (`GCMD.CFI`
+clear). A refused message is recorded like a DMA (reason 0x20 and up,
+0x26 another function's entry, the address its handle). QEMU's unit lets
+plain-format messages through (hardware refuses them), so `pcidev_smoke`
+checks the entry instead: the device's message rewritten to another handle
+is refused and counted, its own arrives again afterwards. On aarch64 and
+riscv64 the devices' interrupts are INTx lines, which carry no address:
+nothing to remap (the SMMUv3's and the RISC-V IOMMU's MSI translation stay
+unused). AMD-Vi (the IVRS table) is not driven: issue #539.
 
 | Arch | Unit | Where it is described |
 |---|---|---|
-| x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the registers (whole: the context cache and the IOTLB), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
+| x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the queue where the unit has one (`ECAP.QI`; the registers otherwise; whole: the context cache, the IOTLB, the interrupt entry cache), interrupt remapping (`ECAP.IR` and the DMAR's `INTR_REMAP` flag; a table of 256 entries per unit, one per message or I/O APIC pin routed, extended interrupt mode where the unit has it, `ECAP.EIM`, and the BSP runs in x2APIC mode), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
 | aarch64 | Arm SMMUv3 (`iommu/smmuv3.rs`): a linear stream table, one entry per requester id, *bypass* for every function (no table walked) and a *stage-2* entry (VMSAv8, 4 KiB granule, a VMID per domain) for one a program holds; the command queue for invalidations and syncs, the event queue (its interrupt, which the SMMU pulses, taken edge-triggered) for the refused DMAs; the tables and queues written back for a unit that does not snoop (`IDR0.COHACC` clear) | the IORT's SMMUv3 node (registers, the event and global error GSIVs) and the root complex node's ID mapping to it, or the tree's `arm,smmu-v3` node and the PCIe host's `iommu-map`: a `platform::Iommu` component, `/proc/platform`'s `iommu smmuv3 ...` line |
 | riscv64 | the RISC-V IOMMU (`iommu/riscv.rs`, specification 1.0): a three-level device directory, one 64-byte context per device id (32 bytes for a unit without MSI translation), *bare* for every function of a populated bus (no table walked) and a *second-stage* context (a G-stage table in the CPU's Sv39x4 or Sv48x4 format, a GSCID per domain) for one a program holds; the command queue for invalidations and fences, the fault queue for the refused DMAs, read when `/proc/iommu` is (the PCI unit signals it by MSI only, which the riscv64 kernel does not take) | a PCI function of class 08.06 (system peripheral, IOMMU), its registers in BAR 0, claimed by the kernel so `/dev/pci` cannot hand it out; nothing from the tree |
 
-QEMU's `q35` carries the unit (`-device intel-iommu`, 39-bit, 3-level,
-both superpage sizes, snooping walks), every x86 boot of the launcher and
+QEMU's `q35` carries the unit (`-device intel-iommu,intremap=on`, 39-bit,
+3-level, both superpage sizes, snooping walks, queued invalidation,
+interrupt remapping), every x86 boot of the launcher and
 of CI, QEMU's `virt` an SMMUv3 (`iommu=smmuv3`: 44-bit output,
 snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
 `[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
@@ -388,8 +404,8 @@ edk2-stable202605 build raises an invalid-opcode exception inside the
 firmware on a `q35` with the IOMMU and an xHCI controller, before any boot
 loader runs. On the `[ OK ]` line at
 boot: `iommu: vt-d, 1 unit(s), 3-level tables, 1 GiB superpages, memory
-to 0x...`; a board without a DMAR table prints nothing and `/proc/iommu`
-says `none`.
+to 0x..., interrupts remapped`; a board without a DMAR table prints
+nothing and `/proc/iommu` says `none`.
 
 ## AML opcode set (custom interpreter — not ACPICA)
 

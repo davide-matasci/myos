@@ -1,6 +1,6 @@
 //! A PCI function driven through `/dev/pci/BB:SS.F` (modules/pcidev,
 //! docs/pci-acpi-smp.md): its registers (BAR0), DMA buffers and interrupt
-//! for the AX201's driver (the `iwx` crate).
+//! for the Intel radios' driver (the `iwx` crate).
 
 use alloc::vec::Vec;
 
@@ -88,8 +88,11 @@ impl Pci {
             _ => return Err("no interrupt"),
         };
         p.irq = open_flags(&path(dir, b"/irq", b""), O_RDWR).ok_or("irq")?;
-        // A line starts masked.
-        p.irq_done();
+        // A line starts masked: open it (a write of a byte; the kernel
+        // passes a write of none to no file).
+        if p.intx && write_fd(p.irq, b"\0") != 1 {
+            return Err("irq unmask");
+        }
         Ok(p)
     }
 
@@ -189,9 +192,11 @@ impl Device for Pci {
         monotonic_ns() / 1000
     }
 
+    /// The line open again: a write of a byte (the kernel passes a write
+    /// of none to no file). A message interrupt needs nothing.
     fn irq_done(&mut self) {
         if self.intx {
-            write_fd(self.irq, b"");
+            write_fd(self.irq, b"\0");
         }
     }
 }

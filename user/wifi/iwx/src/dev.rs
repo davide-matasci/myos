@@ -10,6 +10,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{Ordering, fence};
 
+use crate::chip::Chip;
 use crate::fw::{Firmware, Section};
 use crate::hw::{Bus, Hw, HwError};
 use crate::msg::{self, Channel, NvmInfo};
@@ -94,7 +95,8 @@ impl Dma {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Error {
     Hw(HwError),
-    /// Not an AX201 (a QuZ MAC): its HW_REV, as the driver reads it.
+    /// Not the radio its PCI id says (another MAC): its HW_REV, as the
+    /// driver reads it.
     Unsupported(u32),
     /// No DMA memory, or the firmware's images do not fit what the
     /// context information has room for.
@@ -225,7 +227,6 @@ const CAPA_LAR_MULTI_MCC: usize = 29;
 const CAPA_CT_KILL_BY_FW: usize = 74;
 const CAPA_MCC_UPDATE_11AX_SUPPORT: usize = 89;
 const CAPA_UMAC_SCAN: usize = 2;
-const SOC_LATENCY_US: u32 = 500;
 
 /// Where each section goes in one DMA buffer: page-aligned offsets, and
 /// the buffer's length.
@@ -256,6 +257,8 @@ fn ict_causes(mut r: u32) -> u32 {
 
 pub struct Dev<D: Device> {
     pub hw: Hw<D>,
+    /// The radio it is.
+    pub chip: &'static Chip,
     /// HW_REV as read, and in the driver's form (steps in bits 2-3).
     hw_rev_raw: u32,
     hw_rev: u32,
@@ -282,17 +285,16 @@ pub struct Dev<D: Device> {
 }
 
 impl<D: Device> Dev<D> {
-    /// The device behind `dev`, its interrupt through MSI-X or MSI: an
-    /// AX201 or nothing (iwx_attach). Its buffers are set up, nothing
-    /// started.
-    pub fn new(dev: D, msix: bool) -> Result<Self, Error> {
-        let mut hw = Hw::new(dev, msix, true);
+    /// The radio `chip` behind `dev`, its interrupt through MSI-X or MSI
+    /// (iwx_attach): its MAC checked, its buffers set up, nothing started.
+    pub fn new(dev: D, msix: bool, chip: &'static Chip) -> Result<Self, Error> {
+        let mut hw = Hw::new(dev, msix, chip.integrated);
         hw.write(INT_MASK, 0);
         hw.write(INT, !0);
         hw.write(FH_INT_STATUS, !0);
         let raw = hw.read(HW_REV);
         let hw_rev = (raw & 0xfff0) | ((raw & 0x3) << 2);
-        if hw_rev != HW_REV_TYPE_QUZ {
+        if !chip.has_mac(hw_rev) {
             return Err(Error::Unsupported(hw_rev));
         }
         let ctl = hw.bus.dma(CTL_LEN).ok_or(Error::Dma)?;
@@ -303,6 +305,7 @@ impl<D: Device> Dev<D> {
             .collect::<Result<Vec<_>, _>>()?;
         let mut d = Dev {
             hw,
+            chip,
             hw_rev_raw: raw,
             hw_rev,
             ctl,
@@ -418,7 +421,7 @@ impl<D: Device> Dev<D> {
         let rx = valid(fw.rx_chains(), nvm.rx_chains);
         self.cmd(msg::TX_ANT_CONFIGURATION, &msg::tx_ant_configuration(tx))?;
         self.cmd(msg::BT_CONFIG, &msg::bt_config())?;
-        self.cmd(msg::SOC_CONFIGURATION, &msg::soc_configuration(SOC_LATENCY_US))?;
+        self.cmd(msg::SOC_CONFIGURATION, &msg::soc_configuration(self.chip.integrated, self.chip.xtal_latency_us))?;
         if fw.capa(CAPA_CT_KILL_BY_FW) {
             self.cmd(msg::TEMP_REPORTING_THRESHOLDS, &msg::temp_reporting_thresholds())?;
         }
@@ -851,6 +854,7 @@ impl<D: Device> Dev<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chip::{AX200, AX201};
     use crate::ring::{put16, put32};
     use alloc::boxed::Box;
     use alloc::collections::BTreeMap;
@@ -940,15 +944,21 @@ mod tests {
     }
 
     #[test]
-    fn not_an_ax201() {
+    fn the_mac_its_id_says() {
+        // A CC MAC is an AX200's, not an AX201's; a QuZ the other way.
         let mut f = fake();
         f.regs.insert(HW_REV, 0x340);
-        assert!(matches!(Dev::new(f, false), Err(Error::Unsupported(0x340))));
+        assert!(matches!(Dev::new(f, false, &AX201), Err(Error::Unsupported(0x340))));
+        let mut f = fake();
+        f.regs.insert(HW_REV, 0x340);
+        let d = Dev::new(f, false, &AX200).unwrap();
+        assert!(!d.hw.integrated);
+        assert!(matches!(Dev::new(fake(), false, &AX200), Err(Error::Unsupported(0x354))));
     }
 
     #[test]
     fn buffers_and_ring() {
-        let d = Dev::new(fake(), false).unwrap();
+        let d = Dev::new(fake(), false, &AX201).unwrap();
         // control, TFDs, commands, 4 receive buffers.
         assert_eq!(d.hw.bus.bufs.borrow().len(), 7);
         let (ctl, _) = d.hw.bus.bufs.borrow()[0];
@@ -969,7 +979,7 @@ mod tests {
             deliver(bufs, 0, &[(0x04, 0, 0, 0x80, &[]), (0x98, 1, 0, 0, &[7, 0, 0, 0])]);
             true
         }));
-        let mut d = Dev::new(f, false).unwrap();
+        let mut d = Dev::new(f, false, &AX201).unwrap();
         d.hw.intmask = INT_INI_SET;
         let r = d.cmd(msg::TX_ANT_CONFIGURATION, &msg::tx_ant_configuration(3)).unwrap();
         assert_eq!(r, [7, 0, 0, 0]);
@@ -1013,7 +1023,7 @@ mod tests {
         };
         let file = std::fs::read(path).unwrap();
         let fw = Firmware::parse(&file).unwrap();
-        let mut d = Dev::new(fake(), false).unwrap();
+        let mut d = Dev::new(fake(), false, &AX201).unwrap();
         d.place_firmware(&fw).unwrap();
         let bufs = d.hw.bus.bufs.borrow().clone();
         assert_eq!(bufs.len(), 9);
@@ -1095,7 +1105,7 @@ mod tests {
     #[test]
     fn join_send_leave() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let mut d = Dev::new(answering(log.clone(), 1), false).unwrap();
+        let mut d = Dev::new(answering(log.clone(), 1), false, &AX201).unwrap();
         d.hw.intmask = INT_INI_SET;
         let (info, peer) = (info(), peer());
         assert_eq!(d.send(&[0x08; 30], false), Err(Error::NotJoined));

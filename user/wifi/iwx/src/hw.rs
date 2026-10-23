@@ -33,7 +33,8 @@ pub struct Hw<B: Bus> {
     pub bus: B,
     /// Interrupts through MSI-X (else MSI).
     pub msix: bool,
-    /// Integrated (CNVi) part: the AX201 (iwx_attach's sc_integrated).
+    /// Integrated (CNVi) part, the AX201's (iwx_attach's sc_integrated), or
+    /// a discrete one, the AX200's.
     pub integrated: bool,
     locks: u32,
     /// MSI: the causes INT_MASK lets through.
@@ -378,10 +379,14 @@ impl<B: Bus> Hw<B> {
     pub fn kick_self_load(&mut self, ctxt_phys: u64) -> Result<(), HwError> {
         self.write(CTXT_INFO_BA, ctxt_phys as u32);
         self.write(CTXT_INFO_BA + 4, (ctxt_phys >> 32) as u32);
+        // ~250 µs snoop and no-snoop latency until the firmware sets its
+        // own: in a register of a discrete radio's, in the periphery of an
+        // integrated one.
+        if !self.integrated {
+            self.write(LTR_LONG_VAL_AD, LTR_250_US);
+        }
         self.nic_lock()?;
         if self.integrated {
-            // ~250 µs snoop and no-snoop latency until the firmware sets
-            // its own.
             self.write_prph_unlocked(HPM_MAC_LTR_CSR, HPM_MAC_LRT_ENABLE_ALL);
             self.write_prph_unlocked(HPM_UMAC_LTR, LTR_250_US);
         }
@@ -414,7 +419,7 @@ impl<B: Bus> Hw<B> {
     }
 }
 
-/// HPM_UMAC_LTR's value: no-snoop and snoop latency both required, 250 in
+/// The latency tolerance (LTR_LONG_VAL_AD, HPM_UMAC_LTR): no-snoop and snoop latency both required, 250 in
 /// units of 1 µs (scale 2) (iwx_set_ltr).
 pub const LTR_250_US: u32 = 0x8000_0000 | (2 << 24) & 0x1c00_0000 | (250 << 16) & 0x03ff_0000 | 0x8000 | (2 << 8) & 0x1c00 | 250;
 

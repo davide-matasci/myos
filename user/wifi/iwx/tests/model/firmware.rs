@@ -1,4 +1,4 @@
-//! The simulated AX201's firmware: its self load from the context
+//! The modelled radio's firmware: its self load from the context
 //! information (the sections checked against the synthetic file the
 //! driver was given, `iwx::sim`), ALIVE, then the commands of the command
 //! queue, each checked against the firmware's structure for it and
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use iwx::sim;
 
-use super::device::{le16, le32, le64, put16, put32, tbs, Ax201, Cause, RxRing, Ring, CMD_RING, MAC, TFD_LEN};
+use super::device::{le16, le32, le64, put16, put32, tbs, Device, Cause, RxRing, Ring, CMD_RING, MAC, TFD_LEN};
 use super::air::Heard;
 
 /// The ALIVE comes this long after the self load starts.
@@ -125,7 +125,7 @@ pub struct Fw {
 /// UREG_CPU_INIT_RUN: the firmware loads itself as the context
 /// information at `ctxt` says, which must be the synthetic file's
 /// sections, each where its DRAM entry points.
-pub fn start(d: &mut Ax201, ctxt: u64) -> Result<(), String> {
+pub fn start(d: &mut Device, ctxt: u64) -> Result<(), String> {
     if ctxt == 0 || ctxt % 4096 != 0 {
         return Err(format!("the self load started with the context information at 0x{ctxt:x}"));
     }
@@ -133,7 +133,7 @@ pub fn start(d: &mut Ax201, ctxt: u64) -> Result<(), String> {
     let flags = le32(&c, 8);
     // Version: the MAC id, version 0, the size in words; long TFDs, 2^9
     // receive buffers of 4 KB.
-    if le16(&c, 0) != super::device::HW_REV_RAW as u16 || le16(&c, 2) != 0 || le16(&c, 4) != (CTXT_LEN / 4) as u16 {
+    if le16(&c, 0) != d.hw.hw_rev_raw as u16 || le16(&c, 2) != 0 || le16(&c, 4) != (CTXT_LEN / 4) as u16 {
         return Err(format!("context information version {:x?}", &c[..8]));
     }
     if flags != (1 << 8) | (9 << 4) | (4 << 9) {
@@ -167,7 +167,7 @@ pub fn start(d: &mut Ax201, ctxt: u64) -> Result<(), String> {
             }
             let data = d.dma_read(addr, s.len, "firmware section").ok_or("")?;
             if let Some(at) = (0..s.len).find(|&j| data[j] != sim::byte(k0 + i, j)) {
-                return Err(format!("{name} section {i} differs at byte {at}: not the simulated firmware ({})", sim::NAME));
+                return Err(format!("{name} section {i} differs at byte {at}: not the simulated firmware (iwx::sim)"));
             }
         }
     }
@@ -189,13 +189,13 @@ pub fn start(d: &mut Ax201, ctxt: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn fw(d: &mut Ax201) -> &mut Fw {
+fn fw(d: &mut Device) -> &mut Fw {
     d.fw.as_mut().expect("the firmware runs")
 }
 
 /// What the firmware does by itself: ALIVE once loaded, the scan's
 /// channels, the joined network's beacons. When to come back.
-pub fn tick(d: &mut Ax201, now: Instant) -> Duration {
+pub fn tick(d: &mut Device, now: Instant) -> Duration {
     let f = fw(d);
     if let Stage::Loading(at) = f.stage {
         if now < at {
@@ -240,7 +240,7 @@ fn alive() -> Vec<u8> {
 }
 
 /// A queue's write pointer moved to `idx`: the descriptors up to it.
-pub fn kick(d: &mut Ax201, qid: u8, idx: usize) {
+pub fn kick(d: &mut Device, qid: u8, idx: usize) {
     let Some(f) = d.fw.as_mut() else {
         d.violation(format!("queue {qid} kicked before the firmware runs"));
         return;
@@ -279,7 +279,7 @@ pub fn kick(d: &mut Ax201, qid: u8, idx: usize) {
 }
 
 /// The transfer buffers of a descriptor, gathered.
-fn gather(d: &mut Ax201, tbs: &[(u64, usize)]) -> Option<Vec<u8>> {
+fn gather(d: &mut Device, tbs: &[(u64, usize)]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     for &(addr, len) in tbs {
         out.extend(d.dma_read(addr, len, "transfer buffer")?);
@@ -306,7 +306,7 @@ impl Answer {
 }
 
 /// The command at index `i` of the command queue.
-fn command(d: &mut Ax201, i: usize, tfd: &[u8]) {
+fn command(d: &mut Device, i: usize, tfd: &[u8]) {
     let t = tbs(tfd);
     if t.is_empty() || t.len() > 2 {
         d.violation(format!("command {i}: {} transfer buffers", t.len()));
@@ -355,8 +355,8 @@ fn len_is(p: &[u8], n: usize) -> Result<(), String> {
     if p.len() == n { Ok(()) } else { Err(format!("{} bytes, the firmware's structure is {n}", p.len())) }
 }
 
-fn handle(d: &mut Ax201, group: u8, opcode: u8, p: &[u8]) -> Result<Answer, String> {
-    let mac = MAC;
+fn handle(d: &mut Device, group: u8, opcode: u8, p: &[u8]) -> Result<Answer, String> {
+    let (mac, hw) = (MAC, d.hw);
     let f = fw(d);
     // Until INIT_COMPLETE only the NVM access commands.
     match (&f.stage, group, opcode) {
@@ -402,11 +402,18 @@ fn handle(d: &mut Ax201, group: u8, opcode: u8, p: &[u8]) -> Result<Answer, Stri
             }
             Answer::empty()
         }
-        // SOC_CONFIGURATION: the AX201 is integrated (not DISCRETE).
+        // SOC_CONFIGURATION: DISCRETE as the radio is (no other flag), its
+        // crystal's latency.
         (SYSTEM, 0x01) => {
             len_is(p, 8)?;
-            if le32(p, 0) & 1 != 0 {
-                return Err("the SoC configured as discrete: the AX201 is integrated".into());
+            let (flags, latency) = (le32(p, 0), le32(p, 4));
+            if flags != u32::from(!hw.integrated) || latency != hw.xtal_latency_us {
+                return Err(format!(
+                    "the SoC configured with flags 0x{flags:x}, {latency} µs: the {} is {}, {} µs",
+                    hw.name,
+                    if hw.integrated { "integrated" } else { "discrete" },
+                    hw.xtal_latency_us
+                ));
             }
             Answer::empty()
         }
@@ -700,7 +707,7 @@ fn queue_config(f: &mut Fw, p: &[u8]) -> Result<Answer, String> {
 
 /// SCAN_REQ_UMAC version 14 (the layout of versions 14 to 16): a passive
 /// scan of its channels, each for the passive dwell.
-fn scan_request(d: &mut Ax201, p: &[u8]) -> Result<Answer, String> {
+fn scan_request(d: &mut Device, p: &[u8]) -> Result<Answer, String> {
     len_is(p, 1940)?;
     let f = fw(d);
     if f.scan.is_some() {
@@ -743,7 +750,7 @@ fn scan_request(d: &mut Ax201, p: &[u8]) -> Result<Answer, String> {
 
 /// The scan: each channel's beacons half way through its dwell, the next
 /// channel at its end; the end notified.
-fn scan_tick(d: &mut Ax201, now: Instant) -> Option<Duration> {
+fn scan_tick(d: &mut Device, now: Instant) -> Option<Duration> {
     let f = fw(d);
     let s = f.scan.as_mut()?;
     if !s.heard && now >= s.hear_at {
@@ -781,7 +788,7 @@ fn scan_tick(d: &mut Ax201, now: Instant) -> Option<Duration> {
 /// A frame on the channel the station is bound to: up to the host when it
 /// is for it (its address, a group address the MAC context accepts, a
 /// beacon).
-fn hear(d: &mut Ax201, h: Heard) {
+fn hear(d: &mut Device, h: Heard) {
     let f = fw(d);
     let Some(m) = f.mac.as_ref() else {
         return;
@@ -797,7 +804,7 @@ fn hear(d: &mut Ax201, h: Heard) {
 /// REPLY_RX_MPDU (iwx_rx_mpdu_desc v1): the frame with its CRC good, the
 /// MAC header padded to 4 bytes when it is not, its signal on antenna A,
 /// the channel, the device's clock.
-fn mpdu(d: &mut Ax201, h: &Heard) {
+fn mpdu(d: &mut Device, h: &Heard) {
     let f = &h.frame;
     let hdr = iwx::msg::header_len(f).min(f.len());
     let pad = f[0] & 0x0c != 0x04 && hdr % 4 != 0;
@@ -822,13 +829,13 @@ fn mpdu(d: &mut Ax201, h: &Heard) {
 /// The frame at index `i` of the station's queue: its TX command checked
 /// against its descriptor and byte count, sent on the bound channel to
 /// the access points, its TX response, then their answers.
-fn transmit(d: &mut Ax201, qid: u8, i: usize, tfd: &[u8]) {
+fn transmit(d: &mut Device, qid: u8, i: usize, tfd: &[u8]) {
     if let Err(e) = send_frame(d, qid, i, tfd) {
         d.violation(format!("frame {i} of queue {qid}: {e}"));
     }
 }
 
-fn send_frame(d: &mut Ax201, qid: u8, i: usize, tfd: &[u8]) -> Result<(), String> {
+fn send_frame(d: &mut Device, qid: u8, i: usize, tfd: &[u8]) -> Result<(), String> {
     const CMD_RATE: u32 = 1 << 0;
     const ENCRYPT_DIS: u32 = 1 << 1;
     const OFFLD_PAD: u16 = 1 << 13;

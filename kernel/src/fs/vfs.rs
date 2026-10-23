@@ -873,6 +873,7 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<DeviceFrame> {
     (phys != 0 && phys % crate::user::PAGE as u64 == 0).then_some(DeviceFrame {
         phys,
         uncached: attrs & myos_abi::MYOS_MMAP_UNCACHED != 0,
+        nocache: attrs & myos_abi::MYOS_MMAP_NOCACHE != 0,
     })
 }
 
@@ -882,6 +883,9 @@ pub struct DeviceFrame {
     pub phys: u64,
     /// Registers, not memory: mapped uncached.
     pub uncached: bool,
+    /// Memory a device reads and writes without seeing the caches: mapped
+    /// non-cacheable.
+    pub nocache: bool,
 }
 
 /// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node` and

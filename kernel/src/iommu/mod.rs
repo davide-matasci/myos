@@ -3,11 +3,14 @@
 //! identity domain). A function a program drives through `/dev/pci`
 //! ([`attach`]) gets a domain of its own, holding the DMA buffers the
 //! driver asked for ([`map`]) and nothing else, each at its physical
-//! address, so the numbers `ctl` shows stay the device's: a DMA (or an MSI
-//! write) anywhere else is refused by the hardware and recorded
-//! ([`record`], `/proc/iommu`). The driver's device cannot read or write
-//! kernel memory or another process's pages, which without an IOMMU any
-//! bus-mastering device can.
+//! address, so the numbers `ctl` shows stay the device's: a DMA anywhere
+//! else is refused by the hardware and recorded ([`record`],
+//! `/proc/iommu`). The driver's device cannot read or write kernel memory
+//! or another process's pages, which without an IOMMU any bus-mastering
+//! device can. Its interrupts are messages it writes too: where the unit
+//! remaps them (x86_64, [`remap_msi`]) each message names an entry that
+//! verifies the function it came from, so the device raises its own vector
+//! and no other's.
 //!
 //! The units are the platform's: Intel VT-d on x86_64 (`vtd`, the ACPI
 //! DMAR table), Arm's SMMUv3 on aarch64 (`smmuv3`, the IORT or the device
@@ -45,8 +48,11 @@ pub struct Fault {
     pub sid: u16,
     pub addr: u64,
     /// The unit's reason code (VT-d: 0x5 a write to no mapping, 0x6 a
-    /// read; SMMUv3: the event type, 0x10 a translation fault; RISC-V:
-    /// the cause, 21 a read's guest-page fault, 23 a write's).
+    /// read, 0x20 and up an interrupt message refused, 0x26 one from
+    /// another function than its entry's, the address then the handle it
+    /// named; SMMUv3: the event type, 0x10 a
+    /// translation fault; RISC-V: the cause, 21 a read's guest-page fault,
+    /// 23 a write's).
     pub reason: u8,
     pub read: bool,
 }
@@ -93,6 +99,22 @@ pub fn map(domain: u32, phys: u64, len: usize) -> bool {
 /// The function back in passthrough, its domain gone.
 pub fn detach(bus: u8, slot: u8, func: u8) {
     backend::detach(bus, slot, func)
+}
+
+/// An interrupt remapping entry for PCI function `bus:slot.func`'s message
+/// that raises `vector` on the BSP: its handle for the message's address
+/// (remappable format), or `None` where messages are not remapped (they go
+/// to the LAPIC as they are).
+#[cfg(target_arch = "x86_64")]
+pub fn remap_msi(bus: u8, slot: u8, func: u8, vector: u8) -> Option<u16> {
+    vtd::remap(vtd::Source::Pci(bus, slot, func), vector, false)
+}
+
+/// The same for an I/O APIC pin (`level`: its trigger mode), for the
+/// pin's redirection entry.
+#[cfg(target_arch = "x86_64")]
+pub fn remap_ioapic(vector: u8, level: bool) -> Option<u16> {
+    vtd::remap(vtd::Source::IoApic, vector, level)
 }
 
 /// `/proc/iommu`: the units, the domains and what they map, the refused

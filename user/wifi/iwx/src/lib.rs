@@ -1,5 +1,6 @@
 //! The logic of the wifi daemon's driver for Intel's Wi-Fi 6 radios (the
-//! AX201 of issue #495), ported from OpenBSD's iwx(4): the firmware file,
+//! AX201 of issue #495 and the AX200, `chip`), ported from OpenBSD's
+//! iwx(4): the firmware file,
 //! the device's registers and bring-up, its command and receive rings, the
 //! commands and notifications up to a scan. The daemon gives it the device
 //! (`Bus`: the registers, DMA memory, the interrupt; `/dev/pci` on myos),
@@ -14,6 +15,7 @@
 
 extern crate alloc;
 
+pub mod chip;
 pub mod fw;
 pub mod hw;
 pub mod reg;

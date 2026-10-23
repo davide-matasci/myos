@@ -2,7 +2,7 @@
 //! a request and its answer, sent again when no answer comes (then, on a
 //! WPA2 network, the 4-way handshake: `rsn.rs`); leaving it with a
 //! deauthentication. The radio is told each step (its firmware, the
-//! AX201's, keeps the network's state).
+//! Intel radio's, keeps the network's state).
 
 use crate::frame::{self, Bss};
 use crate::radio::Radio;
