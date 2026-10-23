@@ -114,8 +114,13 @@ t -t wifi,tap wifi_data wifi_data myos-open
 t -t wifi,tap wifi_wpa2_data wifi_data myos-wpa2 myos-passphrase
 
 # The radios' firmware files, as wifi-firmware pins them: the AX201's, the
-# AX200's, the MT7601U's, the MT7612U's two.
-WIFI_FIRMWARE='iwlwifi-QuZ-a0-hr-b0-77.ucode iwlwifi-cc-a0-77.ucode mt7601u.bin mt7662.bin mt7662_rom_patch.bin'
+# AX200's, the MT7601U's, the MT7612U's two, the CYW43455's and the
+# CYW43438's (firmware, CLM, the Raspberry Pi boards' NVRAM).
+WIFI_FIRMWARE='iwlwifi-QuZ-a0-hr-b0-77.ucode iwlwifi-cc-a0-77.ucode mt7601u.bin
+mt7662.bin mt7662_rom_patch.bin
+cyfmac43455-sdio.bin cyfmac43455-sdio.clm_blob
+brcmfmac43455-sdio.raspberrypi,3-model-b-plus.txt brcmfmac43455-sdio.raspberrypi,4-model-b.txt
+cyfmac43430-sdio.bin cyfmac43430-sdio.clm_blob brcmfmac43430-sdio.raspberrypi,3-model-b.txt'
 
 # wifi-firmware: a file whose SHA-256 is not the pinned one is refused and
 # not kept (a mirror directory with the wrong bytes); `list` says each

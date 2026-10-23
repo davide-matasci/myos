@@ -16,6 +16,7 @@ bench = false
 [dependencies]
 myos-abi = { path = "../abi" }
 sdio-host = "0.9"
+sdio = { path = "sdio" }
 
 [profile.dev]
 panic = "abort"

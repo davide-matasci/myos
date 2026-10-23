@@ -14,8 +14,9 @@ use mtw::mt76x2;
 use mtw::reg::MAX_RXSZ;
 use mtw::rx;
 use mtw::usb::Endpoints;
-use myos_user::{close, open_flags, poll, read, PollFd, O_RDONLY, POLLIN};
+use myos_user::{poll, read, PollFd, O_RDONLY, POLLIN};
 
+use crate::devs::load;
 use crate::frame::Bss;
 use crate::radio::{Radio, Rx};
 use crate::usb::{self, Usb};
@@ -127,25 +128,6 @@ pub fn find() -> Option<(Vec<u8>, &'static Chip)> {
 /// Firmware file `name` from the first firmware directory that has it.
 fn firmware(name: &'static str) -> Result<Vec<u8>, Failed> {
     FIRMWARE_DIRS.iter().find_map(|d| load(&[d, name.as_bytes()].concat())).ok_or(Failed::NoFirmware(name))
-}
-
-fn load(path: &[u8]) -> Option<Vec<u8>> {
-    let fd = open_flags(path, O_RDONLY)?;
-    let mut data = Vec::new();
-    let mut buf = [0u8; 16384];
-    loop {
-        let n = read(fd, &mut buf);
-        if n == usize::MAX {
-            close(fd);
-            return None;
-        }
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-    }
-    close(fd);
-    Some(data)
 }
 
 impl Radio for Mediatek {

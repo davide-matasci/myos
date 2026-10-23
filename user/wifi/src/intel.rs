@@ -12,8 +12,8 @@ use iwx::dev::{Dev, Error, Info, Peer};
 use iwx::fw::Firmware;
 use iwx::msg::{self, Channel};
 use iwx::sta::{self, Beacon};
-use myos_user::{close, open_flags, read, O_RDONLY};
 
+use crate::devs::load;
 use crate::frame::Bss;
 use crate::pci::{self, Pci};
 use crate::radio::{Heard, Radio, Rx};
@@ -80,25 +80,6 @@ pub fn find() -> Option<(Vec<u8>, &'static Chip)> {
     let ids: Vec<(u16, u16)> = CHIPS.iter().flat_map(|c| c.ids.iter().copied()).collect();
     let (dir, id) = pci::find(&ids)?;
     Some((dir, Chip::by_id(id)?))
-}
-
-fn load(path: &[u8]) -> Option<Vec<u8>> {
-    let fd = open_flags(path, O_RDONLY)?;
-    let mut data = Vec::new();
-    let mut buf = [0u8; 16384];
-    loop {
-        let n = read(fd, &mut buf);
-        if n == usize::MAX {
-            close(fd);
-            return None;
-        }
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-    }
-    close(fd);
-    Some(data)
 }
 
 impl Radio for Intel {
