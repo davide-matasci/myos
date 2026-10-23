@@ -27,8 +27,10 @@ myos_port_dir() {
 }
 
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
+MYOS_MLIBC_VERSION="$MYOS_ROOT/target/.myos-mlibc-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
 MYOS_C_SMOKES_VERSION="$MYOS_ROOT/target/.myos-c-smokes-version"
+MYOS_C_SMOKES_MLIBC_VERSION="$MYOS_ROOT/target/.myos-c-smokes-mlibc-version"
 MYOS_CURL_VERSION="$MYOS_ROOT/target/.myos-curl-version"
 MYOS_SBASE_VERSION="$MYOS_ROOT/target/.myos-sbase-version"
 MYOS_OKSH_VERSION="$MYOS_ROOT/target/.myos-oksh-version"
@@ -105,7 +107,7 @@ myos_newlib_version_hash() {
   h="$(
     {
       echo "newlib_tag=$MYOS_NEWLIB_TAG"
-      find "$MYOS_ROOT/toolchain/newlib/libgloss/myos" -type f -print0 2>/dev/null \
+      find "$MYOS_ROOT/toolchain/newlib/libgloss/myos" "$MYOS_ROOT/toolchain/libmyos" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/toolchain/newlib/patch.sh"
       sha256sum "$MYOS_ROOT/toolchain/newlib/build.sh"
@@ -129,6 +131,37 @@ myos_newlib_is_current() {
     && myos_newlib_prefix_ok x86_64 \
     && myos_newlib_prefix_ok aarch64 \
     && myos_newlib_prefix_ok riscv64
+}
+
+# mlibc (toolchain/mlibc): its pins, its port files and the C both libcs
+# share, all of it the input of the three sysroots.
+myos_mlibc_version_hash() {
+  local h
+  h="$(
+    {
+      find "$MYOS_ROOT/toolchain/mlibc" "$MYOS_ROOT/toolchain/libmyos" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      sha256sum "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crti-x86_64.S" \
+        "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crti-aarch64.S" \
+        "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crti-riscv64.S" \
+        "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crtn-x86_64.S" \
+        "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crtn-aarch64.S" \
+        "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crtn-riscv64.S" \
+        "$MYOS_ROOT/toolchain/newlib/libgloss/myos/sys/myos_extra.h"
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_mlibc_is_current() {
+  local arch
+  [[ -f "$MYOS_MLIBC_VERSION" ]] \
+    && [[ "$(cat "$MYOS_MLIBC_VERSION")" == "$(myos_mlibc_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/libc.a" && -f "$MYOS_ROOT/target/mlibc-${arch}/lib/crt0.o" ]] || return 1
+  done
+  return 0
 }
 
 myos_c_hello_version_hash() {
@@ -208,41 +241,95 @@ myos_get_alpine_is_current() {
   return 0
 }
 
+# The C smoke programs beside c-hello and socket_smoke (user/c, the
+# `c-smokes` port): `name source`, built by scripts/build-c-smokes.sh.
+MYOS_C_SMOKES=(
+  "tcp-listen-smoke user/c/tcp_listen_smoke.c"
+  "pty-smoke user/c/pty_smoke.c"
+  "urandom-smoke user/c/urandom_smoke.c"
+  "tty-smoke user/c/tty_smoke.c"
+  "unix-smoke user/c/unix_smoke.c"
+  "fb-smoke user/c/fb_smoke.c"
+  "poll-smoke user/c/poll_smoke.c"
+  "kbd-smoke user/c/kbd_smoke.c"
+  "mouse-smoke user/c/mouse_smoke.c"
+  "uio-smoke user/c/uio_smoke.c"
+  "pthread-smoke user/c/pthread_smoke.c"
+  "netconv-smoke user/c/netconv_smoke.c"
+  "loopback-smoke user/c/loopback_smoke.c"
+  "child-smoke user/c/child_smoke.c"
+  "libc-smoke user/c/libc_smoke.c"
+  "sec user/c/sec.c"
+  "at-smoke user/c/at_smoke.c"
+  "fileio-smoke user/c/fileio_smoke.c"
+  "mmap-smoke user/c/mmap_smoke.c"
+  "shm-smoke user/c/shm_smoke.c"
+  "fault-smoke user/c/fault_smoke.c"
+  "jit-smoke user/c/jit_smoke.c"
+  "ctor-smoke user/c/ctor_smoke.c"
+  "sched-smoke user/c/sched_smoke.c"
+  "memhog user/c/memhog.c"
+  "evfd-smoke user/c/evfd_smoke.c"
+  "epoll-smoke user/c/epoll_smoke.c"
+  "sigfd-smoke user/c/sigfd_smoke.c"
+  "pcidev-smoke user/c/pcidev_smoke.c"
+  "tap-smoke user/c/tap_smoke.c"
+  "multihome-smoke user/c/multihome_smoke.c"
+)
+
 # All the C smokes (scripts/build-c-smokes.sh): c-hello's inputs plus the
 # other smoke sources and their build scripts.
 myos_c_smokes_version_hash() {
-  local h
+  local h entry
   h="$(
     {
       myos_c_hello_version_hash
-      sha256sum "$MYOS_ROOT/user/c/tcp_listen_smoke.c" "$MYOS_ROOT/user/c/pty_smoke.c" \
-        "$MYOS_ROOT/user/c/urandom_smoke.c" "$MYOS_ROOT/user/c/tty_smoke.c" \
-        "$MYOS_ROOT/user/c/unix_smoke.c" "$MYOS_ROOT/user/c/fb_smoke.c" \
-        "$MYOS_ROOT/user/c/poll_smoke.c" "$MYOS_ROOT/user/c/kbd_smoke.c" \
-        "$MYOS_ROOT/user/c/mouse_smoke.c" \
-        "$MYOS_ROOT/user/c/uio_smoke.c" "$MYOS_ROOT/user/c/pthread_smoke.c" \
-        "$MYOS_ROOT/user/c/netconv_smoke.c" "$MYOS_ROOT/user/c/loopback_smoke.c" \
-        "$MYOS_ROOT/user/c/child_smoke.c" \
-        "$MYOS_ROOT/user/c/libc_smoke.c" "$MYOS_ROOT/user/c/sec.c" "$MYOS_ROOT/user/c/at_smoke.c" \
-        "$MYOS_ROOT/user/c/fileio_smoke.c" "$MYOS_ROOT/user/c/mmap_smoke.c" "$MYOS_ROOT/user/c/shm_smoke.c" \
-        "$MYOS_ROOT/user/c/jit_smoke.c" "$MYOS_ROOT/user/c/fault_smoke.c" "$MYOS_ROOT/user/c/ctor_smoke.c" "$MYOS_ROOT/user/c/sched_smoke.c" \
-        "$MYOS_ROOT/user/c/memhog.c" "$MYOS_ROOT/user/c/evfd_smoke.c" "$MYOS_ROOT/user/c/epoll_smoke.c" \
-        "$MYOS_ROOT/user/c/tap_smoke.c" "$MYOS_ROOT/user/c/sigfd_smoke.c" "$MYOS_ROOT/user/c/pcidev_smoke.c" \
-        "$MYOS_ROOT/user/c/multihome_smoke.c" \
-        "$MYOS_ROOT/scripts/build-c-smokes.sh"
+      for entry in "${MYOS_C_SMOKES[@]}"; do
+        sha256sum "$MYOS_ROOT/${entry#* }"
+      done
+      sha256sum "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | myos_hash
   )"
   printf '%s' "$h"
 }
-
 myos_c_smokes_is_current() {
   local arch bin
   [[ -f "$MYOS_C_SMOKES_VERSION" ]] \
     && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke tcp-listen-smoke pty-smoke urandom-smoke tty-smoke unix-smoke fb-smoke poll-smoke kbd-smoke mouse-smoke uio-smoke pthread-smoke netconv-smoke loopback-smoke child-smoke libc-smoke sec at-smoke fileio-smoke mmap-smoke shm-smoke fault-smoke ctor-smoke sched-smoke memhog evfd-smoke epoll-smoke sigfd-smoke pcidev-smoke tap-smoke multihome-smoke; do
+    for bin in c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
       [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
+    done
+  done
+  return 0
+}
+
+# The same programs against mlibc (user/c-mlibc, the `c-smokes-mlibc`
+# port, `scripts/build-c-smokes.sh mlibc`): target/<name>-mlibc-<arch>-unknown-none,
+# c-hello and socket_smoke included.
+myos_c_smokes_mlibc_version_hash() {
+  local h entry
+  h="$(
+    {
+      myos_mlibc_version_hash
+      sha256sum "$MYOS_ROOT/user/c/hello.c" "$MYOS_ROOT/user/c/socket_smoke.c"
+      for entry in "${MYOS_C_SMOKES[@]}"; do
+        sha256sum "$MYOS_ROOT/${entry#* }"
+      done
+      sha256sum "$MYOS_ROOT/scripts/build-c-smokes.sh"
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+myos_c_smokes_mlibc_is_current() {
+  local arch bin
+  [[ -f "$MYOS_C_SMOKES_MLIBC_VERSION" ]] \
+    && [[ "$(cat "$MYOS_C_SMOKES_MLIBC_VERSION")" == "$(myos_c_smokes_mlibc_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    for bin in c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
+      [[ -f "$MYOS_ROOT/target/${bin}-mlibc-${arch}-unknown-none" ]] || return 1
     done
   done
   return 0
@@ -690,40 +777,82 @@ myos_riscv64_softfloat() {
   echo "$MYOS_ROOT/target/libsoftfloat-riscv64.a"
 }
 
+# The second C library, mlibc (toolchain/mlibc, docs/mlibc.md): a port opts
+# in with PORT_LIBC=mlibc in its descriptor and is built against the
+# sysroot target/mlibc-<arch> (include/, lib/) with these.
+# myos_mlibc_cflags ARCH: the compiler's flags for a program against mlibc
+# (clang for the bare target, as the newlib wrappers run it; riscv64
+# soft-float, as every riscv64 program).
+myos_mlibc_cflags() {
+  local arch="$1"
+  # mlibc's headers before clang's: freestanding, clang's limits.h does not
+  # include the libc's after itself.
+  printf '%s ' "--target=${arch}-unknown-none" -ffreestanding -fPIC -nostdinc \
+    -isystem "$MYOS_ROOT/target/mlibc-${arch}/include" -isystem "$(clang -print-resource-dir)/include"
+  [[ "$arch" == riscv64 ]] && printf '%s ' -march=rv64imac -mabi=lp64 -mno-relax
+  return 0
+}
+# myos_mlibc_link ARCH OUT INPUT...: a static PIE of the INPUTs (objects,
+# -L, -l) against mlibc, the way scripts/build-c-smokes.sh links against
+# newlib: its crt0 first, then libc.a and the compiler builtins a program
+# calls beside it (toolchain/mlibc/build.sh).
+myos_mlibc_link() {
+  local arch="$1" out="$2" lib="$MYOS_ROOT/target/mlibc-$1/lib"
+  shift 2
+  ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
+    "$lib/crt0.o" "$@" -L"$lib" -lc -lbuiltins
+}
+
 # myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
-# ports: clang against the newlib sysroot with the CFLAGs, and for a link
-# ld.lld with crt0, libc and libgloss the way scripts/build-c-smokes.sh
+# ports: clang against the port's libc's sysroot with the CFLAGs, and for
+# a link ld.lld with crt0 and the libc the way scripts/build-c-smokes.sh
 # links, so configure's link tests answer for myos (--build and --host
 # differing keeps configure from running what it links). Not clang's own
 # link: for a bare-metal target it hands it to the host's gcc on some
-# triples and versions.
+# triples and versions. The libc is newlib (with libgloss), or mlibc when
+# PORT_LIBC is `mlibc`: the port's build script sources its port.env.
 myos_write_cross_cc() {
   local arch="$1" out="$2"
   shift 2
   local elf="${arch}-unknown-none"
+  local libc="${PORT_LIBC:-newlib}"
   local sysroot="$MYOS_ROOT/target/newlib-${arch}/${arch}-unknown-myos"
-  local clanginc extra="" flags="" f
+  local libs="--start-group -lc -lgloss -lg --end-group"
+  local clanginc incs extra="" flags="" f
   clanginc="$(clang -print-resource-dir)/include"
+  incs="-isystem $clanginc -isystem $sysroot/include"
   for f in "$@"; do
     flags="$flags $(printf '%q' "$f")"
   done
-  # newlib's printf wants the long-double helpers these arches lack (the
-  # sbase port carries them); riscv64 has no FPU, so its float and double
-  # arithmetic, conversions and compares are compiler-rt's as well.
-  case "$arch" in
-    aarch64) extra="$out.helpers.o"
-      clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
-        -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
-    riscv64)
-      clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
-        -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
-      extra="$out.helpers.o $(myos_riscv64_softfloat)" ;;
+  case "$libc" in
+    newlib)
+      # newlib's printf wants the long-double helpers these arches lack
+      # (the sbase port carries them); riscv64 has no FPU, so its float
+      # and double arithmetic, conversions and compares are compiler-rt's
+      # as well.
+      case "$arch" in
+        aarch64) extra="$out.helpers.o"
+          clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
+            -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
+        riscv64)
+          clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
+            -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
+          extra="$out.helpers.o $(myos_riscv64_softfloat)" ;;
+      esac ;;
+    mlibc)
+      # The builtins archive of its sysroot has them (myos_mlibc_link).
+      sysroot="$MYOS_ROOT/target/mlibc-${arch}"
+      incs="-isystem $sysroot/include -isystem $clanginc" # myos_mlibc_cflags
+      libs="-lc -lbuiltins"
+      [[ "$arch" == riscv64 ]] && flags=" -march=rv64imac -mabi=lp64 -mno-relax$flags" ;;
+    *) echo "error: PORT_LIBC=$libc: newlib or mlibc" >&2; return 1 ;;
   esac
   cat > "$out" <<EOC
 #!/usr/bin/env bash
-cflags=(--target=$elf -ffreestanding -fPIC -nostdinc -isystem $clanginc -isystem $sysroot/include$flags)
+cflags=(--target=$elf -ffreestanding -fPIC -nostdinc $incs$flags)
 sysroot=$sysroot
 extra="$extra"
+libs="$libs"
 EOC
   cat >> "$out" <<'EOC'
 for a in "$@"; do
@@ -754,7 +883,7 @@ for i in "${!srcs[@]}"; do
 done
 exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
   "$sysroot/lib/crt0.o" "${inputs[@]}" $extra \
-  -L"$sysroot/lib" --start-group -lc -lgloss -lg --end-group
+  -L"$sysroot/lib" $libs
 EOC
   chmod +x "$out"
 }

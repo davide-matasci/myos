@@ -119,8 +119,8 @@ static HCD_OPS: UsbHcdOps = UsbHcdOps {
     device_free,
     control,
     bulk,
-    interrupt_start,
-    interrupt_take,
+    transfer_start,
+    transfer_take,
     clear_halt,
 };
 
@@ -261,15 +261,15 @@ unsafe extern "C" fn bulk(ctrl: usize, hdev: u32, endpoint: u8, data: *mut u8, l
     on_device(ctrl, hdev, |c, s, d| dev::bulk(c, s, d, endpoint, data, len, timeout_ms))
 }
 
-unsafe extern "C" fn interrupt_start(ctrl: usize, hdev: u32, endpoint: u8, data: *mut u8, len: usize) -> i32 {
+unsafe extern "C" fn transfer_start(ctrl: usize, hdev: u32, endpoint: u8, data: *mut u8, len: usize) -> i32 {
     if data.is_null() || len == 0 {
         return USB_EIO;
     }
-    on_device(ctrl, hdev, |c, s, d| dev::interrupt_start(c, s, d, endpoint, data, len))
+    on_device(ctrl, hdev, |c, s, d| dev::transfer_start(c, s, d, endpoint, data, len))
 }
 
-unsafe extern "C" fn interrupt_take(ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
-    on_device(ctrl, hdev, |c, s, d| dev::interrupt_take(c, s, d, endpoint))
+unsafe extern "C" fn transfer_take(ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
+    on_device(ctrl, hdev, |c, s, d| dev::transfer_take(c, s, d, endpoint))
 }
 
 unsafe extern "C" fn clear_halt(ctrl: usize, hdev: u32, endpoint: u8) -> i32 {

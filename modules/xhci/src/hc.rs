@@ -163,8 +163,8 @@ pub struct Pending {
     pub td_start: AtomicU32,
     pub td_trbs: AtomicU32,
     pub total: AtomicU32,
-    /// A queued transfer (`interrupt_start`): its completion wakes the
-    /// core's thread, which asks for it (`interrupt_take`).
+    /// A queued transfer (`transfer_start`): its completion wakes the
+    /// core's thread, which asks for it (`transfer_take`).
     pub has_callback: AtomicBool,
     /// The endpoint's ring (base and TRBs), for the handler to find the
     /// TD's TRBs; null while the endpoint does not exist.
@@ -196,7 +196,7 @@ impl Pending {
     }
 
     /// No endpoint and no transfer any more (the device is gone): clean
-    /// for the next device in the entry, whose `interrupt_start` refuses
+    /// for the next device in the entry, whose `transfer_start` refuses
     /// a record still `active`.
     pub fn reset(&self) {
         self.ring_trbs.store(core::ptr::null_mut(), Ordering::Release);
@@ -242,13 +242,18 @@ pub struct Endpoint {
     /// Transfer type (`bmAttributes & 3`): 0 control, 2 bulk, 3 interrupt.
     pub kind: u8,
     pub max_packet: u16,
-    /// A bounce slot for small transfers (control data, interrupt reports).
+    /// A bounce slot for small transfers (control data, interrupt reports),
+    /// or a bulk IN endpoint's own page (`own_bounce`: from its first
+    /// `transfer_start`, back to the pool at detach).
     pub bounce: *mut u8,
     pub bounce_phys: u64,
     pub bounce_len: usize,
-    /// A queued transfer (`interrupt_start`) is on the ring, and the
+    /// A queued transfer (`transfer_start`) is on the ring, and the
     /// caller's buffer gets the bytes when the TD is done.
     pub queued: bool,
+    /// A bulk IN endpoint's own bounce page (`transfer_start`): from its
+    /// first transfer, back to the pool with the device.
+    pub own_bounce: bool,
     pub user: *mut u8,
     pub user_len: usize,
 }

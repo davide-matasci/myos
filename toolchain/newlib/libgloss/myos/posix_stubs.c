@@ -1,4 +1,6 @@
-/* myos libgloss: POSIX helpers sbase expects beyond read-only VFS hooks. */
+/* myos libgloss: the POSIX calls newlib's libc lacks that are only libc
+ * (over the calls of toolchain/libmyos): creat, umask, the utimes family,
+ * execvp, sysconf, the user and group ids. */
 
 #include <dirent.h>
 #include <errno.h>
@@ -18,11 +20,6 @@
 
 #include "myos_syscalls.h"
 
-static int myos_rofs(void) {
-    errno = EROFS;
-    return -1;
-}
-
 static int myos_nosys(void) {
     errno = ENOSYS;
     return -1;
@@ -33,32 +30,11 @@ int creat(const char *path, mode_t mode) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 }
 
-int chmod(const char *path, mode_t mode) {
-    (void)path;
-    (void)mode;
-    /* No mode bits in VFS yet; succeed so git config lock chmod works. */
-    return 0;
-}
-
 mode_t umask(mode_t mask) {
     static mode_t cur = 022;
     mode_t old = cur;
     cur = mask;
     return old;
-}
-
-int chown(const char *path, uid_t owner, gid_t group) {
-    (void)path;
-    (void)owner;
-    (void)group;
-    return myos_rofs();
-}
-
-int lchown(const char *path, uid_t owner, gid_t group) {
-    (void)path;
-    (void)owner;
-    (void)group;
-    return myos_rofs();
 }
 
 /* timeval pair (NULL = both now) -> timespec pair. */
@@ -163,47 +139,6 @@ int execvp(const char *file, char *const argv[]) {
     return -1;
 }
 
-#ifndef WNOHANG
-#define WNOHANG 1
-#endif
-
-/*
- * SYS_WAITPID(status, options, pid): the kernel writes a POSIX int status
- * (WIFSIGNALED for a signal death) and waits for `pid` when it is > 0, for
- * any child otherwise (process-group waits are treated as "any"). WNOHANG
- * keeps dropbear's `while (waitpid(-1, &st, WNOHANG) > 0)` reap loop from
- * blocking after the last zombie. WUNTRACED is ignored: nothing stops.
- */
-static pid_t waitpid_body(pid_t pid, int *status, int options) {
-    int st = 0;
-    long ret;
-    long opts = 0;
-
-    if ((options & WNOHANG) != 0) {
-        opts |= MYOS_WAIT_NOHANG;
-    }
-
-    ret = myos_syscall3(MYOS_SYS_WAITPID, status ? (long)(uintptr_t)&st : 0, opts,
-                        pid > 0 ? (long)pid : 0);
-
-    if (ret == (long)MYOS_EINTR) {
-        errno = EINTR;
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        errno = ECHILD;
-        return -1;
-    }
-    /* Kernel returns 0 for WNOHANG with live children but no zombie. */
-    if (ret == 0 && (options & WNOHANG) != 0) {
-        return 0;
-    }
-    if (status != NULL) {
-        *status = st;
-    }
-    return (pid_t)ret;
-}
-
 long sysconf(int name) {
 #ifdef _SC_OPEN_MAX
     if (name == _SC_OPEN_MAX) {
@@ -278,161 +213,6 @@ gid_t getegid(void) {
 }
 
 
-int dup2(int oldfd, int newfd) {
-    long ret = myos_syscall3(MYOS_SYS_DUPFD, oldfd, newfd, MYOS_DUP_EXACT);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EBADF;
-        return -1;
-    }
-    return newfd;
-}
-
-int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags) {
-    (void)dirfd;
-    (void)path;
-    (void)owner;
-    (void)group;
-    (void)flags;
-    return myos_rofs();
-}
-
-
-/* F_GETLK, F_SETLK, F_SETLKW: newlib's struct flock to the kernel's
- * lock range (from l_whence to an absolute start, a negative l_len to the
- * bytes before l_start) and back for F_GETLK. */
-static int myos_record_lock(int fd, int cmd, struct flock *fl) {
-    struct myos_lock_range r = {0};
-    long long start = fl->l_start;
-    long long len = fl->l_len;
-    long ret;
-
-    switch (fl->l_type) {
-    case F_RDLCK: r.kind = MYOS_LOCK_SHARED; break;
-    case F_WRLCK: r.kind = MYOS_LOCK_EXCLUSIVE; break;
-    case F_UNLCK: r.kind = MYOS_LOCK_UNLOCK; break;
-    default: errno = EINVAL; return -1;
-    }
-    if (fl->l_whence == SEEK_CUR) {
-        off_t pos = lseek(fd, 0, SEEK_CUR);
-        if (pos < 0) {
-            return -1;
-        }
-        start += pos;
-    } else if (fl->l_whence == SEEK_END) {
-        struct stat st;
-        if (fstat(fd, &st) < 0) {
-            return -1;
-        }
-        start += st.st_size;
-    } else if (fl->l_whence != SEEK_SET) {
-        errno = EINVAL;
-        return -1;
-    }
-    if (len < 0) {
-        start += len;
-        len = -len;
-    }
-    if (start < 0) {
-        errno = EINVAL;
-        return -1;
-    }
-    r.start = (unsigned long long)start;
-    r.len = (unsigned long long)len;
-    ret = myos_syscall3(MYOS_SYS_LOCKCTL, fd,
-                        cmd == F_GETLK ? MYOS_LOCKCTL_GET : cmd == F_SETLK ? MYOS_LOCKCTL_SET : MYOS_LOCKCTL_WAIT,
-                        (long)&r);
-    if (ret == (long)MYOS_EAGAIN) {
-        errno = EAGAIN;
-        return -1;
-    }
-    if (ret == (long)MYOS_EINTR) {
-        errno = EINTR;
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EBADF;
-        return -1;
-    }
-    if (cmd == F_GETLK) {
-        fl->l_type = r.kind == MYOS_LOCK_SHARED ? F_RDLCK : r.kind == MYOS_LOCK_EXCLUSIVE ? F_WRLCK : F_UNLCK;
-        if (r.kind != MYOS_LOCK_UNLOCK) {
-            fl->l_whence = SEEK_SET;
-            fl->l_start = (off_t)r.start;
-            fl->l_len = (off_t)r.len;
-            fl->l_pid = (short)r.pid;
-        }
-    }
-    return 0;
-}
-
-/* newlib libc exports fcntl() when HAVE_FCNTL; we supply the syscall glue.
- * `wide` is the whole argument word (a pointer for the lock commands,
- * toolchain/newlib/patch.sh patch_fcntl_arg); the others take an int. */
-int _fcntl(int fd, int cmd, long wide) {
-    int arg = (int)wide;
-
-    if (cmd == F_GETLK || cmd == F_SETLK || cmd == F_SETLKW) {
-        return myos_record_lock(fd, cmd, (struct flock *)wide);
-    }
-    if (cmd == F_DUPFD
-#ifdef F_DUPFD_CLOEXEC
-        || cmd == F_DUPFD_CLOEXEC
-#endif
-    ) {
-        long flags = 0;
-#ifdef F_DUPFD_CLOEXEC
-        if (cmd == F_DUPFD_CLOEXEC) {
-            flags = MYOS_FD_CLOEXEC;
-        }
-#endif
-        long ret = myos_syscall3(MYOS_SYS_DUPFD, fd, arg, flags);
-        if (ret == (long)MYOS_SYSERR) {
-            errno = EBADF;
-            return -1;
-        }
-        myos_fd_nonblock_dup(fd, (int)ret);
-        return (int)ret;
-    }
-
-    switch (cmd) {
-    case F_GETFD:
-    case F_SETFD: {
-        long ret = cmd == F_GETFD ? myos_syscall3(MYOS_SYS_FDFLAGS, fd, MYOS_FD_GET, 0)
-                                  : myos_syscall3(MYOS_SYS_FDFLAGS, fd, MYOS_FD_SET,
-                                                  (arg & FD_CLOEXEC) ? MYOS_FD_CLOEXEC : 0);
-        if (ret == (long)MYOS_SYSERR) {
-            errno = EBADF;
-            return -1;
-        }
-        return cmd == F_GETFD ? ((ret & MYOS_FD_CLOEXEC) ? FD_CLOEXEC : 0) : 0;
-    }
-    case F_GETFL: {
-        int sockfl = myos_socket_fcntl(fd, F_GETFL, 0);
-        if (sockfl >= 0) {
-            return sockfl;
-        }
-        (void)arg;
-        return O_RDWR | (myos_fd_nonblock_get(fd) ? O_NONBLOCK : 0);
-    }
-    case F_SETFL: {
-        int sockfl = myos_socket_fcntl(fd, F_SETFL, arg);
-        if (sockfl == 0) {
-            return 0;
-        }
-        if (sockfl == -2) {
-            return -1;
-        }
-        /* Non-socket (pipes): track O_NONBLOCK in userspace. */
-        myos_fd_nonblock_set(fd, (arg & O_NONBLOCK) != 0);
-        return 0;
-    }
-    default:
-        (void)fd;
-        (void)arg;
-        errno = EINVAL;
-        return -1;
-    }
-}
 
 int setpriority(int which, id_t who, int prio) {
     (void)which;
@@ -441,71 +221,10 @@ int setpriority(int which, id_t who, int prio) {
     return myos_nosys();
 }
 
-int setsid(void) {
-    /* SYS_SETSID: a new session and process group led by the caller, no
-     * controlling terminal; EPERM when it already leads a group. */
-    long ret = myos_syscall3(MYOS_SYS_SETSID, 0, 0, 0);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EPERM;
-        return -1;
-    }
-    return (int)ret;
-}
-
-int setpgid(pid_t pid, pid_t pgid) {
-    /* SYS_SETPGID: move pid (0 = self) into process group pgid (0 = create
-     * group with the target's pid). Same session; self or a child that has
-     * not exec'd (EACCES); new pgid must be target pid or an existing group
-     * in the session. */
-    long ret = myos_syscall3(MYOS_SYS_SETPGID, (long)pid, (long)pgid, 0);
-    if (ret == (long)MYOS_EACCES) {
-        errno = EACCES;
-        return -1;
-    }
-    if (ret == (long)MYOS_SYSERR) {
-        errno = EPERM;
-        return -1;
-    }
-    return 0;
-}
-
-pid_t getpgid(pid_t pid) {
-    long ret = myos_syscall1(MYOS_SYS_GETPGID, (long)pid);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = ESRCH;
-        return (pid_t)-1;
-    }
-    return (pid_t)ret;
-}
-
-pid_t getsid(pid_t pid) {
-    long ret = myos_syscall1(MYOS_SYS_GETSID, (long)pid);
-    if (ret == (long)MYOS_SYSERR) {
-        errno = ESRCH;
-        return (pid_t)-1;
-    }
-    return (pid_t)ret;
-}
-
-/* getpwnam/getgrnam live in pwdgrp.c (root:root only). */
-
-int _chmod(const char *path, mode_t mode) {
-    return chmod(path, mode);
-}
-
 int _creat(const char *path, mode_t mode) {
     return creat(path, mode);
 }
 
 mode_t _umask(mode_t mask) {
     return umask(mask);
-}
-
-
-/* A cancellation point (pthread.c). */
-pid_t waitpid(pid_t pid, int *status, int options) {
-    __myos_cancel_enter();
-    pid_t r = waitpid_body(pid, status, options);
-    __myos_cancel_leave();
-    return r;
 }
