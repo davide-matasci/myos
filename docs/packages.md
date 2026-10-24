@@ -35,6 +35,15 @@ run-myos [-r ROOT] APP[@VERSION][,APP...][:CMD] [ARGS...]
   (below); a failed download or a mismatch removes it and leaves the
   current version as it was. `get-myos` records the current version of
   each package under `ROOT/.get-myos/pkgs/`.
+- **Four at a time**: what an install, an upgrade (`-u`) or a `--sync`
+  downloads (the packages named and what they need, whose version is not
+  on disk yet) streams four packages at once, each in a worker process of
+  its own with its own `curl`, into its own `.new` directory; the
+  recording (`ROOT/<name>`, the records, `apps.list`, the generation)
+  stays with the one process, in order, once they are done. A package
+  whose worker failed fails the install as one downloaded alone would, its
+  message said by the worker; each message is one line, whole. One
+  package alone downloads in the process itself, as before.
 - **Dependencies**: a package's index line names the packages it needs on
   the running system (`PORT_RDEPS` in its descriptor, `docs/ports.md`:
   `st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`), each

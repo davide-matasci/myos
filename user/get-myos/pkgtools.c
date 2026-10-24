@@ -25,17 +25,23 @@ const char *pkg_root = "/tmp";
 
 /* ---- messages ----------------------------------------------------------- */
 
+/* The line goes out in one write: get-myos's download workers say theirs
+ * at the same time (stderr is unbuffered, a write per fputs would mix
+ * their pieces). */
 void say(const char *a, const char *b, const char *c) {
-    fputs(pkg_prog, stderr);
-    fputs(": ", stderr);
-    fputs(a, stderr);
-    if (b != NULL) {
-        fputs(b, stderr);
+    char line[600];
+    const char *parts[] = {pkg_prog, ": ", a, b, c, "\n"};
+    size_t n = 0;
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+        for (const char *p = parts[i]; p != NULL && *p != '\0' && n < sizeof line - 1; p++) {
+            line[n++] = *p;
+        }
     }
-    if (c != NULL) {
-        fputs(c, stderr);
+    if (line[n - 1] != '\n') {
+        line[n - 1] = '\n'; /* cut short: still one line */
     }
-    fputs("\n", stderr);
+    fflush(stderr);
+    (void)!write(2, line, n);
 }
 
 int die(const char *a, const char *b) {
