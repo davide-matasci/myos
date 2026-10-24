@@ -1608,7 +1608,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     cmd.arg("-global")
         .arg("virtio-mmio.force-legacy=false")
         .arg("-machine")
-        .arg("virt");
+        .arg(riscv64_machine());
     // The IOMMU in front of the PCI host, first on the bus (00:01.0), the
     // kernel's `iommu/riscv.rs` on every boot that has it (`/dev/pci`'s
     // devices confined).
@@ -1693,12 +1693,25 @@ fn build_riscv64_image() -> PathBuf {
 /// `-smp` as qemu_riscv64: a cached single-hart dump (no -smp) only lists
 /// cpu@0; when OpenSBI boots on hart 1 Limine panics "missing struct
 /// riscv_hart for BSP" before the kernel runs (CI #34824642315).
+/// QEMU `virt` for the riscv64 boots (boot and the DTB dump alike). Its
+/// interrupt controllers are `$MYOS_RISCV_INTC`'s: `aia` (the default:
+/// the AIA's APLIC for the wired interrupts and an IMSIC per hart, which
+/// takes the PCI devices' MSIs) or `plic` (the SiFive PLIC alone, INTx
+/// only); CI boots both.
+fn riscv64_machine() -> &'static str {
+    match std::env::var("MYOS_RISCV_INTC").as_deref() {
+        Ok("plic") => "virt",
+        _ => "virt,aia=aplic-imsic",
+    }
+}
+
 fn riscv64_dtb() -> Vec<u8> {
     let dtb_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/virt.dtb");
+    let machine = format!("{},dumpdtb=target/virt.dtb", riscv64_machine());
     let status = Command::new("qemu-system-riscv64")
         .args([
             "-machine",
-            "virt,dumpdtb=target/virt.dtb",
+            &machine,
             "-smp",
             RISCV_SMP,
             "-nographic",

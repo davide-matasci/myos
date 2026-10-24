@@ -250,6 +250,9 @@ jobs:
           # CPU through /dev/kvm; TCG when unset, as the other arches).
           MYOS_X86_IOMMU: ${{ matrix.iommu }}
           MYOS_X86_ACCEL: ${{ matrix.accel }}
+          # The riscv64 boots' interrupt controllers (the AIA when unset,
+          # `plic` on the riscv64-plic machine).
+          MYOS_RISCV_INTC: ${{ matrix.intc }}
         run: ./target/debug/myos ${{ matrix.args }}
 
   iso:
