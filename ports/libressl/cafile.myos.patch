@@ -1,0 +1,12 @@
+--- a/crypto/crypto_local.h
++++ b/crypto/crypto_local.h
+@@ -71,7 +71,8 @@
+ 
+ #define X509_CERT_AREA		OPENSSLDIR
+ #define X509_CERT_DIR		OPENSSLDIR "/certs"
+-#define X509_CERT_FILE		OPENSSLDIR "/cert.pem"
++/* myos: the image's CA bundle (the curl port's, /lib/cacert.pem). */
++#define X509_CERT_FILE		"/lib/cacert.pem"
+ #define X509_PRIVATE_DIR	OPENSSLDIR "/private"
+ #define X509_CERT_DIR_EVP        "SSL_CERT_DIR"
+ #define X509_CERT_FILE_EVP       "SSL_CERT_FILE"

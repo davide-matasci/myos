@@ -10,7 +10,7 @@ fallbacks: `dumb`, `ansi`, `vt100`).
 |--------|------|
 | `fetch.sh` | Download pinned tarball → `target/ncurses-src` (SHA-256 checked) |
 | `prepare.sh` | Host `./configure` + header gen + myos cfg patch → `target/ncurses-myos-build` |
-| `build.sh` | Cross-compile → `target/ncurses-<arch>/{lib,include}` |
+| `build.sh` | Cross-compile → `target/ncurses-<arch>/{lib,include}` (newlib), `target/ncurses-mlibc-<arch>/{lib,include}` (mlibc, with `libpanel.a`: python's `curses` and `_curses_panel`) |
 
 ## Why host-configure?
 
