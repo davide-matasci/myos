@@ -1295,7 +1295,7 @@ static void check_toolchain_calls(char *self) {
     }
 }
 
-/* One raw query for example.com's A record, sent as the resolver sends
+/* One raw query for github.com's A record, sent as the resolver sends
  * it (`__res_msend`), with what came back: run when `dns` failed, to say
  * which step loses the answer. Each probe has its own socket: a query to
  * `ns` alone; to `ns` then to `dead`; to `dead` then to `ns`, and `ns`
@@ -1359,8 +1359,8 @@ static void probe_send(int fd, const unsigned char *q, size_t len, const struct 
 }
 
 static void dns_probe(const char *ns, const char *dead) {
-    static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
-                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 'g', 'i', 't', 'h', 'u',
+                                       'b', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
     struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns;
     inet_pton(AF_INET, ns, &to_ns.sin_addr);
     inet_pton(AF_INET, dead, &to_dead.sin_addr);
@@ -1389,8 +1389,8 @@ static void dns_probe(const char *ns, const char *dead) {
  * connected the socket to the last address sent to reported that as the
  * sender, and dropped what the earlier one had answered). */
 static void dns_sender(const char *ns, const char *dead) {
-    static const unsigned char q[] = { 0x56, 0x78, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
-                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    static const unsigned char q[] = { 0x56, 0x78, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 'g', 'i', 't', 'h', 'u',
+                                       'b', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
     struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns, from = { 0 };
     struct pollfd p;
     socklen_t fl = sizeof from;
@@ -1470,7 +1470,7 @@ int main(int argc, char **argv) {
      * last address sent to, which `dns_sender` checks directly. */
     if (argc > 1 && strcmp(argv[1], "dns") == 0) {
         struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
-        int r = getaddrinfo("example.com", "80", &hints, &res);
+        int r = getaddrinfo("github.com", "80", &hints, &res);
         check(r == 0 && res != NULL, r == 0 ? "getaddrinfo" : gai_strerror(r));
         if (res != NULL) {
             freeaddrinfo(res);

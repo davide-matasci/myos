@@ -220,7 +220,7 @@ Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go
 ### Smoke
 
 `/bin/etc/socket_smoke` does `getaddrinfo` + `socket` + `connect` + HTTP GET to
-`example.com:80` and prints `[ OK ] socket`. Wired into `/heap` (`CI_NEEDLES_STD`).
+`github.com:80` and prints `[ OK ] socket`. Wired into `/heap` (`CI_NEEDLES_STD`).
 
 ### curl
 
@@ -231,8 +231,9 @@ Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go
 - Sockets: libgloss shim (no kernel socket syscall)
 - DNS: `getaddrinfo` in libgloss
 - Clock: existing `gettimeofday` / RTC path (same as `/http`)
-- Guest: `/bin/etc/curl`; CI types
-  `curl -fsS --connect-timeout 30 --max-time 90 -o /tmp/curl-ex.html https://example.com/; cat /tmp/curl-ex.html`
+- Guest: `/bin/etc/curl`; its test fetches the launcher's test server over
+  HTTPS, trusting the test CA alone (`--cacert /lib/myos-tests/test-ca.pem
+  https://10.0.2.2:8767/hello.txt`, `docs/testing.md`)
 - riscv64 links a small soft-float helper archive (`ports/curl/build-softfloat-riscv64.sh`)
 
 ### Build

@@ -1450,7 +1450,7 @@ lx_dns_root() {
 	# What the smoke's probes do not say: the system's resolver, and musl
 	# without the dead server, right after.
 	cat /net/ndb
-	dns example.com
+	dns github.com
 	printf 'nameserver %s\n' "$ns" > /tmp/lxroot/etc/resolv.conf
 	linux --root /tmp/lxroot /linux-smoke dns "$ns" 192.0.2.1
 	return 1
@@ -1540,10 +1540,11 @@ lx_python() {
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]
 }
-# ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP).
+# ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP) from the
+# launcher's test server (src/test_www.rs).
 lx_python_net() {
 	alpine_disk || return 1
-	out=$(linux --root /tmp/alpine/python python3 -c 'import urllib.request as u;print("HTTP",u.urlopen("http://example.com/").status)')
+	out=$(linux --root /tmp/alpine/python python3 -c 'import socket,urllib.request as u;socket.gethostbyname("github.com");print("HTTP",u.urlopen("http://10.0.2.2:8766/hello.txt").status)')
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
 }

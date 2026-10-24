@@ -57,13 +57,14 @@ print(ssl.OPENSSL_VERSION.split()[0], ssl.get_default_verify_paths().cafile,
 }
 t -t pkg,python python_modules python_modules
 
-# urllib over _ssl: an HTTPS GET of example.com, the certificate checked
-# against the image's bundle.
+# urllib over _ssl: an HTTPS GET from the launcher's test server
+# (src/test_www.rs), the certificate checked against the test CA.
 python_https() {
 	out=$(run-myos python -c '
-import urllib.request
-with urllib.request.urlopen("https://example.com/", timeout=60) as r:
-    print(r.status, b"Example Domain" in r.read())
+import ssl, urllib.request
+ctx = ssl.create_default_context(cafile="/lib/myos-tests/test-ca.pem")
+with urllib.request.urlopen("https://10.0.2.2:8767/hello.txt", timeout=60, context=ctx) as r:
+    print(r.status, b"myos test server" in r.read())
 ') || return 1
 	echo "$out"
 	[ "$out" = '200 True' ]
