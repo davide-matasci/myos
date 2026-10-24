@@ -300,6 +300,28 @@ if "myos: without the file" not in s:
     print("patched resolv_conf.cpp: /net/ndb's dns= without /etc/resolv.conf")
 PY
 
+# The arc4random family is the shared C's (libmyos/random.c, as newlib has
+# it): declared in <stdlib.h> with the BSD option's other calls, as the
+# BSDs and glibc 2.36 do.
+python3 - "$SRC/options/bsd/include/bits/bsd/bsd_stdlib.h" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "arc4random" not in s:
+    old = "#if defined(_DEFAULT_SOURCE)\nint getloadavg(double *__loadavg, int __count);\n#endif\n"
+    new = """#if defined(_DEFAULT_SOURCE)
+int getloadavg(double *__loadavg, int __count);
+/* myos: the shared C's (toolchain/libmyos/random.c). */
+__UINT32_TYPE__ arc4random(void);
+void arc4random_buf(void *__buf, __SIZE_TYPE__ __n);
+__UINT32_TYPE__ arc4random_uniform(__UINT32_TYPE__ __upper_bound);
+#endif
+"""
+    assert s.count(old) == 1, "bsd_stdlib.h: the getloadavg block not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched bsd_stdlib.h: the arc4random family")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose

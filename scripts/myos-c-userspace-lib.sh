@@ -60,6 +60,8 @@ MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 MYOS_PYTHON_VERSION="$MYOS_ROOT/target/.myos-python-version"
+MYOS_SQLITE_VERSION="$MYOS_ROOT/target/.myos-sqlite-version"
+MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
@@ -720,6 +722,7 @@ myos_ncurses_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
+      myos_mlibc_version_hash
       sha256sum "$(myos_port_dir ncurses)/build.sh"
       sha256sum "$(myos_port_dir ncurses)/prepare.sh"
       sha256sum "$(myos_port_dir ncurses)/fetch.sh"
@@ -738,6 +741,7 @@ myos_ncurses_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/ncurses-${arch}/lib/libncurses.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/ncurses-mlibc-${arch}/lib/libpanel.a" ]] || return 1
   done
 }
 
@@ -787,9 +791,11 @@ myos_riscv64_softfloat() {
 myos_mlibc_cflags() {
   local arch="$1"
   # mlibc's headers before clang's: freestanding, clang's limits.h does not
-  # include the libc's after itself.
+  # include the libc's after itself. Its stdc-predef.h first, as clang
+  # includes glibc's on Linux (__STDC_ISO_10646__: wchar_t holds Unicode).
   printf '%s ' "--target=${arch}-unknown-none" -ffreestanding -fPIC -nostdinc \
-    -isystem "$MYOS_ROOT/target/mlibc-${arch}/include" -isystem "$(clang -print-resource-dir)/include"
+    -isystem "$MYOS_ROOT/target/mlibc-${arch}/include" -isystem "$(clang -print-resource-dir)/include" \
+    -include stdc-predef.h
   [[ "$arch" == riscv64 ]] && printf '%s ' -march=rv64imac -mabi=lp64 -mno-relax
   return 0
 }
@@ -843,7 +849,7 @@ myos_write_cross_cc() {
     mlibc)
       # The builtins archive of its sysroot has them (myos_mlibc_link).
       sysroot="$MYOS_ROOT/target/mlibc-${arch}"
-      incs="-isystem $sysroot/include -isystem $clanginc" # myos_mlibc_cflags
+      incs="-isystem $sysroot/include -isystem $clanginc -include stdc-predef.h" # myos_mlibc_cflags
       libs="-lc -lbuiltins"
       [[ "$arch" == riscv64 ]] && flags=" -march=rv64imac -mabi=lp64 -mno-relax$flags" ;;
     *) echo "error: PORT_LIBC=$libc: newlib or mlibc" >&2; return 1 ;;
@@ -1129,13 +1135,14 @@ myos_zlib_is_current() {
   done
 }
 
-# LibreSSL: its pin, scripts and source-list reader, and what it links
-# (newlib).
+# LibreSSL: its pin, scripts, patch and source-list reader, and the two
+# libcs it is built against.
 myos_libressl_version_hash() {
   local h
   h="$(
     {
       myos_newlib_version_hash
+      myos_mlibc_version_hash
       find "$MYOS_ROOT/ports/libressl" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1144,15 +1151,17 @@ myos_libressl_version_hash() {
 }
 
 myos_libressl_is_current() {
-  local arch lib
+  local arch dir lib
   [[ -f "$MYOS_LIBRESSL_VERSION" ]] \
     && [[ "$(cat "$MYOS_LIBRESSL_VERSION")" == "$(myos_libressl_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for lib in crypto ssl tls; do
-      [[ -f "$MYOS_ROOT/target/libressl-${arch}/lib/lib${lib}.a" ]] || return 1
+    for dir in "libressl-${arch}" "libressl-mlibc-${arch}"; do
+      for lib in crypto ssl tls; do
+        [[ -f "$MYOS_ROOT/target/${dir}/lib/lib${lib}.a" ]] || return 1
+      done
+      [[ -f "$MYOS_ROOT/target/${dir}/include/tls.h" ]] || return 1
     done
-    [[ -f "$MYOS_ROOT/target/libressl-${arch}/include/tls.h" ]] || return 1
   done
 }
 
@@ -1295,14 +1304,67 @@ myos_lua_is_current() {
   done
 }
 
+# SQLite (packages/sqlite), against mlibc: its pin and scripts, and mlibc.
+myos_sqlite_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      find "$(myos_port_dir sqlite)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_sqlite_is_current() {
+  local arch
+  [[ -f "$MYOS_SQLITE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_SQLITE_VERSION")" == "$(myos_sqlite_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/sqlite-mlibc-${arch}/lib/libsqlite3.a" ]] || return 1
+  done
+}
+
+# libedit (packages/libedit), against mlibc: its pin and scripts, mlibc and
+# the ncurses it links.
+myos_libedit_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      myos_ncurses_version_hash
+      find "$(myos_port_dir libedit)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_libedit_is_current() {
+  local arch
+  [[ -f "$MYOS_LIBEDIT_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LIBEDIT_VERSION")" == "$(myos_libedit_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/libedit-mlibc-${arch}/lib/libedit.a" ]] || return 1
+  done
+}
+
 # CPython (packages/python), against mlibc: its sysroot's hash, zlib's pin
-# (the module's zlib is built from that source) and the port's files.
+# (the module's zlib is built from that source), the libraries of its other
+# modules (LibreSSL, ncurses, SQLite, libedit) and the port's files.
 myos_python_version_hash() {
   local h
   h="$(
     {
       myos_mlibc_version_hash
       sha256sum "$(myos_port_dir zlib)/versions.env"
+      myos_libressl_version_hash
+      myos_ncurses_version_hash
+      myos_sqlite_version_hash
+      myos_libedit_version_hash
       find "$(myos_port_dir python)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash

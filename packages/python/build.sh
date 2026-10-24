@@ -24,6 +24,12 @@ fi
 "$HERE/fetch.sh"
 "$ROOT/ports/zlib/fetch.sh"
 "$ROOT/toolchain/mlibc/build.sh"
+# The libraries of _ssl and _hashlib, curses, sqlite3 and readline, built
+# against mlibc (their builds skip themselves when current).
+"$ROOT/ports/libressl/build.sh"
+"$ROOT/packages/ncurses/build.sh"
+"$ROOT/packages/sqlite/build.sh"
+"$ROOT/packages/libedit/build.sh"
 myos_ensure_llvm_bin
 # The binutils: newlib's build leaves <triple>-ar, -ranlib and -strip in
 # target/newlib-bin, wrappers over LLVM's (the plain names, else the Rust
@@ -41,7 +47,11 @@ MINOR="${PYTHON_VERSION%.*}"
 rm -rf "$SRC"
 mkdir -p "$SRC"
 tar -xJf "$TARBALL" -C "$SRC" --strip-components=1
-patch -d "$SRC" -p1 -s < "$HERE/host-myos.myos.patch"
+# The myos host (host-myos.myos.patch), _hashlib on LibreSSL
+# (hashlib-libressl.myos.patch).
+for p in "$HERE"/*.myos.patch; do
+  patch -d "$SRC" -p1 -s <"$p"
+done
 
 # The build python: one of this minor on the host, else this source built
 # for the host, kept across builds of the same version.
@@ -92,18 +102,29 @@ build_arch() {
 
   # configure, told what it cannot find out (config.site) and kept off the
   # host's libraries (PKG_CONFIG=false: with it, it took the host's libffi,
-  # liblzma, readline and uuid for the target's). Every module static (no
-  # dlopen in a static program); no mimalloc (it wants sys/syscall.h, a
-  # Linux header); the bundled expat and libmpdec; /usr the prefix, built
-  # into the interpreter: the app has the library at /usr/lib/python3.13
-  # (the search upwards from the executable's directory, /bin/custom,
-  # stops short of the root).
+  # liblzma, readline and uuid for the target's), given the mlibc builds of
+  # LibreSSL (_ssl, _hashlib), SQLite (sqlite3), libedit (readline:
+  # editline's interface) and ncurses (curses, curses.panel). The curses
+  # headers and libraries are on the search paths rather than in
+  # CURSES_CFLAGS: given those, configure takes them for ncursesw, the wide
+  # build, and this one is narrow. Every module static (no dlopen in a
+  # static program); no mimalloc (it wants sys/syscall.h, a Linux header);
+  # the bundled expat and libmpdec; /usr the prefix, built into the
+  # interpreter: the app has the library at /usr/lib/python3.13 (the search
+  # upwards from the executable's directory, /bin/custom, stops short of
+  # the root).
+  local ssl="$ROOT/target/libressl-mlibc-$arch" nc="$ROOT/target/ncurses-mlibc-$arch"
+  local sq="$ROOT/target/sqlite-mlibc-$arch" le="$ROOT/target/libedit-mlibc-$arch"
   (cd "$build" && CONFIG_SITE="$HERE/config.site" CC="$build/cc" CPP="$build/cc -E" \
     AR="${arch}-unknown-myos-ar" RANLIB="${arch}-unknown-myos-ranlib" READELF="$READELF_BIN" PKG_CONFIG=false \
     ZLIB_CFLAGS="-I$build/zlib" ZLIB_LIBS="-L$build/zlib -lz" MODULE_BUILDTYPE=static \
+    LIBSQLITE3_CFLAGS="-I$sq/include" LIBSQLITE3_LIBS="-L$sq/lib -lsqlite3" \
+    LIBEDIT_CFLAGS="-I$le/include" LIBEDIT_LIBS="-L$le/lib -ledit -L$nc/lib -lncurses" \
+    CPPFLAGS="-I$nc/include" LDFLAGS="-L$nc/lib" \
     "$SRC/configure" --host="${arch}-unknown-myos" --build="$("$SRC/config.guess")" \
       --with-build-python="$BUILD_PYTHON" --prefix=/usr --disable-shared \
-      --disable-test-modules --without-ensurepip --without-readline --without-mimalloc \
+      --disable-test-modules --without-ensurepip --with-readline=editline --without-mimalloc \
+      --with-openssl="$ssl" --with-openssl-rpath=no \
       --with-system-expat=no --with-system-libmpdec=no >configure.log 2>&1) \
     || { tail -30 "$build/configure.log" >&2; exit 1; }
   make -C "$build" -j"$JOBS" >"$build/make.log" 2>&1 \
@@ -112,15 +133,26 @@ build_arch() {
     || { tail -20 "$build/install.log" >&2; exit 1; }
 
   # What the app carries: the interpreter and the library, without the
-  # test suite, IDLE, Tk, turtle and ensurepip (no pip without ssl), the
-  # .pyc files (half the files and bytes of the library: the interpreter
-  # writes them into the app's directory on the first import), the
-  # headers, libpython, the manuals and the scripts beside the
-  # interpreter.
+  # test suite, IDLE, Tk and turtle, the .pyc files (half the files and
+  # bytes of the library: the interpreter writes them into the app's
+  # directory on the first import), the headers, libpython, the manuals
+  # and the scripts beside the interpreter.
   rm -rf "$lib"/test "$lib"/idlelib "$lib"/tkinter "$lib"/turtledemo "$lib"/turtle.py \
-    "$lib"/ensurepip "$lib"/config-"$MINOR"* "$out/usr/include" "$out/usr/share" \
+    "$lib"/config-"$MINOR"* "$out/usr/include" "$out/usr/share" \
     "$out/usr/lib/pkgconfig" "$out/usr/lib"/libpython*
+  # pip, installed: the wheel ensurepip carries (pure Python), unpacked
+  # into site-packages, as `python -m ensurepip` would; `python -m pip`
+  # runs it (there is no pip script: the app's commands are its own). The
+  # host's python3 unpacks it: a build python made here may lack zlib.
+  python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+    "$(ls "$lib"/ensurepip/_bundled/pip-*.whl)" "$lib/site-packages"
   find "$lib" -name __pycache__ -type d -prune -exec rm -rf {} +
+  # The modules that must be there: configure leaves out one whose library
+  # it did not find, and the build only says so in its log.
+  local m
+  for m in _ssl _hashlib _sqlite3 _curses _curses_panel readline; do
+    grep -q "^$m " "$build/Modules/Setup.stdlib" || { echo "error: python $arch: no $m module" >&2; exit 1; }
+  done
   # lib-dynload is empty (every module is built in), and a package carries
   # files only: a placeholder keeps the directory, which the interpreter
   # looks for at startup (it warns on stderr without it).

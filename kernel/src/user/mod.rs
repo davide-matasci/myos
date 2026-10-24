@@ -39,12 +39,12 @@ pub const PAGE: usize = 4096;
 /// force `elf_scratch_mut` to grab N contiguous frames before init could run.
 const MAX_INIT_PAGES: usize = 1024;
 /// Cap for in-place `expand_user_elf` of the larger ELFs (uutils, ripgrep,
-/// git at ~1080 pages; python's interpreter at ~2200, 8.7 MiB, the largest):
-/// 12 MiB, under `EXEC_FILE_MAX`. An image's frames are the process's own
+/// git at ~1080 pages; python's interpreter with its modules' libraries at
+/// ~3140, 12.9 MiB, the largest): 16 MiB, `EXEC_FILE_MAX`. An image's frames are the process's own
 /// (a fork shares them copy-on-write), and the scratch it is realized in
 /// (`ELF_SCRATCH_BYTES`) grows once to the largest image run, a contiguous
 /// run of bump frames. `docs/linux-compat.md` states the limit.
-const MAX_EXPAND_PAGES: usize = 3072;
+const MAX_EXPAND_PAGES: usize = 4096;
 /// Largest image we may map, fork-copy, or stage in ELF scratch.
 const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
     MAX_EXPAND_PAGES

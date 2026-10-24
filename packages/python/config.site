@@ -1,6 +1,10 @@
 # What CPython's configure would run to find out, answered for myos (a
 # cross build runs nothing): no /dev/ptmx or /dev/ptc (the ptys are
-# openpty's), a getaddrinfo that works (mlibc's resolver).
+# openpty's), a getaddrinfo that works (mlibc's resolver). And _hashlib on
+# LibreSSL: configure's check wants BLAKE2 and scrypt of it, which LibreSSL
+# has not; the module does without BLAKE2 (the built-in _blake2 has it)
+# and, patched (hashlib-libressl.myos.patch), without scrypt.
 ac_cv_file__dev_ptmx=no
 ac_cv_file__dev_ptc=no
 ac_cv_buggy_getaddrinfo=no
+ac_cv_working_openssl_hashlib=yes

@@ -51,12 +51,14 @@ under its own license.
 | TinyCC (`tcc`) and `libtcc1` | `TCC_REV` in `ports/tcc/versions.env` | **LGPL-2.1** | https://github.com/TinyCC/tinycc |
 | Vim | 9.2.0 | Vim license (GPL-compatible, "charityware") | https://github.com/vim/vim |
 | ncurses | 6.5 | X11/MIT-style | https://ftp.gnu.org/gnu/ncurses/ |
+| SQLite (package `sqlite`, linked into python) | `SQLITE_VERSION` in `packages/sqlite/versions.env` | Public domain | https://sqlite.org/ |
+| libedit (package `libedit`, linked into python) | `LIBEDIT_VERSION` in `packages/libedit/versions.env` | BSD-3-Clause | https://thrysoee.dk/editline/ |
 | zlib | 1.3.1 | zlib | https://github.com/madler/zlib |
 | Git | 2.55.0 | **GPL-2.0-only** (some parts LGPL-2.1+) | https://github.com/git/git |
 | Lynx | 2.9.3 | **GPL-2.0-only** | https://invisible-island.net/lynx/ |
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
-| CPython (package `python`, built against mlibc; its bundled expat, libmpdec, `_hacl` and `_blake2` sources under their own permissive licenses, `Doc/license.rst` in the upstream source; the myos patch `packages/python/host-myos.myos.patch` under the same license) | `PYTHON_VERSION` in `packages/python/versions.env` | PSF-2.0 (the Python Software Foundation License, GPL-compatible, permissive) | https://www.python.org/ |
+| CPython (package `python`, built against mlibc; its bundled expat, libmpdec, `_hacl` and `_blake2` sources under their own permissive licenses, `Doc/license.rst` in the upstream source; the myos patches `packages/python/*.myos.patch` under the same license; `pip`, unpacked from the wheel CPython bundles, MIT, with its vendored packages under their own licenses, all in its `dist-info/licenses`: MIT, BSD, Apache-2.0 and, for `certifi` and its CA bundle, **MPL-2.0** (`licenses/MPL-2.0.txt`)) | `PYTHON_VERSION` in `packages/python/versions.env` | PSF-2.0 (the Python Software Foundation License, GPL-compatible, permissive) | https://www.python.org/ |
 | nginx (package `nginx`) | `NGINX_VERSION` in `packages/nginx/versions.env` | BSD-2-Clause (the myos patches, `packages/nginx/*.myos.patch`, under the same license) | https://nginx.org/ |
 | PCRE2 (`packages/pcre2`, the 8-bit library linked into nginx) | `PCRE2_VERSION` in `packages/pcre2/versions.env` | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2 |
 | bottom (package `bottom`, `btm`) + its Rust dependencies | `packages/bottom/versions.env` (dependencies: bottom's `Cargo.lock`) | bottom, crossterm, sysinfo, ratatui: MIT (the myos patches to them: the same); dependencies: MIT / Apache-2.0 and similar permissive licenses (Zlib, Unlicense OR MIT); `option-ext` 0.2.0 (used unmodified, through `dirs-sys`): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/ClementTsang/bottom |
@@ -69,7 +71,7 @@ under its own license.
 | xev, libXext, libXrandr (package `x11-apps`) | see `packages/x11-apps/versions.env` | MIT/X Consortium (xev); MIT-Open-Group / HPND-style (libXext, libXrandr) | https://www.x.org/releases/individual/ |
 | Xft font stack (package `x11-xft`): expat, FreeType, fontconfig, libXrender, libXft | see `packages/x11-xft/versions.env` | expat, libXrender, libXft: MIT; fontconfig: MIT-style (HPND); FreeType: the FreeType License (FTL, used instead of its GPL-2.0 alternative; credit below) | https://libexpat.github.io/ https://freetype.org/ https://www.freedesktop.org/wiki/Software/fontconfig/ https://www.x.org/releases/individual/lib/ |
 | DejaVu Sans Mono and DejaVu Sans (package `x11-fonts`, `/lib/fonts`) | `DEJAVU_VERSION` in `packages/x11-fonts/versions.env` | Bitstream Vera Fonts license and Arev Fonts license (DejaVu's changes public domain); the text ships as `/lib/fonts/LICENSE.DejaVu` | https://dejavu-fonts.github.io/ |
-| LibreSSL (libcrypto, libssl, libtls: TLS for `curl`, `lynx`, `nginx`, `user/tls`) | 4.3.3 | ISC (new code) and the OpenSSL and SSLeay licenses (inherited code); the texts in `licenses/LibreSSL.txt` | https://www.libressl.org/ (`ports/libressl`) |
+| LibreSSL (libcrypto, libssl, libtls: TLS for `curl`, `lynx`, `nginx`, `user/tls`, and `python` from its mlibc build; the myos patch `ports/libressl/cafile.myos.patch` under the same license) | 4.3.3 | ISC (new code) and the OpenSSL and SSLeay licenses (inherited code); the texts in `licenses/LibreSSL.txt` | https://www.libressl.org/ (`ports/libressl`) |
 | openssl(1), LibreSSL's command-line tool (the `openssl` package, built from the same release) | 4.3.3 (`ports/libressl/versions.env`) | LibreSSL's, as above | https://www.libressl.org/ (`packages/openssl`) |
 | acme.sh, the ACME client (the `acme` package: the script with its dnsapi, deploy and notify hooks; the myos patch, `packages/acme/acme.sh.myos.patch`, under the same license) | 3.1.6 | **GPL-3.0** (`licenses/GPL-3.0.txt`) | https://github.com/acmesh-official/acme.sh |
 | curl | 8.11.1 | curl license (MIT-style) | https://curl.se/ |
@@ -111,7 +113,7 @@ Files in this repository that carry notices from upstream (kept as required):
 The following programs in the image are under copyleft licenses
 (GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
 GNU Make, TinyCC, TinyX (`Xfbdev`), acme.sh, the Mozilla CA bundle, and
-`option-ext` in the bottom package.** (Vim's license also allows redistribution. LibreSSL's
+`option-ext` in the bottom package, `certifi` (pip's, its CA bundle) in the python package.** (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry
 their notices: `licenses/LibreSSL.txt`, and this product includes software
 developed by the OpenSSL Project for use in the OpenSSL Toolkit

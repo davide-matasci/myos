@@ -15,7 +15,11 @@
 #ifdef MYOS_LIBC_MLIBC
 #define MYOS_ALIAS(name)
 #define MYOS_WEAK_ALIAS(name)
+/* A name newlib has of its own and mlibc lacks: the alias in mlibc only. */
+#define MYOS_MLIBC_PUBLIC(name) \
+    extern __typeof(__myos_##name) name __attribute__((alias("__myos_" #name)));
 #else
+#define MYOS_MLIBC_PUBLIC(name)
 #define MYOS_ALIAS(name) \
     extern __typeof(__myos_##name) name __attribute__((alias("__myos_" #name)));
 /* A port's own definition wins (dropbear's nanosleep). */
