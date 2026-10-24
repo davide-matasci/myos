@@ -143,6 +143,12 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     crate::irq::pci_intx_setup(bus, slot, func)
 }
 
+/// A PCI function's interrupt given back (`irq::pci_irq_disable`): its
+/// INTx off. The controller's line is not allocated, only its handlers.
+pub fn pci_irq_release(bus: u8, slot: u8, func: u8, _irq: u32, _last: bool) {
+    crate::irq::pci_intx_release(bus, slot, func);
+}
+
 pub fn wait_interrupt() {
     unsafe {
         core::arch::asm!("wfi", options(nostack, preserves_flags));

@@ -119,6 +119,24 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     Some(PciIrq { irq, delivery: Delivery::IntX })
 }
 
+/// Give back what [`pci_irq_setup`] took for the function's interrupt
+/// `irq` (`irq::pci_irq_disable`): its INTx or its MSI-X or MSI off, and
+/// once `last` (no handler of `irq` left) the vector, with the I/O APIC
+/// pin of an INTx line and the IOMMU's remapping entry.
+pub fn pci_irq_release(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
+    let intx = intx::release(bus, slot, func);
+    let Ok(vector) = u8::try_from(irq) else {
+        return;
+    };
+    if intx {
+        if last {
+            ioapic::release_vector(vector);
+        }
+    } else if last {
+        interrupts::pci_msi_release(bus, slot, func, vector);
+    }
+}
+
 /// See [`intx::add`].
 pub fn pci_intx_route(bus: u8, device: u8, pin: u8, gsi: u32, flags: u32) -> bool {
     intx::add(bus, device, pin, gsi, flags)

@@ -145,3 +145,19 @@ pub fn setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     super::ioapic::unmask_gsi(route.gsi);
     Some(vector)
 }
+
+/// The function's INTx given back (`irq::pci_irq_disable`): turned off and
+/// no longer one of the [`USERS`]. Whether it was one (its interrupt was
+/// its INTx).
+pub fn release(bus: u8, slot: u8, func: u8) -> bool {
+    let me = Some((bus, slot, func));
+    {
+        let mut users = USERS.lock();
+        let Some(u) = users.iter_mut().find(|u| **u == me) else {
+            return false;
+        };
+        *u = None;
+    }
+    intx_off(bus, slot, func, true);
+    true
+}

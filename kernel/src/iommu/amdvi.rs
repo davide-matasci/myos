@@ -153,7 +153,8 @@ struct Unit {
     inv_all: bool,
 }
 
-/// A device's interrupt remapping table and the entries given out.
+/// A device's interrupt remapping table and how many of its entries are in
+/// use (enabled).
 struct IrTable {
     devid: u16,
     table: u64,
@@ -467,22 +468,13 @@ pub fn active() -> bool {
 
 /// An entry in `source`'s interrupt remapping table (made at its first
 /// interrupt) that raises `vector` on the BSP: its index, which the
-/// message's data carries. `None` when no unit remaps for the source, for
-/// the unit's own function (its message goes as it is), or the table is
-/// full.
+/// message's data carries: the lowest free one ([`unremap`] frees one).
+/// `None` when no unit remaps for the source, for the unit's own function
+/// (its message goes as it is), or the table is full.
 pub fn remap(source: Source, vector: u8) -> Option<u16> {
     let mut guard = STATE.lock();
     let st = guard.as_mut()?;
-    let (ui, dev) = match source {
-        Source::Pci(bus, slot, func) => {
-            let d = devid(bus, slot, func);
-            (unit_for(st, d)?, d)
-        }
-        Source::IoApic => {
-            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
-            (ui, st.units[ui].ioapic?)
-        }
-    };
+    let (ui, dev) = source_unit(st, source)?;
     let u = &st.units[ui];
     if dev == u.devid {
         return None;
@@ -505,15 +497,58 @@ pub fn remap(source: Source, vector: u8) -> Option<u16> {
         }
     };
     let t = &mut st.irts[ti];
-    if t.used >= IRT_ENTRIES {
-        return None;
-    }
-    let idx = t.used;
+    let idx = (0..IRT_ENTRIES).find(|&i| unsafe { irte(t, i).read_volatile() } & IRTE_EN == 0)?;
     t.used += 1;
-    unsafe { (mm::hhdm(t.table) as *mut u32).add(usize::from(idx)).write_volatile(IRTE_EN | (apic as u32 & 0xff) << 8 | u32::from(vector) << 16) };
+    unsafe { irte(t, idx).write_volatile(IRTE_EN | (apic as u32 & 0xff) << 8 | u32::from(vector) << 16) };
     core::sync::atomic::fence(Ordering::SeqCst);
     submit(u, &[[CMD_INVALIDATE_IRT | u64::from(dev), 0]]);
     Some(idx)
+}
+
+/// The unit remapping `source`'s interrupts, and its device id.
+fn source_unit(st: &State, source: Source) -> Option<(usize, u16)> {
+    match source {
+        Source::Pci(bus, slot, func) => {
+            let d = devid(bus, slot, func);
+            Some((unit_for(st, d)?, d))
+        }
+        Source::IoApic => {
+            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
+            Some((ui, st.units[ui].ioapic?))
+        }
+    }
+}
+
+/// Entry `idx` of a device's interrupt remapping table.
+fn irte(t: &IrTable, idx: u16) -> *mut u32 {
+    unsafe { (mm::hhdm(t.table) as *mut u32).add(usize::from(idx)) }
+}
+
+/// Free `source`'s entry raising `vector` ([`remap`]): disabled, the
+/// unit's cached copy of the table invalidated. The table stays the
+/// device's.
+pub fn unremap(source: Source, vector: u8) {
+    let mut guard = STATE.lock();
+    let Some(st) = guard.as_mut() else {
+        return;
+    };
+    let Some((ui, dev)) = source_unit(st, source) else {
+        return;
+    };
+    let Some(t) = st.irts.iter_mut().find(|t| t.devid == dev) else {
+        return;
+    };
+    let found = (0..IRT_ENTRIES).find(|&i| {
+        let e = unsafe { irte(t, i).read_volatile() };
+        e & IRTE_EN != 0 && (e >> 16) as u8 == vector
+    });
+    let Some(idx) = found else {
+        return;
+    };
+    unsafe { irte(t, idx).write_volatile(0) };
+    t.used -= 1;
+    core::sync::atomic::fence(Ordering::SeqCst);
+    submit(&st.units[ui], &[[CMD_INVALIDATE_IRT | u64::from(dev), 0]]);
 }
 
 pub fn attach(bus: u8, slot: u8, func: u8) -> Option<u32> {

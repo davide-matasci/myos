@@ -148,7 +148,7 @@ struct Unit {
     iq: u64,
     iq_tail: AtomicU32,
     /// The interrupt remapping table (0: interrupts not remapped), the
-    /// entries given out, whether it takes 32-bit APIC ids.
+    /// entries in use (present), whether it takes 32-bit APIC ids.
     irt: u64,
     irt_used: u16,
     eime: bool,
@@ -655,33 +655,28 @@ pub fn init() {
 /// `vector` on the BSP (`level`: the trigger mode of an I/O APIC pin): its
 /// handle, which the message or the pin's entry names in the remappable
 /// format. The entry verifies the source id, so a function can raise its
-/// own vectors and no other's. `None` when no unit remaps for the source
-/// (its messages pass as they are), or the table is full.
+/// own vectors and no other's. The lowest free entry ([`unremap`] frees
+/// one). `None` when no unit remaps for the source (its messages pass as
+/// they are), or the table is full.
 pub fn remap(source: Source, vector: u8, level: bool) -> Option<u16> {
     let mut guard = STATE.lock();
     let st = guard.as_mut()?;
-    let (ui, sid) = match source {
-        Source::Pci(bus, slot, func) => (unit_for(st, bus, slot, func)?, Some(u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func))),
-        Source::IoApic => {
-            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
-            (ui, st.units[ui].ioapic)
-        }
-    };
+    let (ui, sid) = source_unit(st, source)?;
     let u = &mut st.units[ui];
-    if u.irt == 0 || u.irt_used >= IRT_ENTRIES {
+    if u.irt == 0 {
         return None;
     }
-    let idx = u.irt_used;
-    u.irt_used += 1;
     let apic = crate::smp::cpu_hw_id(0);
     // Without extended interrupt mode the entry names the BSP in 8 bits.
     if !u.eime && apic > 0xff {
         return None;
     }
+    let idx = (0..IRT_ENTRIES).find(|&i| unsafe { irte(u, i).read_volatile() } & IRTE_P == 0)?;
+    u.irt_used += 1;
     let dest = if u.eime { apic << 32 } else { apic << 40 };
     let lo = IRTE_P | u64::from(level) << 4 | u64::from(vector) << 16 | dest;
     let hi = sid.map_or(0, |s| u64::from(s) | IRTE_SVT_RID);
-    let e = unsafe { (mm::hhdm(u.irt) as *mut u64).add(usize::from(idx) * 2) };
+    let e = irte(u, idx);
     unsafe {
         e.add(1).write_volatile(hi);
         e.write_volatile(lo);
@@ -689,6 +684,57 @@ pub fn remap(source: Source, vector: u8, level: bool) -> Option<u16> {
     tables_written(u.coherent, e as usize, 16);
     queue(u, &[QI_IEC_GLOBAL]);
     Some(idx)
+}
+
+/// The unit remapping `source`'s interrupts, and the source id its
+/// entries verify.
+fn source_unit(st: &State, source: Source) -> Option<(usize, Option<u16>)> {
+    match source {
+        Source::Pci(bus, slot, func) => Some((unit_for(st, bus, slot, func)?, Some(u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func)))),
+        Source::IoApic => {
+            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
+            Some((ui, st.units[ui].ioapic))
+        }
+    }
+}
+
+/// Entry `idx` of the unit's interrupt remapping table: its low quadword,
+/// the high one after it.
+fn irte(u: &Unit, idx: u16) -> *mut u64 {
+    unsafe { (mm::hhdm(u.irt) as *mut u64).add(usize::from(idx) * 2) }
+}
+
+/// Free `source`'s entry raising `vector` ([`remap`]): not present, its
+/// cached copies invalidated.
+pub fn unremap(source: Source, vector: u8) {
+    let mut guard = STATE.lock();
+    let Some(st) = guard.as_mut() else {
+        return;
+    };
+    let Some((ui, sid)) = source_unit(st, source) else {
+        return;
+    };
+    let u = &mut st.units[ui];
+    if u.irt == 0 {
+        return;
+    }
+    let hi = sid.map_or(0, |s| u64::from(s) | IRTE_SVT_RID);
+    let found = (0..IRT_ENTRIES).find(|&i| {
+        let e = irte(u, i);
+        let (lo, h) = unsafe { (e.read_volatile(), e.add(1).read_volatile()) };
+        lo & IRTE_P != 0 && (lo >> 16) as u8 == vector && h == hi
+    });
+    let Some(idx) = found else {
+        return;
+    };
+    let e = irte(u, idx);
+    unsafe {
+        e.write_volatile(0);
+        e.add(1).write_volatile(0);
+    }
+    tables_written(u.coherent, e as usize, 16);
+    queue(u, &[QI_IEC_GLOBAL]);
+    u.irt_used -= 1;
 }
 
 /// Whether a unit is driven.

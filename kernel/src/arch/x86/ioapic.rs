@@ -220,6 +220,25 @@ pub fn unmask_gsi(gsi: u32) {
     program(IOREDTBL + 2 * pin as u32, PCI_LOW[pin].load(Ordering::SeqCst), vector, &PCI_REMAP[pin]);
 }
 
+/// The PCI line whose pin raises `vector` given back (its last handler
+/// gone): the pin masked, the IOMMU's remapping entry for it and the
+/// vector freed. Whether a pin had it.
+pub fn release_vector(vector: u8) -> bool {
+    let Some(pin) = (0..PCI_PINS).find(|&p| vector != 0 && PCI_VECTOR[p].load(Ordering::SeqCst) == vector) else {
+        return false;
+    };
+    let reg = IOREDTBL + 2 * pin as u32;
+    write(reg, read(reg) | RED_MASKED);
+    PCI_UNMASKED[pin].store(false, Ordering::SeqCst);
+    if PCI_REMAP[pin].swap(0, Ordering::SeqCst) != 0 {
+        crate::iommu::unremap_ioapic(vector);
+    }
+    PCI_VECTOR[pin].store(0, Ordering::SeqCst);
+    PCI_LOW[pin].store(0, Ordering::SeqCst);
+    super::interrupts::free_vector(vector);
+    true
+}
+
 /// Write every unmasked pin's entry again: interrupt remapping came on
 /// after it was routed (the console's pin).
 pub fn refresh() {
