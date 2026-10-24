@@ -15,6 +15,7 @@ pub const ASSOC_RESP: u8 = 0x10;
 pub const DISASSOC: u8 = 0xa0;
 pub const AUTH: u8 = 0xb0;
 pub const DEAUTH: u8 = 0xc0;
+pub const ACTION: u8 = 0xd0;
 /// The status code of a request granted.
 pub const STATUS_OK: u16 = 0;
 /// Deauthentication reason: the station is leaving.
@@ -26,8 +27,17 @@ const HDR: usize = 24;
 /// interval, capabilities.
 const FIXED: usize = 12;
 const CAP_PRIVACY: u16 = 0x0010;
-/// The rates a probe request offers: 1, 2, 5.5 and 11 Mb/s, 6, 9, 12, 18.
+const CAP_SHORT_PREAMBLE: u16 = 0x0020;
+const CAP_SHORT_SLOT: u16 = 0x0400;
+/// The rates a station offers on 2.4 GHz: 1, 2, 5.5 and 11 Mb/s, 6, 9,
+/// 12, 18 (Supported Rates), then 24, 36, 48 and 54 (Extended Supported
+/// Rates); on 5 GHz the OFDM ones, 6, 12 and 24 basic.
 const RATES: [u8; 8] = [0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24];
+const EXT_RATES: [u8; 4] = [0x30, 0x48, 0x60, 0x6c];
+const RATES_5G: [u8; 8] = [0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c];
+/// The WMM Information element of a station: the Wi-Fi Alliance's OUI,
+/// type 2, subtype 0, version 1, no U-APSD.
+const WMM_INFO: [u8; 9] = [221, 7, 0x00, 0x50, 0xf2, 0x02, 0x00, 0x01, 0x00];
 
 /// How a network is secured, from its capabilities and RSN element.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,6 +73,16 @@ pub struct Bss {
     /// Its RSN element, whole (empty when it has none): the 4-way
     /// handshake checks message 3's against it.
     pub rsn: Vec<u8>,
+    /// Its legacy rates, as its Supported and Extended Supported Rates say
+    /// them (500 kb/s units, bit 7 for a basic rate).
+    pub rates: Vec<u8>,
+    /// An 802.11n access point's RX MCS bitmap, its first two bytes (MCS
+    /// 0 to 15, HT Capabilities), and whether it does WMM (QoS): an
+    /// 802.11n station needs both.
+    pub ht_mcs: Option<u16>,
+    pub wmm: bool,
+    pub short_preamble: bool,
+    pub short_slot: bool,
 }
 
 /// A management frame's header: `subtype` from `sa` to `da` of `bssid`.
@@ -76,15 +96,27 @@ fn header(subtype: u8, da: [u8; 6], sa: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
     f
 }
 
-/// A wildcard probe request from `sa`: every network on the channel
+/// A wildcard probe request from `sa` on `channel`: every network there
 /// answers.
-pub fn probe_request(sa: [u8; 6]) -> Vec<u8> {
+pub fn probe_request(sa: [u8; 6], channel: u8) -> Vec<u8> {
     let mut f = header(PROBE_REQ, BROADCAST, sa, BROADCAST);
     f.extend_from_slice(&[0, 0]); // SSID: the wildcard
-    f.push(1);
-    f.push(RATES.len() as u8);
-    f.extend_from_slice(&RATES);
+    rates(&mut f, channel);
     f
+}
+
+/// The Supported (and Extended Supported) Rates elements of `channel`'s
+/// band.
+fn rates(f: &mut Vec<u8>, channel: u8) {
+    if channel > 14 {
+        f.extend_from_slice(&[1, RATES_5G.len() as u8]);
+        f.extend_from_slice(&RATES_5G);
+        return;
+    }
+    f.extend_from_slice(&[1, RATES.len() as u8]);
+    f.extend_from_slice(&RATES);
+    f.extend_from_slice(&[50, EXT_RATES.len() as u8]);
+    f.extend_from_slice(&EXT_RATES);
 }
 
 /// The network a beacon or probe response heard on `channel` describes.
@@ -110,7 +142,22 @@ pub fn bss_of(bssid: [u8; 6], cap: u16, ies: &[u8], channel: u8) -> Bss {
         None => Security::Open,
     };
     let rsn = rsn.map(|b| [&[48, b.len() as u8][..], b].concat()).unwrap_or_default();
-    Bss { bssid, ssid: ssid.to_vec(), channel, security, rsn }
+    let rates = [ie(ies, 1).unwrap_or(&[]), ie(ies, 50).unwrap_or(&[])].concat();
+    let ht_mcs = ie(ies, 45).and_then(|ht| Some(u16::from_le_bytes([*ht.get(3)?, *ht.get(4)?])));
+    // WMM's Parameter element (subtype 1) or Information element (0).
+    let wmm = ies_of(ies, 221).any(|v| v.len() >= 5 && v[..4] == [0x00, 0x50, 0xf2, 0x02] && v[4] <= 1);
+    Bss {
+        bssid,
+        ssid: ssid.to_vec(),
+        channel,
+        security,
+        rsn,
+        rates,
+        ht_mcs,
+        wmm,
+        short_preamble: cap & CAP_SHORT_PREAMBLE != 0,
+        short_slot: cap & CAP_SHORT_SLOT != 0,
+    }
 }
 
 /// Whether an RSN element offers PSK key management (suite 00-0f-ac:2).
@@ -127,16 +174,25 @@ fn rsn_psk(rsn: &[u8]) -> bool {
 }
 
 /// The body of the first information element `id` in `ies`.
-fn ie(mut ies: &[u8], id: u8) -> Option<&[u8]> {
-    while ies.len() >= 2 {
-        let len = ies[1] as usize;
-        let body = ies.get(2..2 + len)?;
-        if ies[0] == id {
-            return Some(body);
+fn ie(ies: &[u8], id: u8) -> Option<&[u8]> {
+    ies_of(ies, id).next()
+}
+
+/// The bodies of the information elements `id` in `ies` (a vendor's,
+/// 221, may come more than once).
+fn ies_of(mut ies: &[u8], id: u8) -> impl Iterator<Item = &[u8]> {
+    core::iter::from_fn(move || {
+        while ies.len() >= 2 {
+            let len = ies[1] as usize;
+            let body = ies.get(2..2 + len)?;
+            let this = ies[0];
+            ies = &ies[2 + len..];
+            if this == id {
+                return Some(body);
+            }
         }
-        ies = &ies[2 + len..];
-    }
-    None
+        None
+    })
 }
 
 /// The first frame of open-system authentication, from `sa` to `bssid`.
@@ -146,20 +202,44 @@ pub fn auth_request(sa: [u8; 6], bssid: [u8; 6]) -> Vec<u8> {
     f
 }
 
-/// An association request to `bssid` for network `ssid`, with RSN element
-/// `rsn` (whole; empty for an open network).
-pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], ssid: &[u8], rsn: &[u8]) -> Vec<u8> {
+/// An association request to `bssid` on `channel` for network `ssid`,
+/// with RSN element `rsn` (whole; empty for an open network), and as an
+/// 802.11n station with HT Capabilities `ht` (the element's body: the
+/// radio's) when given, a QoS (WMM) one then too.
+pub fn assoc_request(sa: [u8; 6], bssid: [u8; 6], channel: u8, ssid: &[u8], rsn: &[u8], ht: Option<&[u8; 26]>) -> Vec<u8> {
     let mut f = header(ASSOC_REQ, bssid, sa, bssid);
     f.extend_from_slice(&0x0001u16.to_le_bytes()); // capabilities: ESS
     f.extend_from_slice(&10u16.to_le_bytes()); // listen interval, in beacons
     f.push(0);
     f.push(ssid.len() as u8);
     f.extend_from_slice(ssid);
-    f.push(1);
-    f.push(RATES.len() as u8);
-    f.extend_from_slice(&RATES);
+    rates(&mut f, channel);
     f.extend_from_slice(rsn);
+    if let Some(ht) = ht {
+        f.extend_from_slice(&[45, ht.len() as u8]);
+        f.extend_from_slice(ht);
+        f.extend_from_slice(&WMM_INFO);
+    }
     f
+}
+
+/// The answer to an ADDBA request (a block ack session the access point
+/// offers, IEEE 802.11-2020 9.6.4.2) in action frame body `body` from
+/// `bssid`: declined (status 37), so the access point sends frames one at
+/// a time; `None` for another action frame.
+pub fn addba_declined(sa: [u8; 6], bssid: [u8; 6], body: &[u8]) -> Option<Vec<u8>> {
+    // Category 3 (block ack), action 0 (ADDBA request): its dialog token,
+    // parameters and timeout.
+    let (token, params, timeout) = match body {
+        [3, 0, token, p0, p1, t0, t1, ..] => (*token, [*p0, *p1], [*t0, *t1]),
+        _ => return None,
+    };
+    let mut f = header(ACTION, bssid, sa, bssid);
+    f.extend_from_slice(&[3, 1, token]);
+    f.extend_from_slice(&37u16.to_le_bytes());
+    f.extend_from_slice(&params);
+    f.extend_from_slice(&timeout);
+    Some(f)
 }
 
 /// A deauthentication of `sa` from `bssid`, for `reason`.
@@ -203,17 +283,21 @@ const FROM_DS: u8 = 0x02;
 const SNAP: [u8; 6] = [0xaa, 0xaa, 0x03, 0, 0, 0];
 
 /// The data frame station `me` sends to `bssid` for Ethernet frame `eth`
-/// (destination, source, EtherType, payload).
-pub fn data_to_ds(me: [u8; 6], bssid: [u8; 6], eth: &[u8]) -> Option<Vec<u8>> {
+/// (destination, source, EtherType, payload): a QoS data frame of best
+/// effort on a link with QoS (`qos`).
+pub fn data_to_ds(me: [u8; 6], bssid: [u8; 6], eth: &[u8], qos: bool) -> Option<Vec<u8>> {
     if eth.len() < 14 {
         return None;
     }
-    let mut f = Vec::with_capacity(HDR + SNAP.len() + eth.len() - 12);
-    f.extend_from_slice(&[DATA, TO_DS, 0, 0]);
+    let mut f = Vec::with_capacity(HDR + 2 + SNAP.len() + eth.len() - 12);
+    f.extend_from_slice(&[if qos { QOS_DATA } else { DATA }, TO_DS, 0, 0]);
     f.extend_from_slice(&bssid);
     f.extend_from_slice(&me);
     f.extend_from_slice(&eth[..6]);
     f.extend_from_slice(&[0, 0]);
+    if qos {
+        f.extend_from_slice(&[0, 0]);
+    }
     f.extend_from_slice(&SNAP);
     f.extend_from_slice(&eth[12..]);
     Some(f)

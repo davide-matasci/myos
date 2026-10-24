@@ -1,8 +1,8 @@
 //! The radio a scan and an association go through: tuned to a channel, it
 //! sends and hears 802.11 frames ([`Radio`]: the test boots' simulated
-//! one, Intel's in `intel.rs`, MediaTek's in `mediatek.rs`); or one whose
-//! firmware does all of that and carries Ethernet frames ([`FullMac`]:
-//! Broadcom's in `broadcom.rs`).
+//! one, Intel's in `intel.rs`, MediaTek's (the MT7601U, the MT7612U) in
+//! `mediatek.rs`); or one whose firmware does all of that and carries
+//! Ethernet frames ([`FullMac`]: Broadcom's in `broadcom.rs`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -20,6 +20,11 @@ pub struct Rx {
 pub trait Radio {
     /// The station's own address.
     fn mac(&self) -> [u8; 6];
+    /// The channels a scan visits: the 2.4 GHz ones, unless the radio has
+    /// others.
+    fn channels(&self) -> Vec<u8> {
+        (1..=13).collect()
+    }
     /// Hear and send on `channel` from now on.
     fn set_channel(&mut self, channel: u8);
     fn send(&mut self, frame: &[u8]) -> bool;
@@ -38,10 +43,20 @@ pub trait Radio {
     fn joining(&mut self, _bss: &Bss) -> bool {
         true
     }
-    /// Associated with the network being joined, as `aid`.
-    fn associated(&mut self, _aid: u16) -> bool {
+    /// Associated with the network being joined, as `aid`, over 802.11n
+    /// when `ht` (the association offered the radio's [`Radio::ht`]).
+    fn associated(&mut self, _aid: u16, _ht: bool) -> bool {
         true
     }
+    /// The body of the HT Capabilities element of a radio that does
+    /// 802.11n itself (its rates, aggregation off): the association
+    /// offers it to an 802.11n access point.
+    fn ht(&self) -> Option<[u8; 26]> {
+        None
+    }
+    /// Once a second while associated: a radio's periodic work (choosing
+    /// the transmit rate from how the last second's frames went).
+    fn tick(&mut self) {}
     /// The network left, or joining it given up.
     fn left(&mut self) {}
     /// A scan the radio does by itself (its firmware's): what it heard;
@@ -125,6 +140,12 @@ impl Radio for Sim {
 
     fn set_channel(&mut self, channel: u8) {
         self.channel = channel;
+    }
+
+    /// An 802.11n radio of one stream, as the MT7601U is: the test boots'
+    /// `myos-open` takes it over 802.11n.
+    fn ht(&self) -> Option<[u8; 26]> {
+        Some(mtw::chip::HT_CAP_1X1)
     }
 
     fn send(&mut self, frame: &[u8]) -> bool {

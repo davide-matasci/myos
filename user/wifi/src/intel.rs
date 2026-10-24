@@ -144,7 +144,7 @@ impl Radio for Intel {
         true
     }
 
-    fn associated(&mut self, aid: u16) -> bool {
+    fn associated(&mut self, aid: u16, _ht: bool) -> bool {
         let Some(mut p) = self.peer else {
             return false;
         };

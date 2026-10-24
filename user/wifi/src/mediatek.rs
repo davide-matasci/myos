@@ -1,15 +1,16 @@
-//! MediaTek's USB radios: the MT7601U, as `mtw::chip` describes it, with
-//! the `mtw` crate's driver over `/dev/usb` and its firmware from
-//! `wifi-firmware`. A SoftMAC: the daemon scans by visiting the channels
-//! (Radio::scan is the default), joins and encrypts; the radio tunes,
-//! sends and hears.
+//! MediaTek's USB radios, as `mtw::chip` describes them: the MT7601U with
+//! the `mtw` crate's `dev`, the MT7612U with its `mt76x2`, over
+//! `/dev/usb`, their firmware from `wifi-firmware`. SoftMACs: the daemon
+//! scans by visiting the channels (Radio::scan is the default; the
+//! MT7612U's include 5 GHz), joins and encrypts; the radio tunes, sends
+//! and hears.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use mtw::chip::{CHIPS, Chip};
-use mtw::dev::{Dev, Error, Info};
-use mtw::fw::Firmware;
+use mtw::chip::{CHIPS, Chip, Family};
+use mtw::dev::{Dev, Error, Info, Peer};
+use mtw::mt76x2;
 use mtw::reg::MAX_RXSZ;
 use mtw::rx;
 use mtw::usb::Endpoints;
@@ -23,8 +24,14 @@ use crate::usb::{self, Usb};
 /// Where `wifi-firmware fetch` keeps the firmware by default.
 const FIRMWARE_DIRS: &[&[u8]] = &[b"/data/firmware/", b"/tmp/firmware/"];
 
+/// The chip's driver.
+enum Driver {
+    Mt7601(Dev<Usb>),
+    Mt76x2(mt76x2::dev::Dev<Usb>),
+}
+
 pub struct Mediatek {
-    dev: Dev<Usb>,
+    dev: Driver,
     info: Info,
     /// The bulk IN endpoint's file: a read is one transfer of frames.
     rx: usize,
@@ -32,31 +39,54 @@ pub struct Mediatek {
     /// The frames of the last transfer not handed out yet: {frame, dBm}.
     heard: VecDeque<(Vec<u8>, i8)>,
     /// The network being joined, or joined.
-    bssid: Option<[u8; 6]>,
+    peer: Option<Peer>,
 }
 
 /// Why the radio did not come up, for the daemon to say.
 pub enum Failed {
     Usb(&'static str),
-    NoFirmware,
-    BadFirmware,
+    /// The file named is not in the firmware directory, or not one.
+    NoFirmware(&'static str),
+    BadFirmware(&'static str),
     Driver(Error),
 }
 
 impl Mediatek {
     /// The radio `chip` at `/dev/usb` directory `dir`: held, its firmware
-    /// loaded and started, up on channel 1.
+    /// loaded and started, up on its first channel.
     pub fn open(dir: &[u8], chip: &'static Chip) -> Result<Self, Failed> {
-        let name = chip.firmware.as_bytes();
-        let file = FIRMWARE_DIRS.iter().find_map(|d| load(&[d, name].concat())).ok_or(Failed::NoFirmware)?;
-        let fw = Firmware::parse(&file).map_err(|_| Failed::BadFirmware)?;
+        let file = firmware(chip.firmware)?;
+        let patch = match chip.rom_patch {
+            Some(name) => Some((name, firmware(name)?)),
+            None => None,
+        };
         let usb = Usb::open(dir).map_err(Failed::Usb)?;
         let eps = Endpoints::new(&usb.bulk).ok_or(Failed::Usb("not its endpoints"))?;
         let rx = usb.endpoint(eps.rx, O_RDONLY).ok_or(Failed::Usb("its bulk IN endpoint"))?;
-        let mut dev = Dev::new(usb, chip, eps).map_err(Failed::Driver)?;
-        let info = dev.attach(&fw).map_err(Failed::Driver)?;
-        dev.init(info.mac).map_err(Failed::Driver)?;
-        Ok(Mediatek { dev, info, rx, channel: 1, heard: VecDeque::new(), bssid: None })
+        let bad = |name| move |_| Failed::BadFirmware(name);
+        let (dev, info) = match (chip.family, patch) {
+            (Family::Mt7601, _) => {
+                let fw = mtw::fw::Firmware::parse(&file).map_err(bad(chip.firmware))?;
+                let mut dev = Dev::new(usb, chip, eps).map_err(Failed::Driver)?;
+                let info = dev.attach(&fw).map_err(Failed::Driver)?;
+                dev.init(info.mac).map_err(Failed::Driver)?;
+                (Driver::Mt7601(dev), info)
+            }
+            (Family::Mt76x2, Some((name, patch))) => {
+                let fw = mt76x2::fw::Firmware::parse(&file).map_err(bad(chip.firmware))?;
+                let patch = mt76x2::fw::RomPatch::parse(&patch).map_err(bad(name))?;
+                let mut dev = mt76x2::dev::Dev::new(usb, chip, eps).map_err(Failed::Driver)?;
+                let info = dev.attach(&patch, &fw).map_err(Failed::Driver)?;
+                dev.init(info.mac).map_err(Failed::Driver)?;
+                (Driver::Mt76x2(dev), info)
+            }
+            (Family::Mt76x2, None) => return Err(Failed::NoFirmware("its ROM patch")),
+        };
+        let channel = match &dev {
+            Driver::Mt7601(_) => 1,
+            Driver::Mt76x2(d) => d.channels()[0],
+        };
+        Ok(Mediatek { dev, info, rx, channel, heard: VecDeque::new(), peer: None })
     }
 
     /// The transfer waiting on the bulk IN endpoint, if one is: its frames
@@ -71,10 +101,19 @@ impl Mediatek {
         if n == 0 || n == usize::MAX {
             return false;
         }
-        let dev = &self.dev;
         let heard = &mut self.heard;
-        rx::frames(&mut xfer[..n], |f| heard.push_back((f.frame.to_vec(), dev.rssi_dbm(f.rssi))));
+        match &mut self.dev {
+            Driver::Mt7601(d) => rx::frames(&mut xfer[..n], |f| heard.push_back((f.frame.to_vec(), d.rssi_dbm(f.rssi)))),
+            Driver::Mt76x2(d) => d.frames(&mut xfer[..n], |f, dbm| heard.push_back((f.to_vec(), dbm))),
+        }
         true
+    }
+
+    fn chip(&self) -> &'static Chip {
+        match &self.dev {
+            Driver::Mt7601(d) => d.chip,
+            Driver::Mt76x2(d) => d.chip,
+        }
     }
 }
 
@@ -86,14 +125,31 @@ pub fn find() -> Option<(Vec<u8>, &'static Chip)> {
     Some((dir, Chip::by_id(id)?))
 }
 
+/// Firmware file `name` from the first firmware directory that has it.
+fn firmware(name: &'static str) -> Result<Vec<u8>, Failed> {
+    FIRMWARE_DIRS.iter().find_map(|d| load(&[d, name.as_bytes()].concat())).ok_or(Failed::NoFirmware(name))
+}
+
 impl Radio for Mediatek {
     fn mac(&self) -> [u8; 6] {
         self.info.mac
     }
 
+    /// The MT7612U's: its board's bands.
+    fn channels(&self) -> Vec<u8> {
+        match &self.dev {
+            Driver::Mt7601(_) => (1..=13).collect(),
+            Driver::Mt76x2(d) => d.channels(),
+        }
+    }
+
     /// What was heard on the channel before is dropped.
     fn set_channel(&mut self, channel: u8) {
-        if self.dev.set_chan(channel).is_ok() {
+        let tuned = match &mut self.dev {
+            Driver::Mt7601(d) => d.set_chan(channel),
+            Driver::Mt76x2(d) => d.set_chan(channel),
+        };
+        if tuned.is_ok() {
             self.channel = channel;
             while self.fill() {}
             self.heard.clear();
@@ -101,7 +157,10 @@ impl Radio for Mediatek {
     }
 
     fn send(&mut self, frame: &[u8]) -> bool {
-        self.dev.send(frame).is_ok()
+        match &mut self.dev {
+            Driver::Mt7601(d) => d.send(frame).is_ok(),
+            Driver::Mt76x2(d) => d.send(frame).is_ok(),
+        }
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Option<Rx> {
@@ -122,25 +181,61 @@ impl Radio for Mediatek {
         !self.heard.is_empty()
     }
 
-    /// Tuned to `bss`'s channel, its address the MAC's BSSID.
+    /// Tuned to `bss`'s channel (calibrated for it), its address the MAC's
+    /// BSSID.
     fn joining(&mut self, bss: &Bss) -> bool {
         self.left();
-        if self.dev.joining(bss.bssid, bss.channel).is_err() {
+        let peer = Peer {
+            bssid: bss.bssid,
+            channel: bss.channel,
+            rates: bss.rates.clone(),
+            ht_mcs: bss.ht_mcs,
+            short_preamble: bss.short_preamble,
+            short_slot: bss.short_slot,
+        };
+        let r = match &mut self.dev {
+            Driver::Mt7601(d) => d.joining(&peer),
+            Driver::Mt76x2(d) => d.joining(&peer),
+        };
+        if r.is_err() {
             return false;
         }
         self.channel = bss.channel;
-        self.bssid = Some(bss.bssid);
+        self.peer = Some(peer);
         true
     }
 
-    fn associated(&mut self, aid: u16) -> bool {
-        self.bssid.is_some_and(|b| self.dev.associated(b, aid).is_ok())
+    /// The access point's rates for AMRR: its MCS over 802.11n.
+    fn associated(&mut self, aid: u16, ht: bool) -> bool {
+        let Some(p) = self.peer.as_ref() else {
+            return false;
+        };
+        match &mut self.dev {
+            Driver::Mt7601(d) => d.associated(p, aid, ht).is_ok(),
+            Driver::Mt76x2(d) => d.associated(p, aid, ht).is_ok(),
+        }
     }
 
     fn left(&mut self) {
-        if self.bssid.take().is_some() {
-            let _ = self.dev.left();
+        if self.peer.take().is_some() {
+            let _ = match &mut self.dev {
+                Driver::Mt7601(d) => d.left(),
+                Driver::Mt76x2(d) => d.left(),
+            };
         }
+    }
+
+    fn ht(&self) -> Option<[u8; 26]> {
+        Some(self.chip().ht_cap)
+    }
+
+    /// AMRR's once-a-second look at the TX statistics (and the MT7612U's
+    /// periodic calibration).
+    fn tick(&mut self) {
+        let _ = match &mut self.dev {
+            Driver::Mt7601(d) => d.calibrate(),
+            Driver::Mt76x2(d) => d.calibrate(),
+        };
     }
 }
 
@@ -149,8 +244,8 @@ pub fn why(chip: &Chip, f: &Failed) -> Vec<u8> {
     let mut s = alloc::format!("wifi: {}: ", chip.name).into_bytes();
     match f {
         Failed::Usb(what) => s.extend_from_slice(what.as_bytes()),
-        Failed::NoFirmware => s.extend_from_slice(alloc::format!("no {} (wifi-firmware fetch)", chip.firmware).as_bytes()),
-        Failed::BadFirmware => s.extend_from_slice(b"its firmware file is not one (wifi-firmware fetch)"),
+        Failed::NoFirmware(name) => s.extend_from_slice(alloc::format!("no {name} (wifi-firmware fetch)").as_bytes()),
+        Failed::BadFirmware(name) => s.extend_from_slice(alloc::format!("{name} is not its firmware (wifi-firmware fetch)").as_bytes()),
         Failed::Driver(e) => s.extend_from_slice(alloc::format!("{e:?}").as_bytes()),
     }
     s.push(b'\n');

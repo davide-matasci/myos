@@ -49,13 +49,17 @@ struct Ap {
     /// The signal the guest hears it with, in dBm.
     rssi: i8,
     wpa2: bool,
+    /// An 802.11n access point (HT and WMM): a station that associates
+    /// with its HT Capabilities sends QoS data, and its plain data frames
+    /// (EAPOL aside) are dropped.
+    ht: bool,
 }
 
 /// The networks of every test boot (`user/wifid/test.sh` expects them).
 const APS: [Ap; 3] = [
-    Ap { ssid: b"myos-open", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x01], channel: 1, rssi: -40, wpa2: false },
-    Ap { ssid: b"myos-wpa2", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x06], channel: 6, rssi: -55, wpa2: true },
-    Ap { ssid: b"myos-far", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x0b], channel: 11, rssi: -82, wpa2: true },
+    Ap { ssid: b"myos-open", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x01], channel: 1, rssi: -40, wpa2: false, ht: true },
+    Ap { ssid: b"myos-wpa2", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x06], channel: 6, rssi: -55, wpa2: true, ht: false },
+    Ap { ssid: b"myos-far", bssid: [0x02, 0x00, 0x5e, 0x00, 0x01, 0x0b], channel: 11, rssi: -82, wpa2: true, ht: false },
 ];
 
 /// What precedes the 802.11 frame in the Ethernet payload.
@@ -132,9 +136,8 @@ pub struct Heard {
     pub frame: Vec<u8>,
 }
 
-/// The access points and their stations, whichever radio reaches them:
-/// the simulated one's UDP datagrams, or the simulated AX201
-/// (`src/ax201_sim.rs`).
+/// The access points and their stations, as the simulated radio's UDP
+/// datagrams reach them.
 pub struct Air {
     start: Instant,
     stations: Stations,
@@ -215,6 +218,8 @@ struct Group {
 #[derive(Default)]
 struct Stations {
     sta: HashMap<([u8; 6], [u8; 6]), Sta>,
+    /// The stations associated over 802.11n.
+    ht: std::collections::HashSet<([u8; 6], [u8; 6])>,
     next_aid: u16,
     groups: HashMap<[u8; 6], Group>,
     /// Makes the nonces and keys: a test network's, not secret.
@@ -259,6 +264,7 @@ impl Stations {
             }
             0x00 if body.len() >= 4 => {
                 let rsn = ie(&body[4..], 48);
+                self.ht.remove(&key);
                 let status = match self.sta.get(&key) {
                     None => STATUS_UNSPECIFIED,
                     Some(_) if ap.wpa2 && rsn.is_none() => STATUS_INVALID_AKMP,
@@ -290,6 +296,12 @@ impl Stations {
                         out.push(data_frame(ap.bssid, sta, eapol::ETHERTYPE, &m1));
                     }
                     self.sta.insert(key, Sta::Associated(aid, hs));
+                    // 802.11n: the station's HT Capabilities and WMM
+                    // Information element.
+                    let wmm = ies(&body[4..], 221).any(|v| v.starts_with(&[0x00, 0x50, 0xf2, 0x02, 0x00]));
+                    if ap.ht && ie(&body[4..], 45).is_some() && wmm {
+                        self.ht.insert(key);
+                    }
                 }
                 let mut f = header(0x10, sta, ap.bssid);
                 let cap: u16 = 0x0001 | if ap.wpa2 { 0x0010 } else { 0 };
@@ -298,11 +310,16 @@ impl Stations {
                 // The association id has its two top bits set.
                 f.extend_from_slice(&(aid | 0xc000).to_le_bytes());
                 push_ie(&mut f, 1, &[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
+                push_ie(&mut f, 50, &[0x30, 0x48, 0x60, 0x6c]);
+                if self.ht.contains(&key) {
+                    push_ht(&mut f, ap.channel);
+                }
                 out.insert(0, f);
                 out
             }
             0xc0 | 0xa0 => {
                 self.sta.remove(&key);
+                self.ht.remove(&key);
                 Vec::new()
             }
             0x08 | 0x88 if frame[1] & 3 == 1 => self.data(ap, sta, frame).unwrap_or_default(),
@@ -342,6 +359,9 @@ impl Stations {
             return None;
         }
         let ethertype = u16::from_be_bytes([body[6], body[7]]);
+        if self.ht.contains(&key) && frame[0] != 0x88 && ethertype != eapol::ETHERTYPE {
+            return None;
+        }
         if keyed.is_some() && ethertype == eapol::ETHERTYPE {
             return self.eapol(ap, sta, &body[8..]);
         }
@@ -521,13 +541,39 @@ fn mgmt(ap: &Ap, subtype: u8, da: [u8; 6], ts_us: u64) -> Vec<u8> {
     let cap: u16 = 0x0001 | if ap.wpa2 { 0x0010 } else { 0 };
     f.extend_from_slice(&cap.to_le_bytes());
     push_ie(&mut f, 0, ap.ssid);
-    // 1, 2, 5.5 and 11 Mb/s basic, 6, 9, 12 and 18.
+    // 1, 2, 5.5 and 11 Mb/s basic, 6, 9, 12 and 18; 24, 36, 48 and 54.
     push_ie(&mut f, 1, &[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
     push_ie(&mut f, 3, &[ap.channel]);
+    push_ie(&mut f, 50, &[0x30, 0x48, 0x60, 0x6c]);
     if ap.wpa2 {
         f.extend_from_slice(&RSN);
     }
+    if ap.ht {
+        push_ht(&mut f, ap.channel);
+    }
     f
+}
+
+/// An 802.11n access point's elements: HT Capabilities (20 MHz, short
+/// guard interval, MCS 0 to 15), HT Operation (no secondary channel) and
+/// the WMM Parameter element (the Wi-Fi Alliance's OUI, type 2, subtype 1;
+/// the usual access categories).
+fn push_ht(f: &mut Vec<u8>, channel: u8) {
+    let mut cap = vec![0x2c, 0x01, 0x03, 0xff, 0xff];
+    cap.resize(26, 0);
+    cap[15] = 0x01;
+    push_ie(f, 45, &cap);
+    let mut op = vec![channel];
+    op.resize(22, 0);
+    push_ie(f, 61, &op);
+    push_ie(
+        f,
+        221,
+        &[
+            0x00, 0x50, 0xf2, 0x02, 0x01, 0x01, 0x00, 0x00, 0x03, 0xa4, 0x00, 0x00, 0x27, 0xa4, 0x00, 0x00, 0x42,
+            0x43, 0x5e, 0x00, 0x62, 0x32, 0x2f, 0x00,
+        ],
+    );
 }
 
 fn push_ie(f: &mut Vec<u8>, id: u8, body: &[u8]) {
@@ -536,17 +582,25 @@ fn push_ie(f: &mut Vec<u8>, id: u8, body: &[u8]) {
     f.extend_from_slice(body);
 }
 
-/// The body of the first element `id` in `ies`.
-fn ie(mut ies: &[u8], id: u8) -> Option<&[u8]> {
-    while ies.len() >= 2 {
-        let len = ies[1] as usize;
-        let body = ies.get(2..2 + len)?;
-        if ies[0] == id {
-            return Some(body);
+/// The bodies of the elements `id` in `ies`.
+fn ies(mut rest: &[u8], id: u8) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        while rest.len() >= 2 {
+            let len = rest[1] as usize;
+            let body = rest.get(2..2 + len)?;
+            let this = rest[0];
+            rest = &rest[2 + len..];
+            if this == id {
+                return Some(body);
+            }
         }
-        ies = &ies[2 + len..];
-    }
-    None
+        None
+    })
+}
+
+/// The body of the first element `id` in `ies`.
+fn ie(elements: &[u8], id: u8) -> Option<&[u8]> {
+    ies(elements, id).next()
 }
 
 fn wrap(hdr: SimHeader, frame: &[u8]) -> Vec<u8> {

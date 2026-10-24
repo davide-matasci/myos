@@ -6,7 +6,8 @@
 mod model;
 
 use mtw::chip::{self, MT7601U};
-use mtw::dev::{Dev, Error};
+use mtw::dev::{Dev, Error, Peer};
+use mtw::rate::TxRate;
 use mtw::fw::{self, Firmware};
 use mtw::reg::{self, MCU_IVB_LEN};
 use mtw::rx;
@@ -26,9 +27,15 @@ impl Usb for Host {
         self.0.vendor_in(request, value, index, data);
         Ok(())
     }
+    fn class_out(&mut self, request: u8, _value: u16, _index: u16, _data: &[u8]) -> Result<(), UsbError> {
+        panic!("model: class request {request:#x} to an MT7601U");
+    }
     fn bulk_out(&mut self, endpoint: u8, data: &[u8]) -> Result<(), UsbError> {
         self.0.bulk_out(endpoint, data);
         Ok(())
+    }
+    fn bulk_in(&mut self, endpoint: u8, _buf: &mut [u8], _timeout_ms: u32) -> Result<usize, UsbError> {
+        panic!("model: the MT7601U's MCU answers nothing (read of {endpoint:#x})");
     }
     fn delay_us(&mut self, _us: u32) {}
 }
@@ -61,6 +68,79 @@ fn hear(dev: &mut Dev<Host>) -> Vec<(Vec<u8>, i8)> {
     let mut heard = Vec::new();
     rx::frames(&mut xfer, |f| heard.push((f.frame.to_vec(), f.rssi)));
     heard.into_iter().map(|(f, r)| (f, dev.rssi_dbm(r))).collect()
+}
+
+/// The body of the first information element `id` of a beacon.
+fn ie(beacon: &[u8], id: u8) -> Option<&[u8]> {
+    let mut ies = &beacon[36..];
+    while ies.len() >= 2 {
+        let len = usize::from(ies[1]);
+        if ies[0] == id {
+            return ies.get(2..2 + len);
+        }
+        ies = &ies[2 + len..];
+    }
+    None
+}
+
+/// The access point a beacon describes, as the daemon reads it.
+fn peer(beacon: &[u8]) -> Peer {
+    let cap = u16::from_le_bytes([beacon[34], beacon[35]]);
+    Peer {
+        bssid: beacon[16..22].try_into().unwrap(),
+        channel: ie(beacon, 3).unwrap()[0],
+        rates: [ie(beacon, 1).unwrap_or(&[]), ie(beacon, 50).unwrap_or(&[])].concat(),
+        ht_mcs: ie(beacon, 45).map(|ht| u16::from_le_bytes([ht[3], ht[4]])),
+        short_preamble: cap & 0x20 != 0,
+        short_slot: cap & 0x400 != 0,
+    }
+}
+
+/// The beacon of the network `name` on `chan`.
+fn beacon(dev: &mut Dev<Host>, chan: u8, name: &[u8]) -> Vec<u8> {
+    dev.set_chan(chan).unwrap();
+    hear(dev).into_iter().map(|(f, _)| f).find(|f| f[0] == 0x80 && ssid(f) == name).expect("its beacon")
+}
+
+/// Join network `name` on `chan` (802.11n when `ht`): its peer and the
+/// association id.
+fn join(dev: &mut Dev<Host>, chan: u8, name: &[u8], ht: bool) -> (Peer, u16) {
+    let p = peer(&beacon(dev, chan, name));
+    dev.joining(&p).unwrap();
+    assert_eq!(dev.usb.0.bssid(), p.bssid);
+    dev.send(&mgmt(0xb0, p.bssid, &[0, 0, 1, 0, 0, 0])).unwrap();
+    let auth = hear(dev).into_iter().find(|(f, _)| f[0] == 0xb0).expect("authentication answered");
+    assert_eq!(&auth.0[24..30], &[0, 0, 2, 0, 0, 0]);
+    dev.send(&mgmt(0x00, p.bssid, &[0x01, 0x00, 10, 0, 0, 9])).unwrap();
+    let assoc = hear(dev).into_iter().find(|(f, _)| f[0] == 0x10).expect("association answered");
+    let aid = u16::from_le_bytes([assoc.0[28], assoc.0[29]]) & 0x3fff;
+    dev.associated(&p, aid, ht).unwrap();
+    assert_eq!(dev.usb.0.bytes(reg::WCID_ENTRY0 + 8 * u16::from(reg::aid_to_wcid(aid)), 6), &p.bssid);
+    (p, aid)
+}
+
+/// A data frame from the station to the distribution system through `bssid`.
+fn data(bssid: [u8; 6]) -> Vec<u8> {
+    let mut f = vec![0x08, 0x01, 0, 0];
+    f.extend_from_slice(&bssid);
+    f.extend_from_slice(&MAC);
+    f.extend_from_slice(&[0xff; 6]);
+    f.extend_from_slice(&[0, 0, 0xaa, 0xaa, 3, 0, 0, 0, 0x08, 0x00, 0x45]);
+    f
+}
+
+/// `seconds` of traffic: 20 data frames to `bssid` a second, then the
+/// once-a-second calibration; the rates AMRR chose, second by second.
+fn traffic(dev: &mut Dev<Host>, bssid: [u8; 6], seconds: usize) -> Vec<TxRate> {
+    let mut rates = Vec::new();
+    for _ in 0..seconds {
+        for _ in 0..20 {
+            dev.send(&data(bssid)).unwrap();
+        }
+        dev.calibrate().unwrap();
+        rates.push(dev.tx_rate());
+    }
+    rates
 }
 
 fn ssid(beacon: &[u8]) -> &[u8] {
@@ -149,33 +229,58 @@ fn channels_and_scan() {
 #[test]
 fn join_send_leave() {
     let mut dev = up(&firmware());
-    let bssid = [0x02, 0x00, 0x5e, 0x00, 0x01, 0x01];
-    dev.joining(bssid, 1).unwrap();
-    assert_eq!(dev.usb.0.bssid(), bssid);
-
-    dev.send(&mgmt(0xb0, bssid, &[0, 0, 1, 0, 0, 0])).unwrap();
-    let auth = hear(&mut dev).into_iter().find(|(f, _)| f[0] == 0xb0).expect("authentication answered");
-    assert_eq!(&auth.0[24..30], &[0, 0, 2, 0, 0, 0]);
-    dev.send(&mgmt(0x00, bssid, &[0x01, 0x00, 10, 0, 0, 9])).unwrap();
-    let assoc = hear(&mut dev).into_iter().find(|(f, _)| f[0] == 0x10).expect("association answered");
-    let aid = u16::from_le_bytes([assoc.0[28], assoc.0[29]]) & 0x3fff;
-    dev.associated(bssid, aid).unwrap();
-    assert_eq!(dev.usb.0.bytes(reg::WCID_ENTRY0 + 8 * u16::from(reg::aid_to_wcid(aid)), 6), &bssid);
-
-    // A data frame to the access point: OFDM, ACKed, its entry.
-    let mut data = vec![0x08, 0x01, 0, 0];
-    data.extend_from_slice(&bssid);
-    data.extend_from_slice(&MAC);
-    data.extend_from_slice(&[0xff; 6]);
-    data.extend_from_slice(&[0, 0, 0xaa, 0xaa, 3, 0, 0, 0, 0x08, 0x00, 0x45]);
-    dev.send(&data).unwrap();
+    let (p, aid) = join(&mut dev, 1, b"myos-open", false);
+    // A data frame to the access point: the slowest of its rates to start
+    // with, ACKed, its entry.
+    let frame = data(p.bssid);
+    dev.send(&frame).unwrap();
     let s = dev.usb.0.sent.last().unwrap();
-    assert_eq!(s.phy >> reg::PHY_SHIFT, reg::PHY_OFDM);
+    assert_eq!(s.phy, 0);
     assert_eq!((s.endpoint, s.wcid, s.acked), (EP_DATA[0], reg::aid_to_wcid(aid), true));
-    assert_eq!(&s.frame[4..], &data[4..]);
+    assert_eq!(&s.frame[4..], &frame[4..]);
+    // Its basic rates are the MAC's, its preamble and slot the long ones.
+    assert_eq!(dev.usb.0.reg(reg::LEGACY_BASIC_RATE), 0xf);
+    assert_eq!(dev.usb.0.reg(reg::BKOFF_SLOT_CFG) & 0xff, 20);
 
     dev.left().unwrap();
     assert_eq!(dev.usb.0.bssid(), [0; 6]);
+    assert_eq!(dev.tx_rate(), TxRate::Legacy(reg::RIDX_CCK1));
     dev.stop().unwrap();
     assert!(!dev.usb.0.radio_on);
+}
+
+#[test]
+fn rate_adaptation_ht() {
+    // An 802.11n network with a strong signal: AMRR climbs a MCS a second
+    // from MCS 0, to MCS 7, and stays.
+    let mut dev = up(&firmware());
+    let (p, _) = join(&mut dev, 1, b"myos-open", true);
+    assert_eq!(p.ht_mcs, Some(0xffff));
+    assert_eq!(dev.tx_rate(), TxRate::Ht(0));
+    let rates = traffic(&mut dev, p.bssid, 10);
+    assert_eq!(&rates[..7], &(1..8).map(TxRate::Ht).collect::<Vec<_>>()[..]);
+    assert!(rates[7..].iter().all(|&r| r == TxRate::Ht(7)));
+    let s = dev.usb.0.sent.last().unwrap();
+    assert_eq!((s.phy, s.acked), (reg::PHY_HT << reg::PHY_SHIFT | 7, true));
+}
+
+#[test]
+fn rate_adaptation_weak() {
+    // An 802.11g network whose signal carries 9 Mb/s: AMRR climbs to it,
+    // tries 11 Mb/s now and then, and is back at 9 or under after each.
+    let mut dev = up(&firmware());
+    let (p, _) = join(&mut dev, 11, b"myos-far", false);
+    let rates = traffic(&mut dev, p.bssid, 40);
+    let kbps = |r: &TxRate| match r {
+        TxRate::Legacy(i) => u32::from(reg::RATES[*i].rate) * 500,
+        TxRate::Ht(_) => panic!("an 802.11g network"),
+    };
+    assert!(rates.iter().any(|r| kbps(r) == 9000));
+    assert!(rates.iter().all(|r| kbps(r) <= 11_000));
+    // A failure after an increase doubles the wait before the next: the
+    // tries at 11 Mb/s get rarer.
+    let tries: Vec<usize> = (0..rates.len()).filter(|&i| kbps(&rates[i]) == 11_000).collect();
+    assert!(tries.len() >= 2 && tries.len() <= 8, "{tries:?}");
+    let (fails, ..) = dev.usb.0.tx_counts();
+    assert!(fails < 20, "the counters were read: {fails}");
 }

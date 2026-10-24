@@ -1,12 +1,12 @@
 //! A USB device driven through `/dev/usb/NNN` (modules/usbdev,
-//! docs/usb.md): vendor requests through `ep0`, writes to its bulk OUT
-//! endpoints, reads of its bulk IN one, for the MediaTek radios' driver
-//! (the `mtw` crate).
+//! docs/usb.md): vendor and class requests through `ep0`, writes to its
+//! bulk OUT endpoints, reads of its bulk IN ones, for the MediaTek radios'
+//! driver (the `mtw` crate).
 
 use alloc::vec::Vec;
 
 use mtw::usb::{Usb as Bus, UsbError};
-use myos_user::{close, monotonic_ns, open_flags, read, sleep_ns, write_fd, O_RDWR};
+use myos_user::{close, monotonic_ns, open_flags, poll, read, sleep_ns, write_fd, PollFd, O_RDONLY, O_RDWR, POLLIN};
 
 use crate::devs::{self, hex, path, slurp};
 
@@ -15,9 +15,9 @@ pub struct Usb {
     ctl: usize,
     ep0: usize,
     /// The bulk endpoints in the interface's order, and the fd of each
-    /// OUT one (opened when first written).
+    /// one the driver uses (opened when first written or read).
     pub bulk: Vec<u8>,
-    outs: Vec<(u8, usize)>,
+    files: Vec<(u8, usize)>,
 }
 
 /// The first device under `/dev/usb` whose `id VVVV:PPPP` is one of
@@ -34,7 +34,7 @@ impl Usb {
             close(ctl);
             return Err("ep0");
         };
-        let mut u = Usb { dir: dir.to_vec(), ctl, ep0, bulk: Vec::new(), outs: Vec::new() };
+        let mut u = Usb { dir: dir.to_vec(), ctl, ep0, bulk: Vec::new(), files: Vec::new() };
         let text = slurp(&path(dir, b"/info", b"")).ok_or("info")?;
         // `epXX bulk in|out MAXPACKET` lines.
         for l in text.split(|&c| c == b'\n') {
@@ -54,6 +54,16 @@ impl Usb {
         open_flags(&path(&self.dir, &name, b""), flags)
     }
 
+    /// Endpoint `address`'s file, opened the first time.
+    fn held(&mut self, address: u8) -> Result<usize, UsbError> {
+        if let Some(&(_, fd)) = self.files.iter().find(|(a, _)| *a == address) {
+            return Ok(fd);
+        }
+        let fd = self.endpoint(address, if address & 0x80 != 0 { O_RDONLY } else { O_RDWR }).ok_or(UsbError)?;
+        self.files.push((address, fd));
+        Ok(fd)
+    }
+
     /// One control transfer: setup packet, then an OUT data stage.
     fn control(&mut self, request_type: u8, request: u8, value: u16, index: u16, len: usize, out: &[u8]) -> bool {
         let mut x = Vec::with_capacity(8 + out.len());
@@ -68,7 +78,7 @@ impl Usb {
 
 impl Drop for Usb {
     fn drop(&mut self) {
-        for &(_, fd) in &self.outs {
+        for &(_, fd) in &self.files {
             close(fd);
         }
         close(self.ep0);
@@ -89,16 +99,27 @@ impl Bus for Usb {
         (read(self.ep0, data) == data.len()).then_some(()).ok_or(UsbError)
     }
 
+    fn class_out(&mut self, request: u8, value: u16, index: u16, data: &[u8]) -> Result<(), UsbError> {
+        self.control(0x20, request, value, index, data.len(), data).then_some(()).ok_or(UsbError)
+    }
+
     fn bulk_out(&mut self, endpoint: u8, data: &[u8]) -> Result<(), UsbError> {
-        let fd = match self.outs.iter().find(|(a, _)| *a == endpoint) {
-            Some(&(_, fd)) => fd,
-            None => {
-                let fd = self.endpoint(endpoint, O_RDWR).ok_or(UsbError)?;
-                self.outs.push((endpoint, fd));
-                fd
-            }
-        };
+        let fd = self.held(endpoint)?;
         (write_fd(fd, data) == data.len()).then_some(()).ok_or(UsbError)
+    }
+
+    /// The endpoint's file keeps a transfer queued once opened: a poll
+    /// waits for it.
+    fn bulk_in(&mut self, endpoint: u8, buf: &mut [u8], timeout_ms: u32) -> Result<usize, UsbError> {
+        let fd = self.held(endpoint)?;
+        let mut fds = [PollFd { fd: fd as i32, events: POLLIN, revents: 0 }];
+        if poll(&mut fds, timeout_ms as i32) != 1 {
+            return Ok(0);
+        }
+        match read(fd, buf) {
+            usize::MAX | 0 => Err(UsbError),
+            n => Ok(n),
+        }
     }
 
     fn delay_us(&mut self, us: u32) {

@@ -140,7 +140,8 @@ fn send_eapol(radio: &mut dyn Radio, bssid: [u8; 6], pdu: &[u8], rsn: Option<&mu
     eth.extend_from_slice(&me);
     eth.extend_from_slice(&eapol::ETHERTYPE.to_be_bytes());
     eth.extend_from_slice(pdu);
-    let Some(f) = frame::data_to_ds(me, bssid, &eth) else {
+    // Plain data: an EAPOL frame goes as one on any link.
+    let Some(f) = frame::data_to_ds(me, bssid, &eth, false) else {
         return;
     };
     match rsn {

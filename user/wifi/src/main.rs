@@ -1,14 +1,15 @@
 //! `wifi`: the Wi-Fi daemon and its command (issue #495, `docs/wifi.md`).
 //!
 //! - `wifi daemon [NIC]` drives the radio: an Intel AX201 or AX200 when
-//!   `/dev/pci` has one and no NIC is named, else a MediaTek MT7601U when
-//!   `/dev/usb` has one, else a Broadcom CYW43455 or CYW43438 (the
-//!   Raspberry Pi's) when `/dev/sdio` has one (their firmware from
+//!   `/dev/pci` has one and no NIC is named, else a MediaTek MT7601U or
+//!   MT7612U when `/dev/usb` has one, else a Broadcom CYW43455 or CYW43438
+//!   (the Raspberry Pi's) when `/dev/sdio` has one (their firmware from
 //!   `wifi-firmware fetch`), else the simulated one on NIC (default
 //!   `/dev/net1`, the test boots' second NIC, `src/wifi_sim.rs`).
 //!   It listens on the unix socket `wifid` for the commands below, one per
 //!   connection: a line in, the answer out, then the connection ends.
-//! - `wifi scan`: a scan of the 2.4 GHz channels; prints what answered.
+//! - `wifi scan`: a scan of the radio's channels (2.4 GHz, and 5 GHz on a
+//!   dual-band one); prints what answered.
 //! - `wifi list`: what the last scan found.
 //! - `wifi connect SSID [PASSPHRASE]`: join the network SSID (the
 //!   strongest the last scan heard, after a scan when it heard none): an
@@ -70,13 +71,18 @@ pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
     main()
 }
 
-/// The 2.4 GHz channels a scan visits.
-const CHANNELS: core::ops::RangeInclusive<u8> = 1..=13;
 /// How long a scan listens on each channel after its probe request, in
 /// ms: beacons come every 100 TU (102.4 ms), so one is heard too.
 const DWELL_MS: u64 = 120;
 /// How often a FullMAC radio without an interrupt line is looked at, ms.
 const LOOK_MS: i32 = 20;
+
+/// Whether 5 GHz channel `ch` is one where radar has precedence (DFS,
+/// UNII-2A and -2C): a station only listens there until it hears an
+/// access point.
+fn radar(ch: u8) -> bool {
+    (52..=144).contains(&ch)
+}
 
 fn usage() -> ! {
     write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID [PASSPHRASE] | status | disconnect\n");
@@ -193,6 +199,7 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
     // The link's NIC, there while `link` is.
     let mut tap: Option<Tap> = None;
     let mut frame = [0u8; 2048];
+    let mut tick = monotonic_ns();
     loop {
         let mut fds = Vec::from([
             PollFd { fd: listener.data as i32, events: POLLIN, revents: 0 },
@@ -201,7 +208,19 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
         if let Some(t) = &tap {
             fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
         }
-        poll(&mut fds, if radio.pending() { 0 } else { -1 });
+        // A link wakes the loop every second for the radio's tick.
+        let wait = if radio.pending() {
+            0
+        } else if link.is_some() {
+            1000
+        } else {
+            -1
+        };
+        poll(&mut fds, wait);
+        if link.is_some() && monotonic_ns() >= tick + 1_000_000_000 {
+            tick = monotonic_ns();
+            radio.tick();
+        }
         // What the radio hears between commands: data for the link's NIC
         // (decrypted first on a WPA2 network, where the access point may
         // also start a group key handshake); the access point letting the
@@ -217,6 +236,13 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
                 continue;
             }
             let (me, bssid) = (radio.mac(), l.bss.bssid);
+            // A block ack session the access point offers: declined.
+            if let Some((frame::ACTION, body)) = frame::from_ap(f, me, bssid) {
+                if let Some(answer) = frame::addba_declined(me, bssid, body) {
+                    radio.send(&answer);
+                }
+                continue;
+            }
             let clear;
             let f = match l.rsn.as_mut() {
                 Some(r) => match r.open(f) {
@@ -237,7 +263,7 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
         // What netd sends on the link.
         if let (Some(t), Some(l)) = (&tap, &mut link) {
             while let Some(n) = t.recv(&mut frame) {
-                let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n]) else {
+                let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n], l.qos) else {
                     continue;
                 };
                 match l.rsn.as_mut() {
@@ -523,8 +549,9 @@ fn status(link: Option<(&Bss, u16)>) -> Vec<u8> {
     out
 }
 
-/// Visit every channel: a wildcard probe request, then whatever beacons and
-/// probe responses are heard for [`DWELL_MS`]; or the radio's own scan.
+/// Visit every channel of the radio: a wildcard probe request (none on a
+/// radar channel), then whatever beacons and probe responses are heard
+/// for [`DWELL_MS`]; or the radio's own scan.
 fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
     let mut seen: Vec<Seen> = Vec::new();
     if let Some(heard) = radio.scan() {
@@ -537,9 +564,11 @@ fn scan(radio: &mut dyn Radio) -> Vec<Seen> {
         return seen;
     }
     let mut buf = [0u8; 2048];
-    for ch in CHANNELS {
+    for ch in radio.channels() {
         radio.set_channel(ch);
-        radio.send(&frame::probe_request(radio.mac()));
+        if !radar(ch) {
+            radio.send(&frame::probe_request(radio.mac(), ch));
+        }
         let end = monotonic_ns() + DWELL_MS * 1_000_000;
         loop {
             while let Some(rx) = radio.recv(&mut buf) {
@@ -658,7 +687,8 @@ fn client() -> ! {
     let mut buf = [0u8; 1024];
     let mut error = false;
     loop {
-        // A scan takes CHANNELS × DWELL_MS: well within the wait.
+        // A scan takes the radio's channels × DWELL_MS (38 channels on a
+        // dual-band radio: under 5 s), well within the wait.
         let n = conn.read(&mut buf, 30_000);
         if n == 0 {
             break;

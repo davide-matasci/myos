@@ -6,6 +6,7 @@
 
 use crate::chip::Chip;
 use crate::fw::Firmware;
+use crate::rate::{Amrr, RateSet, TxRate};
 use crate::reg::*;
 use crate::tx::{self, Queue};
 use crate::usb::{Endpoints, Usb, UsbError};
@@ -30,6 +31,22 @@ impl From<UsbError> for Error {
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
+
+/// The access point joined, as its beacon describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub bssid: [u8; 6],
+    pub channel: u8,
+    /// Its legacy rates (Supported Rates bytes: 500 kb/s units, the basic
+    /// ones with bit 7 set).
+    pub rates: alloc::vec::Vec<u8>,
+    /// Its HT Capabilities' RX MCS bitmap, the first two bytes (MCS 0 to
+    /// 15), when it is an 802.11n access point.
+    pub ht_mcs: Option<u16>,
+    /// Its capabilities: short preambles, short slots.
+    pub short_preamble: bool,
+    pub short_slot: bool,
+}
 
 /// What the radio says of itself once attached.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -67,10 +84,11 @@ pub struct Dev<U: Usb> {
     /// The channel group set up (sc_chan_group, sc_bw_calibrated).
     chan_group: Option<u8>,
     rf_calibrated: bool,
-    /// The station's table entry for the access point joined, and the
-    /// rate data frames to it go at.
+    /// The station's table entry for the access point joined, the rates
+    /// data frames to it go at, and its preamble.
     wcid: u8,
-    ridx: usize,
+    amrr: Option<Amrr>,
+    short_preamble: bool,
 }
 
 impl<U: Usb> Dev<U> {
@@ -88,7 +106,7 @@ impl<U: Usb> Dev<U> {
         if ver == 0 || ver == 0xffff_ffff {
             return Err(Error::Timeout("the NIC to initialize"));
         }
-        if (ver >> 16) as u16 != chip.asic_ver {
+        if !chip.asic.contains(&((ver >> 16) as u16)) {
             return Err(Error::Chip((ver >> 16) as u16));
         }
         Ok(Dev {
@@ -100,9 +118,8 @@ impl<U: Usb> Dev<U> {
             chan_group: None,
             rf_calibrated: false,
             wcid: 0xff,
-            // No rate adaptation yet (issue #552): the hardware falls back
-            // on retries.
-            ridx: RIDX_OFDM24,
+            amrr: None,
+            short_preamble: false,
         })
     }
 
@@ -237,29 +254,66 @@ impl<U: Usb> Dev<U> {
         Ok(())
     }
 
-    /// About to authenticate with `bssid` on `chan`: there, and its
-    /// address the MAC's BSSID.
-    pub fn joining(&mut self, bssid: [u8; 6], chan: u8) -> Result<()> {
-        self.set_chan(chan)?;
-        self.set_bssid(bssid)
+    /// About to authenticate with `peer`: on its channel, its address the
+    /// MAC's BSSID.
+    pub fn joining(&mut self, peer: &Peer) -> Result<()> {
+        self.set_chan(peer.channel)?;
+        self.set_bssid(peer.bssid)
     }
 
-    /// Associated to `bssid` as `aid` (mtw_newstate_cb's RUN state):
-    /// the slot time, rate fallback, preamble and basic rates set for an
-    /// 802.11g network, the access point in the station table. The
-    /// beacon timer (TSF sync) is left off: the station does not sleep.
-    pub fn associated(&mut self, bssid: [u8; 6], aid: u16) -> Result<()> {
-        // A long slot: right on any network (a short one is 11g only).
+    /// Associated to `peer` as `aid`, over 802.11n when `ht` (the
+    /// association asked for it), as mtw_newstate_cb's RUN state and
+    /// mtw_newassoc set the station up: the slot time, rate fallback,
+    /// preamble and basic rates of the network, the access point in the
+    /// station table, its rates for AMRR, which starts at the slowest.
+    /// The beacon timer (TSF sync) is left off: the station does not
+    /// sleep.
+    pub fn associated(&mut self, peer: &Peer, aid: u16, ht: bool) -> Result<()> {
         let tmp = self.read(BKOFF_SLOT_CFG)?;
-        self.write(BKOFF_SLOT_CFG, (tmp & !0xff) | 20)?;
+        self.write(BKOFF_SLOT_CFG, (tmp & !0xff) | if peer.short_slot { 9 } else { 20 })?;
         self.enable_mrr()?;
         let tmp = self.read(AUTO_RSP_CFG)?;
-        self.write(AUTO_RSP_CFG, tmp & !CCK_SHORT_EN)?;
-        self.write(LEGACY_BASIC_RATE, 0x17f)?;
-        self.set_bssid(bssid)?;
+        let tmp = if peer.short_preamble { tmp | CCK_SHORT_EN } else { tmp & !CCK_SHORT_EN };
+        self.write(AUTO_RSP_CFG, tmp)?;
+        self.write(LEGACY_BASIC_RATE, basic_rates(&peer.rates))?;
+        self.set_bssid(peer.bssid)?;
         self.wcid = aid_to_wcid(aid);
-        self.write_region_1(WCID_ENTRY0 + 8 * u16::from(self.wcid), &bssid)?;
+        self.write_region_1(WCID_ENTRY0 + 8 * u16::from(self.wcid), &peer.bssid)?;
+        self.short_preamble = peer.short_preamble;
+        self.amrr = Some(Amrr::new(RateSet::new(&peer.rates, peer.ht_mcs.filter(|_| ht), 1)));
+        // The counters start from the association.
+        self.tx_stats()?;
         self.set_leds(LED_MODE_BLINK_TX)
+    }
+
+    /// Once a second while associated: the last second's TX statistics to
+    /// AMRR, which may change the rate (mtw_calibrate_cb).
+    pub fn calibrate(&mut self) -> Result<()> {
+        if self.amrr.is_none() {
+            return Ok(());
+        }
+        let (tx, retries) = self.tx_stats()?;
+        if let Some(a) = self.amrr.as_mut() {
+            a.update(tx, retries);
+        }
+        Ok(())
+    }
+
+    /// The rate data frames to the access point go at now (1 Mb/s when
+    /// not associated).
+    pub fn tx_rate(&self) -> TxRate {
+        self.amrr.as_ref().map_or(TxRate::Legacy(RIDX_CCK1), Amrr::rate)
+    }
+
+    /// The TX counters since they were last read (they clear when read):
+    /// frames sent counting their retries, and the retries and failures
+    /// among them.
+    fn tx_stats(&mut self) -> Result<(u32, u32)> {
+        let fail = self.read(TX_STA_CNT0)? & 0xffff;
+        let cnt1 = self.read(TX_STA_CNT1)?;
+        self.read(TX_STA_CNT2)?;
+        let retries = fail + (cnt1 >> 16);
+        Ok((retries + (cnt1 & 0xffff), retries))
     }
 
     /// The network left: no BSSID, the access point's entry cleared.
@@ -268,6 +322,7 @@ impl<U: Usb> Dev<U> {
             self.set_region_4(WCID_ENTRY0 + 8 * u16::from(self.wcid), 0xffff_ffff, 2)?;
             self.wcid = 0xff;
         }
+        self.amrr = None;
         self.set_bssid([0; 6])?;
         self.set_leds(LED_MODE_ON)
     }
@@ -277,7 +332,7 @@ impl<U: Usb> Dev<U> {
         if frame.len() < 24 {
             return Err(Error::Usb);
         }
-        let (queue, xfer) = tx::transfer(frame, self.ridx, self.wcid);
+        let (queue, xfer) = tx::transfer(frame, self.tx_rate(), self.wcid, self.short_preamble);
         let ep = match queue {
             Queue::Mcu => self.eps.mcu,
             Queue::Data(ac) => self.eps.data[ac],
@@ -798,6 +853,15 @@ impl<U: Usb> Dev<U> {
         )?;
         self.write(LG_FBK_CFG1, 2 << 12 | 1 << 8)
     }
+}
+
+/// LEGACY_BASIC_RATE: a bit per `reg::RATES` index the access point says
+/// is basic (mtw_set_basicrates' 0x17f for 802.11g when it says none).
+fn basic_rates(rates: &[u8]) -> u32 {
+    let mask = (0..RATES.len())
+        .filter(|&r| rates.iter().any(|&v| v & 0x80 != 0 && v & 0x7f == RATES[r].rate))
+        .fold(0, |m, r| m | 1 << r);
+    if mask == 0 { 0x17f } else { mask }
 }
 
 /// A register: four bytes of the device's (mtw_read).
