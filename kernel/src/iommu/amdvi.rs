@@ -153,11 +153,15 @@ struct Unit {
     inv_all: bool,
 }
 
-/// A device's interrupt remapping table and the entries given out.
+/// A device's interrupt remapping table: the entries given out (index
+/// and vector), how far they ever went, those given back for the next
+/// ones.
 struct IrTable {
     devid: u16,
     table: u64,
-    used: u16,
+    given: Vec<(u16, u8)>,
+    next: u16,
+    free: Vec<u16>,
 }
 
 /// A function's own domain.
@@ -500,20 +504,50 @@ pub fn remap(source: Source, vector: u8) -> Option<u16> {
             unsafe { e.add(2).write_volatile(DTE_IV | IRT_LEN_LOG2 << DTE_INT_LEN_SHIFT | table | DTE_INTCTL_REMAP) };
             core::sync::atomic::fence(Ordering::SeqCst);
             submit(u, &[[CMD_INVALIDATE_DTE | u64::from(dev), 0]]);
-            st.irts.push(IrTable { devid: dev, table, used: 0 });
+            st.irts.push(IrTable { devid: dev, table, given: Vec::new(), next: 0, free: Vec::new() });
             st.irts.len() - 1
         }
     };
     let t = &mut st.irts[ti];
-    if t.used >= IRT_ENTRIES {
-        return None;
-    }
-    let idx = t.used;
-    t.used += 1;
+    let idx = match t.free.pop() {
+        Some(idx) => idx,
+        None if t.next < IRT_ENTRIES => {
+            t.next += 1;
+            t.next - 1
+        }
+        None => return None,
+    };
+    t.given.push((idx, vector));
     unsafe { (mm::hhdm(t.table) as *mut u32).add(usize::from(idx)).write_volatile(IRTE_EN | (apic as u32 & 0xff) << 8 | u32::from(vector) << 16) };
     core::sync::atomic::fence(Ordering::SeqCst);
     submit(u, &[[CMD_INVALIDATE_IRT | u64::from(dev), 0]]);
     Some(idx)
+}
+
+/// Give back the entry [`remap`] gave PCI function `bus:slot.func` for
+/// `vector`: cleared (a message naming it is refused) and free for the
+/// next one. False when it has none.
+pub fn unmap(bus: u8, slot: u8, func: u8, vector: u8) -> bool {
+    let mut guard = STATE.lock();
+    let Some(st) = guard.as_mut() else {
+        return false;
+    };
+    let dev = devid(bus, slot, func);
+    let Some(ui) = unit_for(st, dev) else {
+        return false;
+    };
+    let Some(t) = st.irts.iter_mut().find(|t| t.devid == dev) else {
+        return false;
+    };
+    let Some(i) = t.given.iter().position(|&(_, v)| v == vector) else {
+        return false;
+    };
+    let idx = t.given.swap_remove(i).0;
+    unsafe { (mm::hhdm(t.table) as *mut u32).add(usize::from(idx)).write_volatile(0) };
+    core::sync::atomic::fence(Ordering::SeqCst);
+    t.free.push(idx);
+    submit(&st.units[ui], &[[CMD_INVALIDATE_IRT | u64::from(dev), 0]]);
+    true
 }
 
 pub fn attach(bus: u8, slot: u8, func: u8) -> Option<u32> {

@@ -116,6 +116,13 @@ pub fn remap_msi(bus: u8, slot: u8, func: u8, vector: u8) -> Option<(u32, u32)> 
     x86::remap_msi(bus, slot, func, vector)
 }
 
+/// Give back the remapping entry [`remap_msi`] gave PCI function
+/// `bus:slot.func` for `vector`, once the function no longer sends it.
+#[cfg(target_arch = "x86_64")]
+pub fn unmap_msi(bus: u8, slot: u8, func: u8, vector: u8) {
+    x86::unmap_msi(bus, slot, func, vector)
+}
+
 /// The same for an I/O APIC pin (`level`: its trigger mode): its
 /// redirection entry's high dword, and the bits of the low one beside the
 /// mask, polarity and trigger bits.

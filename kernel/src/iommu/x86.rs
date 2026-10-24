@@ -86,6 +86,21 @@ pub fn remap_msi(bus: u8, slot: u8, func: u8, vector: u8) -> Option<(u32, u32)> 
     }
 }
 
+/// Give back the remapping entry [`remap_msi`] gave the function for
+/// `vector` (its interrupt is gone: `irq::pci_irq_release`). Nothing where
+/// messages are not remapped.
+pub fn unmap_msi(bus: u8, slot: u8, func: u8, vector: u8) {
+    match kind() {
+        VTD => {
+            vtd::unmap(bus, slot, func, vector);
+        }
+        AMDVI => {
+            amdvi::unmap(bus, slot, func, vector);
+        }
+        _ => {}
+    }
+}
+
 /// The same for an I/O APIC pin (`level`: its trigger mode): its
 /// redirection entry's high dword and the bits of the low one beside the
 /// mask, polarity and trigger bits. VT-d: the remappable format (bit 48,
