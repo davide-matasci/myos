@@ -9,7 +9,7 @@
 //! `init` ELF (no `module_init`).
 
 pub mod elf;
-mod registry;
+pub(crate) mod registry;
 mod services;
 mod threads;
 
@@ -151,6 +151,8 @@ static API: KernelApi = KernelApi {
     irq_dispatch: api_irq_dispatch,
     pci_bar_phys: api_pci_bar_phys,
     dma_coherent: api_dma_coherent,
+    pci_irq_disable: api_pci_irq_disable,
+    irq_disable: api_irq_disable,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -742,12 +744,9 @@ unsafe extern "C" fn api_pci_irq_enable(
         let bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
         core::str::from_utf8(bytes).unwrap_or("pci")
     };
-    let Some(route) = crate::irq::pci_irq_setup(bus, slot, func) else {
+    let Some(route) = crate::irq::pci_irq_enable(bus, slot, func, name, handler, ctx as usize) else {
         return -1;
     };
-    if !crate::irq::register(route.irq, name, handler, ctx as usize) {
-        return -1;
-    }
     registry::note_registration();
     unsafe {
         *msix_entry = match route.delivery {
@@ -1195,13 +1194,28 @@ unsafe extern "C" fn api_irq_enable(
     noted(crate::irq::enable(irq, name, handler, ctx as usize))
 }
 
+unsafe extern "C" fn api_pci_irq_disable(
+    bus: u8,
+    slot: u8,
+    func: u8,
+    handler: myos_abi::IrqHandler,
+    ctx: *mut core::ffi::c_void,
+) -> i32 {
+    if crate::irq::pci_irq_release(bus, slot, func, handler, ctx as usize) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_irq_disable(irq: u32, handler: myos_abi::IrqHandler, ctx: *mut core::ffi::c_void) -> i32 {
+    if crate::irq::disable(irq, handler, ctx as usize) { 0 } else { -1 }
+}
+
 unsafe extern "C" fn api_irq_domain_register(
     phandle: u32,
     count: u32,
-    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+    unmask: myos_abi::IrqLineFn,
+    mask: myos_abi::IrqLineFn,
     ctx: *mut core::ffi::c_void,
 ) -> u32 {
-    match crate::irqchip::domain_register(phandle, count, unmask, ctx as usize) {
+    match crate::irqchip::domain_register(phandle, count, unmask, mask, ctx as usize) {
         Some(first) => {
             registry::note_registration();
             first

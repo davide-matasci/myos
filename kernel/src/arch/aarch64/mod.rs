@@ -145,6 +145,14 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     crate::irq::pci_intx_setup(bus, slot, func)
 }
 
+/// Undo [`pci_irq_setup`] (its handler is gone): the INTx line masked
+/// once no device's handler is on it (`last`).
+pub fn pci_irq_teardown(_bus: u8, _slot: u8, _func: u8, irq: u32, last: bool) {
+    if last {
+        crate::irqchip::mask(irq);
+    }
+}
+
 pub fn wait_interrupt() {
     unsafe {
         core::arch::asm!("wfi", options(nostack, preserves_flags));

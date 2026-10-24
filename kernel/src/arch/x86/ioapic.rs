@@ -147,6 +147,19 @@ pub fn unmask(irq: u8) {
     }
 }
 
+/// Mask ISA `irq`'s pin again (its last handler went). Its vector and
+/// remapping entry stay the pin's, for the next [`unmask`]: at most one
+/// per ISA IRQ.
+pub fn mask(irq: u8) {
+    let Some((reg, low)) = entry(irq) else {
+        return;
+    };
+    if irq < 16 {
+        ISA_UNMASKED[irq as usize].store(false, Ordering::SeqCst);
+    }
+    write(reg, low | RED_MASKED);
+}
+
 /// Write every unmasked pin's entry again: interrupt remapping came on
 /// after it was routed (the console's pin).
 pub fn refresh() {

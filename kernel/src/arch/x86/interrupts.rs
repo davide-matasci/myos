@@ -9,7 +9,7 @@
 //! takes the other. PIC IRQ0 never arrives under Limine: the timer is the
 //! LAPIC's.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Once;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
@@ -391,16 +391,43 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
 /// pins, the IOMMU's own interrupt).
 const DEVICE_VECTOR_BASE: u8 = 48;
 /// How many: vectors 48 to 111, priority classes 3 to 6 (above the timer
-/// and the IPIs, below the spurious vector). A vector is never given back
-/// (issue #577).
+/// and the IPIs, below the spurious vector). One bit each in
+/// [`DEVICE_VECTORS_USED`].
 const DEVICE_VECTORS: u8 = 64;
+/// The device vectors taken (bit `n`: vector `DEVICE_VECTOR_BASE + n`).
+static DEVICE_VECTORS_USED: AtomicU64 = AtomicU64::new(0);
+/// Where the search for a free vector starts: after the last one given,
+/// so a vector given back is the last to be given again (an interrupt of
+/// its old device still on its way lands on nobody's handler).
 static NEXT_DEVICE_VECTOR: AtomicUsize = AtomicUsize::new(0);
 
 /// A fresh device vector (its `irq::dispatch` number), or `None` when all
 /// are taken.
 pub fn alloc_vector() -> Option<u8> {
-    let n = NEXT_DEVICE_VECTOR.fetch_add(1, Ordering::SeqCst);
-    (n < DEVICE_VECTORS as usize).then(|| DEVICE_VECTOR_BASE + n as u8)
+    let start = NEXT_DEVICE_VECTOR.load(Ordering::Relaxed);
+    for k in 0..DEVICE_VECTORS as usize {
+        let n = (start + k) % DEVICE_VECTORS as usize;
+        let bit = 1u64 << n;
+        if DEVICE_VECTORS_USED.fetch_or(bit, Ordering::SeqCst) & bit == 0 {
+            NEXT_DEVICE_VECTOR.store(n + 1, Ordering::Relaxed);
+            return Some(DEVICE_VECTOR_BASE + n as u8);
+        }
+    }
+    None
+}
+
+/// Give device vector `vector` back ([`alloc_vector`]): its device no
+/// longer raises it.
+pub fn free_vector(vector: u8) {
+    if let Some(n) = vector.checked_sub(DEVICE_VECTOR_BASE).filter(|&n| n < DEVICE_VECTORS) {
+        DEVICE_VECTORS_USED.fetch_and(!(1u64 << n), Ordering::SeqCst);
+    }
+}
+
+/// The device vectors taken and how many there are, for
+/// `/proc/interrupts`.
+pub fn vectors() -> (u32, u32) {
+    (DEVICE_VECTORS_USED.load(Ordering::Relaxed).count_ones(), u32::from(DEVICE_VECTORS))
 }
 
 /// The IDT stubs of the device vectors, `DEVICE_STUBS[n]` for vector
@@ -508,6 +535,31 @@ pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     let ctrl = ((w0 >> 16) as u16 | 0x8000) & !0x4000;
     crate::pci::cfg_write32(bus, slot, func, cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
     Some(vector)
+}
+
+/// Undo [`pci_msix_setup`] or [`pci_msi_setup`]: the function sends no
+/// message any more (MSI-X entry 0 masked and MSI-X off, MSI off), the
+/// IOMMU's remapping entry for `vector` and the vector itself are given
+/// back.
+pub fn pci_msi_teardown(bus: u8, slot: u8, func: u8, vector: u8) {
+    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
+    if let Some(cap) = pci_cap(bus, slot, func, 0x11) {
+        let table = cfg(cap.wrapping_add(4));
+        if let Some((va, size)) = crate::pci::bar_map(bus, slot, func, (table & 0x7) as u8) {
+            let offset = (table & !0x7) as u64;
+            if offset.saturating_add(16) <= size {
+                unsafe { core::ptr::write_volatile((va + offset as usize + 12) as *mut u32, 1) };
+            }
+        }
+        let w0 = cfg(cap);
+        crate::pci::cfg_write32(bus, slot, func, cap, w0 & !(0x8000 << 16));
+    }
+    if let Some(cap) = pci_cap(bus, slot, func, 0x05) {
+        let w0 = cfg(cap);
+        crate::pci::cfg_write32(bus, slot, func, cap, w0 & !(1 << 16));
+    }
+    crate::iommu::unmap_msi(bus, slot, func, vector);
+    free_vector(vector);
 }
 
 /// A function with MSI and no MSI-X (QEMU's `edu`): its one message raises

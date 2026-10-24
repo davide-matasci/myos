@@ -3,7 +3,10 @@
  * launcher adds one to every test boot).
  *
  * Finds the device by its `info`, and one a kernel driver drives, whose
- * `ctl` must not open (its info names the driver); holds the edu device
+ * `ctl` must not open (its info names the driver); routes the edu
+ * device's interrupt and lets go of it more times than x86_64 has device
+ * vectors: each close gives it back (no `pcidev` handler left in
+ * /proc/interrupts, and on x86_64 the vectors taken as before); holds the edu device
  * (a second open is refused), maps BAR 0 uncached and checks the id, the
  * liveness register (it inverts what is written) and the factorial unit;
  * routes the interrupt
@@ -273,6 +276,56 @@ static int spoof_msi(int irq, const char *ctl_text) {
     return 0;
 }
 
+/* How many /proc/interrupts lines name `what`, and the vectors taken
+ * (`vectors: N/M`, x86_64; -1 without the line) in `*vectors`. -1 when the
+ * file is unreadable. */
+static int irq_lines(const char *what, int *vectors) {
+    char text[8192];
+    int fd = open("/proc/interrupts", O_RDONLY);
+    if (fd < 0)
+        return -1;
+    int ok = read_ctl(fd, text, sizeof text);
+    close(fd);
+    if (!ok)
+        return -1;
+    int n = 0;
+    for (const char *l = text; (l = strstr(l, what)); l += strlen(what))
+        n++;
+    unsigned long long v;
+    *vectors = ctl_value(text, "vectors: ", &v) ? (int)v : -1;
+    return n;
+}
+
+/* Route the interrupt and close ctl, 80 times: more than the 64 device
+ * vectors x86_64 has, so a vector or an IOMMU remapping entry not given
+ * back at the close runs out. */
+static int irq_cycles(void) {
+    char p[128];
+    int vectors0, vectors;
+    if (irq_lines("pcidev", &vectors0) != 0)
+        return fail("a pcidev handler before the first route");
+    path(p, sizeof p, "ctl");
+    for (int i = 0; i < 80; i++) {
+        int ctl = open(p, O_RDWR);
+        if (ctl < 0)
+            return fail("open ctl for a route");
+        if (write(ctl, "irq", 3) != 3) {
+            printf("[ FAIL ] pcidev route %d of 80 refused\n", i + 1);
+            return 1;
+        }
+        if (i == 0 && irq_lines("pcidev", &vectors) != 1)
+            return fail("no pcidev handler once routed");
+        close(ctl);
+    }
+    if (irq_lines("pcidev", &vectors) != 0)
+        return fail("a pcidev handler left after the close");
+    if (vectors != vectors0) {
+        printf("[ FAIL ] pcidev vectors taken %d after 80 routes, %d before\n", vectors, vectors0);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     if (!find_edu())
         return fail("no edu device in /dev/pci");
@@ -284,6 +337,8 @@ int main(void) {
     snprintf(p, sizeof p, "/dev/pci/%s/ctl", driven);
     if (open(p, O_RDWR) >= 0)
         return fail("a kernel driver's function opened");
+    if (irq_cycles())
+        return 1;
     path(p, sizeof p, "ctl");
     int ctl = open(p, O_RDWR);
     if (ctl < 0)

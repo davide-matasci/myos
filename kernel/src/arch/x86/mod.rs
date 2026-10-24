@@ -114,6 +114,20 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     Some(PciIrq { irq, delivery: Delivery::Msi })
 }
 
+/// Undo [`pci_irq_setup`] (its handler is gone): the function's message
+/// off, its vector and IOMMU remapping entry given back. Every MSI has a
+/// vector of its own, so `_last` is always true.
+pub fn pci_irq_teardown(bus: u8, slot: u8, func: u8, irq: u32, _last: bool) {
+    if let Ok(vector) = u8::try_from(irq) {
+        interrupts::pci_msi_teardown(bus, slot, func, vector);
+    }
+}
+
+/// The device vectors taken, and how many there are.
+pub fn irq_vectors() -> (u32, u32) {
+    interrupts::vectors()
+}
+
 /// A device vector (its `irq::dispatch` number) and the MSI message address
 /// that raises it on the BSP, for a device's own message register.
 pub fn msi_vector() -> Option<(u32, u32)> {

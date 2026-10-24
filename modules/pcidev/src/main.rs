@@ -24,8 +24,11 @@
 //!   interrupt to `irq`), `dma PAGES` (a physically contiguous, zeroed
 //!   buffer, the next `dmaN`). Closing it (the driver's exit too) turns
 //!   bus mastering and memory decoding off, so the device stops reaching
-//!   memory, and gives the DMA buffers back to this module for the next
-//!   driver (they are never freed: a mapping of one may outlive the fd).
+//!   memory, gives the interrupt back to the kernel (its vector and IOMMU
+//!   remapping entry go to the next device that asks,
+//!   `KernelApi::pci_irq_disable`) and the DMA buffers back to this module
+//!   for the next driver (they are never freed: a mapping of one may
+//!   outlive the fd).
 //! - `config`: the 256 bytes of configuration space, read and written at
 //!   any offset (whole dwords underneath).
 //! - `barN`: a memory BAR's registers, for `mmap(MAP_SHARED)` (uncached).
@@ -449,10 +452,15 @@ fn ctl_write(i: usize, d: &mut Dev, cmd: &[u8]) -> bool {
     }
 }
 
-/// The driver let go: the device stops reaching memory, its buffers wait
-/// for the next driver.
+/// The driver let go: the device stops reaching memory, its interrupt goes
+/// back to the kernel, its buffers wait for the next driver.
 fn let_go(i: usize, d: &mut Dev) {
     command(d, CMD_INTX_OFF, CMD_MEM | CMD_MASTER);
+    if d.irq != Irq::None {
+        api().pci_irq_disable(d.bus, d.slot, d.func, irq_handler, i as *mut _);
+        ADDR[i].fetch_and(!ADDR_INTX, Ordering::Relaxed);
+        d.irq = Irq::None;
+    }
     for b in d.dma.iter_mut() {
         b.used = false;
     }

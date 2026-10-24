@@ -47,8 +47,10 @@ t -t events epoll $SMOKES/epoll_smoke
 # one outside the mask delivered, EAGAIN, a child's kill ending a read, the
 # mask changed, the fd in a wait set (sigfd_smoke.c).
 t -t events sigfd $SMOKES/sigfd_smoke
-# /dev/pci: a userspace driver for QEMU's edu device: its registers mapped
-# uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
+# /dev/pci: a userspace driver for QEMU's edu device: its interrupt routed
+# and given back at each close, more times than x86 has vectors; its
+# registers mapped uncached, its interrupt (MSI on x86, a shared INTx line
+# elsewhere), a DMA
 # copy through a buffer of /dev/pci, and where the board has an IOMMU a DMA
 # outside the buffer refused (pcidev_smoke.c). The module is not loaded at
 # boot (root opts in, docs/pci-acpi-smp.md): the test loads it.
