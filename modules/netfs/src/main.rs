@@ -208,6 +208,11 @@ struct Conv {
     /// report a hangup). Taken as the new conversation's, that hangup
     /// refused its connect (issue #473).
     cloning: bool,
+    /// The holder closed it while the request ring to netd was full: its
+    /// REQ_CLOSE goes out as soon as netd has taken a request (`chr_read`).
+    /// Dropped, netd held the index on (`/net/convs` showed it `held`,
+    /// never `released`) and the slot waited here for a reclaim.
+    close_pending: bool,
     proto: u8,
     /// The unread bytes: `data_len` of them from `data_off` on (a read
     /// moves the start instead of the rest of the buffer; an append that
@@ -254,6 +259,7 @@ impl Conv {
         closing: false,
         suppress_stale_hangup: false,
         cloning: false,
+        close_pending: false,
         proto: 0,
         data_off: 0,
         data_len: 0,
@@ -560,6 +566,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 closing: false,
                 suppress_stale_hangup: false,
                 cloning: true,
+                close_pending: false,
                 proto,
                 data_off: 0,
                 data_len: 0,
@@ -590,6 +597,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 closing: false,
                 suppress_stale_hangup: false,
                 cloning: true,
+                close_pending: false,
                 proto,
                 data_off: 0,
                 data_len: 0,
@@ -797,6 +805,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 // real (see the field).
                 suppress_stale_hangup: payload.is_empty(),
                 cloning: false,
+                close_pending: false,
                 proto,
                 data_off: 0,
                 data_len: 0,
@@ -1308,11 +1317,29 @@ fn teardown_conv(st: &mut State, id: u16) {
     set_status(&mut st.convs[i], b"hangup");
     changed(st, id);
     if !enqueue_req(&mut st.req, REQ_CLOSE, id, st.convs[i].proto, &[]) {
-        // Ring full: leave used+hangup for second-pass reclaim; clone's
-        // drop_conv still cleans netd when the id is reused.
+        // Ring full: the close goes out when netd has taken a request
+        // (`retry_closes`); until then the slot is used+hangup, which the
+        // second-pass reclaim may take (clone's drop_conv then cleans netd).
+        st.convs[i].close_pending = true;
         return;
     }
     st.convs[i].closing = true;
+}
+
+/// The closes `teardown_conv` could not queue while the ring was full, as
+/// many as fit now.
+fn retry_closes(st: &mut State) {
+    for i in 0..MAX_CONV {
+        let c = &st.convs[i];
+        if !c.used || !c.close_pending || c.closing {
+            continue;
+        }
+        if !enqueue_req(&mut st.req, REQ_CLOSE, i as u16, c.proto, &[]) {
+            return;
+        }
+        st.convs[i].close_pending = false;
+        st.convs[i].closing = true;
+    }
 }
 
 unsafe extern "C" fn net_write(
@@ -1502,7 +1529,11 @@ unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
     // No serial spam here: CI login typing matches against the serial log, and
     // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
-    st.req.pop(out).map_or(-1, |n| n as i32)
+    let n = st.req.pop(out);
+    if n.is_some() {
+        retry_closes(st);
+    }
+    n.map_or(-1, |n| n as i32)
 }
 
 unsafe extern "C" fn chr_write(buf: *const u8, buf_len: usize) -> i32 {
