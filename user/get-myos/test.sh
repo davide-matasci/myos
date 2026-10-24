@@ -21,9 +21,17 @@ get_myos_list() {
 	abi=$(sed 's/.*abi=//' /lib/myos-release)
 	grep -q "^mirror: release [0-9]* abi $abi\$" /tmp/get-myos-list || return 1
 	grep -q "^system: release [0-9]* abi $abi\$" /tmp/get-myos-list || return 1
-	# Every package of the mirror was installed by the packages test, st
-	# with its dependencies.
-	! grep -q ' -$' /tmp/get-myos-list || return 1
+	# Each package is marked as the root records it (installed or upgrade,
+	# else `-`): the packages test installed those the selected tests
+	# name, st among them with its dependencies.
+	while read -r lname lversion ldeps lstate rest; do
+		case $lname in mirror: | system:) continue ;; esac
+		if [ -e $MYOS_APPS/.get-myos/pkgs/$lname ]; then
+			[ "$lstate" = installed ] || [ "$lstate" = upgrade ] || { echo "$lname: $lstate, recorded"; return 1; }
+		else
+			[ "$lstate" = - ] || { echo "$lname: $lstate, not recorded"; return 1; }
+		fi
+	done < /tmp/get-myos-list
 	grep -q '^st [0-9a-f]* x11-xft@[0-9a-f]*,x11-fonts@[0-9a-f]* installed [0-9a-f]*\*$' /tmp/get-myos-list
 }
 
@@ -289,9 +297,9 @@ apps_global() {
 	rm -rf $R
 }
 
-t -t net,pkg get_myos_list get_myos_list
+t -t net,pkg,st get_myos_list get_myos_list
 t -t net,pkg apps_data apps_data
-t -t net,pkg get_myos_versions get_myos_versions
+t -t net,pkg,lua get_myos_versions get_myos_versions
 t -t net,pkg apps_set apps_set
 t -t net,pkg apps_global apps_global
 t -t net,pkg,install boot_upgrade boot_upgrade

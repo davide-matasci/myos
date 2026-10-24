@@ -72,11 +72,11 @@ xev_events() {
 xev_keys() {
 	xev_events keyboard "sendkey x" KeyRelease "KeyPress event" "keysym 0x78, x"
 }
-t -t x11 xev xev_keys
+t -t x11,tinyx xev xev_keys
 
 # The pointer: /dev/console/mouse (usb_hid), host.sh's 10 right, 5 up and
 # a left click.
 xev_pointer() {
 	xev_events mouse mouse ButtonRelease "MotionNotify event" "ButtonPress event" "button 1,"
 }
-t -t x11,mouse xev_pointer xev_pointer
+t -t x11,mouse,tinyx xev_pointer xev_pointer

@@ -193,8 +193,9 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
 - **Everything** runs on a push to master, daily, on a dispatch of
   `ci.yml` with `full_boot: true` and on a pull request labelled
   `ci:full`; a `linux` test in the selection puts the layer in the image
-  (`MYOS_CI_FEATURES=linux_compat`), and every package is installed from
-  the build's own mirror before a `pkg` test. Label a pull request
+  (`MYOS_CI_FEATURES=linux_compat`), and the packages the selected `pkg`
+  tests name in their tags are installed from the build's own mirror
+  before them, four at a time. Label a pull request
   `ci:full` when the planner's rules would miss what it touches.
 - On master (a push or the daily run) the **iso** job builds the x86_64
   hybrid ISO with the Linux layer in it and the **publish** job uploads it

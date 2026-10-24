@@ -42,4 +42,4 @@ heap_smoke() {
 	! grep -q -E "(^| )FAIL" $OUT/heap.log
 }
 t -t smoke heap_mini heap_smoke mini
-t -t heavy,pkg heap heap_smoke full
+t -t heavy,pkg,git,coreutils heap heap_smoke full

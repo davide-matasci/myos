@@ -23,8 +23,9 @@
 # Every test belongs to the port of what it tests (ports/*.sh, from their
 # PORT_TEST; the packer names them so the core image ports come first, the
 # other image ports next, the packages last), except the kernel's own
-# (kernel.sh), which run first. The `packages` test installs every package
-# of the mirror the host serves, and the packages' tests come with them.
+# (kernel.sh), which run first. The `packages` test installs the packages
+# of the mirror the host serves that the selected tests use (every one of
+# them for the whole list), and the packages' tests come with them.
 # `reboot` is the second boot of a run that upgraded the boot disk
 # (get-myos --upgrade): it checks only that the system came up from the
 # slot the upgrade wrote; `installed` the third, of the disk get-myos
@@ -197,14 +198,40 @@ fi
 
 echo "tests: tags=${TAGS:--} skip=${SKIP:--}"
 
-# The packages: every one of this build from the host's mirror
-# (docs/packages.md; packages.txt names the ports the image lacks, the
-# index has the image's ports too), as apps under /tmp/apps (all of them
-# do not fit the boot disk's data partition): the packages' tests run
-# them with run-myos.
+# wanted_packages NAMES: of the mirror's packages NAMES, the ones the
+# selected `pkg` tests use: those their tags name (a package's tests carry
+# its name; a test of the kernel or of another port names what it runs,
+# alpine_jq get-alpine, get_myos_list st). A `pkg` test that names none
+# uses the mirror itself (get-myos's into roots of their own). In the order
+# of NAMES; what they need get-myos installs with them.
+wanted_packages() {
+	w_want=
+	while read -r w_name w_tags; do
+		has "$w_tags" pkg || continue
+		for p in $1; do
+			has "$w_tags" "$p" && w_want="$w_want,$p"
+		done
+	done < $OUT/selected
+	w_out=
+	for p in $1; do
+		has "$w_want" "$p" && w_out="$w_out $p"
+	done
+	echo "${w_out# }"
+}
+
+# The packages: those of this build from the host's mirror that the
+# selected tests use (wanted_packages; docs/packages.md: packages.txt names
+# the ports the image lacks, the index has the image's ports too), as apps
+# under /tmp/apps (all of them do not fit the boot disk's data partition):
+# the packages' tests run them with run-myos. The os-test boot installs
+# os-test (and make, which it needs), the Alpine one get-alpine, the
+# packages' boot the packages with tests of their own and what those use
+# (not os-test's 60 MB, nor get-alpine).
 install_packages() {
-	names=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
-	echo "packages: $names"
+	all=$(curl -fsS $MIRROR/packages.txt | tr "\n" " ") || return 1
+	names=$(wanted_packages "$all")
+	echo "packages: ${names:-none}"
+	[ -n "$names" ] || return 0
 	# The first package with dependencies alone first, on the fresh system:
 	# get-myos must install them with it (the deps field of the index).
 	first=
@@ -212,7 +239,11 @@ install_packages() {
 	while read -r name version deps state; do
 		case "$name:$deps" in
 		mirror:* | system:* | *:- | *:) ;;
-		*) first=$name; break ;;
+		*)
+			case " $names " in
+			*" $name "*) first=$name; break ;;
+			esac
+			;;
 		esac
 	done < /tmp/get-myos-list
 	if [ -n "$first" ]; then
