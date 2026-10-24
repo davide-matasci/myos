@@ -210,11 +210,7 @@ pub fn init() {
         idt[SPURIOUS_VECTOR].set_handler_fn(spurious);
         // Device vectors (MSI-X messages, I/O APIC pins): one IDT stub per
         // vector, all funnelled into `irq::dispatch`.
-        let stubs: [extern "x86-interrupt" fn(InterruptStackFrame); DEVICE_VECTORS as usize] = [
-            dev_irq0, dev_irq1, dev_irq2, dev_irq3, dev_irq4, dev_irq5, dev_irq6, dev_irq7, dev_irq8, dev_irq9,
-            dev_irq10, dev_irq11, dev_irq12, dev_irq13, dev_irq14, dev_irq15,
-        ];
-        for (i, stub) in stubs.into_iter().enumerate() {
+        for (i, stub) in DEVICE_STUBS.into_iter().enumerate() {
             idt[DEVICE_VECTOR_BASE + i as u8].set_handler_fn(stub);
         }
         idt
@@ -391,9 +387,13 @@ pub fn wait_for_interrupt_proof() {
 
 extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
 
-/// First LAPIC vector handed to devices (PCI MSI-X, I/O APIC pins).
+/// First LAPIC vector handed to devices (PCI MSI and MSI-X, I/O APIC
+/// pins, the IOMMU's own interrupt).
 const DEVICE_VECTOR_BASE: u8 = 48;
-const DEVICE_VECTORS: u8 = 16;
+/// How many: vectors 48 to 111, priority classes 3 to 6 (above the timer
+/// and the IPIs, below the spurious vector). A vector is never given back
+/// (issue #577).
+const DEVICE_VECTORS: u8 = 64;
 static NEXT_DEVICE_VECTOR: AtomicUsize = AtomicUsize::new(0);
 
 /// A fresh device vector (its `irq::dispatch` number), or `None` when all
@@ -403,31 +403,27 @@ pub fn alloc_vector() -> Option<u8> {
     (n < DEVICE_VECTORS as usize).then(|| DEVICE_VECTOR_BASE + n as u8)
 }
 
-macro_rules! dev_stub {
-    ($name:ident, $n:expr) => {
-        extern "x86-interrupt" fn $name(_frame: InterruptStackFrame) {
-            let vector = u32::from(DEVICE_VECTOR_BASE) + $n;
-            crate::irq::dispatch(vector);
-            crate::irqchip::root().complete(vector);
-        }
+/// The IDT stubs of the device vectors, `DEVICE_STUBS[n]` for vector
+/// `DEVICE_VECTOR_BASE + n`: an x86 interrupt handler gets no vector
+/// number, so each one has its own.
+macro_rules! device_stubs {
+    ($($n:literal)*) => {
+        const DEVICE_STUBS: [extern "x86-interrupt" fn(InterruptStackFrame); DEVICE_VECTORS as usize] = [$({
+            extern "x86-interrupt" fn stub(_frame: InterruptStackFrame) {
+                let vector = u32::from(DEVICE_VECTOR_BASE) + $n;
+                crate::irq::dispatch(vector);
+                crate::irqchip::root().complete(vector);
+            }
+            stub
+        }),*];
     };
 }
-dev_stub!(dev_irq0, 0);
-dev_stub!(dev_irq1, 1);
-dev_stub!(dev_irq2, 2);
-dev_stub!(dev_irq3, 3);
-dev_stub!(dev_irq4, 4);
-dev_stub!(dev_irq5, 5);
-dev_stub!(dev_irq6, 6);
-dev_stub!(dev_irq7, 7);
-dev_stub!(dev_irq8, 8);
-dev_stub!(dev_irq9, 9);
-dev_stub!(dev_irq10, 10);
-dev_stub!(dev_irq11, 11);
-dev_stub!(dev_irq12, 12);
-dev_stub!(dev_irq13, 13);
-dev_stub!(dev_irq14, 14);
-dev_stub!(dev_irq15, 15);
+device_stubs!(
+    0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+    16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+    32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
+    48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63
+);
 
 /// The offset of the PCI function's capability `id` in configuration
 /// space, if it has one.
