@@ -118,8 +118,8 @@ pub fn bar_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u64)> {
 }
 
 /// Every function present, bus by bus, slot by slot (the RISC-V IOMMU
-/// gives each one a context).
-#[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+/// gives each one a context; x86_64's INTx routes find bridges in it).
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 pub fn functions() -> Vec<Bdf> {
     let mut all = Vec::new();
     for bus in 0u8..=arch_pci::max_bus() {

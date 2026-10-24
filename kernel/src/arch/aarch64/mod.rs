@@ -141,6 +141,18 @@ pub fn timer_resume() {
 
 /// A PCI function's INTx line, as the device tree's PCIe `interrupt-map`
 /// says (QEMU `virt`: GIC SPIs 3..6 with the standard slot swizzle).
+/// ACPI's PCI interrupt routes are x86_64's: here the device tree's
+/// `interrupt-map` routes INTx (`irq::pci_intx_setup`).
+pub fn pci_intx_route(_bus: u8, _device: u8, _pin: u8, _gsi: u32, _flags: u32) -> bool {
+    false
+}
+
+/// [`crate::modules`]'s `phys_map`: not offered here (only the acpi
+/// module's AML interpreter, x86_64's, asks).
+pub fn phys_map(_phys: u64, _len: usize) -> Option<usize> {
+    None
+}
+
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
     crate::irq::pci_intx_setup(bus, slot, func)
 }

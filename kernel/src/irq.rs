@@ -1,8 +1,9 @@
 //! Device interrupt registry: one handler per interrupt number, shared by
 //! the three architectures' second-level dispatch.
 //!
-//! * x86_64: MSI-X messages and I/O APIC pins (the legacy ISA interrupts)
-//!   land on LAPIC vectors `DEVICE_VECTOR_BASE..`; the IDT stubs call
+//! * x86_64: MSI-X and MSI messages and I/O APIC pins (the legacy ISA
+//!   interrupts, and PCI INTx lines where the firmware's `_PRT` routes
+//!   them) land on LAPIC vectors `DEVICE_VECTOR_BASE..`; the IDT stubs call
 //!   [`dispatch`] with the vector.
 //! * aarch64: PCI INTx lines and the board's devices are GIC SPIs;
 //!   `aarch64_irq_handler` passes any non-timer, non-SGI INTID here.
@@ -133,8 +134,9 @@ pub fn dispatch(irq: u32) {
 }
 
 /// Route a PCI function's interrupt to CPU 0 and return how it is delivered.
-/// x86_64 uses MSI-X (entry 0), or MSI on a function without it; aarch64
-/// and riscv64 use the INTx line the
+/// x86_64 uses MSI-X (entry 0), or MSI on a function without it, or its
+/// INTx line through the I/O APIC where the firmware's `_PRT` routes it;
+/// aarch64 and riscv64 use the INTx line the
 /// QEMU `virt` machine wires to a GIC SPI / PLIC source.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
     crate::arch::pci_irq_setup(bus, slot, func)

@@ -1,6 +1,7 @@
 //! The I/O APIC: legacy ISA interrupts (the COM1 UART's IRQ 4, the PS/2
-//! keyboard's IRQ 1) to LAPIC vectors on the BSP. PCI devices use MSI-X
-//! instead (`interrupts::pci_msix_setup`). Only the first I/O APIC of the
+//! keyboard's IRQ 1) to LAPIC vectors on the BSP, and the PCI INTx lines
+//! of the functions with neither MSI-X nor MSI ([`route_gsi`], the GSIs
+//! the firmware's `_PRT` gives: `intx`). Only the first I/O APIC of the
 //! MADT is driven: it serves GSIs 0..23 on every PC, the ISA ones among
 //! them. Without an MADT I/O APIC entry nothing is routed and the callers
 //! poll their device.
@@ -20,6 +21,15 @@ static ISA_VECTOR: [AtomicU8; 16] = [const { AtomicU8::new(0) }; 16];
 /// whether its pin is unmasked (for [`refresh`]).
 static ISA_REMAP: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static ISA_UNMASKED: [AtomicBool; 16] = [const { AtomicBool::new(false) }; 16];
+/// The pins a PCI GSI was routed to ([`route_gsi`]), by pin: their vector
+/// (0: none), the entry's trigger and polarity bits, the remapped entry
+/// (as `ISA_REMAP`), and whether the pin is unmasked. A line its devices
+/// share has one vector, every handler of it called (`irq::register`).
+const PCI_PINS: usize = 64;
+static PCI_VECTOR: [AtomicU8; PCI_PINS] = [const { AtomicU8::new(0) }; PCI_PINS];
+static PCI_LOW: [AtomicU32; PCI_PINS] = [const { AtomicU32::new(0) }; PCI_PINS];
+static PCI_REMAP: [AtomicU64; PCI_PINS] = [const { AtomicU64::new(0) }; PCI_PINS];
+static PCI_UNMASKED: [AtomicBool; PCI_PINS] = [const { AtomicBool::new(false) }; PCI_PINS];
 
 const IOREGSEL: usize = 0x00;
 const IOWIN: usize = 0x10;
@@ -99,7 +109,11 @@ pub fn route(irq: u8) -> Option<u32> {
     if irq >= 16 {
         return None;
     }
-    entry(irq)?;
+    let (reg, _) = entry(irq)?;
+    // A pin a PCI line has already: not shared with an ISA one.
+    if PCI_VECTOR.get(((reg - IOREDTBL) / 2) as usize).is_some_and(|v| v.load(Ordering::SeqCst) != 0) {
+        return None;
+    }
     // The destination field has 8 bits: a BSP with a larger x2APIC id
     // would need interrupt remapping.
     if crate::smp::cpu_hw_id(0) > 0xFF {
@@ -129,9 +143,17 @@ pub fn unmask(irq: u8) {
         return;
     }
     ISA_UNMASKED[irq as usize].store(true, Ordering::SeqCst);
-    let remapped = match ISA_REMAP[irq as usize].load(Ordering::SeqCst) {
+    program(reg, low, vector, &ISA_REMAP[irq as usize]);
+}
+
+/// Write redirection entry `reg` for `vector` with trigger and polarity
+/// `low`, unmasked: fixed delivery to the BSP's LAPIC, physical
+/// destination mode, or through the IOMMU's interrupt remapping where
+/// there is one (its entry made once, kept in `remap`).
+fn program(reg: u32, low: u32, vector: u8, remap: &AtomicU64) {
+    let remapped = match remap.load(Ordering::SeqCst) {
         0 => crate::iommu::remap_ioapic(vector, low & RED_LEVEL != 0).inspect(|&(high, bits)| {
-            ISA_REMAP[irq as usize].store(1 << 63 | u64::from(high) << 32 | u64::from(bits), Ordering::SeqCst);
+            remap.store(1 << 63 | u64::from(high) << 32 | u64::from(bits), Ordering::SeqCst);
         }),
         v => Some(((v >> 32) as u32 & 0x7fff_ffff, v as u32)),
     };
@@ -147,12 +169,69 @@ pub fn unmask(irq: u8) {
     }
 }
 
+/// The pin of GSI `gsi`, if this I/O APIC serves it.
+fn gsi_pin(gsi: u32) -> Option<usize> {
+    if BASE.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    let pin = gsi.checked_sub(GSI_BASE.load(Ordering::Relaxed))?;
+    (pin < ENTRIES.load(Ordering::Relaxed) && (pin as usize) < PCI_PINS).then_some(pin as usize)
+}
+
+/// Give PCI GSI `gsi` (a level-triggered, active-low line: `level`,
+/// `active_low`) a device vector, its pin still masked; the line's devices
+/// share it. `None` without an I/O APIC pin for it, a pin an ISA IRQ has,
+/// a line routed already with another trigger, or out of vectors.
+pub fn route_gsi(gsi: u32, level: bool, active_low: bool) -> Option<u32> {
+    let pin = gsi_pin(gsi)?;
+    // The destination field has 8 bits, as for an ISA line.
+    if crate::smp::cpu_hw_id(0) > 0xFF {
+        return None;
+    }
+    let isa = (0..16u8).any(|irq| {
+        ISA_VECTOR[irq as usize].load(Ordering::SeqCst) != 0 && crate::acpi::isa_irq(irq).0 == gsi
+    });
+    if isa {
+        return None;
+    }
+    let low = if level { RED_LEVEL } else { 0 } | if active_low { RED_ACTIVE_LOW } else { 0 };
+    match PCI_VECTOR[pin].load(Ordering::SeqCst) {
+        0 => {
+            let v = super::interrupts::alloc_vector()?;
+            PCI_LOW[pin].store(low, Ordering::SeqCst);
+            PCI_VECTOR[pin].store(v, Ordering::SeqCst);
+            Some(u32::from(v))
+        }
+        v if PCI_LOW[pin].load(Ordering::SeqCst) == low => Some(u32::from(v)),
+        _ => None,
+    }
+}
+
+/// Unmask PCI GSI `gsi`'s pin (after [`route_gsi`]).
+pub fn unmask_gsi(gsi: u32) {
+    let Some(pin) = gsi_pin(gsi) else {
+        return;
+    };
+    let vector = PCI_VECTOR[pin].load(Ordering::SeqCst);
+    if vector == 0 {
+        return;
+    }
+    PCI_UNMASKED[pin].store(true, Ordering::SeqCst);
+    program(IOREDTBL + 2 * pin as u32, PCI_LOW[pin].load(Ordering::SeqCst), vector, &PCI_REMAP[pin]);
+}
+
 /// Write every unmasked pin's entry again: interrupt remapping came on
 /// after it was routed (the console's pin).
 pub fn refresh() {
     for irq in 0..16u8 {
         if ISA_UNMASKED[irq as usize].load(Ordering::SeqCst) {
             unmask(irq);
+        }
+    }
+    let base = GSI_BASE.load(Ordering::Relaxed);
+    for pin in 0..PCI_PINS {
+        if PCI_UNMASKED[pin].load(Ordering::SeqCst) {
+            unmask_gsi(base + pin as u32);
         }
     }
 }
