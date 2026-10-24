@@ -292,6 +292,11 @@ static const char *app;
 typedef struct {
     int fd;
     int failed;
+    /* The directory the last entry went into, which exists: the archive
+     * lists a directory's files together, and each of them would otherwise
+     * make every directory of its path again (a mkdir per component, each
+     * looking the whole path up). */
+    char dir[PATH_MAX_GV];
 } unpack;
 
 static int unpack_entry(tar *t, char type, const char *name, const char *link, uint64_t size) {
@@ -324,12 +329,18 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
     }
     if (type == '5') {
         mkdirs(path, 1);
+        copy_field(u->dir, sizeof u->dir, path, pl);
         return 0;
     }
     if (type != '0' && type != '\0' && type != '7' && type != '2') {
         return 0; /* the packer writes regular files and symlinks only */
     }
-    mkdirs(path, 0);
+    size_t dl = (size_t)(strrchr(path, '/') - path);
+    if (strlen(u->dir) != dl || strncmp(u->dir, path, dl) != 0) {
+        mkdirs(path, 0);
+        copy_field(u->dir, sizeof u->dir, path, dl);
+    }
+    /* Not written through a symlink an earlier entry left at this name. */
     unlink(path);
     if (type == '2') {
         /* An alias of a program: a symlink to the file that has its data,
