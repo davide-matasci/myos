@@ -534,6 +534,7 @@ pub fn fault_in(va: usize, access: Access) -> bool {
                 let pte = unsafe { *p };
                 if pte & LEAF_COW != 0 {
                     FAULTS.fetch_add(1, Ordering::Relaxed);
+                    crate::task::count_fault();
                     if pte & LEAF_COW_WRITE == 0 {
                         Some((false, false))
                     } else {
@@ -583,6 +584,7 @@ pub fn fault_in(va: usize, access: Access) -> bool {
         crate::arch::irq_restore(flags);
         if stale {
             FAULTS.fetch_add(1, Ordering::Relaxed);
+            crate::task::count_fault();
             return true;
         }
     }
@@ -710,6 +712,7 @@ pub fn fault_in(va: usize, access: Access) -> bool {
             flush_page(page);
         }
         FAULTS.fetch_add(1, Ordering::Relaxed);
+        crate::task::count_fault();
         if let Some((node, off)) = &file {
             fault_around(aspace, page, prot, node, *off, left);
         }

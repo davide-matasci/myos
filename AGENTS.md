@@ -181,7 +181,10 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   bios-amd with AMD's IOMMU and aarch64 with GICv2 boot the smoke set for
   a kernel change, everything on every machine for a change to what sets
   them apart), the long groups (os-test, the Alpine apk installs, the
-  packages with the install tests) each in a boot of its own; the Alpine roots the Linux layer
+  packages with the install tests) each in a boot of its own, on x86
+  alone in a pull request (aarch64 and riscv64 boot their light tests;
+  the groups there run once merged, and in a pull request that touches
+  get-myos, the Linux layer, os-test or `kernel/src/arch/<arch>`); the Alpine roots the Linux layer
   tests mount (rustc, Python, an X client) come from a disk made once and
   cached. The Linux layer's musl pieces are built and
   cached like a port (`linux-compat`) in every run. The Raspberry Pi 3

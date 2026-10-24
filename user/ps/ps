@@ -32,7 +32,7 @@ fi
 
 set --
 for d in /proc/[0-9]*; do
-	read -r pid name state ppid pgid sid nthreads size cpu children start kind \
+	read -r pid name state ppid pgid sid nthreads size cpu children start kind faults \
 		2>/dev/null < "$d/status" || continue
 	[ $all = 1 ] || [ "$kind" = user ] || continue
 	if [ $threads = 0 ]; then

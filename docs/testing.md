@@ -81,9 +81,12 @@ TESTS SKIPPED 45
 - `HOST <port> <args>`: the test needs the host. The launcher runs that
   port's host-side script (`PORT_HOST=host.sh` in its `port.env`, from the
   checkout) with the arguments, in the background; the guest test then
-  waits for what the script does. `c-smokes tcp-ping PORT` (`user/c/host.sh`)
+  waits for what the script does. `c-smokes tcp-ping PORT TOKEN` (`user/c/host.sh`)
   connects to the guest's listener through QEMU's port forward, plays
-  ping/pong and then opens and closes forty connections without a word; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
+  ping/pong and then opens and closes forty connections without a word
+  (asked for once `/net/convs` names the listener; `tcp-ping-stop PORT
+  TOKEN` ends a peer whose smoke failed, so it does not retry onto the
+  next listen test's); `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
   second USB stick into the guest through the QEMU monitor and pulls it out
   (`docs/usb.md`); `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
   sessions at once with the test key to the dropbear the boot script
@@ -232,8 +235,9 @@ and writes the boot job's matrix. A path selects tags:
 | a port's or a package's directory | its tests (its name), those of the ports built on it or needing it (`PORT_DEPS`, `PORT_RDEPS`) and what it implements (netd: `netfs`; mkfs.ext2: `ext2`; get-myos: `install`, `pkg`) |
 | `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`, sdmmc also `sdmmc` and `sdio`; the USB modules: `usb`; virtio_net: `virtio_net`, `netfs`; pl061: `irq`); `modules/abi`, `acpi` and `pci_enum`: everything |
 | `linux-compat/` | `linux` |
-| `kernel/src/arch/<arch>` | everything on that arch's machines, variants too; the tags (`smoke` at least) on the other arches' primary machines |
+| `kernel/src/arch/<arch>` | everything on that arch's machines, variants too, the long groups included; the tags (`smoke` at least) on the other arches' primary machines |
 | `kernel/src/iommu/`, `kernel/src/limine_boot.rs`, `src/`, `boot/`, `.github/`, `scripts/ci-*` | everything on every machine: what differs between an arch's machines |
+| `user/get-myos`, `linux-compat/`, `packages/os-test` | their tags, with the long groups on aarch64 and riscv64 too (below) |
 | `kernel/`, `toolchain/`, `build.rs`, `scripts/`, `etc/`, `user/init`, `user/tests`, anything else | everything on the primary machines, `smoke` on the variants |
 | documentation (`*.md`, `docs/`, `licenses/`) | nothing: no boot |
 
@@ -250,9 +254,23 @@ pull request's selection boots on; the others are variants of it, in the
 firmware, the IOMMU or the interrupt controller, and boot the smoke set
 for a change that selects everything, nothing for one that selects tags:
 what sets them apart is exercised by the machine-specific paths of the
-table (everything on every machine) and by master's runs. A pull request
-that touches the kernel thus boots 16 times instead of 19, one that
-touches a port 4 times instead of 7.
+table (everything on every machine) and by master's runs.
+
+On aarch64 and riscv64, which run under TCG, the long groups take two to
+three times what the light boot does (below: 16 minutes against 9 on
+riscv64), so a pull request boots the light tests there alone, whatever
+it selects, and the groups on x86, under KVM, where they take 3 to 6
+minutes. The exceptions, which boot the groups on aarch64 and riscv64 in a
+pull request too, are the paths whose changes the groups have caught
+breaking one arch before: `user/get-myos` (riscv64's lseek, brk heap and
+ESP broke the install and the upgrade), `linux-compat/` (musl's vfork on
+aarch64 and riscv64) and `packages/os-test` (its semantics have per-arch
+issues open), and `kernel/src/arch/<arch>`, which boots everything on its
+arch. The runs of everything (master, daily, `ci:full`) boot the groups
+on every machine, so a port's or the kernel's arch-specific breakage in
+them is found within the hour of merging. A pull request that touches the
+kernel thus boots 10 times instead of 16 (its longest boot the riscv64
+light one), one that touches a package 5 times, four of them smoke boots.
 
 A machine's selection runs in parallel boots: the long tests' groups
 (`ostest` and `alpine`: the curated os-test list and the apk installs,

@@ -88,8 +88,12 @@ Guest staging uses a thin copy (not the whole suite):
 
 ```sh
 sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o && cd /tmp/o
-make TESTLIST=misc/ci-boot.tests report
+make -j4 TESTLIST=misc/ci-boot.tests report
 ```
+
+The boot test (`test.sh`) runs it so, four tests at a time: each is a
+process of its own and none signals a process group it shares, so the
+jobs are independent; the report comes after the last.
 
 `ci-boot.tests` includes `ci-basic-smoke.tests` + `ci-nonbasic-100.tests` +
 `ci-expansion.tests` + `ci-expansion-2.tests` + `ci-udp.tests`.

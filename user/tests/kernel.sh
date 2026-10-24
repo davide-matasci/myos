@@ -870,8 +870,8 @@ t -t mm mem_hog_survives mem_hog_survives
 # and the USB host's thread is there as a kernel thread.
 proc_pid() {
 	ls /proc | grep -qx "$$" || { echo "no $$ in /proc"; return 1; }
-	read pid name state ppid pgid sid threads size cpu child start kind < /proc/$$/status
-	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] || { cat /proc/$$/status; return 1; }
+	read pid name state ppid pgid sid threads size cpu child start kind faults < /proc/$$/status
+	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] && [ "$faults" -gt 0 ] || { cat /proc/$$/status; return 1; }
 	[ "$(ls /proc/$$/task)" = "$$" ] || { ls /proc/$$/task; return 1; }
 	read tid tpid tname rest < /proc/$$/task/$$/status
 	[ "$tid" = "$$" ] && [ "$tpid" = "$$" ] && [ "$tname" = "$name" ] || { cat /proc/$$/task/$$/status; return 1; }
@@ -882,9 +882,9 @@ proc_pid() {
 	cat /proc/$kid/status
 	kill $kid
 	wait $kid
-	# The USB bus's kernel thread, where xhci found a controller (it
-	# publishes /proc/usb; the Raspberry Pi 3 has none).
-	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel$"; }
+	# The USB bus's kernel thread, where a controller was found (it
+	# publishes /proc/usb): a kernel thread, with a fault count after.
+	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel [0-9]*$"; }
 }
 t -t proc,smoke proc_pid proc_pid
 

@@ -21,7 +21,7 @@ mod signals;
 mod thread;
 pub mod tp;
 mod vm;
-pub use acct::idle_ns;
+pub use acct::{count_fault, idle_ns};
 use bits::*;
 pub use fd::*;
 pub use jobs::*;
