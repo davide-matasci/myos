@@ -270,9 +270,11 @@ static void whole(void) {
  * netd on a packet or the test runner's shell faulting meanwhile made the
  * fault-around check below fail once (issue #567). */
 static long faults(void) {
-    FILE *f = fopen("/proc/self/status", "r");
+    char path[32];
     char line[256];
     long n = -1;
+    snprintf(path, sizeof path, "/proc/%d/status", (int)getpid());
+    FILE *f = fopen(path, "r");
     if (!f) {
         return -1;
     }
@@ -312,7 +314,7 @@ static void fault_around(void) {
         }
         after = faults();
         if (before < 0 || after < 0) {
-            check(0, "/proc/self/status counts the faults");
+            check(0, "/proc/<pid>/status counts the faults");
         } else if (after - before > 2) {
             printf("[ FAIL ] mmap fault-around: %ld faults for 16 cached pages\n", after - before);
             failures++;
