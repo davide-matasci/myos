@@ -13,7 +13,8 @@ terminates with a `WIFSIGNALED` wait status, and blocking syscalls return
 | `kernel/src/task/signals.rs` | per-thread pending / blocked bits; per-process ignored bits, caught-handler table and libc trampoline address |
 | `toolchain/libmyos/sigtramp.c` | `__myos_sigtramp` (per arch) and the kernel calls (`__myos_sigaction_k`, `__myos_sigprocmask_k`, ...), shared by both libcs (`docs/mlibc.md`) |
 | `toolchain/newlib/libgloss/myos/signal.c`, `toolchain/mlibc/sysdeps/myos/generic/signal.cpp` | each libc's `sigaction`, `signal`, `sigpending`, `sigsuspend`, `sigwait`, `pthread_sigmask` over them, and its handler dispatch |
-| `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO`, `SA_NOCLDWAIT` |
+| `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO`, `SA_NOCLDWAIT`, `si_addr` and the fault `si_code`s |
+| `kernel/src/arch/*/interrupts.rs` | the faults a program raises, as signals (x86: the trap stubs that save its registers) |
 | `toolchain/newlib/build.sh` | `-DSIGNAL_PROVIDED`: newlib's userspace `signal()`/`raise()` emulation is off; `raise` is `kill(getpid(), sig)` |
 
 Signal numbers are newlib's (BSD layout: `SIGCHLD = 20`, `SIGUSR1 = 30`),
@@ -63,7 +64,8 @@ For a caught signal the kernel:
 2. writes a frame below the interrupted stack pointer (past the 128-byte
    x86-64 red zone): magic, signal number, handler, the mask to restore,
    and the interrupted PC, SP, syscall result and syscall-number register,
-   plus a `siginfo_t`;
+   plus a `siginfo_t` and what the trampoline's own syscall cannot keep
+   (x86's `rflags`, `rcx` and `r11`);
 3. resumes user mode at the trampoline registered with `sigaction`, with
    the stack pointer at the frame and every other register untouched.
 
@@ -73,7 +75,38 @@ ones on hard-float builds), calls the handler as `handler(sig, &siginfo,
 NULL)`, restores everything and calls `SYS_SIGRETURN` with the stack pointer
 back at the frame. The kernel restores the mask, PC, SP, the result
 register and the syscall-number register (`x8` / `a7`), so the interrupted
-code sees its syscall return normally.
+code sees its syscall return normally. On x86 it puts back `rflags`, `rcx`
+and `r11` too; when those are not what `sysret` would load (a return to a
+faulting instruction, or into a handler), `syscall_entry` returns with
+`iretq` instead.
+
+## Faults
+
+A synchronous fault in user mode raises its signal at once, from the trap's
+registers (`signal::on_fault`), without waiting for a syscall:
+
+| Fault | Signal | `si_code` | `si_addr` |
+|-------|--------|-----------|-----------|
+| an undefined instruction (x86 `#UD`, aarch64 EC 0, riscv64 cause 2) | `SIGILL` | `ILL_ILLOPN` (x86), `ILL_ILLOPC` | the instruction |
+| a breakpoint (`int3`, `brk`, `ebreak`), x86's single step | `SIGTRAP` | `TRAP_BRKPT`, `TRAP_TRACE` | the instruction |
+| an access a page or a mapping refuses (`PROT_NONE`, a store to a read-only page) | `SIGSEGV` | `SEGV_ACCERR` | the address |
+| an access where nothing is mapped | `SIGSEGV` | `SEGV_MAPERR` | the address |
+| x86 `#GP` (a privileged instruction, a non-canonical address), `into`, `bound` | `SIGSEGV` | `SI_KERNEL` | 0 |
+| a misaligned access, PC or SP (x86 `#AC`, aarch64, riscv64) | `SIGBUS` | `BUS_ADRALN` | the address |
+| x86 divide error | `SIGFPE` | `FPE_INTDIV` | the instruction |
+| an FP exception that traps (x87, SSE, aarch64) | `SIGFPE` | `FPE_FLT*` from the status flags | the instruction |
+
+The codes are POSIX's, at Linux's values (newlib's `SI_USER` is 1 like
+`SEGV_MAPERR`: tell them apart by the signal). A handler runs as for a
+signal sent, and its return resumes the faulting instruction, which runs
+again: the handler fixes the cause (an `mprotect`, as a garbage collector
+or a JIT does) or leaves with `siglongjmp` (a CPU-feature probe). A page
+not touched yet is paged in first and is no fault. When the program does
+not catch the signal, or blocks it (Linux kills then too), the task ends by
+the signal, after a `[ WARN ] user fault` line naming the fault and where
+it happened (`docs/linux-compat.md`, Debugging). The Linux layer gets the
+same faults in its own `rt_sigframe`, with `si_code` and `si_addr` (and
+the address in the `sigcontext`'s `fault_address`, `cr2` on x86).
 
 ## Process groups and sessions
 
@@ -134,7 +167,8 @@ previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 ## Not yet
 
 - Asynchronous delivery of signals other than `SIGKILL` to a process that
-  makes no syscalls (on the interrupt-return path).
+  makes no syscalls (on the interrupt-return path). Faults are delivered
+  at once.
 - `sigaltstack` / `SA_ONSTACK`, `sigqueue` / real-time signals, `ppoll`.
 - `ITIMER_VIRTUAL` and `ITIMER_PROF` (`ENOSYS`): they need CPU time
   accounting.

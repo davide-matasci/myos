@@ -8,17 +8,21 @@
  * calls with the frame: it runs the handler with the siginfo the frame
  * holds, in the libc's layout.
  *
- * The kernel delivers on the way out of a syscall. It writes a frame below
- * the interrupted stack pointer (see kernel/src/signal.rs) and resumes here,
- * at __myos_sigtramp, with the stack pointer at that frame and every other
+ * The kernel delivers on the way out of a syscall, and at once for a fault
+ * (an undefined instruction, a bad access). It writes a frame below the
+ * interrupted stack pointer (see kernel/src/signal.rs) and resumes here, at
+ * __myos_sigtramp, with the stack pointer at that frame and every other
  * register as the interrupted code left it (the result register aside: the
- * frame holds the syscall's result). The trampoline saves all integer and
- * FP registers, calls the handler through __myos_sigdispatch, restores them
- * and calls SYS_SIGRETURN with the stack pointer back at the frame; the
- * kernel then restores the signal mask and resumes the interrupted code.
+ * frame holds the syscall's result, or its value at the fault). The
+ * trampoline saves all integer and FP registers, calls the handler through
+ * __myos_sigdispatch, restores them and calls SYS_SIGRETURN with the stack
+ * pointer back at the frame; the kernel then restores the signal mask and
+ * resumes the interrupted code, with what the trampoline's syscall cannot
+ * keep (x86's rcx, r11 and rflags) from the frame.
  *
  * Frame words: [0] magic, [1] signo, [2] handler, [3] saved mask, [4] pc,
- * [5] sp, [6] result, [7] number register, [10..13] siginfo_t.
+ * [5] sp, [6] result, [7] number register, [10..13] siginfo_t, [16..19]
+ * the kernel's.
  */
 
 #include <errno.h>

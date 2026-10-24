@@ -71,6 +71,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
 
     let mut uc = vec![0u8; UC_BYTES];
     uc_head(&mut uc, f.mask);
+    put_u64(&mut uc, UC_MCONTEXT, f.addr as u64); // fault_address
     for i in 0..31 {
         let v = if i == 0 { f.ret as u64 } else { regs.word(i) };
         put_u64(&mut uc, MC_REGS + i * 8, v);
@@ -88,7 +89,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     let mut rec = [0u8; 16];
     put_u64(&mut rec, 0, regs.word(29));
     put_u64(&mut rec, 8, f.pc as u64);
-    sys::put(frame_va, &siginfo(f.sig)).ok()?;
+    sys::put(frame_va, &siginfo(f.sig, f.code, f.addr)).ok()?;
     sys::put(uc_va, &uc).ok()?;
     sys::put(rec_va, &rec).ok()?;
 

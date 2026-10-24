@@ -486,6 +486,13 @@ registers, blocked mask and FP/SIMD state (x86_64: FXSAVE image; aarch64:
 no `sa_restorer` (Linux uses its vDSO there), so the kernel maps a one-page
 trampoline into the process on the first such `rt_sigaction`.
 
+A fault (an undefined instruction, a bad access) raises its signal at once,
+from the trap's registers (`docs/signals.md`, Faults): the `siginfo_t` has
+its `si_code` and `si_addr`, the `sigcontext` the address
+(`fault_address` on aarch64, `cr2` on x86_64), and `rt_sigreturn` resumes
+the faulting instruction with every register the `ucontext` holds (x86_64's
+`rcx` and `r11` too: the kernel returns with `iretq` then).
+
 On x86_64 the callee-saved registers (rbx, rbp, r12-r15) are reported as 0
 in `uc_mcontext` and not restored from it: the handler preserves them, and
 the kernel does not keep a per-task copy at syscall entry.
@@ -539,7 +546,7 @@ three, the kernel crate itself an hour. Known gaps:
   prebuilt `busybox.static` does not load).
 - Signals act at syscall exit, as for native programs: a task looping in
   user mode is not interrupted until its next syscall (only `SIGKILL` acts
-  on the interrupt return). No alternate signal stacks, no real-time signal
+  on the interrupt return, and a fault's signal at once). No alternate signal stacks, no real-time signal
   queueing.
 - No other `clone` with `CLONE_VM` but not `CLONE_THREAD` than
   posix_spawn's.
@@ -691,9 +698,11 @@ call, shared data, a relocated function pointer and a thread-local in
 of `/dev`, and with a `resolv.conf` naming the system's nameserver and
 then a dead address, musl's resolver (`linux-smoke dns`, `LINUX-DNS OK`)
 gets the answer from the live one; `linux_trace` turns the trace on, checks that a syscall no arch
-has still gets `ENOSYS` (`linux-smoke enosys`), and off again. A fault
-cannot be a boot test (the host takes the kernel's `user fault` line for a
-crash), so the fault's location is not tested in the boot.
+has still gets `ENOSYS` (`linux-smoke enosys`), and off again. The smoke's
+faults are caught (`SIGILL`, `SIGSEGV`, a handler that returns to the
+store); one a program does not catch cannot be a boot test (the host takes
+the kernel's `user fault` line for a crash), so the fault's location is not
+tested in the boot.
 The test is plain musl C, so it can also be run on a Linux host for
 reference. The full list then runs
 `run-myos get-alpine jq && linux --root /data/alpine jq -Rrn '...' /proc/mounts` (the

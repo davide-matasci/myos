@@ -37,6 +37,7 @@ pub fn x86_page_fault(cr2: u64, rip: u64, rsp: u64, code: u64, user: bool) -> ! 
         // Halting turned UEFI boot-mini `cat | cat` into a machine-wide
         // `[ FAIL ] exception` (cr2 in HHDM, code=0x5) instead of a child SEGV.
         user_fault_kill(
+            crate::signal::SIGSEGV,
             "page fault",
             rip,
             &format!("cr2={cr2:#x} rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx} stack{stack}", ctx = task_ctx()),
@@ -75,11 +76,13 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64, user: boo
         hex.push_str("unreadable");
     }
     if user {
-        // Ring-3 #GP (e.g. an `int3` through the DPL-0 breakpoint gate, a
-        // non-canonical address): kill the task like a user page fault
-        // instead of halting the machine (os-test basic/signal/sigismember
-        // took the whole guest down with `[ FAIL ] exception`).
+        // Ring-3 #GP (e.g. a privileged instruction, a non-canonical
+        // address) the program does not catch: kill the task like a user
+        // page fault instead of halting the machine (os-test
+        // basic/signal/sigismember took the whole guest down with
+        // `[ FAIL ] exception`).
         user_fault_kill(
+            crate::signal::SIGSEGV,
             "general protection",
             rip,
             &format!(
@@ -97,11 +100,11 @@ pub fn x86_general_protection(rip: u64, rsp: u64, code: u64, rbp: u64, user: boo
 }
 
 /// Any other exception (`name`: `#UD`, `#DE`, `#MF`, ...): from ring 3 it
-/// kills the faulting task, whose program ran a trapping instruction; from
-/// the kernel it is fatal.
-pub fn x86_exception(name: &str, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
+/// kills the faulting task with `sig`, whose program ran a trapping
+/// instruction and does not catch it; from the kernel it is fatal.
+pub fn x86_exception(sig: u32, name: &str, rip: u64, rsp: u64, code: u64, user: bool) -> ! {
     if user {
-        user_fault_kill(name, rip, &format!("rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}", ctx = task_ctx()));
+        user_fault_kill(sig, name, rip, &format!("rip={rip:#x} rsp={rsp:#x} code={code:#x}{ctx}", ctx = task_ctx()));
     }
     fatal_line(&format!("{name} rip={rip:#x} rsp={rsp:#x} code={code:#x} kernel{ctx}", ctx = task_ctx()));
 }

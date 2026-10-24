@@ -39,6 +39,7 @@ extern "C" void __myos_sigdispatch(unsigned long *frame) {
 	info.si_signo = (int)(frame[FRAME_SIGINFO] & 0xffffffff);
 	info.si_code = (int)(frame[FRAME_SIGINFO] >> 32);
 	info.si_value.sival_ptr = (void *)frame[FRAME_SIGINFO + 1];
+	info.si_addr = (void *)frame[FRAME_SIGINFO + 2];
 	// The kernel keeps no sender. SIGCANCEL has one sender on myos, mlibc's
 	// pthread_cancel in this process (Tgkill), and its handler takes the
 	// signal only from there: what Linux's tgkill would say.

@@ -3,7 +3,8 @@
  * the handler dispatch, over the kernel's records (toolchain/libmyos/
  * sigtramp.c: the trampoline, the 32-bit masks, struct myos_ksigaction).
  * newlib's sigset_t is one unsigned long, and its siginfo_t is what the
- * kernel writes into the frame (int si_signo; int si_code; union sigval).
+ * kernel writes into the frame (int si_signo; int si_code; union sigval
+ * si_value; void *si_addr).
  */
 
 #include <errno.h>

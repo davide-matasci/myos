@@ -369,6 +369,13 @@ fn from_user(frame: *const u64) -> bool {
     (unsafe { *frame.add(33) } & 0x100) == 0
 }
 
+/// A U-mode fault's signal `sig` (`code`, `addr`: its siginfo) to the
+/// program's handler, from the trap frame: false when it does not catch it.
+fn raise(frame: *mut u64, sig: u32, code: u32, addr: u64) -> bool {
+    let info = crate::signal::Info { sig, code, addr: addr as usize };
+    crate::signal::on_fault(&mut crate::user::SyscallRegs::from_ptr(frame), info)
+}
+
 /// After an interrupt's reschedule: act on a `SIGKILL` if it came from
 /// user mode.
 fn preempted(frame: *mut u64) {
@@ -436,6 +443,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
     }
 
     let code = scause & 0xfff;
+    use crate::signal::{code::*, *};
     match code {
         8 => {
             // Environment call from U-mode
@@ -479,6 +487,12 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 _ => crate::user::Access::Write,
             };
             if crate::user::fault_in(stval as usize, access) {
+                return;
+            }
+            // A program's fault: its SIGSEGV (a page there refused the
+            // access, or none is mapped).
+            let mapped = super::upaging::virt_to_phys(crate::task::current_aspace(), stval).is_some();
+            if from_user(frame) && raise(frame, SIGSEGV, segv_code(stval as usize, mapped), stval) {
                 return;
             }
             let sepc = unsafe { *frame.add(32) };
@@ -530,6 +544,7 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
                 &alloc::format!("ra={ra:#x}{}", regs),
             );
             crate::exception::user_fault_kill(
+                SIGSEGV,
                 kind,
                 sepc,
                 &alloc::format!(
@@ -549,10 +564,21 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
         _ => {
             let sepc = unsafe { *frame.add(32) };
             // From U-mode (an illegal instruction, scause 2; an `ebreak`, 3;
-            // a misaligned access): kill the task instead of halting the
+            // a misaligned access, 0, 4 and 6; an access fault, 1, 5 and 7):
+            // the program's signal, or the task ends instead of halting the
             // machine. Only a genuine S-mode trap is fatal.
             if from_user(frame) {
+                let (sig, si, addr) = match code {
+                    2 => (SIGILL, ILL_ILLOPC, sepc),
+                    3 => (SIGTRAP, TRAP_BRKPT, sepc),
+                    0 | 4 | 6 => (SIGBUS, BUS_ADRALN, stval),
+                    _ => (SIGSEGV, SEGV_ACCERR, stval),
+                };
+                if raise(frame, sig, si, addr) {
+                    return;
+                }
                 crate::exception::user_fault_kill(
+                    sig,
                     "trap",
                     sepc,
                     &alloc::format!("scause={code:#x} sepc={sepc:#x} stval={stval:#x}{}", crate::exception::task_ctx()),
