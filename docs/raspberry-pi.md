@@ -125,8 +125,8 @@ the sdhost's go through its FIFO by the CPU, as many words at a time as
 it holds (its DREQ to the DMA engine and the UHS-I modes are issue #576).
 A wait for the controller (a transfer, a write's end) spins a moment,
 then sleeps on its interrupt (`pci_irq_enable` for `sdhci-pci`, where
-the kernel routes it: not on x86_64, which gives a PCI function only its
-MSI, and QEMU's `sdhci-pci` has none, so the waits poll there;
+its INTx, on x86_64 as the firmware's `_PRT` routes it, else the waits
+poll;
 `irq_enable` for the tree's), a short nap at most should it not come; a
 card still programming a write is asked once a millisecond, sleeping in
 between. `/dev/mmcblk0/info` ends `speed high|default clock HZ dma

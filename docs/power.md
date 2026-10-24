@@ -45,7 +45,8 @@ in the order they registered; then the arch's own
   sleep types with `SLP_EN` to the FADT's PM1a (and PM1b) control
   registers, after handing ACPI to the OS through the SMI command port
   when the firmware has not (`SCI_EN` clear). The `_S5` values come from
-  the DSDT (the module's AML scan, `/proc/acpi/s5`). Only registers in
+  the DSDT (the module's AML interpreter, or its scan when that failed:
+  `/proc/acpi/s5`, `docs/pci-acpi-smp.md` "AML"). Only registers in
   system I/O space are used, which is what a PC has; a hardware-reduced
   platform (aarch64 under EDK2) has none and uses PSCI.
 - **PSCI** is called through the conduit the platform description names:

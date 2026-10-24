@@ -266,12 +266,10 @@ sdmmc() {
 		return 0
 	fi
 	# High speed (CMD6 and the host control's bit), the blocks by ADMA2,
-	# the waits on the controller's interrupt: its INTx, which x86_64's
-	# kernel does not route (a PCI function's interrupt is its MSI there,
-	# and QEMU's sdhci-pci has none), so the waits poll on x86_64.
-	irq=on
-	grep -q '^intc apic ' /proc/platform && irq=off
-	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}" speed high clock [1-9][0-9]* dma adma2 irq '$irq'$' $d/info ||
+	# the waits on the controller's interrupt: its INTx (QEMU's sdhci-pci
+	# has no MSI), on x86_64 through the I/O APIC as the firmware's _PRT
+	# routes it (the acpi module's AML interpreter).
+	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}" speed high clock [1-9][0-9]* dma adma2 irq on$' $d/info ||
 		{ cat $d/info; return 1; }
 	seq 40000 > /tmp/sd.seq && dd if=/tmp/sd.seq of=/tmp/sd.in bs=512 count=300 2> /dev/null || return 1
 	for at in 1:1 4000:300 5242880:300; do
@@ -537,6 +535,20 @@ platform() {
 	! grep -q 'differs' /proc/platform
 }
 t -t smoke platform platform
+
+# The firmware's AML on a PC (the acpi module's interpreter,
+# docs/pci-acpi-smp.md "AML"): it ran to its end, found the PCI root
+# bridge's interrupt routes (_PRT, handed to the kernel for INTx) and
+# _S5, which power-off then uses.
+acpi_aml() {
+	grep -q '^intc apic ' /proc/platform || return 0
+	grep -Eq '^prt \\[A-Z0-9_.]+ bus 0 routes [1-9][0-9]*$' /proc/acpi/aml &&
+		grep -Eq '^routes [1-9][0-9]*$' /proc/acpi/aml &&
+		grep -Eq '^_S5 [0-9]+ [0-9]+$' /proc/acpi/aml &&
+		grep -q '^source: AML interpreter$' /proc/acpi/s5 ||
+		{ cat /proc/acpi/aml /proc/acpi/s5; return 1; }
+}
+t -t smoke acpi acpi_aml
 
 # Interrupt domains (irqchip, docs/pci-acpi-smp.md "Interrupt domains"):
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
