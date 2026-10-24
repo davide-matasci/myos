@@ -1,0 +1,48 @@
+# A probe, not a CI check: does GitHub's hosted arm64 Linux runner expose
+# KVM? If it does, the aarch64 boots could run on the runner's CPU as the
+# x86 ones do (docs/testing.md), instead of under TCG. Runs on a push to
+# its branch or by hand.
+name: arm64-kvm-check
+on:
+  push:
+    branches: [claude/arm64-kvm-check]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: /dev/kvm on ubuntu-24.04-arm
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - name: The device and the CPU
+        run: |
+          uname -a
+          nproc
+          grep -m3 -E 'CPU implementer|CPU part|Features' /proc/cpuinfo || true
+          ls -l /dev/kvm || echo "no /dev/kvm"
+          id
+          dmesg 2>/dev/null | grep -i -E 'kvm|hyp' | head || sudo dmesg | grep -i -E 'kvm|hyp' | head || true
+      - name: QEMU with -accel kvm
+        if: always()
+        run: |
+          [ -e /dev/kvm ] || { echo "::notice::no /dev/kvm on the arm64 runner"; exit 0; }
+          sudo chmod 666 /dev/kvm
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-system-arm qemu-efi-aarch64 > /dev/null
+          qemu-system-aarch64 -accel help
+          # The firmware alone, five seconds: under KVM it reaches its
+          # banner, and QEMU refuses to start if the accelerator does not work.
+          set +e
+          timeout 20 qemu-system-aarch64 -M virt,gic-version=3 -accel kvm -cpu host -smp 4 -m 1024 \
+            -nographic -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd -no-reboot > /tmp/qemu.log 2>&1
+          rc=$?
+          set -e
+          head -c 3000 /tmp/qemu.log
+          echo
+          echo "qemu exit: $rc (124: still running at the timeout, i.e. it booted)"
+          if [ $rc -eq 124 ] && grep -q -i -E 'UEFI|BdsDxe|Shell' /tmp/qemu.log; then
+            echo "::notice::KVM works on the arm64 runner"
+          else
+            echo "::notice::KVM did not run a guest on the arm64 runner (exit $rc)"
+          fi
