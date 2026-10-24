@@ -119,6 +119,24 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
     Some(PciIrq { irq, delivery: Delivery::IntX })
 }
 
+/// Give back what [`pci_irq_setup`] took for the function's interrupt
+/// `irq` (`irq::pci_irq_disable`): its INTx or its MSI-X or MSI off, and
+/// once `last` (no handler of `irq` left) the vector, with the I/O APIC
+/// pin of an INTx line and the IOMMU's remapping entry.
+pub fn pci_irq_release(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
+    let intx = intx::release(bus, slot, func);
+    let Ok(vector) = u8::try_from(irq) else {
+        return;
+    };
+    if intx {
+        if last {
+            ioapic::release_vector(vector);
+        }
+    } else if last {
+        interrupts::pci_msi_release(bus, slot, func, vector);
+    }
+}
+
 /// See [`intx::add`].
 pub fn pci_intx_route(bus: u8, device: u8, pin: u8, gsi: u32, flags: u32) -> bool {
     intx::add(bus, device, pin, gsi, flags)
@@ -139,24 +157,6 @@ pub fn phys_map(phys: u64, len: usize) -> Option<usize> {
         return None;
     }
     paging::map_mmio(phys, len as u64)
-}
-
-/// Undo [`pci_irq_setup`] (its handler is gone): an INTx off, its line's
-/// pin masked once no handler is left on it (`last`: [`intx::release`]);
-/// else the function's message off, its vector and IOMMU remapping entry
-/// given back (every MSI has a vector of its own).
-pub fn pci_irq_teardown(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
-    if intx::release(bus, slot, func, last) {
-        return;
-    }
-    if let Ok(vector) = u8::try_from(irq) {
-        interrupts::pci_msi_teardown(bus, slot, func, vector);
-    }
-}
-
-/// The device vectors taken, and how many there are.
-pub fn irq_vectors() -> (u32, u32) {
-    interrupts::vectors()
 }
 
 /// A device vector (its `irq::dispatch` number) and the MSI message address

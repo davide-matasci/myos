@@ -116,19 +116,25 @@ pub fn remap_msi(bus: u8, slot: u8, func: u8, vector: u8) -> Option<(u32, u32)> 
     x86::remap_msi(bus, slot, func, vector)
 }
 
-/// Give back the remapping entry [`remap_msi`] gave PCI function
-/// `bus:slot.func` for `vector`, once the function no longer sends it.
-#[cfg(target_arch = "x86_64")]
-pub fn unmap_msi(bus: u8, slot: u8, func: u8, vector: u8) {
-    x86::unmap_msi(bus, slot, func, vector)
-}
-
 /// The same for an I/O APIC pin (`level`: its trigger mode): its
 /// redirection entry's high dword, and the bits of the low one beside the
 /// mask, polarity and trigger bits.
 #[cfg(target_arch = "x86_64")]
 pub fn remap_ioapic(vector: u8, level: bool) -> Option<(u32, u32)> {
     x86::remap_ioapic(vector, level)
+}
+
+/// Free the remapping entry [`remap_msi`] made for the function's `vector`
+/// (its interrupt given back); nothing where none was made.
+#[cfg(target_arch = "x86_64")]
+pub fn unremap_msi(bus: u8, slot: u8, func: u8, vector: u8) {
+    x86::unremap(x86::Source::Pci(bus, slot, func), vector)
+}
+
+/// The same for the I/O APIC pin raising `vector` ([`remap_ioapic`]).
+#[cfg(target_arch = "x86_64")]
+pub fn unremap_ioapic(vector: u8) {
+    x86::unremap(x86::Source::IoApic, vector)
 }
 
 /// `/proc/iommu`: the units, the domains and what they map, the refused

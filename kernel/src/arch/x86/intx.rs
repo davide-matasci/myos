@@ -146,21 +146,18 @@ pub fn setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     Some(vector)
 }
 
-/// Undo [`setup`] for a function whose handler went: its INTx off again,
-/// out of [`USERS`], and the line's pin masked when no handler is left on
-/// it (`last`); the pin keeps its vector for the line's next device. False
-/// when the function's interrupt is not an INTx routed here (an MSI).
-pub fn release(bus: u8, slot: u8, func: u8, last: bool) -> bool {
+/// The function's INTx given back (`irq::pci_irq_disable`): turned off and
+/// no longer one of the [`USERS`]. Whether it was one (its interrupt was
+/// its INTx).
+pub fn release(bus: u8, slot: u8, func: u8) -> bool {
+    let me = Some((bus, slot, func));
     {
         let mut users = USERS.lock();
-        let Some(u) = users.iter_mut().find(|u| **u == Some((bus, slot, func))) else {
+        let Some(u) = users.iter_mut().find(|u| **u == me) else {
             return false;
         };
         *u = None;
     }
     intx_off(bus, slot, func, true);
-    if last && let Some(route) = route_of(bus, slot, func) {
-        super::ioapic::mask_gsi(route.gsi);
-    }
     true
 }

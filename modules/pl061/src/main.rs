@@ -54,13 +54,6 @@ fn update(off: usize, set: u32, clear: u32) {
     write(off, (read(off) & !clear) | set);
 }
 
-/// The domain's `mask`: line `line`'s interrupt off.
-unsafe extern "C" fn mask(_ctx: *mut core::ffi::c_void, line: u32) {
-    if line < LINES {
-        update(GPIOIE, 0, 1 << line);
-    }
-}
-
 /// The domain's `unmask`: line `line`'s interrupt on.
 unsafe extern "C" fn unmask(_ctx: *mut core::ffi::c_void, line: u32) {
     if line < LINES {
@@ -117,7 +110,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     // Every line masked, nothing pending.
     write(GPIOIE, 0);
     write(GPIOIC, 0xff);
-    let first = unsafe { api.irq_domain_register(dev.phandle, LINES, unmask, mask, core::ptr::null_mut()) };
+    let first = unsafe { api.irq_domain_register(dev.phandle, LINES, unmask, core::ptr::null_mut()) };
     if first == 0 {
         status_warn(api, "pl061: no interrupt domain");
         return 0;

@@ -169,19 +169,6 @@ fn program(reg: u32, low: u32, vector: u8, remap: &AtomicU64) {
     }
 }
 
-/// Mask ISA `irq`'s pin again (its last handler went). Its vector and
-/// remapping entry stay the pin's, for the next [`unmask`]: at most one
-/// per ISA IRQ.
-pub fn mask(irq: u8) {
-    let Some((reg, low)) = entry(irq) else {
-        return;
-    };
-    if irq < 16 {
-        ISA_UNMASKED[irq as usize].store(false, Ordering::SeqCst);
-    }
-    write(reg, low | RED_MASKED);
-}
-
 /// The pin of GSI `gsi`, if this I/O APIC serves it.
 fn gsi_pin(gsi: u32) -> Option<usize> {
     if BASE.load(Ordering::Relaxed) == 0 {
@@ -233,14 +220,23 @@ pub fn unmask_gsi(gsi: u32) {
     program(IOREDTBL + 2 * pin as u32, PCI_LOW[pin].load(Ordering::SeqCst), vector, &PCI_REMAP[pin]);
 }
 
-/// Mask PCI GSI `gsi`'s pin again (no handler left on the line). Its
-/// vector and remapping entry stay the pin's, for the line's next device.
-pub fn mask_gsi(gsi: u32) {
-    let Some(pin) = gsi_pin(gsi) else {
-        return;
+/// The PCI line whose pin raises `vector` given back (its last handler
+/// gone): the pin masked, the IOMMU's remapping entry for it and the
+/// vector freed. Whether a pin had it.
+pub fn release_vector(vector: u8) -> bool {
+    let Some(pin) = (0..PCI_PINS).find(|&p| vector != 0 && PCI_VECTOR[p].load(Ordering::SeqCst) == vector) else {
+        return false;
     };
+    let reg = IOREDTBL + 2 * pin as u32;
+    write(reg, read(reg) | RED_MASKED);
     PCI_UNMASKED[pin].store(false, Ordering::SeqCst);
-    write(IOREDTBL + 2 * pin as u32, PCI_LOW[pin].load(Ordering::SeqCst) | RED_MASKED);
+    if PCI_REMAP[pin].swap(0, Ordering::SeqCst) != 0 {
+        crate::iommu::unremap_ioapic(vector);
+    }
+    PCI_VECTOR[pin].store(0, Ordering::SeqCst);
+    PCI_LOW[pin].store(0, Ordering::SeqCst);
+    super::interrupts::free_vector(vector);
+    true
 }
 
 /// Write every unmasked pin's entry again: interrupt remapping came on

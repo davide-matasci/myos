@@ -92,9 +92,8 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// as the firmware's ACPI `_PRT` says ([`KernelApi::pci_intx_route`], the
 /// acpi module's AML interpreter); [`KernelApi::phys_map`] maps physical
 /// memory for it.
-/// 55: an interrupt is given back ([`KernelApi::pci_irq_disable`],
-/// `irq_disable`); [`KernelApi::irq_domain_register`] takes the domain's
-/// `mask` beside its `unmask`.
+/// 55: [`KernelApi::pci_irq_disable`] gives a PCI function's interrupt
+/// back.
 pub const ABI_VERSION: u32 = 55;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
@@ -1082,15 +1081,12 @@ pub struct KernelApi {
     /// `phandle` ([`MmioDevice::phandle`], 0 for none; a specifier whose
     /// `interrupt-parent` it is decodes to a line, its first cell), each
     /// line `n` delivered by `unmask(ctx, n)` when [`KernelApi::irq_enable`]
-    /// enables its interrupt number, and stopped by `mask(ctx, n)` when
-    /// [`KernelApi::irq_disable`] takes its last handler away. The first of
-    /// those numbers (line `n` is `first + n`), 0 on failure. Counted as a
-    /// registration.
+    /// enables its interrupt number. The first of those numbers (line `n`
+    /// is `first + n`), 0 on failure. Counted as a registration.
     pub irq_domain_register: unsafe extern "C" fn(
         phandle: u32,
         count: u32,
-        unmask: IrqLineFn,
-        mask: IrqLineFn,
+        unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
         ctx: *mut core::ffi::c_void,
     ) -> u32,
     /// Run the handlers of interrupt `irq`, a line of the caller's domain:
@@ -1122,24 +1118,15 @@ pub struct KernelApi {
     /// maps it already (RAM, the ACPI tables), else a new uncached device
     /// mapping. 0 when it cannot (x86_64 only: 0 elsewhere).
     pub phys_map: unsafe extern "C" fn(phys: u64, len: usize) -> usize,
-    // --- ABI 55: interrupts given back (docs/pci-acpi-smp.md) ---
-    /// Undo [`KernelApi::pci_irq_enable`] of the same function, handler and
-    /// context: the handler is gone once this returns (an interrupt under
-    /// way on another CPU is waited out; not from the handler itself),
-    /// the function raises it no more (x86_64: its MSI or MSI-X off; an
-    /// INTx line masked when no other device's handler is on it), and its
-    /// vector and IOMMU remapping entry (x86_64) are free for the next
-    /// device. The module's registration count goes down when the enable
-    /// counted. 0, or -1 when the function has no such handler.
+    // --- ABI 55 ---
+    /// Give back the interrupt [`KernelApi::pci_irq_enable`] routed to
+    /// `handler(ctx)` for the function: the handler runs no more once this
+    /// returns (on any CPU), the function's interrupt is off, and once its
+    /// last handler is gone what it took is free for the next device (the
+    /// vector and the IOMMU's remapping entry on x86_64). 0, or -1 when no
+    /// such handler is registered. Task context.
     pub pci_irq_disable: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32,
-    /// Undo [`KernelApi::irq_enable`] the same way: the line masked when its
-    /// last handler goes. 0, or -1 when `irq` has no such handler.
-    pub irq_disable: unsafe extern "C" fn(irq: u32, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32,
 }
-
-/// An interrupt domain's `unmask` or `mask` of line `line`
-/// ([`KernelApi::irq_domain_register`]).
-pub type IrqLineFn = unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32);
 
 /// [`KernelApi::pci_intx_route`]'s flags: a level-triggered line (else
 /// edge), active low (else high). PCI's are both.
@@ -1346,6 +1333,11 @@ impl KernelApi {
         msix_entry: &mut u16,
     ) -> i32 {
         unsafe { (self.pci_irq_enable)(bus, slot, func, name.as_ptr(), name.len(), handler, ctx, msix_entry) }
+    }
+
+    /// See [`KernelApi::pci_irq_disable`] (field): whether it was routed.
+    pub fn pci_irq_disable(&self, bus: u8, slot: u8, func: u8, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> bool {
+        unsafe { (self.pci_irq_disable)(bus, slot, func, handler, ctx) == 0 }
     }
 
     pub fn wake_any(&self) {
@@ -1716,21 +1708,10 @@ impl KernelApi {
         &self,
         phandle: u32,
         count: u32,
-        unmask: IrqLineFn,
-        mask: IrqLineFn,
+        unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
         ctx: *mut core::ffi::c_void,
     ) -> u32 {
-        unsafe { (self.irq_domain_register)(phandle, count, unmask, mask, ctx) }
-    }
-
-    /// See [`KernelApi::pci_irq_disable`] (field).
-    pub fn pci_irq_disable(&self, bus: u8, slot: u8, func: u8, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32 {
-        unsafe { (self.pci_irq_disable)(bus, slot, func, handler, ctx) }
-    }
-
-    /// See [`KernelApi::irq_disable`] (field).
-    pub fn irq_disable(&self, irq: u32, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32 {
-        unsafe { (self.irq_disable)(irq, handler, ctx) }
+        unsafe { (self.irq_domain_register)(phandle, count, unmask, ctx) }
     }
 
     pub fn irq_dispatch(&self, irq: u32) {

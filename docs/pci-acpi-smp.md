@@ -72,8 +72,7 @@ domains, 4096 lines between them), line `n` being `first + n`:
 
 - a driver of a device on a line enables its interrupt as any other
   (`irq_enable`); the kernel registers the handler, then calls the
-  domain's `unmask` with the line, and its `mask` when `irq_disable`
-  takes the line's last handler away (ABI 55);
+  domain's `unmask` with the line;
 - the module enables the controller's own interrupt, and its handler
   passes each line pending to `KernelApi::irq_dispatch` (an edge is
   cleared before, a level after its handlers);
@@ -99,7 +98,7 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 64 vectors shared with the I/O APIC pins below and the IOMMU's own interrupt, given back with the function's interrupt below; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`); a function with neither its INTx line through an I/O APIC pin, level and active low as the firmware's `_PRT` says ("AML" below; the pin's vector shared by the functions on it, remapped like the ISA pins; the line's other functions, a driver's that polls or is on MSI, have their INTx turned off, the command register's disable bit, so none holds the level line asserted), or none when the acpi module gave no route for it (its driver polls) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`); a function with neither its INTx line through an I/O APIC pin, level and active low as the firmware's `_PRT` says ("AML" below; the pin's vector shared by the functions on it, remapped like the ISA pins; the line's other functions, a driver's that polls or is on MSI, have their INTx turned off, the command register's disable bit, so none holds the level line asserted), or none when the acpi module gave no route for it (its driver polls) | vector |
 | aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
@@ -244,31 +243,20 @@ I/O APIC waits for). An INTx line is shared by every slot the swizzle
 puts on it (QEMU `virt` has four for all of them): each driver of a device
 on it registers its handler, and every one runs at each interrupt of the
 line, its device saying whether it was the one. `/proc/interrupts` lists
-counts per registered handler plus spurious interrupts, and on x86_64 the
-device vectors taken (`vectors: N/64`). The kernel holds 64 handlers on
-every arch, as many as x86_64 has device vectors.
+counts per registered handler plus spurious interrupts.
 
-An interrupt is given back as it was taken (ABI 55):
-`KernelApi::pci_irq_disable` undoes `pci_irq_enable`, `irq_disable` undoes
-`irq_enable` (`irq::pci_irq_release`, `irq::disable`). The handler leaves
-the table once no dispatch still runs it (one under way on another CPU is
-waited out: not from the handler itself), and its module's registration
-count goes down with it. A line with no handler left is masked
-(`IrqChip::mask` on each controller: a GIC SPI's `ICENABLER`, the
-Raspberry Pi's disable registers, the PLIC's enable bit, an I/O APIC pin;
-a domain's `mask`), so a shared INTx line stays on while another device's
-handler is on it. On x86_64 a function's message goes off (MSI-X entry 0
-masked and MSI-X off, MSI off) and its vector and IOMMU remapping entry
-are free for the next device: the vectors are a bitmap searched from
-after the last one given, so a vector given back is the last to be given
-again and an interrupt of its old device still on its way lands on no
-handler; the VT-d and AMD-Vi entries go to a free list. A function on
-an INTx line through the I/O APIC has its INTx turned off again and
-leaves the line's users, whose pin is masked once no handler is left on
-it. An I/O APIC pin (an ISA IRQ's, a PCI line's) keeps its vector and
-remapping entry for its next enable: at most one per pin.
-`/dev/pci` gives its function's interrupt back when the driver closes
-`ctl`; the kernel's own drivers keep theirs while they are loaded.
+A PCI function's interrupt is given back with `KernelApi::pci_irq_disable`
+(ABI 55, `irq::pci_irq_disable`): the handler leaves the table (32 slots)
+once no CPU runs it, the function's interrupt is turned off (its MSI-X or
+MSI, or its INTx: the command register's disable bit), and once the
+interrupt has no handler left what the arch took for it is free for the
+next device. On x86_64 that is the device vector (16 of them, a bitmap,
+the lowest free one given out), the IOMMU's interrupt remapping entry
+(VT-d's or AMD-Vi's, 256 a table, the lowest free one reused) and, for an
+INTx line, its I/O APIC pin; aarch64's and riscv64's GIC SPIs and PLIC
+sources are not allocated, only their handlers. `/dev/pci` gives a
+function's interrupt back when its driver closes `ctl`; the kernel's own
+drivers keep theirs.
 
 virtio-net uses this for its RX queue: `AVAIL_F_NO_INTERRUPT` is cleared on
 the RX ring only, the handler acks the ISR and calls `wake_any`, which ends
@@ -342,7 +330,7 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 
 | File | What |
 |------|------|
-| `ctl` | reads the memory BARs (`barN ADDR SIZE`: the address as the CPUs see it, `KernelApi::pci_bar_phys`, ABI 52, where a board's PCI window moves bus addresses, a Raspberry Pi 4's), the interrupt once routed (`irq msix\|msi\|intx`), the IOMMU domain the function is confined to (`iommu N`; no line on a board without an IOMMU), whether the device's DMA sees the caches (`dma coherent` or `dma noncoherent`, `KernelApi::dma_coherent`) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
+| `ctl` | held while open: closing it gives the interrupt back (the next driver routes it again); reads the memory BARs (`barN ADDR SIZE`: the address as the CPUs see it, `KernelApi::pci_bar_phys`, ABI 52, where a board's PCI window moves bus addresses, a Raspberry Pi 4's), the interrupt once routed (`irq msix\|msi\|intx`), the IOMMU domain the function is confined to (`iommu N`; no line on a board without an IOMMU), whether the device's DMA sees the caches (`dma coherent` or `dma noncoherent`, `KernelApi::dma_coherent`) and the DMA buffers (`dmaN BUS PAGES`, the address the device uses); takes `enable` (memory decoding and bus mastering on), `disable`, `irq` (route the interrupt), `dma PAGES` (a zeroed, physically contiguous buffer, the next `dmaN`) |
 | `config` | the 256 bytes of configuration space, read and written at any offset |
 | `barN` | a memory BAR, for `mmap(MAP_SHARED)`: uncached (x86 PCD\|PWT, aarch64 Device-nGnRE; riscv64 from the platform's attributes for the address), the module's `mmap` hook saying so (`MYOS_MMAP_UNCACHED`, ABI 46), and it stays so through `mprotect` |
 | `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq` (a byte at least: the kernel passes an empty write to no file), once the driver quietened its device |
@@ -350,17 +338,14 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 
 Closing `ctl` (the driver's exit too) turns bus mastering and memory
 decoding off, so the device stops reaching memory and raising messages,
-gives the interrupt back ("Device interrupts" above: the next driver
-routes it afresh), and keeps the DMA buffers for the next driver, zeroed: they are never
+and keeps the DMA buffers for the next driver, zeroed: they are never
 freed, since a mapping of one may outlive its fd. With an IOMMU the
 device reaches those buffers and nothing else; without one the program
 reaches all of memory through the device's DMA, as the kernel does
 (issue #501). The test (`pcidev_smoke`,
 tag `pcidev`, which loads the module first) drives QEMU's `edu` device, which every test boot gets
 (`edu,dma_mask=...`: its own mask is 28 bits): a kernel driver's
-function its `ctl` refused, the interrupt routed and given back 80
-times (more than x86_64's vectors; no `pcidev` handler left after, the
-vectors taken as before), the id, liveness and
+function its `ctl` refused, the id, liveness and
 factorial registers, an interrupt it raises, a DMA copy through a buffer
 and back with the interrupt at its end, and, where `ctl` names an IOMMU
 domain, a copy to the page after the buffer that the IOMMU refuses

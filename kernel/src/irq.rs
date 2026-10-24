@@ -25,44 +25,36 @@
 //! Modules get this through `KernelApi::pci_irq_enable`, which also picks
 //! the delivery mechanism per arch (`pci_irq_setup`), and
 //! `KernelApi::irq_enable` for a board device's own interrupt ([`enable`]).
-//! Both are undone (`KernelApi::pci_irq_disable`, `irq_disable`:
-//! [`pci_irq_release`], [`disable`]): the handler leaves the table, a line
-//! without handlers is masked, and on x86_64 an MSI's vector and IOMMU
-//! remapping entry are given back for the next device (a line's stay its
-//! pin's).
+//! A PCI function's interrupt is given back with
+//! `KernelApi::pci_irq_disable` ([`pci_irq_disable`]): its handler's slot,
+//! and once its last handler is gone what the arch took for it (x86_64:
+//! the vector, the IOMMU's remapping entry).
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 pub type Handler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 
-/// Handlers on every arch together: as many as x86_64 has device vectors
-/// (a shared INTx line on aarch64 and riscv64 takes one per device on it).
-/// `dispatch` copies the table onto the interrupted stack, 3 KiB.
-const MAX_HANDLERS: usize = 64;
+const MAX_HANDLERS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct Entry {
     irq: u32,
+    /// The PCI function whose interrupt it is (`pci_irq_enable`).
+    pci: Option<(u8, u8, u8)>,
     handler: Handler,
     ctx: usize,
     name: [u8; 16],
     name_len: u8,
-    /// The PCI function whose interrupt it is ([`pci_irq_setup`]), for
-    /// [`pci_irq_release`].
-    pci: Option<(u8, u8, u8)>,
-    /// The module whose `module_init` or `module_rescan` registered it:
-    /// its registration count goes down with the handler.
-    owner: Option<&'static str>,
 }
 
 static TABLE: Mutex<[Option<Entry>; MAX_HANDLERS]> = Mutex::new([None; MAX_HANDLERS]);
 static COUNTS: [AtomicU64; MAX_HANDLERS] = [const { AtomicU64::new(0) }; MAX_HANDLERS];
 /// Interrupts that reached `dispatch` with no handler registered.
 static SPURIOUS: AtomicU64 = AtomicU64::new(0);
-/// Dispatches running their copy of the table, for [`unregister`] to wait
-/// out.
-static DISPATCHING: AtomicUsize = AtomicUsize::new(0);
+/// The [`dispatch`]es running, with a copy of the table: what
+/// [`unregister_pci`] waits out before a handler's context may go.
+static IN_DISPATCH: AtomicUsize = AtomicUsize::new(0);
 
 /// How a PCI function's interrupt is delivered (chosen per arch).
 #[derive(Clone, Copy)]
@@ -89,10 +81,16 @@ pub enum Delivery {
 /// it (a shared line). Fails when the table is full or the same handler
 /// and context are registered for it already.
 pub fn register(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
-    insert(irq, None, name, handler, ctx)
+    register_for(irq, None, name, handler, ctx)
 }
 
-fn insert(irq: u32, pci: Option<(u8, u8, u8)>, name: &str, handler: Handler, ctx: usize) -> bool {
+/// [`register`] for PCI function `pci`'s interrupt, which
+/// [`pci_irq_disable`] gives back.
+pub fn register_pci(irq: u32, pci: (u8, u8, u8), name: &str, handler: Handler, ctx: usize) -> bool {
+    register_for(irq, Some(pci), name, handler, ctx)
+}
+
+fn register_for(irq: u32, pci: Option<(u8, u8, u8)>, name: &str, handler: Handler, ctx: usize) -> bool {
     let mut table = TABLE.lock();
     if table.iter().flatten().any(|e| e.irq == irq && e.handler as usize == handler as usize && e.ctx == ctx) {
         return false;
@@ -103,42 +101,16 @@ fn insert(irq: u32, pci: Option<(u8, u8, u8)>, name: &str, handler: Handler, ctx
     let mut n = [0u8; 16];
     let len = name.len().min(16);
     n[..len].copy_from_slice(&name.as_bytes()[..len]);
+    COUNTS[slot].store(0, Ordering::Relaxed);
     table[slot] = Some(Entry {
         irq,
+        pci,
         handler,
         ctx,
         name: n,
         name_len: len as u8,
-        pci,
-        owner: crate::modules::registry::current(),
     });
     true
-}
-
-/// Take the handler that `matches` out of the table: its interrupt number
-/// and whether that number has no handler left (the caller masks it),
-/// once no interrupt runs the handler any more (a dispatch already under
-/// way on another CPU is waited out). `None` when no entry matches. Not
-/// from a handler: the dispatch running it would be waited for.
-fn unregister(matches: impl Fn(&Entry) -> bool) -> Option<(u32, bool)> {
-    let (e, last) = {
-        let mut table = TABLE.lock();
-        let i = table.iter().position(|e| e.as_ref().is_some_and(&matches))?;
-        let e = table[i].take()?;
-        COUNTS[i].store(0, Ordering::Relaxed);
-        (e, !table.iter().flatten().any(|o| o.irq == e.irq))
-    };
-    while DISPATCHING.load(Ordering::SeqCst) != 0 {
-        core::hint::spin_loop();
-    }
-    if let Some(owner) = e.owner {
-        crate::modules::registry::drop_registration(owner);
-    }
-    Some((e.irq, last))
-}
-
-fn same(e: &Entry, handler: Handler, ctx: usize) -> bool {
-    e.handler as usize == handler as usize && e.ctx == ctx
 }
 
 /// Route platform interrupt `irq` to `handler(ctx)` on CPU 0, through the
@@ -159,23 +131,6 @@ pub fn enable(irq: u32, name: &str, handler: Handler, ctx: usize) -> bool {
     true
 }
 
-/// Undo [`enable`]: `handler(ctx)` leaves platform interrupt `irq`, which
-/// is masked when it was the last one there. False when it is not there.
-pub fn disable(irq: u32, handler: Handler, ctx: usize) -> bool {
-    let Some(n) = crate::irqchip::route(irq) else {
-        return false;
-    };
-    match unregister(|e| e.irq == n && e.pci.is_none() && same(e, handler, ctx)) {
-        Some((_, last)) => {
-            if last {
-                crate::irqchip::mask(irq);
-            }
-            true
-        }
-        None => false,
-    }
-}
-
 /// Second-level dispatch from the arch interrupt entry (IRQs masked).
 pub fn dispatch(irq: u32) {
     // `try_lock`: a registration racing with an interrupt on another CPU is
@@ -183,11 +138,9 @@ pub fn dispatch(irq: u32) {
     // interrupted CPU can never be the holder because `register` runs with
     // IRQs on only from module init, and we never spin in IRQ context. The
     // handlers run with the table unlocked (copied out).
-    // `unregister` waits while one runs: a handler taken out of the table
-    // is in no copy taken after.
-    DISPATCHING.fetch_add(1, Ordering::SeqCst);
+    IN_DISPATCH.fetch_add(1, Ordering::SeqCst);
     let Some(table) = TABLE.try_lock().map(|t| *t) else {
-        DISPATCHING.fetch_sub(1, Ordering::SeqCst);
+        IN_DISPATCH.fetch_sub(1, Ordering::SeqCst);
         SPURIOUS.fetch_add(1, Ordering::Relaxed);
         return;
     };
@@ -198,7 +151,7 @@ pub fn dispatch(irq: u32) {
         COUNTS[i].fetch_add(1, Ordering::Relaxed);
         unsafe { (e.handler)(e.ctx as *mut core::ffi::c_void) };
     }
-    DISPATCHING.fetch_sub(1, Ordering::SeqCst);
+    IN_DISPATCH.fetch_sub(1, Ordering::SeqCst);
     if !handled {
         SPURIOUS.fetch_add(1, Ordering::Relaxed);
     }
@@ -213,31 +166,49 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
     crate::arch::pci_irq_setup(bus, slot, func)
 }
 
-/// Route the PCI function's interrupt ([`pci_irq_setup`]) to
-/// `handler(ctx)`: how it is delivered, `None` when it cannot be routed
-/// or the table is full (nothing is left set up then).
-pub fn pci_irq_enable(bus: u8, slot: u8, func: u8, name: &str, handler: Handler, ctx: usize) -> Option<PciIrq> {
-    let route = pci_irq_setup(bus, slot, func)?;
-    if !insert(route.irq, Some((bus, slot, func)), name, handler, ctx) {
-        crate::arch::pci_irq_teardown(bus, slot, func, route.irq, !TABLE.lock().iter().flatten().any(|e| e.irq == route.irq));
-        return None;
+/// Take PCI function `pci`'s `handler(ctx)` out (task context): its
+/// interrupt number, and whether it was the number's last handler. When
+/// this returns the handler runs no more, on any CPU.
+fn unregister_pci(pci: (u8, u8, u8), handler: Handler, ctx: usize) -> Option<(u32, bool)> {
+    let irq = {
+        let mut table = TABLE.lock();
+        let slot = table
+            .iter()
+            .position(|e| e.is_some_and(|e| e.pci == Some(pci) && e.handler as usize == handler as usize && e.ctx == ctx))?;
+        let irq = table[slot].map(|e| e.irq)?;
+        table[slot] = None;
+        irq
+    };
+    // A dispatch that copied the table before the entry went may still be
+    // calling it.
+    while IN_DISPATCH.load(Ordering::SeqCst) != 0 {
+        core::hint::spin_loop();
     }
-    Some(route)
+    let last = !TABLE.lock().iter().flatten().any(|e| e.irq == irq);
+    Some((irq, last))
 }
 
-/// Undo [`pci_irq_enable`]: `handler(ctx)` leaves the function's
-/// interrupt, which the function no longer raises (x86_64: its message off,
-/// the vector and the remapping entry given back; its INTx off) and whose
-/// line is masked when no other device's handler is on it (an INTx line). False when the
-/// function has no such handler.
-pub fn pci_irq_release(bus: u8, slot: u8, func: u8, handler: Handler, ctx: usize) -> bool {
-    match unregister(|e| e.pci == Some((bus, slot, func)) && same(e, handler, ctx)) {
-        Some((irq, last)) => {
-            crate::arch::pci_irq_teardown(bus, slot, func, irq, last);
-            true
-        }
-        None => false,
-    }
+/// Give back what [`pci_irq_setup`] and [`register_pci`] took for PCI
+/// function `bus:slot.func`'s `handler(ctx)` (`KernelApi::pci_irq_disable`):
+/// the handler's slot; the function's interrupt turned off; and once the
+/// interrupt has no handler left, what the arch took for it (x86_64: the
+/// vector and the IOMMU's remapping entry, the I/O APIC pin of an INTx
+/// line). False when no such handler is registered.
+pub fn pci_irq_disable(bus: u8, slot: u8, func: u8, handler: Handler, ctx: usize) -> bool {
+    let Some((irq, last)) = unregister_pci((bus, slot, func), handler, ctx) else {
+        return false;
+    };
+    crate::arch::pci_irq_release(bus, slot, func, irq, last);
+    true
+}
+
+/// The function's INTx off (the command register's disable bit): its
+/// interrupt given back on a board whose controller lines are not
+/// allocated (aarch64, riscv64), only their handlers.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn pci_intx_release(bus: u8, slot: u8, func: u8) {
+    let cmd = crate::pci::cfg_read32(bus, slot, func, 0x04) & 0xFFFF;
+    crate::pci::cfg_write32(bus, slot, func, 0x04, cmd | 1 << 10);
 }
 
 /// A PCI function's INTx line where the device tree routes it (the host
@@ -274,11 +245,5 @@ pub fn interrupts_text() -> alloc::vec::Vec<u8> {
         "spurious: {}\n",
         SPURIOUS.load(Ordering::Relaxed)
     ));
-    // x86_64's device vectors, the one pool handlers take from.
-    #[cfg(target_arch = "x86_64")]
-    {
-        let (used, all) = crate::arch::irq_vectors();
-        out.push_str(&alloc::format!("vectors: {used}/{all}\n"));
-    }
     out.into_bytes()
 }

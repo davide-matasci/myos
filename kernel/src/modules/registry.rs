@@ -2,9 +2,8 @@
 //! image (for `rmmod`), their optional entry points and a count of what they
 //! registered through the `KernelApi` (block and char devices, filesystems,
 //! mounts, `/proc` nodes, interrupts, the console, a personality). A module
-//! that still provides something cannot be unloaded: the count is the
-//! guard, and goes down with what the module gives back (an interrupt,
-//! `KernelApi::pci_irq_disable` and `irq_disable`).
+//! that still provides something cannot be unloaded: the kernel has no
+//! unregister paths yet, so the count is the guard.
 
 use alloc::vec::Vec;
 use myos_abi::{ModuleExit, ModuleRescan};
@@ -66,14 +65,6 @@ pub fn as_module<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
 /// The module whose `module_init` or `module_rescan` is running.
 pub fn current() -> Option<&'static str> {
     *CURRENT.lock()
-}
-
-/// Registration undone through the `KernelApi` (an interrupt given back:
-/// `irq::pci_irq_release`) for module `name`, the one that made it.
-pub fn drop_registration(name: &str) {
-    if let Some(m) = MODULES.lock().iter_mut().find(|m| m.name == name) {
-        m.registrations = m.registrations.saturating_sub(1);
-    }
 }
 
 /// A successful registration through the `KernelApi`, for the module whose

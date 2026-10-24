@@ -148,24 +148,12 @@ struct Unit {
     iq: u64,
     iq_tail: AtomicU32,
     /// The interrupt remapping table (0: interrupts not remapped), the
-    /// entries given out, those given back for the next ones, whether it
-    /// takes 32-bit APIC ids.
+    /// entries in use (present), whether it takes 32-bit APIC ids.
     irt: u64,
-    irt_given: Vec<Given>,
-    irt_next: u16,
-    irt_free: Vec<u16>,
+    irt_used: u16,
     eime: bool,
     /// The I/O APIC's source id, from the unit's scope of that kind.
     ioapic: Option<u16>,
-}
-
-/// An interrupt remapping entry in use: its index, the source id it
-/// answers to (none: any, the I/O APIC's without a scope) and its vector.
-#[derive(Clone, Copy)]
-struct Given {
-    idx: u16,
-    sid: Option<u16>,
-    vector: u8,
 }
 
 /// A function's own domain.
@@ -532,9 +520,7 @@ pub fn init() {
                 iq: 0,
                 iq_tail: AtomicU32::new(0),
                 irt: 0,
-                irt_given: Vec::new(),
-                irt_next: 0,
-                irt_free: Vec::new(),
+                irt_used: 0,
                 eime: false,
                 ioapic,
             },
@@ -669,37 +655,28 @@ pub fn init() {
 /// `vector` on the BSP (`level`: the trigger mode of an I/O APIC pin): its
 /// handle, which the message or the pin's entry names in the remappable
 /// format. The entry verifies the source id, so a function can raise its
-/// own vectors and no other's. `None` when no unit remaps for the source
-/// (its messages pass as they are), or the table is full.
+/// own vectors and no other's. The lowest free entry ([`unremap`] frees
+/// one). `None` when no unit remaps for the source (its messages pass as
+/// they are), or the table is full.
 pub fn remap(source: Source, vector: u8, level: bool) -> Option<u16> {
     let mut guard = STATE.lock();
     let st = guard.as_mut()?;
-    let (ui, sid) = match source {
-        Source::Pci(bus, slot, func) => (unit_for(st, bus, slot, func)?, Some(u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func))),
-        Source::IoApic => {
-            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
-            (ui, st.units[ui].ioapic)
-        }
-    };
+    let (ui, sid) = source_unit(st, source)?;
     let u = &mut st.units[ui];
-    let apic = crate::smp::cpu_hw_id(0);
-    // Without extended interrupt mode the entry names the BSP in 8 bits.
-    if u.irt == 0 || (!u.eime && apic > 0xff) {
+    if u.irt == 0 {
         return None;
     }
-    let idx = match u.irt_free.pop() {
-        Some(idx) => idx,
-        None if u.irt_next < IRT_ENTRIES => {
-            u.irt_next += 1;
-            u.irt_next - 1
-        }
-        None => return None,
-    };
-    u.irt_given.push(Given { idx, sid, vector });
+    let apic = crate::smp::cpu_hw_id(0);
+    // Without extended interrupt mode the entry names the BSP in 8 bits.
+    if !u.eime && apic > 0xff {
+        return None;
+    }
+    let idx = (0..IRT_ENTRIES).find(|&i| unsafe { irte(u, i).read_volatile() } & IRTE_P == 0)?;
+    u.irt_used += 1;
     let dest = if u.eime { apic << 32 } else { apic << 40 };
     let lo = IRTE_P | u64::from(level) << 4 | u64::from(vector) << 16 | dest;
     let hi = sid.map_or(0, |s| u64::from(s) | IRTE_SVT_RID);
-    let e = unsafe { (mm::hhdm(u.irt) as *mut u64).add(usize::from(idx) * 2) };
+    let e = irte(u, idx);
     unsafe {
         e.add(1).write_volatile(hi);
         e.write_volatile(lo);
@@ -709,31 +686,55 @@ pub fn remap(source: Source, vector: u8, level: bool) -> Option<u16> {
     Some(idx)
 }
 
-/// Give back the entry [`remap`] gave PCI function `bus:slot.func` for
-/// `vector`: cleared (a message naming it is refused and counted as a
-/// fault) and free for the next one. False when it has none.
-pub fn unmap(bus: u8, slot: u8, func: u8, vector: u8) -> bool {
+/// The unit remapping `source`'s interrupts, and the source id its
+/// entries verify.
+fn source_unit(st: &State, source: Source) -> Option<(usize, Option<u16>)> {
+    match source {
+        Source::Pci(bus, slot, func) => Some((unit_for(st, bus, slot, func)?, Some(u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func)))),
+        Source::IoApic => {
+            let ui = st.units.iter().position(|u| u.ioapic.is_some())?;
+            Some((ui, st.units[ui].ioapic))
+        }
+    }
+}
+
+/// Entry `idx` of the unit's interrupt remapping table: its low quadword,
+/// the high one after it.
+fn irte(u: &Unit, idx: u16) -> *mut u64 {
+    unsafe { (mm::hhdm(u.irt) as *mut u64).add(usize::from(idx) * 2) }
+}
+
+/// Free `source`'s entry raising `vector` ([`remap`]): not present, its
+/// cached copies invalidated.
+pub fn unremap(source: Source, vector: u8) {
     let mut guard = STATE.lock();
     let Some(st) = guard.as_mut() else {
-        return false;
+        return;
     };
-    let sid = Some(u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func));
-    for u in st.units.iter_mut() {
-        let Some(i) = u.irt_given.iter().position(|g| g.sid == sid && g.vector == vector) else {
-            continue;
-        };
-        let idx = u.irt_given.swap_remove(i).idx;
-        let e = unsafe { (mm::hhdm(u.irt) as *mut u64).add(usize::from(idx) * 2) };
-        unsafe {
-            e.write_volatile(0);
-            e.add(1).write_volatile(0);
-        }
-        tables_written(u.coherent, e as usize, 16);
-        queue(u, &[QI_IEC_GLOBAL]);
-        u.irt_free.push(idx);
-        return true;
+    let Some((ui, sid)) = source_unit(st, source) else {
+        return;
+    };
+    let u = &mut st.units[ui];
+    if u.irt == 0 {
+        return;
     }
-    false
+    let hi = sid.map_or(0, |s| u64::from(s) | IRTE_SVT_RID);
+    let found = (0..IRT_ENTRIES).find(|&i| {
+        let e = irte(u, i);
+        let (lo, h) = unsafe { (e.read_volatile(), e.add(1).read_volatile()) };
+        lo & IRTE_P != 0 && (lo >> 16) as u8 == vector && h == hi
+    });
+    let Some(idx) = found else {
+        return;
+    };
+    let e = irte(u, idx);
+    unsafe {
+        e.write_volatile(0);
+        e.add(1).write_volatile(0);
+    }
+    tables_written(u.coherent, e as usize, 16);
+    queue(u, &[QI_IEC_GLOBAL]);
+    u.irt_used -= 1;
 }
 
 /// Whether a unit is driven.
@@ -812,7 +813,7 @@ pub fn text() -> String {
             s,
             "{}{}",
             if u.iq != 0 { " queued" } else { "" },
-            if u.irt != 0 { alloc::format!(" intremap {}/{}", u.irt_given.len(), IRT_ENTRIES) } else { String::new() }
+            if u.irt != 0 { alloc::format!(" intremap {}/{}", u.irt_used, IRT_ENTRIES) } else { String::new() }
         );
     }
     let _ = writeln!(s, "domain {} identity 0x0-0x{:x}", IDENTITY_DID, st.top);

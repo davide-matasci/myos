@@ -48,12 +48,6 @@ impl IrqChip for Apic {
         }
     }
 
-    fn mask(&self, irq: u32) {
-        if let Ok(irq) = u8::try_from(irq) {
-            super::ioapic::mask(irq);
-        }
-    }
-
     /// The vector the CPU took names the interrupt: nothing to ask.
     fn claim(&self) -> Option<u32> {
         None
