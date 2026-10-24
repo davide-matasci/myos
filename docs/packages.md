@@ -28,9 +28,9 @@ run-myos [-r ROOT] APP[@VERSION][,APP...][:CMD] [ARGS...]
   once (into `ROOT/.get-myos/`; `-u` refreshes them), then streams
   each package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
   straight into `ROOT/.<name>-<version>.new/`, checking the SHA-256 of the
-  stream against the index at the end. The tarball is never stored: a
-  tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
-  bigger than that. Only when the checksum matches is the directory
+  stream against the index at the end. The tarball is never stored: in
+  `/tmp` it would take the kernel heap a second time, beside the files it
+  unpacks (the riscv64 `os-test` package is 49 MB). Only when the checksum matches is the directory
   renamed to `ROOT/<name>-<version>/` and `ROOT/<name>` pointed at it
   (below); a failed download or a mismatch removes it and leaves the
   current version as it was. `get-myos` records the current version of

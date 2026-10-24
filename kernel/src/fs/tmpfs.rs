@@ -25,8 +25,9 @@ const MAX_ENTRIES: usize = 16384;
 const COMP_CAP: usize = 255;
 const PATH_CAP: usize = 255;
 /// File data lives in the kernel heap (sized from memory, see `heap`), which
-/// bounds the whole tmpfs; this caps one file.
-const FILE_CAP: usize = 16 * 1024 * 1024;
+/// bounds the whole tmpfs; this caps one file: twice the largest the system
+/// keeps there (the rust app's libcore rlib, 67 MB, in `/tmp/apps`).
+const FILE_CAP: usize = 128 * 1024 * 1024;
 const LINK_CAP: usize = 255;
 
 const S_IFDIR: u32 = 0o040000;

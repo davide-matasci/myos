@@ -51,8 +51,8 @@
  * programs could call syscalls this kernel lacks.
  *
  * A package streams from curl through gunzip and the tar reader into
- * ROOT/.<name>-<version>.new (nothing is stored: a tmpfs file holds 16 MiB
- * at most, less than some packages); its SHA-256 is checked over the
+ * ROOT/.<name>-<version>.new (nothing is stored: in /tmp the tarball would
+ * take the kernel heap a second time, beside what it unpacks); its SHA-256 is checked over the
  * stream, and only a package whose checksum matches is renamed to its
  * version's directory and recorded (ROOT/.get-myos/pkgs/<name> holds the
  * current version). What an install, -u or --sync downloads goes four
