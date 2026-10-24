@@ -106,11 +106,13 @@ EOC
 # this libc.a needs, every one the compiler may call beside them: the IEEE
 # binary128 `long double` of aarch64 and riscv64 (printf, strtod, libm) and
 # riscv64's soft-float double and float arithmetic (rv64imac), the complex
-# multiplications of libm on every arch. Linked after libc.a (-lbuiltins).
+# multiplications of libm and the 128-bit integer divisions (`__int128`
+# arithmetic: CPython's libmpdec) on every arch. Linked after libc.a
+# (-lbuiltins).
 build_builtins() {
   local arch="$1" prefix="$2"
   local obj="$ROOT/target/mlibc-build-$arch/builtins"
-  local files=(muldc3.c mulsc3.c)
+  local files=(muldc3.c mulsc3.c udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c)
   case "$arch" in
     aarch64|riscv64)
       files+=(addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c

@@ -56,6 +56,7 @@ under its own license.
 | Lynx | 2.9.3 | **GPL-2.0-only** | https://invisible-island.net/lynx/ |
 | GNU Make | 4.4.1 | **GPL-3.0-or-later** | https://ftp.gnu.org/gnu/make/ |
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
+| CPython (package `python`, built against mlibc; its bundled expat, libmpdec, `_hacl` and `_blake2` sources under their own permissive licenses, `Doc/license.rst` in the upstream source; the myos patch `packages/python/host-myos.myos.patch` under the same license) | `PYTHON_VERSION` in `packages/python/versions.env` | PSF-2.0 (the Python Software Foundation License, GPL-compatible, permissive) | https://www.python.org/ |
 | nginx (package `nginx`) | `NGINX_VERSION` in `packages/nginx/versions.env` | BSD-2-Clause (the myos patches, `packages/nginx/*.myos.patch`, under the same license) | https://nginx.org/ |
 | PCRE2 (`packages/pcre2`, the 8-bit library linked into nginx) | `PCRE2_VERSION` in `packages/pcre2/versions.env` | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2 |
 | bottom (package `bottom`, `btm`) + its Rust dependencies | `packages/bottom/versions.env` (dependencies: bottom's `Cargo.lock`) | bottom, crossterm, sysinfo, ratatui: MIT (the myos patches to them: the same); dependencies: MIT / Apache-2.0 and similar permissive licenses (Zlib, Unlicense OR MIT); `option-ext` 0.2.0 (used unmodified, through `dirs-sys`): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/ClementTsang/bottom |

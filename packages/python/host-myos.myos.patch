@@ -1,0 +1,55 @@
+--- a/config.sub	2026-10-21 13:48:20.000000000 +0000
++++ b/config.sub	2026-10-23 20:29:03.014531795 +0000
+@@ -1769,7 +1769,7 @@
+ 	     | onefs* | tirtos* | phoenix* | fuchsia* | redox* | bme* \
+ 	     | midnightbsd* | amdhsa* | unleashed* | emscripten* | wasi* \
+ 	     | nsk* | powerunix* | genode* | zvmoe* | qnx* | emx* | zephyr* \
+-	     | fiwix* | mlibc* | cos* | mbr* | ironclad* )
++	     | fiwix* | mlibc* | cos* | mbr* | ironclad* | myos* )
+ 		;;
+ 	# This one is extra strict with allowed versions
+ 	sco3.2v2 | sco3.2v[4-9]* | sco5v6*)
+--- a/configure.ac	2026-10-21 13:48:20.000000000 +0000
++++ b/configure.ac	2026-10-23 20:31:11.900271744 +0000
+@@ -339,6 +339,9 @@
+ 	*-*-wasi*)
+ 	    ac_sys_system=WASI
+ 	    ;;
++	*-*-myos*)
++	    ac_sys_system=myos
++	    ;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+@@ -777,6 +780,9 @@
+ 	wasm32-*-* | wasm64-*-*)
+ 		_host_ident=$host_cpu
+ 		;;
++	*-*-myos*)
++		_host_ident=$host_cpu
++		;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+--- a/configure	2026-10-21 13:48:20.000000000 +0000
++++ b/configure	2026-10-23 20:29:03.009561163 +0000
+@@ -4067,6 +4067,9 @@
+ 	*-*-wasi*)
+ 	    ac_sys_system=WASI
+ 	    ;;
++	*-*-myos*)
++	    ac_sys_system=myos
++	    ;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+@@ -4531,6 +4534,9 @@
+ 	wasm32-*-* | wasm64-*-*)
+ 		_host_ident=$host_cpu
+ 		;;
++	*-*-myos*)
++		_host_ident=$host_cpu
++		;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"

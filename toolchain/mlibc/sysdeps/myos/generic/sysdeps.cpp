@@ -693,6 +693,12 @@ int Sysdeps<Sysconf>::operator()(int num, long *ret) {
 	case _SC_GETGR_R_SIZE_MAX:
 		*ret = 1024;
 		return 0;
+	// The unit of times(2), which myos does not have: the usual 100,
+	// where mlibc's own answer is a red line on stderr (CPython asks at
+	// startup, for its process clocks).
+	case _SC_CLK_TCK:
+		*ret = 100;
+		return 0;
 	default:
 		return EINVAL;
 	}

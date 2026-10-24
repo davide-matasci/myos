@@ -106,8 +106,10 @@ selects the `mlibc` tests; one under `toolchain/libmyos` runs everything
 ## Not there
 
 No shared objects or `dlopen` (mlibc is built static, as newlib is); no
-Rust `std` on mlibc (the Rust port is newlib's); no port other than the
-smokes is built against it yet; tcc's own sysroot is newlib's. A fork
+Rust `std` on mlibc (the Rust port is newlib's); the ports are newlib's
+but the smokes and python (`packages/python`, the first port on mlibc:
+its README says what of CPython's build the libc shaped); tcc's own
+sysroot is newlib's. A fork
 while another thread holds one of mlibc's own locks (the allocator's,
 stdio's) hangs the child in its first `malloc` or `fprintf`: mlibc's fork
 takes none of them, where libgloss's takes newlib's (issue #544; the
