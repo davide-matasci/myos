@@ -92,7 +92,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// as the firmware's ACPI `_PRT` says ([`KernelApi::pci_intx_route`], the
 /// acpi module's AML interpreter); [`KernelApi::phys_map`] maps physical
 /// memory for it.
-pub const ABI_VERSION: u32 = 54;
+/// 55: [`KernelApi::pci_irq_disable`] gives a PCI function's interrupt
+/// back.
+pub const ABI_VERSION: u32 = 55;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1116,6 +1118,14 @@ pub struct KernelApi {
     /// maps it already (RAM, the ACPI tables), else a new uncached device
     /// mapping. 0 when it cannot (x86_64 only: 0 elsewhere).
     pub phys_map: unsafe extern "C" fn(phys: u64, len: usize) -> usize,
+    // --- ABI 55 ---
+    /// Give back the interrupt [`KernelApi::pci_irq_enable`] routed to
+    /// `handler(ctx)` for the function: the handler runs no more once this
+    /// returns (on any CPU), the function's interrupt is off, and once its
+    /// last handler is gone what it took is free for the next device (the
+    /// vector and the IOMMU's remapping entry on x86_64). 0, or -1 when no
+    /// such handler is registered. Task context.
+    pub pci_irq_disable: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32,
 }
 
 /// [`KernelApi::pci_intx_route`]'s flags: a level-triggered line (else
@@ -1323,6 +1333,11 @@ impl KernelApi {
         msix_entry: &mut u16,
     ) -> i32 {
         unsafe { (self.pci_irq_enable)(bus, slot, func, name.as_ptr(), name.len(), handler, ctx, msix_entry) }
+    }
+
+    /// See [`KernelApi::pci_irq_disable`] (field): whether it was routed.
+    pub fn pci_irq_disable(&self, bus: u8, slot: u8, func: u8, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> bool {
+        unsafe { (self.pci_irq_disable)(bus, slot, func, handler, ctx) == 0 }
     }
 
     pub fn wake_any(&self) {

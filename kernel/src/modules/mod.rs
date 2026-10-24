@@ -153,6 +153,7 @@ static API: KernelApi = KernelApi {
     dma_coherent: api_dma_coherent,
     pci_intx_route: api_pci_intx_route,
     phys_map: api_phys_map,
+    pci_irq_disable: api_pci_irq_disable,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -755,7 +756,7 @@ unsafe extern "C" fn api_pci_irq_enable(
     let Some(route) = crate::irq::pci_irq_setup(bus, slot, func) else {
         return -1;
     };
-    if !crate::irq::register(route.irq, name, handler, ctx as usize) {
+    if !crate::irq::register_pci(route.irq, (bus, slot, func), name, handler, ctx as usize) {
         return -1;
     }
     registry::note_registration();
@@ -767,6 +768,16 @@ unsafe extern "C" fn api_pci_irq_enable(
         };
     }
     0
+}
+
+unsafe extern "C" fn api_pci_irq_disable(
+    bus: u8,
+    slot: u8,
+    func: u8,
+    handler: myos_abi::IrqHandler,
+    ctx: *mut core::ffi::c_void,
+) -> i32 {
+    if crate::irq::pci_irq_disable(bus, slot, func, handler, ctx as usize) { 0 } else { -1 }
 }
 
 unsafe extern "C" fn api_wake_any() {

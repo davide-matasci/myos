@@ -79,6 +79,32 @@ irq_total() {
 	echo $t
 }
 t -t pcidev irq_quiet irq_quiet
+# A function's interrupt is given back when its driver lets go
+# (KernelApi::pci_irq_disable, issue #577): the edu device's routed and
+# its ctl closed forty times over (more than x86_64's 16 device vectors
+# and the kernel's 32 handler slots), each route a new one that works,
+# and none left behind: no pcidev handler in /proc/interrupts, the IOMMU's
+# remapping entries in use as before.
+pcidev_irq_reuse() {
+	edu=
+	for d in /dev/pci/*/; do
+		grep -q '^id 1234:11e8$' $d/info && edu=$d
+	done
+	[ -n "$edu" ] || { ls /dev/pci; return 1; }
+	! grep -q ' pcidev$' /proc/interrupts || { cat /proc/interrupts; return 1; }
+	remap=$(grep -o 'intremap [0-9]*' /proc/iommu)
+	i=0
+	while [ $i -lt 40 ]; do
+		exec 5<>${edu}ctl || return 1
+		echo irq >&5 && grep -q '^irq ' <&5 && grep -q ' pcidev$' /proc/interrupts ||
+			{ echo "route $i failed"; exec 5>&-; cat /proc/interrupts; return 1; }
+		exec 5>&-
+		i=$((i + 1))
+	done
+	! grep -q ' pcidev$' /proc/interrupts || { cat /proc/interrupts; return 1; }
+	[ "$(grep -o 'intremap [0-9]*' /proc/iommu)" = "$remap" ] || { cat /proc/iommu; return 1; }
+}
+t -t pcidev pcidev_irq_reuse pcidev_irq_reuse
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).

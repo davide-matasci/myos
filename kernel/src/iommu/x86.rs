@@ -102,3 +102,13 @@ pub fn remap_ioapic(vector: u8, level: bool) -> Option<(u32, u32)> {
         _ => None,
     }
 }
+
+/// Free the remapping entry of `source` that raises `vector` (made by
+/// [`remap_msi`] or [`remap_ioapic`]), for the next interrupt to reuse.
+pub fn unremap(source: Source, vector: u8) {
+    match kind() {
+        VTD => vtd::unremap(source, vector),
+        AMDVI => amdvi::unremap(source, vector),
+        _ => {}
+    }
+}

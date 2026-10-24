@@ -124,6 +124,19 @@ pub fn remap_ioapic(vector: u8, level: bool) -> Option<(u32, u32)> {
     x86::remap_ioapic(vector, level)
 }
 
+/// Free the remapping entry [`remap_msi`] made for the function's `vector`
+/// (its interrupt given back); nothing where none was made.
+#[cfg(target_arch = "x86_64")]
+pub fn unremap_msi(bus: u8, slot: u8, func: u8, vector: u8) {
+    x86::unremap(x86::Source::Pci(bus, slot, func), vector)
+}
+
+/// The same for the I/O APIC pin raising `vector` ([`remap_ioapic`]).
+#[cfg(target_arch = "x86_64")]
+pub fn unremap_ioapic(vector: u8) {
+    x86::unremap(x86::Source::IoApic, vector)
+}
+
 /// `/proc/iommu`: the units, the domains and what they map, the refused
 /// DMAs (`faults N`, and the last one).
 pub fn text() -> String {

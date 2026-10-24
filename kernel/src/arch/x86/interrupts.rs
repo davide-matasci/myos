@@ -394,13 +394,30 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {}
 /// First LAPIC vector handed to devices (PCI MSI-X, I/O APIC pins).
 const DEVICE_VECTOR_BASE: u8 = 48;
 const DEVICE_VECTORS: u8 = 16;
-static NEXT_DEVICE_VECTOR: AtomicUsize = AtomicUsize::new(0);
+/// The device vectors given out, a bit each (bit n: `DEVICE_VECTOR_BASE + n`).
+static DEVICE_VECTORS_USED: AtomicUsize = AtomicUsize::new(0);
 
-/// A fresh device vector (its `irq::dispatch` number), or `None` when all
-/// are taken.
+/// A free device vector (its `irq::dispatch` number), the lowest, or
+/// `None` when all are taken.
 pub fn alloc_vector() -> Option<u8> {
-    let n = NEXT_DEVICE_VECTOR.fetch_add(1, Ordering::SeqCst);
-    (n < DEVICE_VECTORS as usize).then(|| DEVICE_VECTOR_BASE + n as u8)
+    let mut used = DEVICE_VECTORS_USED.load(Ordering::SeqCst);
+    loop {
+        let n = (!used).trailing_zeros();
+        if n >= u32::from(DEVICE_VECTORS) {
+            return None;
+        }
+        match DEVICE_VECTORS_USED.compare_exchange(used, used | 1 << n, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return Some(DEVICE_VECTOR_BASE + n as u8),
+            Err(now) => used = now,
+        }
+    }
+}
+
+/// Give device vector `vector` back ([`alloc_vector`]).
+pub fn free_vector(vector: u8) {
+    if let Some(n) = vector.checked_sub(DEVICE_VECTOR_BASE).filter(|n| *n < DEVICE_VECTORS) {
+        DEVICE_VECTORS_USED.fetch_and(!(1 << n), Ordering::SeqCst);
+    }
 }
 
 macro_rules! dev_stub {
@@ -537,6 +554,33 @@ pub fn pci_msi_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
     let ctrl = (ctrl & !0x70) | 1;
     write(cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
     Some(u32::from(vector))
+}
+
+/// The function's MSI-X or MSI turned off, if one is on (what
+/// [`pci_msix_setup`] or [`pci_msi_setup`] turned on), and `vector` given
+/// back with the IOMMU's remapping entry for it: whether one was on.
+pub fn pci_msi_release(bus: u8, slot: u8, func: u8, vector: u8) -> bool {
+    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
+    let write = |off: u8, v: u32| crate::pci::cfg_write32(bus, slot, func, off, v);
+    let on = if let Some(cap) = pci_cap(bus, slot, func, 0x11).filter(|cap| cfg(*cap) & 1 << 31 != 0) {
+        // MSI-X off (message control bit 15), its function mask on (14).
+        let w0 = cfg(cap);
+        write(cap, (w0 & !(1 << 31)) | 1 << 30);
+        true
+    } else if let Some(cap) = pci_cap(bus, slot, func, 0x05).filter(|cap| cfg(*cap) & 1 << 16 != 0) {
+        write(cap, cfg(cap) & !(1 << 16));
+        true
+    } else {
+        false
+    };
+    if on {
+        // Without its messages the function would fall back to its INTx:
+        // off too (the command register's disable bit).
+        write(4, (cfg(4) & 0xFFFF) | 1 << 10);
+        crate::iommu::unremap_msi(bus, slot, func, vector);
+        free_vector(vector);
+    }
+    on
 }
 
 extern "x86-interrupt" fn spurious(_frame: InterruptStackFrame) {}
