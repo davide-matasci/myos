@@ -55,7 +55,9 @@
  * at most, less than some packages); its SHA-256 is checked over the
  * stream, and only a package whose checksum matches is renamed to its
  * version's directory and recorded (ROOT/.get-myos/pkgs/<name> holds the
- * current version). MYOS_MIRROR or -m overrides the default, the
+ * current version). What an install, -u or --sync downloads goes four
+ * packages at a time, each in a worker process (fetch_all); the recording
+ * stays here, in order, after them. MYOS_MIRROR or -m overrides the default, the
  * project's rolling GitHub release; the full boot test uses the host-served
  * mirror of the build's own packages (http://10.0.2.2:8765).
  *
@@ -1394,6 +1396,156 @@ static int list_generations(void) {
  * one, so an index never has it). */
 #define MAX_DEPTH 16
 
+/* Download, check and unpack `pkg` into its version's directory: it streams
+ * into ROOT/.<name>-<version>.new, which is renamed to ROOT/<name>-<version>/
+ * only once complete and its checksum matched (the current version, if
+ * any, stays as it was otherwise). 0, or 1 after saying why. */
+static int fetch_version(const package *pkg) {
+    char dir[PATH_MAX_GV], tmp[PATH_MAX_GV], url[512], hex[65];
+    if (version_path(dir, pkg->name, pkg->version, "", 0) != 0 ||
+        version_path(tmp, pkg->name, pkg->version, ".new", 1) != 0) {
+        return die("root path too long", NULL);
+    }
+    mirror_url(url, sizeof url, pkg->file);
+    say(pkg->name, " ", pkg->version);
+    /* A transient failure should not fail the whole install; a retry
+     * starts over in an empty directory. */
+    int attempt = 1;
+    remove_tree(tmp);
+    while (fetch_unpack(url, tmp + strlen(pkg_root) + 1, hex) != 0) {
+        remove_tree(tmp);
+        if (attempt++ == 3) {
+            return die("download failed: ", url);
+        }
+        say("retrying ", url, NULL);
+        sleep(2);
+    }
+    if (strcmp(hex, pkg->csum) != 0) {
+        remove_tree(tmp);
+        return die("checksum mismatch: ", pkg->file);
+    }
+    if (rename(tmp, dir) != 0) {
+        remove_tree(tmp);
+        return die("cannot rename to ", dir);
+    }
+    return 0;
+}
+
+/* ---- downloads in parallel ----------------------------------------------- */
+
+/* How many packages download and unpack at once (fetch_all). Each one is a
+ * worker process of its own, with its own curl, inflating its own stream
+ * into its own version's directory: nothing they write is shared, and what
+ * the install records (ROOT/<name>, the records, apps.list, the
+ * generation) stays with this process, in order, after them. Four: the
+ * guest's CPUs on x86_64 and aarch64 (riscv64's two harts share them), and
+ * one package's network waits overlap another's inflating. */
+#define JOBS 4
+
+/* The packages fetch_all downloaded in this run, and whether each one
+ * made it (a worker that failed said why): install() takes them as they
+ * are instead of downloading again or saying "back to". */
+static package fetch_queue[MAX_APPS];
+static int fetch_ok[MAX_APPS];
+static int fetch_n;
+
+/* 1: fetched, -1: its fetch failed, 0: fetch_all did not fetch it. */
+static int fetch_status(const char *name) {
+    for (int i = 0; i < fetch_n; i++) {
+        if (strcmp(fetch_queue[i].name, name) == 0) {
+            return fetch_ok[i] ? 1 : -1;
+        }
+    }
+    return 0;
+}
+
+/* Queue `want` and what it needs, each once, if install() would download
+ * it: the index's version is not on disk yet. A name the index lacks or a
+ * chain too long is install()'s to report. */
+static void queue_fetch(const char *want, int depth) {
+    package pkg;
+    if (depth > MAX_DEPTH || find_package(want, &pkg) != 0 || !is_version(pkg.version)) {
+        return;
+    }
+    for (int i = 0; i < fetch_n; i++) {
+        if (strcmp(fetch_queue[i].name, pkg.name) == 0) {
+            return;
+        }
+    }
+    if (strcmp(pkg.deps, "-") != 0) {
+        char dep[64], v[64];
+        for (const char *p = pkg.deps; (p = next_need(p, dep, v)) != NULL;) {
+            queue_fetch(dep, depth + 1);
+        }
+    }
+    if (!has_version(pkg.name, pkg.version) && fetch_n < MAX_APPS) {
+        fetch_queue[fetch_n] = pkg;
+        fetch_ok[fetch_n] = 0;
+        fetch_n++;
+    }
+}
+
+/* Download what installing `names` (and what they need) will want, JOBS
+ * packages at a time, before install() records them one by one. Fewer
+ * than two to download: install() does it, as before. */
+static void fetch_all(const char *const *names, int n) {
+    int first = fetch_n;
+    for (int i = 0; i < n; i++) {
+        queue_fetch(names[i], 0);
+    }
+    if (fetch_n - first < 2) {
+        fetch_n = first;
+        return;
+    }
+    /* The largest first: the run lasts at least as long as its largest
+     * download, which should not start last (an insertion sort: a few
+     * dozen packages). */
+    for (int i = first + 1; i < fetch_n; i++) {
+        package p = fetch_queue[i];
+        long size = atol(p.size);
+        int j = i;
+        while (j > first && atol(fetch_queue[j - 1].size) < size) {
+            fetch_queue[j] = fetch_queue[j - 1];
+            j--;
+        }
+        fetch_queue[j] = p;
+    }
+    int pids[JOBS], at[JOBS], running = 0, next = first;
+    /* Nothing buffered may be written twice, by a worker too. */
+    fflush(NULL);
+    while (next < fetch_n || running > 0) {
+        while (running < JOBS && next < fetch_n) {
+            int pid = fork();
+            if (pid == 0) {
+                _exit(fetch_version(&fetch_queue[next]));
+            }
+            if (pid < 0) {
+                /* No worker: install() downloads it itself. */
+                fetch_queue[next].name[0] = '\0';
+                next++;
+                continue;
+            }
+            pids[running] = pid;
+            at[running] = next++;
+            running++;
+        }
+        int status = 0;
+        int pid = waitpid(-1, &status, 0);
+        if (pid < 0) {
+            break;
+        }
+        for (int j = 0; j < running; j++) {
+            if (pids[j] == pid) {
+                fetch_ok[at[j]] = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+                pids[j] = pids[running - 1];
+                at[j] = at[running - 1];
+                running--;
+                break;
+            }
+        }
+    }
+}
+
 /* Bring `want` to the index's version: its dependencies first (depth
  * first, each once, at the versions the index names), then itself when it
  * is not installed or installed at another version: the version is
@@ -1404,7 +1556,7 @@ static int list_generations(void) {
  * there is nothing to do; a dependency already there is silent. */
 static int install(const char *want, int depth, int asked) {
     package pkg;
-    char have[64], dir[PATH_MAX_GV], tmp[PATH_MAX_GV];
+    char have[64];
     if (depth > MAX_DEPTH) {
         return die("dependency chain too long at ", want);
     }
@@ -1436,38 +1588,18 @@ static int install(const char *want, int depth, int asked) {
             }
         }
     }
-    if (version_path(dir, pkg.name, pkg.version, "", 0) != 0 ||
-        version_path(tmp, pkg.name, pkg.version, ".new", 1) != 0) {
-        return die("root path too long", NULL);
+    int fetched = fetch_status(pkg.name);
+    if (fetched < 0) {
+        return 1; /* its worker said why */
     }
     if (has_version(pkg.name, pkg.version)) {
-        /* Only a complete version is ever renamed to its directory. */
-        say(pkg.name, ": back to ", pkg.version);
-    } else {
-        char url[512], hex[65];
-        mirror_url(url, sizeof url, pkg.file);
-        say(pkg.name, " ", pkg.version);
-        /* A transient failure should not fail the whole install; a retry
-         * starts over in an empty directory. */
-        int attempt = 1;
-        remove_tree(tmp);
-        while (fetch_unpack(url, tmp + strlen(pkg_root) + 1, hex) != 0) {
-            remove_tree(tmp);
-            if (attempt++ == 3) {
-                return die("download failed: ", url);
-            }
-            say("retrying ", url, NULL);
-            sleep(2);
+        /* Only a complete version is ever renamed to its directory: one
+         * fetch_all just made, or one that was here already. */
+        if (fetched == 0) {
+            say(pkg.name, ": back to ", pkg.version);
         }
-        if (strcmp(hex, pkg.csum) != 0) {
-            /* The current version, if any, stays as it was. */
-            remove_tree(tmp);
-            return die("checksum mismatch: ", pkg.file);
-        }
-        if (rename(tmp, dir) != 0) {
-            remove_tree(tmp);
-            return die("cannot rename to ", dir);
-        }
+    } else if (fetch_version(&pkg) != 0) {
+        return 1;
     }
     if (point_at(pkg.name, pkg.version) != 0) {
         return 1;
@@ -1610,14 +1742,23 @@ static int upgrade_all(void) {
     if (d == NULL) {
         return 0; /* nothing installed */
     }
-    int rc = 0;
+    static char names[MAX_APPS][64];
+    const char *ptrs[MAX_APPS];
+    int n = 0;
     struct dirent *e;
-    while (rc == 0 && (e = readdir(d)) != NULL) {
+    while (n < MAX_APPS && (e = readdir(d)) != NULL) {
         if (e->d_name[0] != '.' && strstr(e->d_name, ".new") == NULL) {
-            rc = install(e->d_name, 0, 0);
+            copy_field(names[n], sizeof names[n], e->d_name, strlen(e->d_name));
+            ptrs[n] = names[n];
+            n++;
         }
     }
     closedir(d);
+    fetch_all(ptrs, n);
+    int rc = 0;
+    for (int i = 0; rc == 0 && i < n; i++) {
+        rc = install(ptrs[i], 0, 0);
+    }
     return rc;
 }
 
@@ -1637,6 +1778,11 @@ static int sync_list(const char *file) {
     if (file != NULL && write_list(&list) != 0) {
         return die("cannot write ", path);
     }
+    const char *names[MAX_APPS];
+    for (int i = 0; i < list.n; i++) {
+        names[i] = list.a[i].name;
+    }
+    fetch_all(names, list.n);
     for (int i = 0; i < list.n; i++) {
         if (install(list.a[i].name, 0, 0) != 0) {
             return 1;
@@ -1946,6 +2092,9 @@ int main(int argc, char **argv) {
     } else {
         if (update) {
             rc = upgrade_all();
+        }
+        if (rc == 0) {
+            fetch_all((const char *const *)(argv + i), argc - i);
         }
         for (; rc == 0 && i < argc; i++) {
             rc = install(argv[i], 0, 1);

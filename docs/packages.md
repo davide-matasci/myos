@@ -35,6 +35,15 @@ run-myos [-r ROOT] APP[@VERSION][,APP...][:CMD] [ARGS...]
   (below); a failed download or a mismatch removes it and leaves the
   current version as it was. `get-myos` records the current version of
   each package under `ROOT/.get-myos/pkgs/`.
+- **Four at a time**: what an install, an upgrade (`-u`) or a `--sync`
+  downloads (the packages named and what they need, whose version is not
+  on disk yet) streams four packages at once, each in a worker process of
+  its own with its own `curl`, into its own `.new` directory; the
+  recording (`ROOT/<name>`, the records, `apps.list`, the generation)
+  stays with the one process, in order, once they are done. A package
+  whose worker failed fails the install as one downloaded alone would, its
+  message said by the worker; each message is one line, whole. One
+  package alone downloads in the process itself, as before.
 - **Dependencies**: a package's index line names the packages it needs on
   the running system (`PORT_RDEPS` in its descriptor, `docs/ports.md`:
   `st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`), each
@@ -249,12 +258,18 @@ The image has the same header's fields in `/lib/myos-release`
   (`cargo run -- test`, `docs/testing.md`) packs this build's packages
   for its arch, serves `target/packages/` on the host's 127.0.0.1:8765 (the
   guest reaches it as `http://10.0.2.2:8765` on QEMU's user network;
-  `index.txt` and `packages.txt` there are the arch's) and installs
-  **every package of the build** as its first test when a `pkg` test is
-  selected (`install_packages` in
-  `user/tests/run.sh`: first one package with dependencies alone, checking
-  they came with it, then all of them; in CI that is the `pkg` boot of a
-  machine, `docs/testing.md` "In CI") into `/tmp/apps` (`MYOS_APPS`: the
+  `index.txt` and `packages.txt` there are the arch's) and installs, as
+  its first test when a `pkg` test is selected, **the packages the
+  selected tests use**: those their tags name (a package's tests carry its
+  name; a test of the kernel or of another port names what it runs:
+  `alpine_jq` `get-alpine`, `heap` `git` and `coreutils`, the X clients'
+  `tinyx`, get-myos's listing test `st`; one that names none uses the mirror
+  alone) (`install_packages` in
+  `user/tests/run.sh`: first one of them with dependencies alone, checking
+  they came with it, then the others; in CI the `pkg` boot of a machine
+  installs the packages with tests and what they use, the os-test boot
+  os-test with `make`, the Alpine one `get-alpine`, `docs/testing.md` "In
+  CI") into `/tmp/apps` (`MYOS_APPS`: the
   test disk's 64 MiB data partition is too small for os-test); the tests
   that use one (git and coreutils in `heap`, os-test with `make`, the
   packages' own `test.sh`, which `run.sh` finds in the apps) run it with
@@ -294,7 +309,8 @@ binaries there: the tag names the commit they were built from, whose
 
 `packages/`: git, lua, lynx, make, os-test, vim, x11-libs (the X client
 libraries for the X packages, with libX11's error database and their
-test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), openssl (LibreSSL's command, `packages/openssl/README.md`), acme (acme.sh, the ACME client: Let's Encrypt certificates for nginx, `packages/acme/README.md`), python (CPython 3.13 against mlibc, `packages/python/README.md`), and ncurses and pcre2 (build dependencies: of vim, lynx and clear, of nginx; nothing in the
+test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), openssl (LibreSSL's command, `packages/openssl/README.md`), acme (acme.sh, the ACME client: Let's Encrypt certificates for nginx, `packages/acme/README.md`), python (CPython 3.13 against mlibc, `packages/python/README.md`), and ncurses, pcre2, sqlite and libedit (build dependencies: of vim, lynx, clear and python, of nginx, of python; nothing in the
 image). Everything a boot needs
 stays in `ports/` (and zlib and LibreSSL, which get-myos and curl link). The full test list
-installs them all; the ISO (`cargo run -- iso`) carries the image only.
+installs those its tests run (the build dependencies, which carry no files, none); the ISO
+(`cargo run -- iso`) carries the image only.

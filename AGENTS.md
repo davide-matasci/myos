@@ -31,7 +31,7 @@ match the surrounding code's naming, idiom and comment density.
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, mlibc (`toolchain/mlibc`, the second C library a port opts into with `PORT_LIBC=mlibc`), the C both libcs share (`toolchain/libmyos`), the Rust `std` port (`toolchain/std`); all ports too (`port.env`: newlib and the sysroot of kind `toolchain`, with CI jobs of their own; mlibc a plain one, built and cached as any port) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
-| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, openssl, acme, python, ncurses, pcre2; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
+| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, openssl, acme, python, ncurses, pcre2, sqlite, libedit; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
@@ -181,7 +181,10 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   bios-amd with AMD's IOMMU and aarch64 with GICv2 boot the smoke set for
   a kernel change, everything on every machine for a change to what sets
   them apart), the long groups (os-test, the Alpine apk installs, the
-  packages with the install tests) each in a boot of its own; the Alpine roots the Linux layer
+  packages with the install tests) each in a boot of its own, on x86
+  alone in a pull request (aarch64 and riscv64 boot their light tests;
+  the groups there run once merged, and in a pull request that touches
+  get-myos, the Linux layer, os-test or `kernel/src/arch/<arch>`); the Alpine roots the Linux layer
   tests mount (rustc, Python, an X client) come from a disk made once and
   cached. The Linux layer's musl pieces are built and
   cached like a port (`linux-compat`) in every run. The Raspberry Pi 3
@@ -190,8 +193,9 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
 - **Everything** runs on a push to master, daily, on a dispatch of
   `ci.yml` with `full_boot: true` and on a pull request labelled
   `ci:full`; a `linux` test in the selection puts the layer in the image
-  (`MYOS_CI_FEATURES=linux_compat`), and every package is installed from
-  the build's own mirror before a `pkg` test. Label a pull request
+  (`MYOS_CI_FEATURES=linux_compat`), and the packages the selected `pkg`
+  tests name in their tags are installed from the build's own mirror
+  before them, four at a time. Label a pull request
   `ci:full` when the planner's rules would miss what it touches.
 - On master (a push or the daily run) the **iso** job builds the x86_64
   hybrid ISO with the Linux layer in it and the **publish** job uploads it

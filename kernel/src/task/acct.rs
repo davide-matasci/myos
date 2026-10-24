@@ -1,5 +1,6 @@
 //! CPU-time accounting: how long each task ran and each CPU sat halted
-//! (`/proc/<pid>/status`, `/proc/cpu`, `docs/proc.md`).
+//! (`/proc/<pid>/status`, `/proc/cpu`, `docs/proc.md`), and each task's
+//! page faults.
 //!
 //! A CPU charges the time since its last charge to its current task when
 //! that task leaves it (`schedule`) and before it halts (`halt`); the halt
@@ -20,6 +21,10 @@ static CPU_NS: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS]
 /// Per slot: monotonic nanoseconds when its task started (spawn, fork, a
 /// new thread), so a reused slot is told from the task it held before.
 static START_NS: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
+/// Per slot: the page faults its task took (`count_fault`); a process's
+/// are its threads' together, the ended ones' handed to it as their CPU
+/// time is (`Process::ended_faults`).
+static FAULTS: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 /// Per CPU: when the time since was last charged.
 static SINCE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 /// Per CPU: nanoseconds spent halted.
@@ -29,10 +34,30 @@ fn cpu() -> usize {
     crate::smp::cpu_id().min(MAX_CPUS - 1)
 }
 
-/// A new task in `slot`: no CPU time yet, started now.
+/// A new task in `slot`: no CPU time or faults yet, started now.
 pub(super) fn start(slot: usize) {
     CPU_NS[slot].store(0, Ordering::Relaxed);
+    FAULTS[slot].store(0, Ordering::Relaxed);
     START_NS[slot].store(crate::time::monotonic_ns(), Ordering::Relaxed);
+}
+
+/// A page fault the current task took (the fault handler, in its context).
+pub fn count_fault() {
+    let slot = super::current_slot();
+    if let Some(n) = FAULTS.get(slot) {
+        n.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The page faults `slot`'s task took so far.
+pub(super) fn faults(slot: usize) -> u64 {
+    FAULTS.get(slot).map_or(0, |n| n.load(Ordering::Relaxed))
+}
+
+/// Take `slot`'s faults out of it (an exiting thread hands them to its
+/// process).
+pub(super) fn take_faults(slot: usize) -> u64 {
+    FAULTS.get(slot).map_or(0, |n| n.swap(0, Ordering::Relaxed))
 }
 
 /// Per CPU: when its current halt began, 0 while it is not halted.

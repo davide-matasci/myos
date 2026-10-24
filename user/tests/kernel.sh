@@ -254,7 +254,10 @@ sdmmc() {
 	d=/dev/mmcblk0
 	[ -e $d/data ] || { ls /dev; return 1; }
 	if grep -q ' sdhost ' $d/info; then
-		grep -q "^$d/p2 /boot fat " /proc/mounts && [ -s /boot/EFI/BOOT/BOOTAA64.EFI ] ||
+		# High speed (CMD6), the controller's interrupt routed, the data
+		# through the FIFO.
+		grep -Eq ' speed high clock [1-9][0-9]* dma none irq on$' $d/info &&
+			grep -q "^$d/p2 /boot fat " /proc/mounts && [ -s /boot/EFI/BOOT/BOOTAA64.EFI ] ||
 			{ cat $d/info /proc/partitions /proc/mounts; return 1; }
 		read -r _ size _ < $d/info
 		n=$((size / 512))
@@ -262,7 +265,11 @@ sdmmc() {
 		[ "$(dd if=$d/data bs=512 skip=$n count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 		return 0
 	fi
-	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}"$' $d/info ||
+	# High speed (CMD6 and the host control's bit), the blocks by ADMA2,
+	# the waits on the controller's interrupt: its INTx (QEMU's sdhci-pci
+	# has no MSI), on x86_64 through the I/O APIC as the firmware's _PRT
+	# routes it (the acpi module's AML interpreter).
+	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}" speed high clock [1-9][0-9]* dma adma2 irq on$' $d/info ||
 		{ cat $d/info; return 1; }
 	seq 40000 > /tmp/sd.seq && dd if=/tmp/sd.seq of=/tmp/sd.in bs=512 count=300 2> /dev/null || return 1
 	for at in 1:1 4000:300 5242880:300; do
@@ -528,6 +535,20 @@ platform() {
 	! grep -q 'differs' /proc/platform
 }
 t -t smoke platform platform
+
+# The firmware's AML on a PC (the acpi module's interpreter,
+# docs/pci-acpi-smp.md "AML"): it ran to its end, found the PCI root
+# bridge's interrupt routes (_PRT, handed to the kernel for INTx) and
+# _S5, which power-off then uses.
+acpi_aml() {
+	grep -q '^intc apic ' /proc/platform || return 0
+	grep -Eq '^prt \\[A-Z0-9_.]+ bus 0 routes [1-9][0-9]*$' /proc/acpi/aml &&
+		grep -Eq '^routes [1-9][0-9]*$' /proc/acpi/aml &&
+		grep -Eq '^_S5 [0-9]+ [0-9]+$' /proc/acpi/aml &&
+		grep -q '^source: AML interpreter$' /proc/acpi/s5 ||
+		{ cat /proc/acpi/aml /proc/acpi/s5; return 1; }
+}
+t -t smoke acpi acpi_aml
 
 # Interrupt domains (irqchip, docs/pci-acpi-smp.md "Interrupt domains"):
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
@@ -870,8 +891,8 @@ t -t mm mem_hog_survives mem_hog_survives
 # and the USB host's thread is there as a kernel thread.
 proc_pid() {
 	ls /proc | grep -qx "$$" || { echo "no $$ in /proc"; return 1; }
-	read pid name state ppid pgid sid threads size cpu child start kind < /proc/$$/status
-	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] || { cat /proc/$$/status; return 1; }
+	read pid name state ppid pgid sid threads size cpu child start kind faults < /proc/$$/status
+	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] && [ "$faults" -gt 0 ] || { cat /proc/$$/status; return 1; }
 	[ "$(ls /proc/$$/task)" = "$$" ] || { ls /proc/$$/task; return 1; }
 	read tid tpid tname rest < /proc/$$/task/$$/status
 	[ "$tid" = "$$" ] && [ "$tpid" = "$$" ] && [ "$tname" = "$name" ] || { cat /proc/$$/task/$$/status; return 1; }
@@ -882,9 +903,9 @@ proc_pid() {
 	cat /proc/$kid/status
 	kill $kid
 	wait $kid
-	# The USB bus's kernel thread, where xhci found a controller (it
-	# publishes /proc/usb; the Raspberry Pi 3 has none).
-	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel$"; }
+	# The USB bus's kernel thread, where a controller was found (it
+	# publishes /proc/usb): a kernel thread, with a fault count after.
+	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel [0-9]*$"; }
 }
 t -t proc,smoke proc_pid proc_pid
 
@@ -1671,11 +1692,11 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache
 	# The Alpine packages (get-alpine, an app: the packages and the network).
-	t -t linux,net,pkg,heavy,alpine alpine_jq lx_alpine
+	t -t linux,net,pkg,heavy,alpine,get-alpine alpine_jq lx_alpine
 	t -t linux,python,alpine-disk alpine_python lx_python
 	t -t linux,python,alpine-disk,net,netfs alpine_python_net lx_python_net
 	t -t linux,python,alpine-disk,events alpine_python_asyncio lx_python_asyncio
-	t -t linux,x11,pkg,alpine-disk alpine_x11 lx_x11
+	t -t linux,x11,pkg,alpine-disk,tinyx alpine_x11 lx_x11
 	t -t linux,alpine-disk alpine_rustc lx_rustc
 else
 	t -t linux linux_insmod lx_insmod

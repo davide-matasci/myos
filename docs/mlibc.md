@@ -14,7 +14,7 @@ the kernel's interface seen through two libcs.
 
 | Where | What |
 |-------|------|
-| `toolchain/libmyos/` | the C both libcs share: the kernel's interface as libc functions (`__myos_read`, `__myos_openat`, `__myos_socket`, the signal trampolines, the tty code, ...), written to the libc's own headers, answering as libgloss always did (`-1` with `errno`). `libc.h` gives a function its public name: `MYOS_PUBLIC(name)` in both libcs (what neither libc has of its own: `getifaddrs`, `mount`, `memfd_create`, ...), `MYOS_ALIAS(name)` / `MYOS_WEAK_ALIAS(name)` in newlib only (mlibc has the function and calls the sysdep) |
+| `toolchain/libmyos/` | the C both libcs share: the kernel's interface as libc functions (`__myos_read`, `__myos_openat`, `__myos_socket`, the signal trampolines, the tty code, ...), written to the libc's own headers, answering as libgloss always did (`-1` with `errno`). `libc.h` gives a function its public name: `MYOS_PUBLIC(name)` in both libcs (what neither libc has of its own: `getifaddrs`, `mount`, `memfd_create`, ...), `MYOS_ALIAS(name)` / `MYOS_WEAK_ALIAS(name)` in newlib only (mlibc has the function and calls the sysdep), `MYOS_MLIBC_PUBLIC(name)` in mlibc only (newlib has its own: the `arc4random` family over `getrandom`) |
 | `toolchain/newlib/libgloss/myos/` | what is newlib's alone: the reent hooks (`hooks.c`: `_read`, `_open`, ... over `__myos_*`), `signal.c` (the `sigaction` family over `sigtramp.c`'s kernel calls), `pthread.c`, the stubs, newlib's missing POSIX pieces |
 | `toolchain/mlibc/versions.env`, `fetch.sh` | the pins: mlibc's tag and the revisions of the meson subprojects its build takes (frigg, libsmarter, the freestanding C and C++ headers), fetched into `target/mlibc-src`; the compiler-rt builtins (`target/mlibc-compiler-rt`) |
 | `toolchain/mlibc/patch.sh` | installs the sysdeps and `libmyos` into the tree, links the Linux ABI bits where myos has no own, and edits what upstream needs told (python replacements, as newlib's `patch.sh`): the sysdeps in `meson.build` (and no ifuncs: the kernel relocates a static PIE itself and applies `RELATIVE` relocations only), the default feature macros, `memfd_create`'s declaration, riscv64's soft-float `setjmp`, what libgloss answers to a thread's misuse of its locks and the pthread smoke checks (`EBUSY`, `EPERM`, `EDEADLK` from a mutex, a read-write lock or a join instead of a panic or a wait; a cancelled condition wait's cleanup handlers run with the mutex locked again), a failed stdio write setting the stream's error indicator instead of logging a line per failure, `hstrerror`'s messages |
@@ -47,6 +47,9 @@ clang's `limits.h` does not include the libc's after itself) and without a
 feature macro sees POSIX 2008 with the XSI extensions, as a program
 compiled against newlib does (mlibc's own default shows less:
 `patch.sh`); `_GNU_SOURCE` adds the GNU calls (`memfd_create`, ...).
+`myos_mlibc_cflags` includes mlibc's `stdc-predef.h` first, as clang
+does glibc's only for a Linux target: `__STDC_ISO_10646__` says a
+`wchar_t` holds Unicode (libedit wants it).
 
 A port: `PORT_LIBC=mlibc` and `mlibc` in `PORT_DEPS`; a build script
 that uses `myos_write_cross_cc` sources its `port.env` first, and the cc
@@ -107,8 +110,10 @@ selects the `mlibc` tests; one under `toolchain/libmyos` runs everything
 
 No shared objects or `dlopen` (mlibc is built static, as newlib is); no
 Rust `std` on mlibc (the Rust port is newlib's); the ports are newlib's
-but the smokes and python (`packages/python`, the first port on mlibc:
-its README says what of CPython's build the libc shaped); tcc's own
+but the smokes, python (`packages/python`, the first port on mlibc:
+its README says what of CPython's build the libc shaped) and the
+libraries it links: LibreSSL and ncurses (built for both libcs,
+`target/<name>-mlibc-<arch>` the mlibc build), SQLite and libedit; tcc's own
 sysroot is newlib's. A fork
 while another thread holds one of mlibc's own locks (the allocator's,
 stdio's) hangs the child in its first `malloc` or `fprintf`: mlibc's fork

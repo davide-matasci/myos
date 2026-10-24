@@ -55,9 +55,10 @@ other times on the monotonic clock (since boot).
 | children | the CPU time of the children it has waited for, theirs included |
 | start | when it started |
 | kind | `user` or `kernel` |
+| faults | its threads' page faults, those that ended included (`/proc/meminfo`'s `Faults` is every process's together) |
 
 ```sh
-read pid name state ppid pgid sid threads size cpu children start kind < /proc/$$/status
+read pid name state ppid pgid sid threads size cpu children start kind faults < /proc/$$/status
 ```
 
 `/proc/<pid>/task/<tid>/status`:
@@ -115,7 +116,8 @@ system monitor reads the last three, in KiB:
 The others count frames: allocated and freed since boot (`FramesAlloc`,
 `FramesFree`, the live ones in `FramesLive` and `LiveKiB`), allocations per
 kernel call site (`Site*`, for leak hunting), the page faults handled
-(`Faults`) and the pages the fault-around mapped besides the faulting ones
+(`Faults`: every process's; a process's own are in its status line) and
+the pages the fault-around mapped besides the faulting ones
 (`FaultAround`, `docs/linux-compat.md`), the forks and the pages a store
 copied after one (`Forks`, `CowCopies`: a fork shares the parent's pages
 copy-on-write, `README.md`), the system calls made (`Syscalls`), the user

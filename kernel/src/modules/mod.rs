@@ -151,6 +151,8 @@ static API: KernelApi = KernelApi {
     irq_dispatch: api_irq_dispatch,
     pci_bar_phys: api_pci_bar_phys,
     dma_coherent: api_dma_coherent,
+    pci_intx_route: api_pci_intx_route,
+    phys_map: api_phys_map,
     pci_irq_disable: api_pci_irq_disable,
     irq_disable: api_irq_disable,
 };
@@ -596,6 +598,14 @@ unsafe extern "C" fn api_pci_bar_phys(bus: u8, slot: u8, func: u8, bar: u8, cpu:
 
 unsafe extern "C" fn api_dma_coherent(dma: i32) -> i32 {
     crate::dma::coherent(dma).map_or(-1, i32::from)
+}
+
+unsafe extern "C" fn api_pci_intx_route(bus: u8, device: u8, pin: u8, gsi: u32, flags: u32) -> i32 {
+    if crate::arch::pci_intx_route(bus, device, pin, gsi, flags) { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_phys_map(phys: u64, len: usize) -> usize {
+    crate::arch::phys_map(phys, len).unwrap_or(0)
 }
 
 unsafe extern "C" fn api_dma_attach(dev: *const myos_abi::DmaDevice) -> i32 {

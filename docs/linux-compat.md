@@ -603,7 +603,7 @@ three, the kernel crate itself an hour. Known gaps:
     mmap regions paged in on first touch, so only the mmap window bounds
     its size (Alpine's cargo is 23 MB). Any other program is read whole: a
     file of at most 16 MiB from a writable filesystem (the initramfs has
-    no limit) whose loaded image spans at most 3072 pages (12 MiB);
+    no limit) whose loaded image spans at most 4096 pages (16 MiB);
   - a per-process `mmap` window of 64 GiB (every arch: the process span
     is 65 GiB, the image, stack and heap in its first gigabyte) with at
     most 4096 mappings; adjacent mappings with the same

@@ -1,4 +1,4 @@
-# PCI discovery, ACPI (custom AML), and SMP scheduler
+# PCI discovery, ACPI (AML), and SMP scheduler
 
 ## Module / kernel split
 
@@ -14,7 +14,7 @@
 | Userspace PCI drivers → `/dev/pci` | `modules/pcidev` | A function's registers, DMA memory and interrupt for a driver that is a program (below); loaded with `insmod`, not at boot |
 | The IOMMU | `kernel/src/iommu` | What a device's DMA reaches: all of memory for a kernel driver's, its own buffers for a program's (below) |
 | Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists |
-| ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP |
+| ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP. On x86_64 the `acpi` crate's AML interpreter: the PCI interrupt routes (`_PRT`) for the kernel and `_S5` ("AML" below) |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
 | AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, per-CPU run queues |
@@ -73,7 +73,7 @@ domains, 4096 lines between them), line `n` being `first + n`:
 - a driver of a device on a line enables its interrupt as any other
   (`irq_enable`); the kernel registers the handler, then calls the
   domain's `unmask` with the line, and its `mask` when `irq_disable`
-  takes the line's last handler away (ABI 54);
+  takes the line's last handler away (ABI 55);
 - the module enables the controller's own interrupt, and its handler
   passes each line pending to `KernelApi::irq_dispatch` (an edge is
   cleared before, a level after its handlers);
@@ -99,7 +99,7 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 64 vectors shared with the I/O APIC pins below and the IOMMU's own interrupt, given back with the function's interrupt below; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 64 vectors shared with the I/O APIC pins below and the IOMMU's own interrupt, given back with the function's interrupt below; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`); a function with neither its INTx line through an I/O APIC pin, level and active low as the firmware's `_PRT` says ("AML" below; the pin's vector shared by the functions on it, remapped like the ISA pins; the line's other functions, a driver's that polls or is on MSI, have their INTx turned off, the command register's disable bit, so none holds the level line asserted), or none when the acpi module gave no route for it (its driver polls) | vector |
 | aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
@@ -239,7 +239,8 @@ flags>` → INTID, the Pi 3's `<bank number>`, PLIC `<source>`).
 
 Handlers run in interrupt context with interrupts masked on CPU 0. On INTx
 the handler must read the device's ISR register so the level line deasserts
-before the GIC/PLIC EOI. An INTx line is shared by every slot the swizzle
+before the GIC/PLIC EOI (on x86_64 the LAPIC's, which a level pin of the
+I/O APIC waits for). An INTx line is shared by every slot the swizzle
 puts on it (QEMU `virt` has four for all of them): each driver of a device
 on it registers its handler, and every one runs at each interrupt of the
 line, its device saying whether it was the one. `/proc/interrupts` lists
@@ -247,7 +248,7 @@ counts per registered handler plus spurious interrupts, and on x86_64 the
 device vectors taken (`vectors: N/64`). The kernel holds 64 handlers on
 every arch, as many as x86_64 has device vectors.
 
-An interrupt is given back as it was taken (ABI 54):
+An interrupt is given back as it was taken (ABI 55):
 `KernelApi::pci_irq_disable` undoes `pci_irq_enable`, `irq_disable` undoes
 `irq_enable` (`irq::pci_irq_release`, `irq::disable`). The handler leaves
 the table once no dispatch still runs it (one under way on another CPU is
@@ -261,8 +262,11 @@ masked and MSI-X off, MSI off) and its vector and IOMMU remapping entry
 are free for the next device: the vectors are a bitmap searched from
 after the last one given, so a vector given back is the last to be given
 again and an interrupt of its old device still on its way lands on no
-handler; the VT-d and AMD-Vi entries go to a free list. An I/O APIC pin
-keeps its vector and entry for its next enable, at most one per ISA IRQ.
+handler; the VT-d and AMD-Vi entries go to a free list. A function on
+an INTx line through the I/O APIC has its INTx turned off again and
+leaves the line's users, whose pin is masked once no handler is left on
+it. An I/O APIC pin (an ISA IRQ's, a PCI line's) keeps its vector and
+remapping entry for its next enable: at most one per pin.
 `/dev/pci` gives its function's interrupt back when the driver closes
 `ctl`; the kernel's own drivers keep theirs while they are loaded.
 
@@ -447,9 +451,39 @@ boot: `iommu: vt-d, 1 unit(s), 3-level tables, 1 GiB superpages, memory
 to 0x..., interrupts remapped`; a board without a DMAR table prints
 nothing and `/proc/iommu` says `none`.
 
-## AML opcode set (custom interpreter — not ACPICA)
+## AML
 
-Used to resolve `Name (_S5_, Package …)` in the DSDT for `/proc/acpi/s5`
+On x86_64 the acpi module runs the firmware's AML with the `acpi` crate's
+interpreter (`modules/acpi/src/aml.rs`, the crate used unmodified over
+the module ABI: memory through `phys_map`, the I/O ports, PCI
+configuration space). It calls `\_PIC(1)` (the OS uses the APIC), runs
+the devices' `_STA` and `_INI`, then reads every PCI bridge's `_PRT`
+(through its link devices' `_CRS` where the firmware has them) and hands
+each route to the kernel (`KernelApi::pci_intx_route`: bus, device, pin,
+GSI, trigger and polarity). A root bridge (`_HID` or `_CID` `PNP0A03`,
+`PNP0A08`) is on its `_BBN`'s bus; a PCI-to-PCI bridge's routes are for
+its secondary bus. A function behind a bridge with no `_PRT` of its own
+is found through the PCI-to-PCI swizzle (`(pin + device) mod 4` per
+bridge, `kernel/src/arch/x86/intx.rs`). It also evaluates `\_S5` for the
+power-off. `/proc/acpi/aml` reports what it found:
+
+```
+prt \_SB.PCI0 bus 0 routes 128
+routes 128
+_S5 0 0
+```
+
+The interpreter is young and stops at what it does not implement (a
+panic): it runs in a thread of its own, which a panic parks, and the
+module's init waits for it 5 seconds at most. Then nothing is routed
+(the drivers of functions without MSI poll, as before) and `_S5` comes
+from the scan below; `/proc/acpi/aml` says why, and `/proc/acpi/s5`'s
+`source:` which one gave it (`AML interpreter`, `AML _S5 scan`).
+
+### The `_S5` scan
+
+Used on the other arches, and on x86_64 when the interpreter failed, to
+resolve `Name (_S5_, Package …)` in the DSDT for `/proc/acpi/s5`
 and the ACPI power-off (`docs/power.md`). The name is found by its bytes:
 the segment `_S5_` right after a NameOp (`0x08`, the root prefix `\` may
 come between) and followed by a PackageOp. The opcodes are not walked:

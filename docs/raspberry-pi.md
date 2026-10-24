@@ -101,20 +101,36 @@ behind the controller's driver:
 - the Pi 4's EMMC2 (`brcm,bcm2711-emmc2`) is a standard SDHCI controller,
   the driver QEMU's `sdhci-pci` checks on every arch (the `sdmmc` test);
   untested on the Pi 4 itself. Every register access is 32 bits wide (the
-  Broadcom controllers lose narrower writes), and with no base clock in
-  its capabilities the divisors assume 250 MHz, so the card never runs
-  faster than asked.
+  Broadcom controllers lose narrower writes). Its base clock is the one
+  the firmware says (`rpi_firmware`, the EMMC2 clock), else its
+  capabilities', else 250 MHz is assumed, so the card never runs faster
+  than asked.
 - the Pi 3's slot is on the BCM2835's own SD host controller
   (`brcm,bcm2835-sdhost`), which Broadcom does not document: its
   registers as Linux's `bcm2835` MMC driver and QEMU's model use them.
-  Its divisors assume the highest core clock, 400 MHz (250 MHz with
-  `enable_uart=1`); its pins stay as the firmware set them. The Pi 3's
+  It runs off the core clock, which the firmware says (without the
+  `rpi_firmware` module the divisors assume the highest, 400 MHz; 250 MHz
+  with `enable_uart=1`); its pins stay as the firmware set them. The Pi 3's
   SDHCI controller (`brcm,bcm2835-sdhci`) is its Wi-Fi's: an SDIO card,
   below.
 
-The CPU moves the data (no DMA) and the module polls for completion, a
-single card per controller at the default speed (25 MHz, 4-bit bus);
-DMA, interrupts and the faster modes are issue #549.
+A single card per controller, on the 4-bit bus. It is switched to high
+speed (CMD6, 50 MHz) when its CSD says it takes the switch and the
+controller can run it (SDHCI's capabilities, the host control's
+high-speed bit; the sdhost runs it by the clock alone, as Linux does),
+else it stays at the default speed (25 MHz). On SDHCI the blocks move by
+ADMA2 through a 64 KiB bounce buffer the controller reaches
+(`dma_alloc`, synced with `dma_sync`: the Pi's DMA is not cache-coherent);
+the sdhost's go through its FIFO by the CPU, as many words at a time as
+it holds (its DREQ to the DMA engine and the UHS-I modes are issue #576).
+A wait for the controller (a transfer, a write's end) spins a moment,
+then sleeps on its interrupt (`pci_irq_enable` for `sdhci-pci`, where
+its INTx, on x86_64 as the firmware's `_PRT` routes it, else the waits
+poll;
+`irq_enable` for the tree's), a short nap at most should it not come; a
+card still programming a write is asked once a millisecond, sleeping in
+between. `/dev/mmcblk0/info` ends `speed high|default clock HZ dma
+adma2|none irq on|off`, which the `sdmmc` test checks.
 
 ### SDIO: `/dev/sdio`
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Cross-build LibreSSL's static libcrypto, libssl and libtls for the three
-# arches with myos newlib, without its configure (which compiles and runs
-# test programs a cross build cannot run): the source lists come from its
-# automake files (sources.py), and what configure would probe for is set
-# below, for newlib + libgloss. The result goes to target/libressl-<arch>/
-# (lib/, include/openssl, include/tls.h), where curl, lynx, nginx and
-# user/tls build against it.
+# arches, against each C library, without its configure (which compiles and
+# runs test programs a cross build cannot run): the source lists come from
+# its automake files (sources.py), and what configure would probe for is set
+# below, per libc. newlib's build goes to target/libressl-<arch>/ (lib/,
+# include/openssl, include/tls.h), where curl, lynx, nginx and user/tls
+# build against it; mlibc's to target/libressl-mlibc-<arch>/, for the mlibc
+# ports (python): a libc's errno, stdio and struct layouts are its own, so a
+# library serves the programs of the libc it was built against only.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -21,6 +23,7 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
+"$ROOT/toolchain/mlibc/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 SRC="$ROOT/target/libressl-src"
 
@@ -28,18 +31,32 @@ SRC="$ROOT/target/libressl-src"
 # functions and headers it has, so their compat copies stay out of the
 # build; the others (strtonum, freezero, recallocarray, getprogname,
 # syslog_r, err.h, ...) come from crypto/compat and include/compat.
-HAVE=(
+HAVE_NEWLIB=(
   ASPRINTF FTRUNCATE GETDELIM GETLINE GETOPT REALLOCARRAY STRCASECMP
   STRLCAT STRLCPY STRNDUP STRNLEN STRSEP EXPLICIT_BZERO TIMINGSAFE_BCMP
   TIMINGSAFE_MEMCMP ARC4RANDOM_BUF ARC4RANDOM_UNIFORM GETENTROPY GETPAGESIZE
   MEMMEM CLOCK_GETTIME SYSLOG ENDIAN_H MACHINE_ENDIAN_H
 )
+# And on mlibc: the same less the timingsafe compares (compat's then) and
+# <machine/endian.h>; the arc4random family is the shared C's
+# (toolchain/libmyos/random.c), as newlib has its own.
+HAVE_MLIBC=(
+  ASPRINTF FTRUNCATE GETDELIM GETLINE GETOPT REALLOCARRAY STRCASECMP
+  STRLCAT STRLCPY STRNDUP STRNLEN STRSEP EXPLICIT_BZERO ARC4RANDOM_BUF
+  ARC4RANDOM_UNIFORM GETENTROPY GETPAGESIZE MEMMEM CLOCK_GETTIME SYSLOG ENDIAN_H
+)
 HAVE_DEFS=()
 HAVE_CONDS=()
-for h in "${HAVE[@]}"; do
-  HAVE_DEFS+=("-DHAVE_$h")
-  HAVE_CONDS+=("HAVE_$h")
-done
+# have NAME...: the HAVE_ defines and automake conditions of a libc.
+have() {
+  HAVE_DEFS=()
+  HAVE_CONDS=()
+  local h
+  for h in "$@"; do
+    HAVE_DEFS+=("-DHAVE_$h")
+    HAVE_CONDS+=("HAVE_$h")
+  done
+}
 
 # The sources of VAR in DIR's Makefile.am, for the host conditions of ARCH.
 sources() {
@@ -78,13 +95,28 @@ compile_all() {
     | xargs -0 -n 2 -P "$(nproc)" bash -c 'n=$#; compile_one "${@:n-1:1}" "${@:n}" "${@:1:n-2}"' _ "$@"
 }
 
+# build_arch ARCH LIBC
 build_arch() {
-  local arch="$1"
+  local arch="$1" libc="$2"
   local triple="${arch}-unknown-myos"
   local prefix="$ROOT/target/newlib-${arch}"
   local inc="$prefix/${triple}/include"
-  local cc="${triple}-cc"
-  local out="$ROOT/target/libressl-${arch}"
+  local cc out sys
+  local clang_res
+  clang_res="$(clang -print-resource-dir)/include"
+  if [[ "$libc" == mlibc ]]; then
+    cc=clang
+    out="$ROOT/target/libressl-mlibc-${arch}"
+    read -r -a sys <<<"$(myos_mlibc_cflags "$arch")"
+    have "${HAVE_MLIBC[@]}"
+  else
+    cc="${triple}-cc"
+    out="$ROOT/target/libressl-${arch}"
+    sys=(-nostdinc -isystem "$clang_res" -isystem "$inc")
+    have "${HAVE_NEWLIB[@]}"
+    # ui_openssl.c reads passwords through termios (the ncurses/vim pattern).
+    cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
+  fi
   local obj="$out/obj"
   local march host
   case "$arch" in
@@ -92,10 +124,6 @@ build_arch() {
     aarch64) march=aarch64 host=HOST_AARCH64 ;;
     riscv64) march=riscv64 host=HOST_RISCV64 ;;
   esac
-  local clang_res
-  clang_res="$(clang -print-resource-dir)/include"
-  # ui_openssl.c reads passwords through termios (the ncurses/vim pattern).
-  cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 
   # Makefile.am.common and the libraries' own flags, less the assembly
   # (OPENSSL_NO_ASM: the C versions everywhere, as on an unknown host). A
@@ -104,7 +132,7 @@ build_arch() {
     -ffreestanding -fPIC -O2 -g0 -std=gnu99 -fno-strict-aliasing
     -ffunction-sections -fdata-sections -Wall -Wno-pointer-sign
     -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-unused-variable
-    -nostdinc -isystem "$clang_res" -isystem "$inc"
+    "${sys[@]}"
     -D_GNU_SOURCE
     -I"$SRC/include" -I"$SRC/include/compat"
     -I"$SRC/crypto/arch/$march" -I"$SRC/crypto/bn/arch/$march"
@@ -120,7 +148,7 @@ build_arch() {
     crypto_inc+=(-I"$SRC/crypto/$d")
   done
 
-  echo "==> libressl ($triple)"
+  echo "==> libressl ($triple, $libc)"
   command -v "$cc" >/dev/null || { echo "missing compiler $cc" >&2; exit 1; }
   rm -rf "$out"
   mkdir -p "$obj/crypto" "$obj/ssl" "$obj/tls" "$out/lib" "$out/include"
@@ -153,11 +181,12 @@ build_arch() {
   rm -f "$out/include/openssl/Makefile.am" "$out/include/openssl/Makefile.in"
   cp "$SRC/include/tls.h" "$out/include/"
   rm -rf "$obj"
-  echo "libressl $arch: $(ls "$out/lib")"
+  echo "libressl $arch $libc: $(ls "$out/lib")"
 }
 
 for arch in ${MYOS_LIBRESSL_ARCHES:-x86_64 aarch64 riscv64}; do
-  build_arch "$arch"
+  build_arch "$arch" newlib
+  build_arch "$arch" mlibc
 done
 
 echo "$(myos_libressl_version_hash)" >"$MYOS_LIBRESSL_VERSION"

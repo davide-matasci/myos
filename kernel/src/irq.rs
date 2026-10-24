@@ -1,8 +1,9 @@
 //! Device interrupt registry: one handler per interrupt number, shared by
 //! the three architectures' second-level dispatch.
 //!
-//! * x86_64: MSI-X messages and I/O APIC pins (the legacy ISA interrupts)
-//!   land on LAPIC vectors `DEVICE_VECTOR_BASE..`; the IDT stubs call
+//! * x86_64: MSI-X and MSI messages and I/O APIC pins (the legacy ISA
+//!   interrupts, and PCI INTx lines where the firmware's `_PRT` routes
+//!   them) land on LAPIC vectors `DEVICE_VECTOR_BASE..`; the IDT stubs call
 //!   [`dispatch`] with the vector.
 //! * aarch64: PCI INTx lines and the board's devices are GIC SPIs;
 //!   `aarch64_irq_handler` passes any non-timer, non-SGI INTID here.
@@ -26,8 +27,9 @@
 //! `KernelApi::irq_enable` for a board device's own interrupt ([`enable`]).
 //! Both are undone (`KernelApi::pci_irq_disable`, `irq_disable`:
 //! [`pci_irq_release`], [`disable`]): the handler leaves the table, a line
-//! without handlers is masked, and on x86_64 a function's vector and its
-//! IOMMU remapping entry are given back for the next device.
+//! without handlers is masked, and on x86_64 an MSI's vector and IOMMU
+//! remapping entry are given back for the next device (a line's stay its
+//! pin's).
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
@@ -203,8 +205,9 @@ pub fn dispatch(irq: u32) {
 }
 
 /// Route a PCI function's interrupt to CPU 0 and return how it is delivered.
-/// x86_64 uses MSI-X (entry 0), or MSI on a function without it; aarch64
-/// and riscv64 use the INTx line the
+/// x86_64 uses MSI-X (entry 0), or MSI on a function without it, or its
+/// INTx line through the I/O APIC where the firmware's `_PRT` routes it;
+/// aarch64 and riscv64 use the INTx line the
 /// QEMU `virt` machine wires to a GIC SPI / PLIC source.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
     crate::arch::pci_irq_setup(bus, slot, func)
@@ -224,8 +227,8 @@ pub fn pci_irq_enable(bus: u8, slot: u8, func: u8, name: &str, handler: Handler,
 
 /// Undo [`pci_irq_enable`]: `handler(ctx)` leaves the function's
 /// interrupt, which the function no longer raises (x86_64: its message off,
-/// the vector and the remapping entry given back) or whose line is masked
-/// when no other device's handler is on it (an INTx line). False when the
+/// the vector and the remapping entry given back; its INTx off) and whose
+/// line is masked when no other device's handler is on it (an INTx line). False when the
 /// function has no such handler.
 pub fn pci_irq_release(bus: u8, slot: u8, func: u8, handler: Handler, ctx: usize) -> bool {
     match unregister(|e| e.pci == Some((bus, slot, func)) && same(e, handler, ctx)) {

@@ -15,6 +15,7 @@
 #include <pwd.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ipc.h>
@@ -233,8 +234,12 @@ ssize_t __myos_writev(int fd, const struct iovec *iov, int iovcnt);
 ssize_t __myos_readv(int fd, const struct iovec *iov, int iovcnt);
 int __myos_mount(const char *source, const char *target, const char *fstype, ...);
 int __myos_reboot(int howto);
-/* random.c: getrandom(2) from /dev/urandom. */
+/* random.c: getrandom(2) from /dev/urandom, and arc4random over it
+ * (mlibc's; newlib has its own). */
 ssize_t __myos_getrandom(void *buf, size_t buflen, unsigned int flags);
+void __myos_arc4random_buf(void *buf, size_t n);
+uint32_t __myos_arc4random(void);
+uint32_t __myos_arc4random_uniform(uint32_t upper);
 
 #ifdef __cplusplus
 }

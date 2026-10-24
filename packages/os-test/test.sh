@@ -2,13 +2,16 @@
 # signal handlers, myos chroot/FIFO, the udp suite and the rest of the
 # suite that passes; 1041 prebuilt tests): a thin writable copy of the
 # suite under /tmp/o,
-# `make report`, and every test must pass. The list takes a while under
-# TCG (`heavy`). The report's progress goes to the console: one line per
-# test.
+# `make -j4 report` (the tests run four at a time, one per CPU of the
+# boot's machine: each is a process of its own, run by make from a shell
+# of its own, and none signals a process group it shares; riscv64's two
+# harts share the four), and every test must pass. The list takes a
+# while under TCG (`heavy`). The report's progress goes to the console:
+# one line per test.
 
 ostest_report() {
 	run-myos os-test:/bin/sh /lib/os-test/misc/ci-smoke-copy.sh /tmp/o || return 1
-	(cd /tmp/o && run-myos os-test:/bin/custom/make TESTLIST=misc/ci-boot.tests report 2>&1 | tee /tmp/o/report.log >&3)
+	(cd /tmp/o && run-myos os-test:/bin/custom/make -j4 TESTLIST=misc/ci-boot.tests report 2>&1 | tee /tmp/o/report.log >&3)
 	grep -e "^pass_rate=" -e "^F " -e "^C " -e "=== os-test" /tmp/o/report.log
 	rate=$(grep "^pass_rate=" /tmp/o/report.log | head -n 1)
 	[ -n "$rate" ] || { echo "no pass_rate line"; return 1; }

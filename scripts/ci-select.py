@@ -20,13 +20,19 @@ otherwise boots on the primaries: everything on them and the smoke set on
 the variants when it selects everything (the kernel, the toolchain), its
 tags on them alone when it selects tags; a change under
 kernel/src/arch/<arch> boots everything on that arch's machines, variants
-too. The Raspberry Pi 3 boots its smoke tests whenever an aarch64 machine
-boots. A machine's selection runs in parallel boots: the long tests'
+too. A machine's selection runs in parallel boots: the long tests'
 groups (`ostest`, `alpine`, `pkg`: each a boot of its own, whole, as its
-tests build on each other) and one light boot with the rest. Each boot
-gets a budget from what it runs, and says whether it needs the Alpine
-disk (`alpine`, the `alpine-disk` tag: the boot job restores it from the
-cache).
+tests build on each other) and one light boot with the rest. On aarch64
+and riscv64, which run under TCG, the groups take two to three times what
+the light boot does: a pull request boots the light tests there alone,
+and the groups on x86 (under KVM), unless the change is one the groups
+have caught arch-specific breakage of before (GROUP_PATHS: get-myos's
+install and upgrade, the Linux layer, os-test) or is under
+kernel/src/arch/<arch>; a run of everything boots them everywhere. The
+Raspberry Pi 3 boots its smoke tests whenever an aarch64 machine boots.
+Each boot gets a budget from what it runs, and says whether it needs the
+Alpine disk (`alpine`, the `alpine-disk` tag: the boot job restores it
+from the cache).
 
 Writes GitHub outputs ($GITHUB_OUTPUT, stdout without it):
   boots=<JSON>     the boot job's matrix (`[]`: no boot)
@@ -65,6 +71,14 @@ MACHINES = [
 # differs between an arch's machines (the IOMMUs, the boot protocol and
 # the boot files, the launcher's QEMU per machine, the workflows).
 MACHINE_SPECIFIC = re.compile(r"^(kernel/src/iommu/|kernel/src/limine_boot\.rs|src/|boot/|\.github/|scripts/ci-)")
+# Paths whose change boots the long groups on aarch64 and riscv64 in a
+# pull request too (`plan`): where the groups have found breakage of one
+# arch's before (get-myos's install and upgrade: riscv64's lseek, brk heap
+# and ESP; the Linux layer: musl's vfork on aarch64 and riscv64; os-test's
+# semantics, with per-arch issues open). A port, a package or the kernel
+# outside its arch directories gets them on x86 alone, and on every
+# machine once merged.
+GROUP_PATHS = re.compile(r"^(user/get-myos/|linux-compat/|packages/os-test/)")
 # The Raspberry Pi 3 (QEMU raspi3b, `myos rpi3 test`, docs/raspberry-pi.md):
 # no disk but the SD card it boots from (`sdmmc` checks it), no network or
 # PCI; its USB (the dwc2 module) carries QEMU's hub with the stick, the
@@ -257,11 +271,16 @@ def plan(changed, everything, ports, tests):
     change under kernel/src/arch/<arch> boots everything on that arch's
     machines. Otherwise only the primary machines boot: everything when
     the change selects everything (the variants the smoke set then), the
-    change's tags when it selects tags (the variants nothing)."""
+    change's tags when it selects tags (the variants nothing). The long
+    groups boot on aarch64 and riscv64 only in a run of everything, for a
+    GROUP_PATHS change or for a change under kernel/src/arch/<arch>: a
+    pull request's other changes boot the light tests there (`light`:
+    True in the selection), the groups on x86."""
     tags = {"smoke"}
     all_on = set()  # the arches that run everything, variants too
     whole = False  # the change selects everything, not for one arch
     every_machine = everything
+    groups_everywhere = everything
     if not everything:
         if not changed:
             return {}, False, None
@@ -280,6 +299,8 @@ def plan(changed, everything, ports, tests):
                 tags |= what
             if MACHINE_SPECIFIC.match(path):
                 every_machine = True
+            if GROUP_PATHS.match(path):
+                groups_everywhere = True
     tags_arg = ",".join(sorted(tags))
     by_tags = {n for n, t in tests.items() if t & tags}
     smoke = {n for n, t in tests.items() if "smoke" in t}
@@ -299,7 +320,11 @@ def plan(changed, everything, ports, tests):
             names, mode = smoke, "smoke"
         else:
             continue
-        selection[mid] = (names, mode)
+        light = False
+        if arch != "x86_64" and not groups_everywhere and arch not in all_on:
+            light = any(group_of(tests[n]) for n in names)
+            names = {n for n in names if group_of(tests[n]) is None}
+        selection[mid] = (names, mode, light)
         linux |= any("linux" in tests[n] for n in names)
     return selection, linux, tags_arg
 
@@ -391,7 +416,7 @@ def main(argv):
     boots = []
     for mid, *_ in MACHINES:
         if mid in selection:
-            names, mode = selection[mid]
+            names, mode, _ = selection[mid]
             boots += shards(mid, names, tests, mode)
     if any(b["arch"] == "aarch64" for b in boots):
         boots.append({
@@ -410,8 +435,8 @@ def main(argv):
             lines.append(f"Tags: {tags_arg}")
     for mid, *_ in MACHINES:
         if mid in selection:
-            names, mode = selection[mid]
-            what = "everything" if mode is None else f"`{mode}`"
+            names, mode, light = selection[mid]
+            what = ("everything" if mode is None else f"`{mode}`") + (", the light boot alone" if light else "")
             lines.append(f"- {mid}: {len(names)} of {len(tests)} tests ({what}) in {sum(1 for b in boots if b['machine'] == mid)} boot(s)")
     for b in boots:
         lines.append(f"  - `{b['id']}`: `myos {b['args']}`")

@@ -31,25 +31,38 @@
 #define MUTE_PROBES 40
 
 /* A second listener on LISTEN_PORT at `addr`: its listen must fail with
- * EADDRINUSE, SO_REUSEADDR or not. */
+ * EADDRINUSE, SO_REUSEADDR or not. A failure says which call failed with
+ * which errno: the socket's own (a conversation netfs could not make) is
+ * not the check's verdict, and setsockopt on -1 used to replace it with
+ * ENOTSOCK (issue #574: it failed so once, cause unknown). */
 static int taken_twice(in_addr_t addr) {
+    const char *where = addr ? "127.0.0.1" : "any";
     int s = socket(AF_INET, SOCK_STREAM, 0);
     int one = 1;
     struct sockaddr_in sa;
+    if (s < 0) {
+        printf("[ FAIL ] second listener on %s: socket failed (errno %d)\n", where, errno);
+        return -1;
+    }
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;
     sa.sin_port = htons(LISTEN_PORT);
     sa.sin_addr.s_addr = addr;
     (void)setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    int r = s < 0 ? -1 : bind(s, (struct sockaddr *)&sa, sizeof sa);
+    const char *call = "bind";
+    int r = bind(s, (struct sockaddr *)&sa, sizeof sa);
     if (r == 0) {
+        call = "listen";
         r = listen(s, 1);
     }
     int err = errno;
     close(s);
-    if (r == 0 || err != EADDRINUSE) {
-        printf("[ FAIL ] second listener on %s: %s (errno %d)\n", addr ? "127.0.0.1" : "any",
-            r == 0 ? "listening" : "failed", err);
+    if (r == 0) {
+        printf("[ FAIL ] second listener on %s: listening\n", where);
+        return -1;
+    }
+    if (err != EADDRINUSE) {
+        printf("[ FAIL ] second listener on %s: %s failed (errno %d)\n", where, call, err);
         return -1;
     }
     return 0;

@@ -58,6 +58,29 @@ pcidev_test() {
 	{ grep -q '^pcidev$' /proc/modules || insmod /lib/modules/pcidev; } && $SMOKES/pcidev_smoke
 }
 t -t pcidev pcidev pcidev_test
+# No interrupt storm after it: the devices' interrupts in a second stay
+# few. A PCI INTx line is shared and level-triggered, and a function on
+# one a driver unmasked (on a PC, the SD controller's) that does not use
+# it must not hold it asserted, or CPU 0 takes its interrupt for ever: the
+# kernel turns those functions' INTx off (arch/x86/intx.rs). On QEMU's PC
+# with VT-d the polled virtio disk beside the edu device raises its line
+# during the test above.
+irq_quiet() {
+	a=$(irq_total)
+	sleep 1
+	b=$(irq_total)
+	[ $((b - a)) -lt 1000 ] || { echo "$((b - a)) interrupts in 1 s"; cat /proc/interrupts; return 1; }
+}
+irq_total() {
+	t=0
+	while read -r n count _; do
+		case $n in
+		[0-9]*:) t=$((t + count)) ;;
+		esac
+	done < /proc/interrupts
+	echo $t
+}
+t -t pcidev irq_quiet irq_quiet
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).
@@ -421,14 +444,24 @@ net_listen() {
 	: > /tmp/listen.out
 	$SMOKES/tcp_listen_smoke >> /tmp/listen.out 2>&1 &
 	pid=$!
-	echo "HOST c-smokes tcp-ping 2323" >&3
-	# netd's table (/net/convs) names the listener while it is up.
+	# netd's table (/net/convs) names the listener while it is up: the host
+	# is asked to connect once it is (asked before, its peer outlived a
+	# smoke that failed at its first checks, retrying for three minutes,
+	# and its connections landed on the next listen test's listener).
 	i=0
-	while [ $i -lt 30 ] && ! grep -q 'listen \*!2323' /net/convs 2>/dev/null; do
+	while [ $i -lt 30 ] && ! grep -q 'listen \*!2323' /net/convs 2>/dev/null \
+		&& ! grep -q "FAIL ]" /tmp/listen.out 2>/dev/null; do
 		sleep 1
 		i=$((i + 1))
 	done
-	grep -q 'listen \*!2323' /net/convs || { echo "no listener on 2323 in /net/convs:"; cat /net/convs; }
+	asked=
+	if grep -q 'listen \*!2323' /net/convs 2>/dev/null; then
+		echo "HOST c-smokes tcp-ping 2323 $pid" >&3
+		asked=1
+	else
+		echo "no listener on 2323 in /net/convs:"
+		cat /net/convs
+	fi
 	i=0
 	while [ $i -lt 180 ] && ! grep -q -e "OK ] listen" -e "FAIL ]" /tmp/listen.out 2>/dev/null; do
 		sleep 1
@@ -437,6 +470,11 @@ net_listen() {
 	kill $pid 2>/dev/null
 	wait $pid 2>/dev/null
 	cat /tmp/listen.out
-	contains "[ OK ] listen" /tmp/listen.out && ! grep -q "no listener on 2323" /tmp/listen.out
+	if contains "[ OK ] listen" /tmp/listen.out && ! grep -q "no listener on 2323" /tmp/listen.out; then
+		return 0
+	fi
+	# The smoke is gone: its peer on the host stops waiting for it.
+	[ -z "$asked" ] || echo "HOST c-smokes tcp-ping-stop 2323 $pid" >&3
+	return 1
 }
 t -t netfs listen net_listen

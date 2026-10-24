@@ -36,7 +36,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | tag | the tests that |
 |---|---|
 | `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
-| `pkg` | need the packages of this build installed as apps (`packages`, the first test of a run that has one, installs them from the mirror; every package's own test has it; in CI the `pkg` boot's) |
+| `pkg` | need the packages of this build: installed as apps (`packages`, the first test of a run that has one, installs from the mirror those the selected `pkg` tests name in their tags; every package's own test has it and its package's name), or the mirror itself (get-myos's, which name none); in CI the `pkg` boot's |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
 | `install` | change the boot disk: `get-myos --upgrade` (Limine made stale first) and `--install` on the scratch disk; when they passed, the launcher boots the upgraded disk again, which must come up from slot `b`, and then the disk `--install --local` made, from its slot a (`docs/install.md`) |
@@ -81,9 +81,12 @@ TESTS SKIPPED 45
 - `HOST <port> <args>`: the test needs the host. The launcher runs that
   port's host-side script (`PORT_HOST=host.sh` in its `port.env`, from the
   checkout) with the arguments, in the background; the guest test then
-  waits for what the script does. `c-smokes tcp-ping PORT` (`user/c/host.sh`)
+  waits for what the script does. `c-smokes tcp-ping PORT TOKEN` (`user/c/host.sh`)
   connects to the guest's listener through QEMU's port forward, plays
-  ping/pong and then opens and closes forty connections without a word; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
+  ping/pong and then opens and closes forty connections without a word
+  (asked for once `/net/convs` names the listener; `tcp-ping-stop PORT
+  TOKEN` ends a peer whose smoke failed, so it does not retry onto the
+  next listen test's); `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
   second USB stick into the guest through the QEMU monitor and pulls it out
   (`docs/usb.md`); `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
   sessions at once with the test key to the dropbear the boot script
@@ -109,11 +112,15 @@ the feature; otherwise that the boot script's `rc.local` loaded it with
 `insmod`). The runner sources `kernel.sh`, then
 `ports/*.sh` in name order; the packer names those so the core image ports
 (the shell, the basic programs) come first, the other image ports next,
-the packages last. In the full mode the very first test installs every
-package the host's mirror has, as apps in `/tmp/apps` (`MYOS_APPS`,
-`docs/packages.md`), and the runner sources the packages' tests from
-there (`<app>/lib/myos-tests/ports/`) with the image's, in the same name
-order; they run their programs with `run-myos`.
+the packages last (the image carries the packages' test files too, so
+the runner reads every test's tags before it installs anything). When a
+selected test has `pkg`, the very first test installs the packages the
+selected tests use from the host's mirror, as apps in `/tmp/apps`
+(`MYOS_APPS`, `docs/packages.md`): a `pkg` test names in its tags the
+packages it runs (its own package's tests carry its name; `alpine_jq`
+names `get-alpine`, the X clients `tinyx`); one that names none gets
+none (get-myos's own install into roots of their own). The tests run
+their programs with `run-myos`.
 
 The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
 interactive shell on a pty the way a person types at the console: history
@@ -232,8 +239,9 @@ and writes the boot job's matrix. A path selects tags:
 | a port's or a package's directory | its tests (its name), those of the ports built on it or needing it (`PORT_DEPS`, `PORT_RDEPS`) and what it implements (netd: `netfs`; mkfs.ext2: `ext2`; get-myos: `install`, `pkg`) |
 | `modules/<name>` | the module's tag (console: `console`, `tty`; the disk drivers: `blk`, sdmmc also `sdmmc` and `sdio`; the USB modules: `usb`; virtio_net: `virtio_net`, `netfs`; pl061: `irq`); `modules/abi`, `acpi` and `pci_enum`: everything |
 | `linux-compat/` | `linux` |
-| `kernel/src/arch/<arch>` | everything on that arch's machines, variants too; the tags (`smoke` at least) on the other arches' primary machines |
+| `kernel/src/arch/<arch>` | everything on that arch's machines, variants too, the long groups included; the tags (`smoke` at least) on the other arches' primary machines |
 | `kernel/src/iommu/`, `kernel/src/limine_boot.rs`, `src/`, `boot/`, `.github/`, `scripts/ci-*` | everything on every machine: what differs between an arch's machines |
+| `user/get-myos`, `linux-compat/`, `packages/os-test` | their tags, with the long groups on aarch64 and riscv64 too (below) |
 | `kernel/`, `toolchain/`, `build.rs`, `scripts/`, `etc/`, `user/init`, `user/tests`, anything else | everything on the primary machines, `smoke` on the variants |
 | documentation (`*.md`, `docs/`, `licenses/`) | nothing: no boot |
 
@@ -250,9 +258,23 @@ pull request's selection boots on; the others are variants of it, in the
 firmware, the IOMMU or the interrupt controller, and boot the smoke set
 for a change that selects everything, nothing for one that selects tags:
 what sets them apart is exercised by the machine-specific paths of the
-table (everything on every machine) and by master's runs. A pull request
-that touches the kernel thus boots 16 times instead of 19, one that
-touches a port 4 times instead of 7.
+table (everything on every machine) and by master's runs.
+
+On aarch64 and riscv64, which run under TCG, the long groups take two to
+three times what the light boot does (below: 16 minutes against 9 on
+riscv64), so a pull request boots the light tests there alone, whatever
+it selects, and the groups on x86, under KVM, where they take 3 to 6
+minutes. The exceptions, which boot the groups on aarch64 and riscv64 in a
+pull request too, are the paths whose changes the groups have caught
+breaking one arch before: `user/get-myos` (riscv64's lseek, brk heap and
+ESP broke the install and the upgrade), `linux-compat/` (musl's vfork on
+aarch64 and riscv64) and `packages/os-test` (its semantics have per-arch
+issues open), and `kernel/src/arch/<arch>`, which boots everything on its
+arch. The runs of everything (master, daily, `ci:full`) boot the groups
+on every machine, so a port's or the kernel's arch-specific breakage in
+them is found within the hour of merging. A pull request that touches the
+kernel thus boots 10 times instead of 16 (its longest boot the riscv64
+light one), one that touches a package 5 times, four of them smoke boots.
 
 A machine's selection runs in parallel boots: the long tests' groups
 (`ostest` and `alpine`: the curated os-test list and the apk installs,

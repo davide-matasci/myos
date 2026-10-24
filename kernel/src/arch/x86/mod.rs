@@ -3,6 +3,7 @@
 mod apic;
 pub mod gdt;
 mod interrupts;
+mod intx;
 mod ioapic;
 mod paging;
 pub mod pci;
@@ -103,21 +104,51 @@ pub fn timer_resume() {
     interrupts::timer_resume();
 }
 
-/// Route a PCI function's interrupt: MSI-X entry 0 → a LAPIC vector on the
-/// BSP (no IOAPIC / PIRQ routing needed).
+/// A PCI function's interrupt: its MSI-X, else its MSI, else its INTx
+/// through the I/O APIC where the firmware's `_PRT` routes it
+/// ([`intx`]).
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
     use crate::irq::{Delivery, PciIrq};
     if let Some(irq) = interrupts::pci_msix_setup(bus, slot, func) {
         return Some(PciIrq { irq, delivery: Delivery::MsiX(0) });
     }
-    let irq = interrupts::pci_msi_setup(bus, slot, func)?;
-    Some(PciIrq { irq, delivery: Delivery::Msi })
+    if let Some(irq) = interrupts::pci_msi_setup(bus, slot, func) {
+        return Some(PciIrq { irq, delivery: Delivery::Msi });
+    }
+    let irq = intx::setup(bus, slot, func)?;
+    Some(PciIrq { irq, delivery: Delivery::IntX })
 }
 
-/// Undo [`pci_irq_setup`] (its handler is gone): the function's message
-/// off, its vector and IOMMU remapping entry given back. Every MSI has a
-/// vector of its own, so `_last` is always true.
-pub fn pci_irq_teardown(bus: u8, slot: u8, func: u8, irq: u32, _last: bool) {
+/// See [`intx::add`].
+pub fn pci_intx_route(bus: u8, device: u8, pin: u8, gsi: u32, flags: u32) -> bool {
+    intx::add(bus, device, pin, gsi, flags)
+}
+
+/// `[phys, phys + len)` where the kernel maps it already (the HHDM's RAM,
+/// the ACPI tables), else mapped uncached as device memory: never a
+/// mapping changed under memory the kernel uses.
+pub fn phys_map(phys: u64, len: usize) -> Option<usize> {
+    let end = phys.checked_add(len.max(1) as u64)?;
+    let hhdm = crate::limine_boot::hhdm_offset();
+    let mapped = (phys & !0xfff..end).step_by(4096).all(|pa| paging::mapped(hhdm + pa));
+    if mapped {
+        return Some((hhdm + phys) as usize);
+    }
+    let unmapped = (phys & !0xfff..end).step_by(4096).all(|pa| !paging::mapped(hhdm + pa));
+    if !unmapped {
+        return None;
+    }
+    paging::map_mmio(phys, len as u64)
+}
+
+/// Undo [`pci_irq_setup`] (its handler is gone): an INTx off, its line's
+/// pin masked once no handler is left on it (`last`: [`intx::release`]);
+/// else the function's message off, its vector and IOMMU remapping entry
+/// given back (every MSI has a vector of its own).
+pub fn pci_irq_teardown(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
+    if intx::release(bus, slot, func, last) {
+        return;
+    }
     if let Ok(vector) = u8::try_from(irq) {
         interrupts::pci_msi_teardown(bus, slot, func, vector);
     }

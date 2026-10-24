@@ -3,16 +3,22 @@
 # `host.sh <what> <args>` for a `HOST c-smokes <what> <args>` line from the
 # guest, in the background; the guest test decides from what it sees.
 #
-#   tcp-ping PORT   the listen/accept smoke's peer: connect to the guest's
-#                   listener through QEMU's port forward, send "ping",
-#                   expect "pong" and then the smoke's numbered lines up to
-#                   its close; connect again to say "good" if every byte
-#                   arrived ("bad <bytes>" if not). Retried until the
-#                   listener is up; the guest test bounds its own wait.
-#                   Then 40 connections that close without a word, the
-#                   close 0 to 20 ms after the connect (the FIN with or
+#   tcp-ping PORT TOKEN  the listen/accept smoke's peer: connect to the
+#                   guest's listener through QEMU's port forward, send
+#                   "ping", expect "pong" and then the smoke's numbered
+#                   lines up to its close; connect again to say "good" if
+#                   every byte arrived ("bad <bytes>" if not). Retried until
+#                   the listener is up or `tcp-ping-stop` with the same
+#                   TOKEN (the guest's name for this run of the smoke)
+#                   says the smoke is gone; the guest test bounds its own
+#                   wait. Then 40 connections that close without a word,
+#                   the close 0 to 20 ms after the connect (the FIN with or
 #                   right after the handshake's last ACK), and one that
 #                   says "done": the smoke's accepts must all end.
+#   tcp-ping-stop PORT TOKEN  the smoke `tcp-ping PORT TOKEN` was the peer
+#                   of failed: its peer stops retrying (it kept on for its
+#                   three minutes once, onto the next listen test's smoke,
+#                   whose own peer then found a connection taken).
 #   sendkey KEYS... type each of KEYS (QEMU's names, `shift-a`), in order,
 #                   on the guest's keyboard through the QEMU monitor (the
 #                   launcher's socket, $MYOS_QEMU_MONITOR). One request per
@@ -35,10 +41,23 @@ set -u
 # The smoke's bulk: BULK_LINES lines "%06d\n" (tcp_listen_smoke.c).
 BULK_LINES=40000
 
+# The file `tcp-ping-stop PORT TOKEN` leaves for `tcp-ping PORT TOKEN`,
+# next to this boot's QEMU monitor socket (one launcher, one boot at a
+# time); the latter removes it when it ends.
+stop_flag() {
+  echo "${MYOS_QEMU_MONITOR:-${TMPDIR:-/tmp}/myos-monitor}.tcp-ping-stop-$1-$2"
+}
+
 tcp_ping() {
-  local port="$1" got verdict deadline=$((SECONDS + 180))
+  local port="$1" stop got verdict deadline=$((SECONDS + 180))
+  stop="$(stop_flag "$port" "${2:-0}")"
   got="$(mktemp)"
   while (( SECONDS < deadline )); do
+    if [[ -e "$stop" ]]; then
+      rm -f "$got" "$stop"
+      echo "boot test: tcp-ping $port: the smoke is gone, not retrying" >&2
+      return 1
+    fi
     # The group keeps the connect error quiet without redirecting the
     # script's stderr for good, as `exec ... 2>/dev/null` would.
     if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
@@ -61,7 +80,7 @@ tcp_ping() {
           sleep 1
           exec 3>&-
         fi
-        rm -f "$got"
+        rm -f "$got" "$stop"
         [[ "$verdict" == good ]] || return 1
         tcp_mute "$port"
         return
@@ -69,9 +88,13 @@ tcp_ping() {
     fi
     sleep 0.25
   done
-  rm -f "$got"
+  rm -f "$got" "$stop"
   echo "boot test: tcp-ping $port: no pong within the bound" >&2
   return 1
+}
+
+tcp_ping_stop() {
+  : > "$(stop_flag "$1" "${2:-0}")"
 }
 
 # The mute connections (see the header), 0.3 s apart so the smoke's accept
@@ -189,7 +212,8 @@ PY
 }
 
 case "${1:-}" in
-  tcp-ping) tcp_ping "${2:?port}" ;;
+  tcp-ping) tcp_ping "${2:?port}" "${3:-0}" ;;
+  tcp-ping-stop) tcp_ping_stop "${2:?port}" "${3:-0}" ;;
   sendkey) shift; sendkey "${1:?keys}" "${@:2}" ;;
   keyburst) keyburst "${2:?count}" "${3:?key}" ;;
   mouse) mouse "${2:-usb}" ;;

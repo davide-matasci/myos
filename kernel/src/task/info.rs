@@ -22,6 +22,8 @@ pub struct ProcInfo {
     pub cpu_ns: u64,
     /// Its reaped children's CPU time, theirs included.
     pub child_cpu_ns: u64,
+    /// Its threads' page faults, those that ended included.
+    pub faults: u64,
     pub start_ns: u64,
     /// A kernel thread (or the idle tasks): no address space of its own.
     pub kernel: bool,
@@ -98,6 +100,7 @@ pub fn process_info(pid: usize) -> Option<ProcInfo> {
         let leader = &tasks[pid];
         let mut threads = 0;
         let mut cpu_ns = 0;
+        let mut faults = 0;
         // The busiest of its threads: running, else ready, else blocked. A
         // leader that only waits for the others to end does not count.
         let mut rank = 0;
@@ -109,6 +112,7 @@ pub fn process_info(pid: usize) -> Option<ProcInfo> {
             }
             threads += 1;
             cpu_ns += acct::cpu_ns(i);
+            faults += acct::faults(i);
             if i == pid && t.wait_key == key_threads(pid) {
                 continue;
             }
@@ -143,6 +147,7 @@ pub fn process_info(pid: usize) -> Option<ProcInfo> {
             size_kib: size / 1024,
             cpu_ns: cpu_ns + proc.map_or(0, |p| p.ended_cpu_ns),
             child_cpu_ns: proc.map_or(0, |p| p.child_cpu_ns),
+            faults: faults + proc.map_or(0, |p| p.ended_faults),
             start_ns: acct::start_ns(pid),
             kernel: leader.aspace == 0 && leader.user_rip == 0,
         })

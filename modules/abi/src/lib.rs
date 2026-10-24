@@ -88,10 +88,14 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// does not ([`MYOS_MMAP_NOCACHE`]).
 /// 53: [`UsbHostOps::transfer_start`] (was `interrupt_start`) queues a
 /// bulk IN transfer too.
-/// 54: an interrupt is given back ([`KernelApi::pci_irq_disable`],
+/// 54: x86_64 routes a PCI function's legacy INTx through the I/O APIC
+/// as the firmware's ACPI `_PRT` says ([`KernelApi::pci_intx_route`], the
+/// acpi module's AML interpreter); [`KernelApi::phys_map`] maps physical
+/// memory for it.
+/// 55: an interrupt is given back ([`KernelApi::pci_irq_disable`],
 /// `irq_disable`); [`KernelApi::irq_domain_register`] takes the domain's
 /// `mask` beside its `unmask`.
-pub const ABI_VERSION: u32 = 54;
+pub const ABI_VERSION: u32 = 55;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1103,7 +1107,22 @@ pub struct KernelApi {
     /// [`KernelApi::dma_sync`] and non-cacheable mappings
     /// ([`MYOS_MMAP_NOCACHE`]) instead (0); -1 for no such handle.
     pub dma_coherent: unsafe extern "C" fn(dma: i32) -> i32,
-    // --- ABI 54: interrupts given back (docs/pci-acpi-smp.md) ---
+    // --- ABI 54 ---
+    /// A PCI interrupt route the firmware gives (ACPI `_PRT`, read by the
+    /// acpi module): pin `pin` (0 INTA to 3 INTD) of device `device` on
+    /// bus `bus` (a root bridge's, or a PCI-to-PCI bridge's with a `_PRT`
+    /// of its own) raises GSI `gsi`, [`PCI_INTX_LEVEL`] and
+    /// [`PCI_INTX_ACTIVE_LOW`] in `flags` saying how. A function with
+    /// neither MSI-X nor MSI then gets its INTx from `pci_irq_enable`
+    /// ([`MYOS_IRQ_INTX`]); one behind bridges without routes by its pin
+    /// swizzled up to a bus with them. 0, or -1 when the table is full or the arch routes INTx
+    /// from the device tree instead (aarch64, riscv64).
+    pub pci_intx_route: unsafe extern "C" fn(bus: u8, device: u8, pin: u8, gsi: u32, flags: u32) -> i32,
+    /// The kernel virtual address of `[phys, phys + len)`: where the kernel
+    /// maps it already (RAM, the ACPI tables), else a new uncached device
+    /// mapping. 0 when it cannot (x86_64 only: 0 elsewhere).
+    pub phys_map: unsafe extern "C" fn(phys: u64, len: usize) -> usize,
+    // --- ABI 55: interrupts given back (docs/pci-acpi-smp.md) ---
     /// Undo [`KernelApi::pci_irq_enable`] of the same function, handler and
     /// context: the handler is gone once this returns (an interrupt under
     /// way on another CPU is waited out; not from the handler itself),
@@ -1121,6 +1140,11 @@ pub struct KernelApi {
 /// An interrupt domain's `unmask` or `mask` of line `line`
 /// ([`KernelApi::irq_domain_register`]).
 pub type IrqLineFn = unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32);
+
+/// [`KernelApi::pci_intx_route`]'s flags: a level-triggered line (else
+/// edge), active low (else high). PCI's are both.
+pub const PCI_INTX_LEVEL: u32 = 1 << 0;
+pub const PCI_INTX_ACTIVE_LOW: u32 = 1 << 1;
 
 /// The longest owner name of a PCI claim ([`KernelApi::pci_claim`]).
 pub const PCI_OWNER_MAX: usize = 16;
@@ -1718,6 +1742,17 @@ impl KernelApi {
         unsafe { (self.pci_bar_phys)(bus, slot, func, bar, cpu, size) }
     }
 
+    /// See [`KernelApi::pci_intx_route`] (field): whether the kernel took it.
+    pub fn pci_intx_route(&self, bus: u8, device: u8, pin: u8, gsi: u32, flags: u32) -> bool {
+        unsafe { (self.pci_intx_route)(bus, device, pin, gsi, flags) == 0 }
+    }
+
+    /// See [`KernelApi::phys_map`] (field).
+    pub fn phys_map(&self, phys: u64, len: usize) -> Option<usize> {
+        let va = unsafe { (self.phys_map)(phys, len) };
+        (va != 0).then_some(va)
+    }
+
     /// See [`KernelApi::dma_coherent`] (field): `None` for no such handle.
     pub fn dma_coherent(&self, dma: i32) -> Option<bool> {
         match unsafe { (self.dma_coherent)(dma) } {
@@ -2225,6 +2260,8 @@ pub const RPI_CLOCK_EMMC: u32 = 1;
 pub const RPI_CLOCK_UART: u32 = 2;
 pub const RPI_CLOCK_ARM: u32 = 3;
 pub const RPI_CLOCK_CORE: u32 = 4;
+/// The BCM2711's EMMC2 controller's (the Pi 4's card slot).
+pub const RPI_CLOCK_EMMC2: u32 = 12;
 
 /// The firmware, for the drivers (the [`RPI_FIRMWARE_SERVICE`] table).
 /// Task context only: a call waits for the firmware's answer.
