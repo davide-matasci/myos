@@ -1561,6 +1561,50 @@ int main(int argc, char **argv) {
     }
     check(found, "opendir/readdir");
 
+    /* A directory of more names than one listing buffer held, emptied
+     * while it is read (what rm -rf does): every entry is seen once and
+     * the directory is left empty; rmdir of it with an entry left is
+     * ENOTEMPTY (issue #584). */
+    const char *bigdir = "/tmp/linux-smoke.big";
+    char name[128];
+    int made = 0, seen = 0;
+    mkdir(bigdir, 0755);
+    for (int i = 0; i < 300; i++) {
+        /* No printf family here: on aarch64 and riscv64 it needs the
+         * 128-bit float builtins this static program is not linked with. */
+        strcpy(name, bigdir);
+        strcat(name, "/an-entry-whose-name-is-long-000");
+        size_t at = strlen(name);
+        name[at - 3] = (char)('0' + i / 100);
+        name[at - 2] = (char)('0' + i / 10 % 10);
+        name[at - 1] = (char)('0' + i % 10);
+        int f = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (f >= 0) {
+            made++;
+            close(f);
+        }
+    }
+    check(made == 300, "300 files in a directory");
+    check(rmdir(bigdir) < 0 && errno == ENOTEMPTY, "rmdir of a directory with entries: ENOTEMPTY");
+    d = opendir(bigdir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') {
+                continue;
+            }
+            strcpy(name, bigdir);
+            strcat(name, "/");
+            strncat(name, e->d_name, sizeof name - strlen(name) - 1);
+            if (unlink(name) == 0) {
+                seen++;
+            }
+        }
+        closedir(d);
+    }
+    check(seen == 300, "readdir while unlinking sees every entry once");
+    check(rmdir(bigdir) == 0, "rmdir of the emptied directory");
+
     /* Large malloc: musl serves it with mmap (the native mmap window is
      * 1 MiB in total). */
     size_t sz = 256 << 10;
