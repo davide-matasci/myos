@@ -72,7 +72,8 @@ domains, 4096 lines between them), line `n` being `first + n`:
 
 - a driver of a device on a line enables its interrupt as any other
   (`irq_enable`); the kernel registers the handler, then calls the
-  domain's `unmask` with the line;
+  domain's `unmask` with the line, and its `mask` when `irq_disable`
+  takes the line's last handler away (ABI 56);
 - the module enables the controller's own interrupt, and its handler
   passes each line pending to `KernelApi::irq_dispatch` (an edge is
   cleared before, a level after its handlers);
@@ -86,8 +87,11 @@ controller's 8 lines (QEMU `virt` without ACPI: with ACPI tables its
 place is the ACPI GED's). No driver uses a line yet, so it ships for
 `insmod` and is not loaded at boot; its probe checks the path once: it
 sets an idle input to interrupt while low and enables that line through
-the kernel, and its handler turns it off (`/proc/interrupts`: `pl061`,
-the controller's, and `pl061 check`, the line's; the `irq_domain` test).
+the kernel, its handler quietens the line, and a thread of the module
+gives the interrupt back (`irq_disable`), so the kernel masks the line
+through the domain and the line asserted again interrupts nobody
+(`/proc/pl061`: `check given back`; `/proc/interrupts`: `pl061`, the
+controller's; the `irq_domain` test).
 
 ## Device interrupts
 
@@ -256,9 +260,17 @@ next device. On x86_64 that is the device vector (64 of them, a bitmap,
 the lowest free one given out), the IOMMU's interrupt remapping entry
 (VT-d's or AMD-Vi's, 256 a table, the lowest free one reused) and, for an
 INTx line, its I/O APIC pin; aarch64's and riscv64's GIC SPIs and PLIC
-sources are not allocated, only their handlers. `/dev/pci` gives a
-function's interrupt back when its driver closes `ctl`; the kernel's own
-drivers keep theirs.
+sources are not allocated, only their handlers, and a line with no
+handler left is masked (another slot's device may still be on a shared
+INTx line). A board device's interrupt is given back with
+`KernelApi::irq_disable` (ABI 56, `irq::disable`): the handler leaves the
+table the same way and the line is masked once no handler is left on it,
+through the controller (`IrqChip::mask`: a GIC SPI's `ICENABLER`, the
+Raspberry Pi's disable registers, the PLIC's enable bit, an ISA pin of
+the I/O APIC, which keeps its vector for its next enable) or the domain's
+`mask`. Either call lowers the registration count of the module that
+enabled the interrupt. `/dev/pci` gives a function's interrupt back when
+its driver closes `ctl`; the kernel's own drivers keep theirs.
 
 virtio-net uses this for its RX queue: `AVAIL_F_NO_INTERRUPT` is cleared on
 the RX ring only, the handler acks the ISR and calls `wake_any`, which ends

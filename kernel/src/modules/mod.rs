@@ -9,7 +9,7 @@
 //! `init` ELF (no `module_init`).
 
 pub mod elf;
-mod registry;
+pub(crate) mod registry;
 mod services;
 mod threads;
 
@@ -154,6 +154,7 @@ static API: KernelApi = KernelApi {
     pci_intx_route: api_pci_intx_route,
     phys_map: api_phys_map,
     pci_irq_disable: api_pci_irq_disable,
+    irq_disable: api_irq_disable,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1216,13 +1217,18 @@ unsafe extern "C" fn api_irq_enable(
     noted(crate::irq::enable(irq, name, handler, ctx as usize))
 }
 
+unsafe extern "C" fn api_irq_disable(irq: u32, handler: myos_abi::IrqHandler, ctx: *mut core::ffi::c_void) -> i32 {
+    if crate::irq::disable(irq, handler, ctx as usize) { 0 } else { -1 }
+}
+
 unsafe extern "C" fn api_irq_domain_register(
     phandle: u32,
     count: u32,
-    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+    unmask: myos_abi::IrqLineFn,
+    mask: myos_abi::IrqLineFn,
     ctx: *mut core::ffi::c_void,
 ) -> u32 {
-    match crate::irqchip::domain_register(phandle, count, unmask, ctx as usize) {
+    match crate::irqchip::domain_register(phandle, count, unmask, mask, ctx as usize) {
         Some(first) => {
             registry::note_registration();
             first
