@@ -105,6 +105,25 @@ pcidev_irq_reuse() {
 	[ "$(grep -o 'intremap [0-9]*' /proc/iommu)" = "$remap" ] || { cat /proc/iommu; return 1; }
 }
 t -t pcidev pcidev_irq_reuse pcidev_irq_reuse
+# Message-signalled interrupts: on a board with an MSI controller (x86_64's
+# local APIC; elsewhere the one /proc/platform's `msi` line names: the
+# GICv3's ITS, a GICv2m frame, the RISC-V IMSIC) the edu device's
+# interrupt is its MSI, which the pcidev test above took through the
+# controller (and the IOMMU's domain, where the board has one); on one
+# without, its INTx line.
+pcidev_msi() {
+	edu=
+	for d in /dev/pci/*/; do
+		grep -q '^id 1234:11e8$' $d/info && edu=$d
+	done
+	[ -n "$edu" ] || { ls /dev/pci; return 1; }
+	want=intx
+	grep -Eq '^(msi |intc apic )' /proc/platform && want=msi
+	exec 5<>${edu}ctl || return 1
+	echo irq >&5 && grep -q "^irq $want\$" <&5 || { exec 5>&-; cat /proc/platform ${edu}info; return 1; }
+	exec 5>&-
+}
+t -t pcidev pcidev_msi pcidev_msi
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).

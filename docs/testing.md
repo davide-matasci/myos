@@ -252,7 +252,10 @@ machine. The image carries the Linux layer (`linux_compat`) when a
 
 The machines are bios, uefi, bios with AMD's IOMMU (`bios-amd`: its light
 boot only, the long groups exercise nothing the unit changes), aarch64,
-aarch64 with GICv3 and riscv64 (the Raspberry Pi 3, below, runs its own).
+aarch64 with GICv3, riscv64 (QEMU's AIA: the APLIC and the IMSICs, the
+PCI devices' MSIs) and riscv64 with the PLIC (`riscv64-plic`,
+`MYOS_RISCV_INTC=plic`: INTx only; its light boot only, as `bios-amd`)
+(the Raspberry Pi 3, below, runs its own).
 Each arch has a primary machine (uefi, aarch64-gicv3, riscv64), the one a
 pull request's selection boots on; the others are variants of it, in the
 firmware, the IOMMU or the interrupt controller, and boot the smoke set

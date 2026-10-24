@@ -19,7 +19,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`, then `run-myos coreutils:ls`)
-- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on x86_64, INTx on aarch64/riscv64) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open or WPA2-PSK network carrying netd's traffic, over the test boots' simulated radio, Intel's AX201 or AX200 through `/dev/pci` (a port of OpenBSD's iwx), a MediaTek MT7601U or MT7612U USB adapter through `/dev/usb` (ports of OpenBSD's mtw and Linux's mt76x2u) or the Raspberry Pi's Broadcom CYW43455 or CYW43438 through `/dev/sdio` (a port of OpenBSD's bwfm, the firmware doing the 802.11 work), untried on the hardware, `docs/wifi.md`, issues #495 and #547); an IOMMU (Intel VT-d or AMD-Vi, Arm SMMUv3, the RISC-V IOMMU) confines a userspace driver's device to its buffers, and on x86_64 its interrupts to its own vector (interrupt remapping; `docs/pci-acpi-smp.md`)
+- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on every arch, through the GICv3 ITS or a GICv2m frame on aarch64 and the AIA's IMSIC on riscv64; INTx on a board without one) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open or WPA2-PSK network carrying netd's traffic, over the test boots' simulated radio, Intel's AX201 or AX200 through `/dev/pci` (a port of OpenBSD's iwx), a MediaTek MT7601U or MT7612U USB adapter through `/dev/usb` (ports of OpenBSD's mtw and Linux's mt76x2u) or the Raspberry Pi's Broadcom CYW43455 or CYW43438 through `/dev/sdio` (a port of OpenBSD's bwfm, the firmware doing the 802.11 work), untried on the hardware, `docs/wifi.md`, issues #495 and #547); an IOMMU (Intel VT-d or AMD-Vi, Arm SMMUv3, the RISC-V IOMMU) confines a userspace driver's device to its buffers, and on x86_64 its interrupts to its own vector (interrupt remapping; `docs/pci-acpi-smp.md`)
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 - **Power** — `poweroff`, `reboot` and `halt` stop the processes, unmount the disks and power off or reset the board: ACPI S5 and the reset register on a PC, PSCI on AArch64, the SBI on RISC-V (`docs/power.md`)
@@ -267,10 +267,13 @@ also runs without ACPI tables: add `acpi=off` to `-machine`).
 
 ### RISC-V
 ```sh
-qemu-system-riscv64 -m 256 -machine virt \
+qemu-system-riscv64 -m 256 -machine virt,aia=aplic-imsic \
   -drive format=raw,file=target/riscv64.img \
   -bios /usr/share/qemu/ovmf-bin/Edk2-riscv64.fd -serial stdio
 ```
+The interrupt controllers must match the device tree the launcher packed
+into the image: the AIA by default, the PLIC (plain `-machine virt`) after
+`MYOS_RISCV_INTC=plic cargo run -- riscv64`.
 
 ### ISO (hybrid)
 ```sh
