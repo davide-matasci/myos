@@ -261,8 +261,8 @@ mirror, the packages' and get-myos's tests on it and the `install` tests
 of the boot disk, a boot of 13 minutes on riscv64 that the light boot
 no longer carries) each in a boot of their own, whole, and one light
 boot with everything else (9 minutes on riscv64), so a full run is four
-boots of at most a quarter of an hour per machine instead of one of
-thirty. Each boot
+boots of at most twenty minutes per machine instead of one of thirty.
+Each boot
 gets a budget from what it runs (riscv64 half as much again); a
 selection without `net` tests skips the mirror, one without `alpine-disk`
 tests the Alpine disk, which a boot that needs it restores from the

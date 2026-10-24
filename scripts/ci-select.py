@@ -95,10 +95,12 @@ RPI3_ARGS = (
 HEAVY_GROUPS = {"ostest": ("ostest",), "alpine": ("alpine",), "pkg": ("pkg", "install")}
 # The budget of a boot in minutes, by what it runs; riscv64 (the slowest
 # under TCG) gets half as much again. A budget is a guard against a hang,
-# not a target: the x86 Alpine boot takes 11 minutes on a good runner and
-# a slow one adds a quarter; the light boot and the pkg boot take 9 and 13
-# on riscv64.
-BUDGETS = {"light": 15, "smoke": 8, "ostest": 15, "alpine": 15, "pkg": 15}
+# not a target, and a slow runner takes up to twice a good one's time:
+# the aarch64 Alpine boot takes 9 to 10 minutes, the aarch64 os-test and
+# pkg boots (every package's install first, python's library among them)
+# 8 on a good runner and 14 on a slow one; on riscv64 the light boot takes
+# 6, the os-test and pkg boots 11 and 12.
+BUDGETS = {"light": 15, "smoke": 8, "ostest": 20, "alpine": 15, "pkg": 20}
 
 
 def group_of(tags):
