@@ -24,12 +24,27 @@ for the host once (`target/python-host`).
 
 Every extension module the standard library has is built in (static:
 there is no `dlopen` in a static program), zlib among them, from a zlib
-built against mlibc here (the `ports/zlib` build is newlib's). Not there:
-`_ssl` and `_hashlib` (LibreSSL is built against newlib; the hashes come
-from CPython's own `_sha2`, `_md5`, `_blake2`, `_sha3`), `sqlite3`,
-`ctypes` (no libffi), `curses`, `readline`, `bz2` and `lzma`, `tkinter`,
-and `pip` (no `ensurepip` without ssl); issue #571. The test suite, IDLE
+built against mlibc here (the `ports/zlib` build is newlib's). The
+libraries of the others are ports with a build against mlibc beside
+their newlib one (a static library serves only the programs of its own
+libc: `errno`'s values, `struct stat` and `FILE` differ): `_ssl` and
+`_hashlib` over LibreSSL (`ports/libressl`, `target/libressl-mlibc-<arch>`;
+its default CA file is the image's `/lib/cacert.pem`, `cafile.myos.patch`
+there), `sqlite3` over SQLite (`packages/sqlite`), `curses` and
+`_curses_panel` over ncurses (`packages/ncurses`), `readline` over
+libedit (`packages/libedit`, `readline.backend` is `editline`).
+LibreSSL has no scrypt, BLAKE2 or SHAKE in its EVP interface:
+`hashlib-libressl.myos.patch` leaves `hashlib.scrypt` out and
+`config.site` tells configure LibreSSL's hashlib is enough (`blake2b`,
+`shake_128` and the others come from CPython's own `_blake2` and `_sha3`).
+`pip` is in `site-packages`, unpacked from the wheel CPython bundles
+(`ensurepip`'s). Not there: `ctypes` (no libffi), `bz2` and `lzma`,
+`dbm`, `tkinter` (issue #571). The test suite, IDLE
 and turtle are left out of the app.
 
 `test.sh` runs the interpreter and the library through it: a thread, a
-subprocess, a socket pair, zlib, json, a hash, floating point and a regexp.
+subprocess, a socket pair, zlib, json, a hash, floating point and a regexp;
+then the modules over the ports' libraries (the default TLS context and
+its CA file, a PBKDF2 through `_hashlib`, an SQLite file and its write
+lock, curses and readline imported, `pip --version`), and an HTTPS GET
+through `urllib` (tagged `net`).
