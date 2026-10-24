@@ -98,7 +98,7 @@ use an MSI-X table entry or the INTx line:
 
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
-| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 16 vectors shared with the I/O APIC pins below; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`); a function with neither its INTx line through an I/O APIC pin, level and active low as the firmware's `_PRT` says ("AML" below; the pin's vector shared by the functions on it, remapped like the ISA pins; the line's other functions, a driver's that polls or is on MSI, have their INTx turned off, the command register's disable bit, so none holds the level line asserted), or none when the acpi module gave no route for it (its driver polls) | vector |
+| x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 64 vectors shared with the I/O APIC pins below and the IOMMU's own interrupt; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`); a function with neither its INTx line through an I/O APIC pin, level and active low as the firmware's `_PRT` says ("AML" below; the pin's vector shared by the functions on it, remapped like the ISA pins; the line's other functions, a driver's that polls or is on MSI, have their INTx turned off, the command register's disable bit, so none holds the level line asserted), or none when the acpi module gave no route for it (its driver polls) | vector |
 | aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
 | riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
 
@@ -243,14 +243,16 @@ I/O APIC waits for). An INTx line is shared by every slot the swizzle
 puts on it (QEMU `virt` has four for all of them): each driver of a device
 on it registers its handler, and every one runs at each interrupt of the
 line, its device saying whether it was the one. `/proc/interrupts` lists
-counts per registered handler plus spurious interrupts.
+counts per registered handler plus spurious interrupts, and on x86_64 the
+device vectors taken (`vectors: N/64`). The kernel holds 64 handlers on
+every arch, as many as x86_64 has device vectors.
 
 A PCI function's interrupt is given back with `KernelApi::pci_irq_disable`
-(ABI 55, `irq::pci_irq_disable`): the handler leaves the table (32 slots)
+(ABI 55, `irq::pci_irq_disable`): the handler leaves the table (64 slots)
 once no CPU runs it, the function's interrupt is turned off (its MSI-X or
 MSI, or its INTx: the command register's disable bit), and once the
 interrupt has no handler left what the arch took for it is free for the
-next device. On x86_64 that is the device vector (16 of them, a bitmap,
+next device. On x86_64 that is the device vector (64 of them, a bitmap,
 the lowest free one given out), the IOMMU's interrupt remapping entry
 (VT-d's or AMD-Vi's, 256 a table, the lowest free one reused) and, for an
 INTx line, its I/O APIC pin; aarch64's and riscv64's GIC SPIs and PLIC

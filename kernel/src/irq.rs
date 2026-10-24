@@ -35,7 +35,10 @@ use spin::Mutex;
 
 pub type Handler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 
-const MAX_HANDLERS: usize = 32;
+/// Handlers on every arch together: as many as x86_64 has device vectors
+/// (a shared INTx line on aarch64 and riscv64 takes one per device on it).
+/// `dispatch` copies the table onto the interrupted stack, 2.5 KiB.
+const MAX_HANDLERS: usize = 64;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -245,5 +248,11 @@ pub fn interrupts_text() -> alloc::vec::Vec<u8> {
         "spurious: {}\n",
         SPURIOUS.load(Ordering::Relaxed)
     ));
+    // x86_64's device vectors, the one pool handlers take from.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (used, all) = crate::arch::irq_vectors();
+        out.push_str(&alloc::format!("vectors: {used}/{all}\n"));
+    }
     out.into_bytes()
 }
