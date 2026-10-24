@@ -1,7 +1,9 @@
 # os-test suite inventory (pinned rev in `versions.env`)
 
-Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
-`target/os-test-embed/` after `fetch.sh`:
+Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites, all in
+`target/os-test-embed/` after `fetch.sh` but `namespace` and `include`
+(removed there: not runtime tests, run by no list, and with 4,000 files half
+of what get-myos would unpack):
 
 | Suite | `*.c` count | In default `SUITES`? | Notes |
 |-------|------------:|:--------------------:|-------|
@@ -13,12 +15,12 @@ Upstream [sortix/os-test](https://gitlab.com/sortix/os-test) suites present in
 | **process** | 24 | yes | fork/setpgid/setsid/waitpid process-group |
 | **signal** | 32 | yes | raise/block/ignore/sigaltstack/ppoll/exec; handlers are kernel-delivered (`docs/signals.md`) |
 | **stdio** | 22 | yes | printf formatting |
-| **namespace** | 159 | no | header pollution vs include-suite APIs (heavy tooling) |
+| **namespace** | 159 | not shipped | header pollution vs include-suite APIs (heavy tooling) |
 | **pty** | 29 | no | pseudoterminals / controlling tty |
 | **udp** | 207 | yes | UDP socket semantics |
 | **myos** | 12 | yes | myos overlay (`overlay/myos/`): `chroot(2)` + named FIFOs |
 | **posix-parse** | 1 | no | parser helper |
-| **include** | 3758 | no | API declaration corpus (not runtime tests) |
+| **include** | 3758 | not shipped | API declaration corpus (not runtime tests) |
 
 **Non-basic** = everything except `basic` (and the non-runtime `include` /
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`

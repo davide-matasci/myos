@@ -169,7 +169,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `kernel/src/arch/` | All per-arch code: boot, UART, interrupts, PCI, user entry/paging (`user`, `upaging`), context switch, FPU, clock, SMP glue |
 | `kernel/src/console.rs` | Serial console + the `console` module's screen/keyboard hooks (early-output replay) |
 | `kernel/src/input.rs` | Stdin line discipline: module keyboard + serial → fd 0 |
-| `kernel/src/heap.rs` | `linked_list_allocator` heap sized from memory (also holds tmpfs data) |
+| `kernel/src/heap.rs` | `linked_list_allocator` heap sized from memory, with a free list per size class for small blocks (also holds tmpfs data) |
 | `kernel/src/task/` | Scheduler records (`Task`) + per-process blocks (`process.rs`): yield, preemption, fork/exec/wait |
 | `kernel/src/fs/` | VFS + rootfs/tmpfs/devfs/procfs backends |
 | `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
