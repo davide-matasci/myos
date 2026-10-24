@@ -109,8 +109,9 @@ pub fn thread_exit(code: u8) -> ! {
     retire(Some(key_threads(pid)));
 }
 
-/// An ending thread (not the leader) gives its CPU time to its process,
-/// which counts it from now on (`/proc/<pid>/status`).
+/// An ending thread (not the leader) gives its CPU time and its page
+/// faults to its process, which counts them from now on
+/// (`/proc/<pid>/status`).
 fn hand_over_cpu_time() {
     let flags = irq_save();
     irq_off();
@@ -118,9 +119,11 @@ fn hand_over_cpu_time() {
     let me = current_slot();
     super::acct::charge(me);
     let ns = super::acct::take_cpu_ns(me);
+    let faults = super::acct::take_faults(me);
     let pid = tasks[me].tgid;
     if let Some(p) = tasks.proc_opt_mut(pid) {
         p.ended_cpu_ns += ns;
+        p.ended_faults += faults;
     }
     drop(tasks);
     irq_restore(flags);

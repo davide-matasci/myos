@@ -73,6 +73,8 @@ pub(super) struct Process {
     pub ctx: crate::sec::Ctx,
     /// Nanoseconds of CPU time of its threads that have ended (`acct`).
     pub ended_cpu_ns: u64,
+    /// The page faults of its threads that have ended (`acct`).
+    pub ended_faults: u64,
     /// Nanoseconds of CPU time of its children it has reaped, theirs
     /// included (`wait`).
     pub child_cpu_ns: u64,
@@ -112,6 +114,7 @@ static EMPTY_PROC: Process = Process {
     ns: None,
     ctx: crate::sec::Ctx::BOOT,
     ended_cpu_ns: 0,
+    ended_faults: 0,
     child_cpu_ns: 0,
 };
 
@@ -151,6 +154,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     b.execd = false;
     b.pdeath_sig = 0;
     b.ended_cpu_ns = 0;
+    b.ended_faults = 0;
     b.child_cpu_ns = 0;
     b
 }

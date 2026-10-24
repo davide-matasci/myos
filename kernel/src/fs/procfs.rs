@@ -327,7 +327,7 @@ fn process_status(pid: usize) -> Option<alloc::string::String> {
     push_name(&mut out, &p.name);
     let _ = writeln!(
         out,
-        " {} {} {} {} {} {} {} {} {} {}",
+        " {} {} {} {} {} {} {} {} {} {} {}",
         p.state,
         p.ppid,
         p.pgid,
@@ -338,6 +338,7 @@ fn process_status(pid: usize) -> Option<alloc::string::String> {
         ms(p.child_cpu_ns),
         ms(p.start_ns),
         if p.kernel { "kernel" } else { "user" },
+        p.faults,
     );
     Some(out)
 }

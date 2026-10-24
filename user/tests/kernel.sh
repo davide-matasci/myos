@@ -870,8 +870,8 @@ t -t mm mem_hog_survives mem_hog_survives
 # and the USB host's thread is there as a kernel thread.
 proc_pid() {
 	ls /proc | grep -qx "$$" || { echo "no $$ in /proc"; return 1; }
-	read pid name state ppid pgid sid threads size cpu child start kind < /proc/$$/status
-	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] || { cat /proc/$$/status; return 1; }
+	read pid name state ppid pgid sid threads size cpu child start kind faults < /proc/$$/status
+	[ "$pid" = "$$" ] && [ "$threads" = 1 ] && [ "$kind" = user ] && [ "$faults" -gt 0 ] || { cat /proc/$$/status; return 1; }
 	[ "$(ls /proc/$$/task)" = "$$" ] || { ls /proc/$$/task; return 1; }
 	read tid tpid tname rest < /proc/$$/task/$$/status
 	[ "$tid" = "$$" ] && [ "$tpid" = "$$" ] && [ "$tname" = "$name" ] || { cat /proc/$$/task/$$/status; return 1; }

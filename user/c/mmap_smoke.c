@@ -265,16 +265,21 @@ static void whole(void) {
 }
 
 /* The page faults handled so far (/proc/meminfo, docs/proc.md). */
+/* This process's page faults: the last field of its status line
+ * (docs/proc.md). Not /proc/meminfo's Faults, every process's together:
+ * netd on a packet or the test runner's shell faulting meanwhile made the
+ * fault-around check below fail once (issue #567). */
 static long faults(void) {
-    FILE *f = fopen("/proc/meminfo", "r");
-    char line[128];
+    FILE *f = fopen("/proc/self/status", "r");
+    char line[256];
     long n = -1;
     if (!f) {
         return -1;
     }
-    while (fgets(line, sizeof line, f)) {
-        if (sscanf(line, "Faults: %ld", &n) == 1) {
-            break;
+    if (fgets(line, sizeof line, f)) {
+        char *last = strrchr(line, ' ');
+        if (last && sscanf(last, " %ld", &n) != 1) {
+            n = -1;
         }
     }
     fclose(f);
@@ -307,7 +312,7 @@ static void fault_around(void) {
         }
         after = faults();
         if (before < 0 || after < 0) {
-            check(0, "/proc/meminfo counts the faults");
+            check(0, "/proc/self/status counts the faults");
         } else if (after - before > 2) {
             printf("[ FAIL ] mmap fault-around: %ld faults for 16 cached pages\n", after - before);
             failures++;
