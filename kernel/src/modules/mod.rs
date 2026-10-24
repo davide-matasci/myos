@@ -754,12 +754,9 @@ unsafe extern "C" fn api_pci_irq_enable(
         let bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
         core::str::from_utf8(bytes).unwrap_or("pci")
     };
-    let Some(route) = crate::irq::pci_irq_setup(bus, slot, func) else {
+    let Some(route) = crate::irq::pci_irq_enable(bus, slot, func, name, handler, ctx as usize) else {
         return -1;
     };
-    if !crate::irq::register_pci(route.irq, (bus, slot, func), name, handler, ctx as usize) {
-        return -1;
-    }
     registry::note_registration();
     unsafe {
         *msix_entry = match route.delivery {
