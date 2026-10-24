@@ -419,14 +419,24 @@ net_listen() {
 	: > /tmp/listen.out
 	$SMOKES/tcp_listen_smoke >> /tmp/listen.out 2>&1 &
 	pid=$!
-	echo "HOST c-smokes tcp-ping 2323" >&3
-	# netd's table (/net/convs) names the listener while it is up.
+	# netd's table (/net/convs) names the listener while it is up: the host
+	# is asked to connect once it is (asked before, its peer outlived a
+	# smoke that failed at its first checks, retrying for three minutes,
+	# and its connections landed on the next listen test's listener).
 	i=0
-	while [ $i -lt 30 ] && ! grep -q 'listen \*!2323' /net/convs 2>/dev/null; do
+	while [ $i -lt 30 ] && ! grep -q 'listen \*!2323' /net/convs 2>/dev/null \
+		&& ! grep -q "FAIL ]" /tmp/listen.out 2>/dev/null; do
 		sleep 1
 		i=$((i + 1))
 	done
-	grep -q 'listen \*!2323' /net/convs || { echo "no listener on 2323 in /net/convs:"; cat /net/convs; }
+	asked=
+	if grep -q 'listen \*!2323' /net/convs 2>/dev/null; then
+		echo "HOST c-smokes tcp-ping 2323 $pid" >&3
+		asked=1
+	else
+		echo "no listener on 2323 in /net/convs:"
+		cat /net/convs
+	fi
 	i=0
 	while [ $i -lt 180 ] && ! grep -q -e "OK ] listen" -e "FAIL ]" /tmp/listen.out 2>/dev/null; do
 		sleep 1
@@ -435,6 +445,11 @@ net_listen() {
 	kill $pid 2>/dev/null
 	wait $pid 2>/dev/null
 	cat /tmp/listen.out
-	contains "[ OK ] listen" /tmp/listen.out && ! grep -q "no listener on 2323" /tmp/listen.out
+	if contains "[ OK ] listen" /tmp/listen.out && ! grep -q "no listener on 2323" /tmp/listen.out; then
+		return 0
+	fi
+	# The smoke is gone: its peer on the host stops waiting for it.
+	[ -z "$asked" ] || echo "HOST c-smokes tcp-ping-stop 2323 $pid" >&3
+	return 1
 }
 t -t netfs listen net_listen

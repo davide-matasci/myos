@@ -81,9 +81,12 @@ TESTS SKIPPED 45
 - `HOST <port> <args>`: the test needs the host. The launcher runs that
   port's host-side script (`PORT_HOST=host.sh` in its `port.env`, from the
   checkout) with the arguments, in the background; the guest test then
-  waits for what the script does. `c-smokes tcp-ping PORT` (`user/c/host.sh`)
+  waits for what the script does. `c-smokes tcp-ping PORT TOKEN` (`user/c/host.sh`)
   connects to the guest's listener through QEMU's port forward, plays
-  ping/pong and then opens and closes forty connections without a word; `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
+  ping/pong and then opens and closes forty connections without a word
+  (asked for once `/net/convs` names the listener; `tcp-ping-stop PORT
+  TOKEN` ends a peer whose smoke failed, so it does not retry onto the
+  next listen test's); `tests usb-plug|usb-unplug` (`user/tests/host.sh`) plugs a
   second USB stick into the guest through the QEMU monitor and pulls it out
   (`docs/usb.md`); `dropbear PORT` (`ports/dropbear/host.sh`) opens two SSH
   sessions at once with the test key to the dropbear the boot script
