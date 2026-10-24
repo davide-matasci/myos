@@ -4,6 +4,13 @@
 //! and routed through the I/O APIC. Only a function with neither MSI-X nor
 //! MSI comes here (`pci_irq_setup`); without routes (no acpi module, its
 //! interpreter failed) there is none, and its driver polls.
+//!
+//! A line is shared, and level-triggered: a function on it that does not
+//! use it (a driver that polls, or one on MSI) could hold it asserted and
+//! the CPU would take its interrupt for ever, no handler quietening it. So
+//! before a line is unmasked every other function on it has its INTx
+//! turned off (the command register's disable bit), except those whose
+//! driver routed it ([`USERS`]).
 
 use spin::Mutex;
 
@@ -28,6 +35,14 @@ const MAX_DEPTH: usize = 8;
 
 /// Filled before the drivers ask, early in boot.
 static ROUTES: Mutex<[Option<Route>; MAX_ROUTES]> = Mutex::new([None; MAX_ROUTES]);
+
+/// The functions whose INTx a driver routed ([`setup`]): bus, slot,
+/// function. The others' INTx stays off while their line is unmasked.
+const MAX_USERS: usize = 64;
+static USERS: Mutex<[Option<(u8, u8, u8)>; MAX_USERS]> = Mutex::new([None; MAX_USERS]);
+
+/// The command register's INTx disable bit.
+const CMD_INTX_OFF: u32 = 1 << 10;
 
 /// Take a route (`KernelApi::pci_intx_route`): false when the table is
 /// full or the route is not one (a pin past INTD, a device past 31). A
@@ -77,24 +92,56 @@ fn find(bus: u8, slot: u8, pin: u8) -> Option<Route> {
     None
 }
 
-/// The function's INTx through the I/O APIC: its vector (the
-/// `irq::dispatch` number), the pin unmasked, the function's INTx enabled
-/// (the command register's disable bit clear). `None` without a pin, a
-/// route or an I/O APIC pin for it.
-pub fn setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
+/// The route of the function at `bus:slot.func`'s INTx pin, if it has a
+/// pin and a route.
+fn route_of(bus: u8, slot: u8, func: u8) -> Option<Route> {
     let pin = (crate::pci::cfg_read32(bus, slot, func, 0x3c) >> 8) & 0xff;
     if pin == 0 || pin > 4 {
         return None;
     }
-    let route = find(bus, slot, pin as u8 - 1)?;
+    find(bus, slot, pin as u8 - 1)
+}
+
+/// Set or clear the function's INTx disable bit.
+fn intx_off(bus: u8, slot: u8, func: u8, off: bool) {
+    let cmd = crate::pci::cfg_read32(bus, slot, func, 0x04) & 0xffff;
+    let new = if off { cmd | CMD_INTX_OFF } else { cmd & !CMD_INTX_OFF };
+    if new != cmd {
+        crate::pci::cfg_write32(bus, slot, func, 0x04, new);
+    }
+}
+
+/// Turn off the INTx of every function on `gsi` but the [`USERS`].
+fn quiet(gsi: u32) {
+    let users = *USERS.lock();
+    for f in crate::pci::functions() {
+        if users.contains(&Some((f.bus, f.slot, f.func))) {
+            continue;
+        }
+        if route_of(f.bus, f.slot, f.func).is_some_and(|r| r.gsi == gsi) {
+            intx_off(f.bus, f.slot, f.func, true);
+        }
+    }
+}
+
+/// The function's INTx through the I/O APIC: its vector (the
+/// `irq::dispatch` number), the line's other functions quietened
+/// ([`quiet`]), the pin unmasked, the function's INTx enabled. `None`
+/// without a pin, a route, an I/O APIC pin for it or room in [`USERS`].
+pub fn setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
+    let route = route_of(bus, slot, func)?;
     let level = route.flags & PCI_INTX_LEVEL != 0;
     let active_low = route.flags & PCI_INTX_ACTIVE_LOW != 0;
     let vector = super::ioapic::route_gsi(route.gsi, level, active_low)?;
-    // INTx on (bit 10 of the command register clear).
-    let cmd = crate::pci::cfg_read32(bus, slot, func, 0x04);
-    if cmd & (1 << 10) != 0 {
-        crate::pci::cfg_write32(bus, slot, func, 0x04, cmd & 0xffff & !(1 << 10));
+    {
+        let mut users = USERS.lock();
+        let me = Some((bus, slot, func));
+        if !users.contains(&me) {
+            *users.iter_mut().find(|u| u.is_none())? = me;
+        }
     }
+    quiet(route.gsi);
+    intx_off(bus, slot, func, false);
     super::ioapic::unmask_gsi(route.gsi);
     Some(vector)
 }
