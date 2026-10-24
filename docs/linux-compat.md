@@ -492,6 +492,10 @@ the kernel does not keep a per-task copy at syscall entry.
 
 ## Building myos in myos
 
+For myos programs (the `*-unknown-myos` targets and their std), the `rust`
+package sets the pinned nightly's own toolchain up in an Alpine root and
+runs cargo there, on every arch (`packages/rust/README.md`). The kernel:
+
 `linux-compat/self-host.sh DIR [REV]` (in the image as `/lib/self-host.sh`)
 builds the x86_64 kernel inside myos with Alpine's Rust toolchain:
 
