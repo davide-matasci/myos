@@ -28,9 +28,9 @@ run-myos [-r ROOT] APP[@VERSION][,APP...][:CMD] [ARGS...]
   once (into `ROOT/.get-myos/`; `-u` refreshes them), then streams
   each package's `<arch>-<name>.tar.gz` from `curl` through gunzip and tar
   straight into `ROOT/.<name>-<version>.new/`, checking the SHA-256 of the
-  stream against the index at the end. The tarball is never stored: a
-  tmpfs file holds at most 16 MiB and the riscv64 `os-test` package is
-  bigger than that. Only when the checksum matches is the directory
+  stream against the index at the end. The tarball is never stored: in
+  `/tmp` it would take the kernel heap a second time, beside the files it
+  unpacks (the riscv64 `os-test` package is 49 MB). Only when the checksum matches is the directory
   renamed to `ROOT/<name>-<version>/` and `ROOT/<name>` pointed at it
   (below); a failed download or a mismatch removes it and leaves the
   current version as it was. `get-myos` records the current version of
@@ -309,7 +309,7 @@ binaries there: the tag names the commit they were built from, whose
 
 `packages/`: git, lua, lynx, make, os-test, vim, x11-libs (the X client
 libraries for the X packages, with libX11's error database and their
-test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), openssl (LibreSSL's command, `packages/openssl/README.md`), acme (acme.sh, the ACME client: Let's Encrypt certificates for nginx, `packages/acme/README.md`), python (CPython 3.13 against mlibc, `packages/python/README.md`), and ncurses, pcre2, sqlite and libedit (build dependencies: of vim, lynx, clear and python, of nginx, of python; nothing in the
+test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), openssl (LibreSSL's command, `packages/openssl/README.md`), acme (acme.sh, the ACME client: Let's Encrypt certificates for nginx, `packages/acme/README.md`), python (CPython 3.13 against mlibc, `packages/python/README.md`), rust (`rust setup` and cargo for myos programs, in myos: the pinned nightly under the Linux layer, `packages/rust/README.md`), and ncurses, pcre2, sqlite and libedit (build dependencies: of vim, lynx, clear and python, of nginx, of python; nothing in the
 image). Everything a boot needs
 stays in `ports/` (and zlib and LibreSSL, which get-myos and curl link). The full test list
 installs those its tests run (the build dependencies, which carry no files, none); the ISO

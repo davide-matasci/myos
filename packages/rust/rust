@@ -1,0 +1,147 @@
+#!/bin/sh
+# rust: Rust for myos programs, in myos (packages/rust/README.md). The
+# compiler is the official musl build of the nightly the myos std is built
+# with, run under the Linux layer in an Alpine root; the std is the one
+# this app carries (/lib/rust), for this machine's arch.
+#
+#     rust [-r ROOT] setup            the toolchain, into ROOT
+#     rust [-r ROOT] COMMAND [ARG...] COMMAND (cargo, rustc, ...) in ROOT
+#
+# ROOT is /data/rust unless -r or RUST_ROOT names another directory; it
+# takes about 1.2 GiB. A COMMAND runs from a directory inside ROOT (the
+# Linux program sees only the root): cargo builds for the myos target by
+# default, into target/@TARGET@/.
+#
+# build.sh fills in what is the arch's and the pin's (packages/rust/versions.env).
+NIGHTLY=@NIGHTLY@
+HOST=@HOST@
+TARGET=@TARGET@
+LDSO=@LDSO@
+SUMS="rustc:@RUSTC@ cargo:@CARGO@ rust-std:@STD@"
+
+R=${RUST_ROOT:-/data/rust}
+if [ "$1" = -r ]; then
+	R=$2
+	shift 2
+fi
+if [ $# -eq 0 ]; then
+	echo "usage: rust [-r ROOT] setup | rust [-r ROOT] COMMAND [ARG...]" >&2
+	exit 2
+fi
+
+die() {
+	echo "rust: $*" >&2
+	exit 1
+}
+
+grep -q '^linux$' /proc/modules || die "the Linux layer is not loaded (insmod /lib/modules/linux)"
+
+# A command in the root, with the Linux environment, from directory $1.
+# OPENSSL_armcap: cargo's OpenSSL on aarch64 would probe the CPU's crypto
+# instructions under a SIGILL handler, and a fault ends a process instead
+# (issue #587); NEON alone, which every ARMv8 CPU has.
+in_root() {
+	d=$1
+	shift
+	linux --root "$R" /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin HOME=/root \
+		OPENSSL_armcap=1 /bin/sh -c 'cd "$0" && exec "$@"' "$d" "$@"
+}
+
+if [ "$1" != setup ]; then
+	[ -x "$R/usr/local/bin/cargo" ] || die "no toolchain in $R: rust -r $R setup"
+	case $PWD in
+	"$R") dir=/ ;;
+	"$R"/*) dir=${PWD#"$R"} ;;
+	*) die "run it from a directory inside $R: the toolchain sees only its root" ;;
+	esac
+	in_root "$dir" "$@"
+	exit
+fi
+
+# 1. The root: busybox (the shell and the tools below), libgcc and
+# libatomic (rustc's libgcc_s, and riscv64's libatomic), lld (the linker:
+# the toolchain's rust-lld is not position-independent, which the Linux
+# layer requires, issue #585), curl and xz for the download, unpacked
+# natively (-n: no apk under emulation, nor its scripts: busybox's links
+# are made here).
+mkdir -p "$R" || exit 1
+get-alpine -n -r "$R" busybox libgcc libatomic lld curl xz || exit 1
+if [ ! -e "$R/usr/bin/env" ]; then
+	linux --root "$R" /bin/busybox --install -s || exit 1
+fi
+X=$R/usr/local/libexec/myos
+mkdir -p "$X" || exit 1
+
+# 2. rustc, cargo and the host's std (for build scripts and proc macros)
+# into /usr/local, where musl's loader finds librustc_driver; the server
+# checked against the image's CA bundle, as myos's own clients do, and the
+# tarballs against the channel's sha256s. Their documentation is left out.
+cp /lib/cacert.pem "$X/cacert.pem" || exit 1
+if [ "$(cat "$R/usr/local/.rust-nightly" 2>/dev/null)" != "$NIGHTLY" ]; then
+	echo "rust: fetching the $NIGHTLY toolchain ($HOST)"
+	in_root / /bin/sh -c '
+		set -e
+		rm -rf /usr/local/lib/rustlib /usr/local/lib/librustc_driver-*.so
+		mkdir -p /usr/local
+		for c in $3; do
+			pkg=${c%%:*}-nightly-$2
+			t=/usr/local/$pkg.tar.xz
+			curl -fsSL --cacert /usr/local/libexec/myos/cacert.pem -o $t https://static.rust-lang.org/dist/$1/$pkg.tar.xz
+			echo "${c#*:}  $t" | sha256sum -c -s
+			# Its one component directory (PKG/COMPONENT/...) straight into
+			# /usr/local: no tree to remove afterwards (issue #584).
+			xz -dc $t | tar -x -C /usr/local --strip-components=2
+			rm $t
+		done
+		rm -rf /usr/local/share/doc /usr/local/share/man /usr/local/manifest.in
+		echo $1 > /usr/local/.rust-nightly
+	' sh "$NIGHTLY" "$HOST" "$SUMS" || die "the toolchain download failed"
+fi
+
+# 3. The myos std, next to the host's: the target is given by its spec's
+# path, as the sysroot was built (the rlibs carry its hash).
+L=$R/usr/local/lib/rustlib
+rm -rf "$L/$TARGET"
+mkdir -p "$L/$TARGET/lib" || exit 1
+cp /lib/rust/$TARGET/lib/*.rlib "$L/$TARGET/lib/" && cp /lib/rust/$TARGET.json "$L/" || exit 1
+
+# 4. The host's linker: Alpine's lld, through a wrapper named ld.lld (which
+# rustc takes for lld, linking the crt objects of the host's std with it).
+# The host's programs, build scripts and proc macros, link dynamically
+# against the root's musl and libgcc_s (aarch64's musl target has no static
+# PIE, and the Linux layer loads position-independent programs only), so
+# the wrapper names the loader and searches those two libraries alone
+# (Alpine's /usr/lib holds its libc.a too, whose debug sections lld cannot
+# read).
+printf '#!/bin/sh\nexec /usr/bin/ld.lld -L/usr/local/libexec/myos --dynamic-linker /lib/%s "$@"\n' "$LDSO" > "$X/ld.lld" || exit 1
+chmod 755 "$X/ld.lld"
+rm -f "$X/libc.so" "$X/libgcc_s.so"
+ln -s /lib/$LDSO "$X/libc.so" && ln -s /usr/lib/libgcc_s.so.1 "$X/libgcc_s.so" || exit 1
+
+# 5. cargo's configuration: the myos target by default, and the host's
+# own (unstable [host]: a [target.HOST] table reaches no build script when
+# a target is given): dynamic, with the crt objects of the host's std
+# (rustc links none with lld when it is not told to: the entry point was 0).
+mkdir -p "$R/root/.cargo" || exit 1
+cat > "$R/root/.cargo/config.toml" << EOF || exit 1
+# Written by \`rust setup\` (the rust app); it rewrites this file.
+target-applies-to-host = false
+
+[unstable]
+json-target-spec = true
+host-config = true
+target-applies-to-host = true
+
+[build]
+target = "/usr/local/lib/rustlib/$TARGET.json"
+
+[target.$TARGET]
+linker = "/usr/bin/ld.lld"
+rustflags = ["-Zunstable-options", "-Cpanic=abort"]
+
+[host]
+linker = "/usr/local/libexec/myos/ld.lld"
+rustflags = ["-Ctarget-feature=-crt-static", "-Clink-self-contained=yes"]
+EOF
+v=$(in_root / rustc --version) || die "rustc does not run in $R"
+echo "rust: ready in $R ($v)"
