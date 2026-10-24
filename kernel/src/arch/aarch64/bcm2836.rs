@@ -49,6 +49,10 @@ const PENDING2: usize = 0x08;
 const ENABLE1: usize = 0x10;
 const ENABLE2: usize = 0x14;
 const ENABLE_BASIC: usize = 0x18;
+/// And the disable registers, write 1 to clear.
+const DISABLE1: usize = 0x1c;
+const DISABLE2: usize = 0x20;
+const DISABLE_BASIC: usize = 0x24;
 
 /// The interrupt numbers this module hands out for the peripherals.
 const GPU_FIRST: u32 = 32;
@@ -140,6 +144,21 @@ impl IrqChip for Bcm2836 {
             }
             BASIC_FIRST.. if irq < BASIC_FIRST + BASIC_COUNT => {
                 write32(armctrl + ENABLE_BASIC, 1 << (irq - BASIC_FIRST))
+            }
+            _ => {}
+        }
+    }
+
+    fn mask(&self, irq: u32) {
+        let armctrl = ARMCTRL.load(Ordering::Relaxed);
+        match irq {
+            GPU_FIRST..BASIC_FIRST => {
+                let n = irq - GPU_FIRST;
+                let reg = if n < 32 { DISABLE1 } else { DISABLE2 };
+                write32(armctrl + reg, 1 << (n % 32));
+            }
+            BASIC_FIRST.. if irq < BASIC_FIRST + BASIC_COUNT => {
+                write32(armctrl + DISABLE_BASIC, 1 << (irq - BASIC_FIRST))
             }
             _ => {}
         }

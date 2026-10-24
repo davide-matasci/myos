@@ -158,9 +158,14 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
 }
 
 /// A PCI function's interrupt given back (`irq::pci_irq_disable`): its
-/// INTx off. The controller's line is not allocated, only its handlers.
-pub fn pci_irq_release(bus: u8, slot: u8, func: u8, _irq: u32, _last: bool) {
+/// INTx off, and the controller's line masked once no handler is left on
+/// it (`last`: another slot's device may share the line). The line is not
+/// allocated, only its handlers.
+pub fn pci_irq_release(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
     crate::irq::pci_intx_release(bus, slot, func);
+    if last {
+        crate::irqchip::mask(irq);
+    }
 }
 
 pub fn wait_interrupt() {
