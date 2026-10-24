@@ -2,7 +2,16 @@
 //!
 //! Supports regular files, directories, symlinks and named FIFOs. Paths are relative to the
 //! mount (no leading slash), e.g. `ci`, `d/f`.
+//!
+//! The entries sit in slots, found by two ordered maps: their whole path to their slot, and
+//! their id (what an open file names it by) to their slot. A lookup by either is
+//! logarithmic and allocates nothing (the kernel heap's allocator walks its free list on
+//! every allocation), and a directory's descendants are one range of the path map (the
+//! paths with its prefix and a `/`), which its listing, its emptiness check and its rename
+//! walk. A plain list scanned on every lookup made unpacking os-test's 7500 files
+//! quadratic: five minutes of its install under TCG.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -34,10 +43,10 @@ enum Kind {
     Fifo(usize),
 }
 
+/// An entry; its path is its key in [`Tree::by_path`]: for a file unlinked
+/// while held (`unlink_keep`) `\0` and its id, a name no path reaches (the
+/// VFS refuses a NUL) and listings leave out.
 struct Entry {
-    /// For a file unlinked while held (`unlink_keep`): `\0` and its id, a
-    /// name no path reaches (the VFS refuses a NUL) and listings leave out.
-    path: String,
     /// The file's id (`vfs::FileOps`) and inode number: unique until reboot.
     id: u64,
     kind: Kind,
@@ -50,9 +59,89 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(path: &str, kind: Kind, now: u64) -> Entry {
+    fn new(kind: Kind, now: u64) -> Entry {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        Entry { path: String::from(path), id, kind, atime: now, mtime: now }
+        Entry { id, kind, atime: now, mtime: now }
+    }
+}
+
+/// The tmpfs's entries (see the module's comment): a path is stored once, as
+/// its key in `by_path`.
+struct Tree {
+    slots: Vec<Option<Entry>>,
+    free: Vec<usize>,
+    by_path: BTreeMap<String, usize>,
+    by_id: BTreeMap<u64, usize>,
+}
+
+impl Tree {
+    const fn new() -> Tree {
+        Tree { slots: Vec::new(), free: Vec::new(), by_path: BTreeMap::new(), by_id: BTreeMap::new() }
+    }
+
+    fn len(&self) -> usize {
+        self.by_path.len()
+    }
+
+    fn slot(&self, i: usize) -> Option<&Entry> {
+        self.slots.get(i)?.as_ref()
+    }
+
+    fn slot_mut(&mut self, i: usize) -> Option<&mut Entry> {
+        self.slots.get_mut(i)?.as_mut()
+    }
+
+    fn get(&self, path: &str) -> Option<&Entry> {
+        self.slot(*self.by_path.get(path)?)
+    }
+
+    fn get_mut(&mut self, path: &str) -> Option<&mut Entry> {
+        let i = *self.by_path.get(path)?;
+        self.slot_mut(i)
+    }
+
+    fn insert(&mut self, path: String, entry: Entry) {
+        let id = entry.id;
+        let i = match self.free.pop() {
+            Some(i) => {
+                self.slots[i] = Some(entry);
+                i
+            }
+            None => {
+                self.slots.push(Some(entry));
+                self.slots.len() - 1
+            }
+        };
+        self.by_id.insert(id, i);
+        self.by_path.insert(path, i);
+    }
+
+    fn remove(&mut self, path: &str) -> Option<Entry> {
+        let i = self.by_path.remove(path)?;
+        let entry = self.slots[i].take()?;
+        self.by_id.remove(&entry.id);
+        self.free.push(i);
+        Some(entry)
+    }
+
+    /// Give the entry at `old` the path `new` (nothing there).
+    fn move_to(&mut self, old: &str, new: String) {
+        if let Some(i) = self.by_path.remove(old) {
+            self.by_path.insert(new, i);
+        }
+    }
+
+    /// The paths below the directory `dir` (not `dir` itself), in order: the
+    /// keys after `dir` that start with it and a `/`. Those that go on with a
+    /// byte below `/` (`dir-x`, `dir.y`) sort between `dir` and them.
+    fn below<'a>(&'a self, dir: &'a str) -> impl Iterator<Item = (&'a String, usize)> + 'a {
+        use core::ops::Bound;
+        let next = move |path: &String| path.starts_with(dir) && path.len() > dir.len();
+        self.by_path
+            .range::<str, _>((Bound::Excluded(dir), Bound::Unbounded))
+            .skip_while(move |(path, _)| next(path) && path.as_bytes()[dir.len()] < b'/')
+            .take_while(move |(path, _)| next(path) && path.as_bytes()[dir.len()] == b'/')
+            .map(|(path, i)| (path, *i))
     }
 }
 
@@ -79,31 +168,42 @@ enum At<'a> {
     Id(u64),
 }
 
-fn index_at(entries: &[Entry], at: At) -> Option<usize> {
+/// The slot of the entry `at` names, if it exists.
+fn slot_at(entries: &Tree, at: At) -> Option<usize> {
     match at {
-        At::Path(name) if valid_rel_path(name) => find_index(entries, name),
+        At::Path(name) if valid_rel_path(name) => entries.by_path.get(name).copied(),
         At::Path(_) => None,
-        At::Id(id) => entries.iter().position(|e| e.id == id),
+        At::Id(id) => entries.by_id.get(&id).copied(),
     }
+}
+
+fn entry_at<'a>(entries: &'a Tree, at: At) -> Option<&'a Entry> {
+    entries.slot(slot_at(entries, at)?)
+}
+
+fn entry_at_mut<'a>(entries: &'a mut Tree, at: At) -> Option<&'a mut Entry> {
+    let i = slot_at(entries, at)?;
+    entries.slot_mut(i)
 }
 
 /// The id of the entry at `name`.
 fn file_id(name: &str) -> Option<u64> {
     let entries = ENTRIES.lock();
-    index_at(&entries, At::Path(name)).map(|i| entries[i].id)
+    entry_at(&entries, At::Path(name)).map(|e| e.id)
 }
 
 /// Unlink the file at `name` but keep it, by its id, for whoever holds it.
 fn unlink_keep(name: &str) -> bool {
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = index_at(&entries, At::Path(name)) else {
+    let Some(entry) = entry_at(&entries, At::Path(name)) else {
         return false;
     };
-    if !matches!(entries[i].kind, Kind::File(_)) {
+    if !matches!(entry.kind, Kind::File(_)) {
         return false;
     }
-    entries[i].path = alloc::format!("\0{}", entries[i].id);
+    let kept = alloc::format!("\0{}", entry.id);
+    entries.move_to(name, kept);
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -116,22 +216,22 @@ pub fn create_kept() -> Option<u64> {
     if entries.len() >= MAX_ENTRIES {
         return None;
     }
-    let mut entry = Entry::new("", Kind::File(Vec::new()), now);
-    entry.path = alloc::format!("\0{}", entry.id);
+    let entry = Entry::new(Kind::File(Vec::new()), now);
     let id = entry.id;
-    entries.push(entry);
+    entries.insert(alloc::format!("\0{id}"), entry);
     Some(id)
 }
 
 /// The file `unlink_keep` kept is let go.
 fn forget(id: u64) {
     let mut entries = ENTRIES.lock();
-    if let Some(i) = entries.iter().position(|e| e.id == id && e.path.starts_with('\0')) {
-        entries.remove(i);
+    let kept = alloc::format!("\0{id}");
+    if entries.by_path.contains_key(kept.as_str()) {
+        entries.remove(&kept);
     }
 }
 
-static ENTRIES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+static ENTRIES: Mutex<Tree> = Mutex::new(Tree::new());
 
 /// How full tmpfs is (`statvfs`): its files' bytes are in the kernel heap,
 /// so the heap is its space, and [`MAX_ENTRIES`] its file nodes.
@@ -160,11 +260,11 @@ fn now() -> u64 {
 }
 
 /// A directory's entries changed: its modification time is now.
-fn touch_dir(entries: &mut [Entry], dir: &str, now: u64) {
+fn touch_dir(entries: &mut Tree, dir: &str, now: u64) {
     if dir.is_empty() {
         ROOT_MTIME.store(now, Ordering::Relaxed);
-    } else if let Some(i) = find_index(entries, dir) {
-        entries[i].mtime = now;
+    } else if let Some(entry) = entries.get_mut(dir) {
+        entry.mtime = now;
     }
 }
 
@@ -193,33 +293,18 @@ fn parent_of(path: &str) -> &str {
     }
 }
 
-fn find_index(entries: &[Entry], path: &str) -> Option<usize> {
-    entries.iter().position(|e| e.path == path)
+fn is_dir_path(entries: &Tree, path: &str) -> bool {
+    path.is_empty() || matches!(entries.get(path).map(|e| &e.kind), Some(Kind::Dir))
 }
 
-fn is_dir_path(entries: &[Entry], path: &str) -> bool {
-    if path.is_empty() {
-        return true;
+fn has_children(entries: &Tree, dir: &str) -> bool {
+    if dir.is_empty() {
+        return entries.len() != 0;
     }
-    match find_index(entries, path).map(|i| &entries[i].kind) {
-        Some(Kind::Dir) => true,
-        _ => false,
-    }
+    entries.below(dir).next().is_some()
 }
 
-fn has_children(entries: &[Entry], dir: &str) -> bool {
-    for e in entries.iter() {
-        if dir.is_empty() {
-            return true;
-        }
-        if e.path.starts_with(dir) && e.path.as_bytes().get(dir.len()) == Some(&b'/') {
-            return true;
-        }
-    }
-    false
-}
-
-fn parent_ok(entries: &[Entry], path: &str) -> bool {
+fn parent_ok(entries: &Tree, path: &str) -> bool {
     is_dir_path(entries, parent_of(path))
 }
 
@@ -238,8 +323,8 @@ pub fn create(name: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    if let Some(i) = find_index(&entries, name) {
-        return matches!(entries[i].kind, Kind::File(_));
+    if let Some(entry) = entries.get(name) {
+        return matches!(entry.kind, Kind::File(_));
     }
     if !parent_ok(&entries, name) {
         return false;
@@ -247,7 +332,7 @@ pub fn create(name: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.push(Entry::new(name, Kind::File(Vec::new()), now));
+    entries.insert(String::from(name), Entry::new(Kind::File(Vec::new()), now));
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -258,13 +343,13 @@ pub fn truncate(name: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
+    let Some(entry) = entries.get_mut(name) else {
         return false;
     };
-    match &mut entries[i].kind {
+    match &mut entry.kind {
         Kind::File(data) => {
             data.clear();
-            entries[i].mtime = now;
+            entry.mtime = now;
             true
         }
         _ => false,
@@ -282,10 +367,10 @@ fn set_size_at(at: At, size: usize) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = index_at(&entries, at) else {
+    let Some(entry) = entry_at_mut(&mut entries, at) else {
         return false;
     };
-    let Kind::File(data) = &mut entries[i].kind else {
+    let Kind::File(data) = &mut entry.kind else {
         return false;
     };
     if size > data.len() && data.try_reserve_exact(size - data.len()).is_err() {
@@ -295,7 +380,7 @@ fn set_size_at(at: At, size: usize) -> bool {
     if size < data.capacity() / 2 {
         data.shrink_to_fit();
     }
-    entries[i].mtime = now;
+    entry.mtime = now;
     true
 }
 
@@ -305,10 +390,10 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 
 fn read_at(at: At, pos: usize, out: &mut [u8]) -> usize {
     let entries = ENTRIES.lock();
-    let Some(i) = index_at(&entries, at) else {
+    let Some(entry) = entry_at(&entries, at) else {
         return 0;
     };
-    let Kind::File(data) = &entries[i].kind else {
+    let Kind::File(data) = &entry.kind else {
         return 0;
     };
     let n = out.len().min(data.len().saturating_sub(pos));
@@ -325,8 +410,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
 fn write_at(at: At, pos: usize, buf: &[u8]) -> Option<usize> {
     let now = now();
     let mut entries = ENTRIES.lock();
-    let i = index_at(&entries, at)?;
-    let entry = &mut entries[i];
+    let entry = entry_at_mut(&mut entries, at)?;
     let Kind::File(data) = &mut entry.kind else {
         return None;
     };
@@ -357,16 +441,13 @@ pub fn mkfifo(name: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    if find_index(&entries, name).is_some()
-        || !parent_ok(&entries, name)
-        || entries.len() >= MAX_ENTRIES
-    {
+    if entries.get(name).is_some() || !parent_ok(&entries, name) || entries.len() >= MAX_ENTRIES {
         return false;
     }
     let Some(id) = crate::pipe::alloc_named() else {
         return false;
     };
-    entries.push(Entry::new(name, Kind::Fifo(id), now));
+    entries.insert(String::from(name), Entry::new(Kind::Fifo(id), now));
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -377,7 +458,7 @@ pub fn fifo_id(name: &str) -> Option<usize> {
         return None;
     }
     let entries = ENTRIES.lock();
-    match entries[find_index(&entries, name)?].kind {
+    match entries.get(name)?.kind {
         Kind::Fifo(id) => Some(id),
         _ => None,
     }
@@ -389,7 +470,7 @@ pub fn mkdir(name: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    if find_index(&entries, name).is_some() {
+    if entries.get(name).is_some() {
         return false;
     }
     if !parent_ok(&entries, name) {
@@ -398,7 +479,7 @@ pub fn mkdir(name: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.push(Entry::new(name, Kind::Dir, now));
+    entries.insert(String::from(name), Entry::new(Kind::Dir, now));
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -409,16 +490,16 @@ pub fn rmdir(name: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
+    let Some(entry) = entries.get(name) else {
         return false;
     };
-    if !matches!(entries[i].kind, Kind::Dir) {
+    if !matches!(entry.kind, Kind::Dir) {
         return false;
     }
     if has_children(&entries, name) {
         return false;
     }
-    entries.remove(i);
+    entries.remove(name);
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -429,10 +510,10 @@ pub fn unlink(name: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(i) = find_index(&entries, name) else {
+    let Some(entry) = entries.get(name) else {
         return false;
     };
-    match entries[i].kind {
+    match entry.kind {
         Kind::File(_) => {}
         Kind::Symlink(_) => {
             SYMLINKS.fetch_sub(1, Ordering::Relaxed);
@@ -440,7 +521,7 @@ pub fn unlink(name: &str) -> bool {
         Kind::Fifo(id) => crate::pipe::fifo_unlink(id),
         Kind::Dir => return false,
     }
-    entries.remove(i);
+    entries.remove(name);
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -462,33 +543,29 @@ pub fn rename(old: &str, new: &str) -> bool {
     true
 }
 
-fn rename_locked(entries: &mut Vec<Entry>, old: &str, new: &str) -> bool {
+fn rename_locked(entries: &mut Tree, old: &str, new: &str) -> bool {
     // Refuse renaming a directory into itself.
     if new.starts_with(old) && new.as_bytes().get(old.len()) == Some(&b'/') {
         return false;
     }
-    let Some(old_i) = find_index(entries, old) else {
+    let Some(entry) = entries.get(old) else {
         return false;
     };
-    let is_dir = matches!(entries[old_i].kind, Kind::Dir);
+    let is_dir = matches!(entry.kind, Kind::Dir);
 
     // POSIX: file/symlink rename may replace an existing non-directory dest.
     // Without this, git init dies on the second config write (config.lock →
     // config) after core.repositoryformatversion already created config —
     // commit_lock_file rename failed with ENOENT on all boot arches.
-    if let Some(new_i) = find_index(entries, new) {
-        if is_dir || matches!(entries[new_i].kind, Kind::Dir) {
+    if let Some(dest) = entries.get(new) {
+        if is_dir || matches!(dest.kind, Kind::Dir) {
             return false;
         }
-        if old_i == new_i {
-            return true;
-        }
-        if let Kind::Fifo(id) = entries[new_i].kind {
+        if let Kind::Fifo(id) = dest.kind {
             crate::pipe::fifo_unlink(id);
         }
-        entries.remove(new_i);
-        let old_i = if new_i < old_i { old_i - 1 } else { old_i };
-        entries[old_i].path = String::from(new);
+        entries.remove(new);
+        entries.move_to(old, String::from(new));
         return true;
     }
 
@@ -497,40 +574,19 @@ fn rename_locked(entries: &mut Vec<Entry>, old: &str, new: &str) -> bool {
     }
 
     if is_dir {
-        let mut idxs: Vec<usize> = Vec::new();
-        for (i, e) in entries.iter().enumerate() {
-            if e.path == old
-                || (e.path.starts_with(old) && e.path.as_bytes().get(old.len()) == Some(&b'/'))
-            {
-                idxs.push(i);
-            }
-        }
+        let below: Vec<String> = entries.below(old).map(|(path, _)| path.clone()).collect();
         // Validate all new paths fit before mutating.
-        for &i in idxs.iter() {
-            let suffix = if entries[i].path.len() == old.len() {
-                ""
-            } else {
-                &entries[i].path[old.len()..]
-            };
-            if new.len() + suffix.len() > PATH_CAP {
-                return false;
-            }
+        if below.iter().any(|path| new.len() + path.len() - old.len() > PATH_CAP) {
+            return false;
         }
-        for i in idxs {
-            let suffix = if entries[i].path.len() == old.len() {
-                String::new()
-            } else {
-                String::from(&entries[i].path[old.len()..])
-            };
+        for path in below {
             let mut np = String::from(new);
-            np.push_str(&suffix);
-            entries[i].path = np;
+            np.push_str(&path[old.len()..]);
+            entries.move_to(&path, np);
         }
-        true
-    } else {
-        entries[old_i].path = String::from(new);
-        true
     }
+    entries.move_to(old, String::from(new));
+    true
 }
 
 pub fn symlink(target: &str, linkpath: &str) -> bool {
@@ -542,7 +598,7 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    if find_index(&entries, linkpath).is_some() {
+    if entries.get(linkpath).is_some() {
         return false;
     }
     if !parent_ok(&entries, linkpath) {
@@ -551,7 +607,7 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.push(Entry::new(linkpath, Kind::Symlink(String::from(target)), now));
+    entries.insert(String::from(linkpath), Entry::new(Kind::Symlink(String::from(target)), now));
     touch_dir(&mut entries, parent_of(linkpath), now);
     SYMLINKS.fetch_add(1, Ordering::Relaxed);
     true
@@ -572,8 +628,7 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
         return None;
     }
     let entries = ENTRIES.lock();
-    let i = find_index(&entries, path)?;
-    let Kind::Symlink(target) = &entries[i].kind else {
+    let Kind::Symlink(target) = &entries.get(path)?.kind else {
         return None;
     };
     let n = target.len().min(buf.len());
@@ -594,24 +649,19 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         return 0;
     }
     let mut n = 0;
-    for e in entries.iter() {
-        let child = if dir.is_empty() {
-            // A kept file (`\0` and its id) has no name.
-            if e.path.contains('/') || e.path.starts_with('\0') {
-                continue;
-            }
-            e.path.as_str()
-        } else if e.path.starts_with(dir)
-            && e.path.as_bytes().get(dir.len()) == Some(&b'/')
-        {
-            let rest = &e.path[dir.len() + 1..];
-            if rest.contains('/') {
-                continue;
-            }
-            rest
-        } else {
-            continue;
-        };
+    // The mount root's children are the paths without a `/`; a directory's
+    // are the ones of its range without one past its prefix.
+    let children: alloc::boxed::Box<dyn Iterator<Item = &str>> = if dir.is_empty() {
+        // A kept file (`\0` and its id) has no name.
+        alloc::boxed::Box::new(
+            entries.by_path.keys().map(String::as_str).filter(|p| !p.contains('/') && !p.starts_with('\0')),
+        )
+    } else {
+        alloc::boxed::Box::new(
+            entries.below(dir).map(move |(p, _)| &p[dir.len() + 1..]).filter(|rest| !rest.contains('/')),
+        )
+    };
+    for child in children {
         let name = child.as_bytes();
         let need = name.len() + 1;
         if n + need > buf.len() {
@@ -642,8 +692,8 @@ pub fn stat(name: &str) -> Option<StatInfo> {
 
 fn stat_at(at: At) -> Option<StatInfo> {
     let entries = ENTRIES.lock();
-    let i = index_at(&entries, at)?;
-    let (mode, size, nlink) = match &entries[i].kind {
+    let entry = entry_at(&entries, at)?;
+    let (mode, size, nlink) = match &entry.kind {
         Kind::Dir => (S_IFDIR | 0o755, 0u64, 2u32),
         Kind::File(data) => (S_IFREG | 0o755, data.len() as u64, 1u32),
         Kind::Symlink(t) => (S_IFLNK | 0o777, t.len() as u64, 1u32),
@@ -652,11 +702,11 @@ fn stat_at(at: At) -> Option<StatInfo> {
     Some(StatInfo {
         mode,
         size,
-        ino: entries[i].id as u32,
+        ino: entry.id as u32,
         nlink,
         dev: 0,
-        mtime: entries[i].mtime,
-        atime: entries[i].atime,
+        mtime: entry.mtime,
+        atime: entry.atime,
     })
 }
 
@@ -677,14 +727,14 @@ pub fn set_times(name: &str, atime: Option<u64>, mtime: Option<u64>) -> bool {
 
 fn set_times_at(at: At, atime: Option<u64>, mtime: Option<u64>) -> bool {
     let mut entries = ENTRIES.lock();
-    let Some(i) = index_at(&entries, at) else {
+    let Some(entry) = entry_at_mut(&mut entries, at) else {
         return false;
     };
     if let Some(t) = atime {
-        entries[i].atime = t;
+        entry.atime = t;
     }
     if let Some(t) = mtime {
-        entries[i].mtime = t;
+        entry.mtime = t;
     }
     true
 }
