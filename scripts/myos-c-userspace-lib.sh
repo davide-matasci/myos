@@ -64,6 +64,7 @@ MYOS_SQLITE_VERSION="$MYOS_ROOT/target/.myos-sqlite-version"
 MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
+MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
 MYOS_DROPBEAR_VERSION_STAMP="$MYOS_ROOT/target/.myos-dropbear-version"
 MYOS_OS_TEST_VERSION="$MYOS_ROOT/target/.myos-os-test-version"
 MYOS_LINUX_COMPAT_VERSION="$MYOS_ROOT/target/.myos-linux-compat-version"
@@ -1424,6 +1425,30 @@ myos_acme_is_current() {
     && [[ "$(cat "$MYOS_ACME_VERSION")" == "$(myos_acme_version_hash)" ]] \
     || return 1
   [[ -f "$MYOS_ROOT/target/acme-app/lib/acme/acme.sh" && -f "$MYOS_ROOT/target/acme-app/bin/custom/acme" ]]
+}
+
+# rust copies the sysroot's std and fills in its script: the sysroot and the
+# package's files.
+myos_rust_version_hash() {
+  local h
+  h="$(
+    {
+      myos_sysroot_version_hash
+      find "$(myos_port_dir rust)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_rust_is_current() {
+  local arch
+  [[ -f "$MYOS_RUST_VERSION" ]] \
+    && [[ "$(cat "$MYOS_RUST_VERSION")" == "$(myos_rust_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/rust-$arch/bin/custom/rust" ]] || return 1
+  done
 }
 
 myos_make_version_hash() {

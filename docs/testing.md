@@ -44,7 +44,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
 | a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port: its `test.sh` (every test of the file, set by the runner) |
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests, each also tagged with its newlib test's name: `docs/mlibc.md`) |
-| `alpine`, `python`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
+| `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
 
 A quick run (`heavy` and `net` skipped) has a budget of 6 minutes (7 with
 the Linux layer; half as much again on riscv64, the slowest under TCG, as
@@ -278,12 +278,14 @@ light one), one that touches a package 5 times, four of them smoke boots.
 
 A machine's selection runs in parallel boots: the long tests' groups
 (`ostest` and `alpine`: the curated os-test list and the apk installs,
-whose tests build on each other; `pkg`: the packages' install from the
+whose tests build on each other; `rust`: the rust package's, which sets
+the toolchain up in the guest, a download of some 230 MB, and builds with
+it under the Linux layer, 11 minutes under TCG; `pkg`: the packages' install from the
 mirror, the packages' and get-myos's tests on it and the `install` tests
 of the boot disk, a boot of 13 minutes on riscv64 that the light boot
 no longer carries) each in a boot of their own, whole, and one light
-boot with everything else (9 minutes on riscv64), so a full run is four
-boots of at most twenty minutes per machine instead of one of thirty.
+boot with everything else (9 minutes on riscv64), so a full run is five
+boots per machine instead of one.
 Each boot
 gets a budget from what it runs (riscv64 half as much again); a
 selection without `net` tests skips the mirror, one without `alpine-disk`
