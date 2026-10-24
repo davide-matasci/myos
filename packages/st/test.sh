@@ -42,4 +42,4 @@ st_run() {
 	cat /tmp/st.log /tmp/st-server.log
 	[ $ok = 1 ]
 }
-t -t x11 st st_run
+t -t x11,tinyx st st_run

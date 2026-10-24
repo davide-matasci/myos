@@ -36,7 +36,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | tag | the tests that |
 |---|---|
 | `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
-| `pkg` | need the packages of this build installed as apps (`packages`, the first test of a run that has one, installs them from the mirror; every package's own test has it; in CI the `pkg` boot's) |
+| `pkg` | need the packages of this build: installed as apps (`packages`, the first test of a run that has one, installs from the mirror those the selected `pkg` tests name in their tags; every package's own test has it and its package's name), or the mirror itself (get-myos's, which name none); in CI the `pkg` boot's |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
 | `install` | change the boot disk: `get-myos --upgrade` (Limine made stale first) and `--install` on the scratch disk; when they passed, the launcher boots the upgraded disk again, which must come up from slot `b`, and then the disk `--install --local` made, from its slot a (`docs/install.md`) |
@@ -112,11 +112,15 @@ the feature; otherwise that the boot script's `rc.local` loaded it with
 `insmod`). The runner sources `kernel.sh`, then
 `ports/*.sh` in name order; the packer names those so the core image ports
 (the shell, the basic programs) come first, the other image ports next,
-the packages last. In the full mode the very first test installs every
-package the host's mirror has, as apps in `/tmp/apps` (`MYOS_APPS`,
-`docs/packages.md`), and the runner sources the packages' tests from
-there (`<app>/lib/myos-tests/ports/`) with the image's, in the same name
-order; they run their programs with `run-myos`.
+the packages last (the image carries the packages' test files too, so
+the runner reads every test's tags before it installs anything). When a
+selected test has `pkg`, the very first test installs the packages the
+selected tests use from the host's mirror, as apps in `/tmp/apps`
+(`MYOS_APPS`, `docs/packages.md`): a `pkg` test names in its tags the
+packages it runs (its own package's tests carry its name; `alpine_jq`
+names `get-alpine`, the X clients `tinyx`); one that names none gets
+none (get-myos's own install into roots of their own). The tests run
+their programs with `run-myos`.
 
 The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
 interactive shell on a pty the way a person types at the console: history
