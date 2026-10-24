@@ -106,6 +106,19 @@ pub fn detach(bus: u8, slot: u8, func: u8) {
     backend::detach(bus, slot, func)
 }
 
+/// A function confined to a domain of its own ([`attach`]) reaches its
+/// MSI controller's doorbell, the page of `address` its messages write
+/// to, only where the domain maps it: mapped (at that address) when its
+/// interrupt is routed (`msi::pci_setup`). A function in passthrough
+/// reaches it as it is. Nothing is remapped: a GICv2m frame or an IMSIC
+/// takes any interrupt it is sent (issue #590).
+#[cfg(not(target_arch = "x86_64"))]
+pub fn map_msi_doorbell(bus: u8, slot: u8, func: u8, address: u64) {
+    if let Some(domain) = backend::domain_of(bus, slot, func) {
+        backend::map(domain, address & !0xfff, 4096);
+    }
+}
+
 /// The MSI message (address, data) with which PCI function `bus:slot.func`
 /// raises `vector` on the BSP through the unit's interrupt remapping (an
 /// entry of its own that holds the vector and answers to this function

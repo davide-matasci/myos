@@ -129,6 +129,42 @@ impl IrqChip for NoChip {
 
 static ROOT: Once<&'static dyn IrqChip> = Once::new();
 
+/// An MSI controller: the interrupts PCI functions raise by a write
+/// (`crate::msi`). Its interrupt numbers are `irq::dispatch` numbers of
+/// their own, beside the root's (GICv3 LPIs from 8192, GICv2m SPIs, the
+/// RISC-V IMSIC's identities above the wired sources').
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+pub trait MsiChip: Sync {
+    /// A free interrupt for the PCI function with requester id `rid`
+    /// (bus, device and function, as the function's writes carry it),
+    /// delivered to the BSP and enabled: its number and the message that
+    /// raises it. `None` when they are all taken.
+    fn alloc(&self, rid: u16) -> Option<(u32, crate::msi::Message)>;
+    /// Give interrupt `irq` back ([`MsiChip::alloc`]).
+    fn free(&self, irq: u32);
+}
+
+static MSI: Once<&'static dyn MsiChip> = Once::new();
+
+/// The board's MSI controller, once its driver started (x86_64 has none:
+/// its local APIC takes the messages, `arch/x86/interrupts.rs`).
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+pub fn msi() -> Option<&'static dyn MsiChip> {
+    MSI.get().copied()
+}
+
+/// Start the board's MSI controller (the arch's driver of the one the
+/// platform description names), after the root's CPU side runs.
+pub fn start_msi() {
+    crate::arch::start_msi(crate::platform::get());
+}
+
+/// Make `chip` the board's MSI controller (its driver's start).
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+pub fn msi_register(chip: &'static dyn MsiChip) {
+    MSI.call_once(|| chip);
+}
+
 /// Start the controller the platform description names, or the arch's own
 /// when it names none (`arch::IRQCHIP_DEFAULT`: a PC without ACPI tables).
 pub fn start(p: &crate::platform::Platform) -> Result<(), &'static str> {

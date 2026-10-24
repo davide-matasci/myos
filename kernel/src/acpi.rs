@@ -33,7 +33,6 @@ impl Table {
         self.bytes.get(off).copied()
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn u16(&self, off: usize) -> Option<u16> {
         let b = self.bytes.get(off..off + 2)?;
         Some(u16::from_le_bytes([b[0], b[1]]))
@@ -136,6 +135,9 @@ pub struct Madt {
     pub gicr: Option<(u64, u64)>,
     /// The GIC ITS base.
     pub its: Option<u64>,
+    /// The first GICv2m MSI frame: its base, and its SPIs (first INTID,
+    /// count) where the entry overrides the frame's `MSI_TYPER`.
+    pub msi_frame: Option<(u64, Option<(u32, u32)>)>,
     /// The first I/O APIC (x86_64): its physical address and the first
     /// global system interrupt (GSI) it serves.
     pub ioapic: Option<(u64, u32)>,
@@ -188,6 +190,14 @@ pub fn madt() -> Option<Madt> {
             0xE if len >= 16 => m.gicr = Some((t.u64(off + 4)?, t.u32(off + 12)? as u64)),
             // GIC ITS: physical base at 8.
             0xF if len >= 20 => m.its = Some(t.u64(off + 8)?),
+            // GIC MSI frame: physical base at 8, flags at 16 (bit 0: the
+            // SPI count at 20 and base at 22 apply).
+            0xD if len >= 24 && m.msi_frame.is_none() => {
+                let spis = (t.u32(off + 16)? & 1 != 0)
+                    .then(|| Some((u32::from(t.u16(off + 22)?), u32::from(t.u16(off + 20)?))))
+                    .flatten();
+                m.msi_frame = Some((t.u64(off + 8)?, spis));
+            }
             _ => {}
         }
         off += len;

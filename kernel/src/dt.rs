@@ -604,6 +604,95 @@ pub fn smmu() -> Option<Smmu> {
     })
 }
 
+/// The node of the PCIe host's MSI controller: the one its `msi-map`
+/// names (requester id base, controller, device id base, count), else
+/// its `msi-parent`.
+#[cfg(not(target_arch = "x86_64"))]
+fn pci_msi_node<'b>(fdt: &'b Fdt<'static>) -> Option<FdtNode<'b, 'static>> {
+    let host = pci_host_node(fdt)?;
+    let phandle = prop(host, "msi-map").and_then(|m| m.get(1)).or_else(|| prop(host, "msi-parent")?.get(0))?;
+    fdt.find_phandle(phandle).filter(|n| enabled(*n))
+}
+
+/// The PCIe host's MSI controller, from the tree: a GICv3 ITS, a GICv2m
+/// frame (its SPIs where the node says) or the supervisor-level IMSICs.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn msi() -> Option<crate::platform::Msi> {
+    use crate::platform::{Msi, MsiKind};
+    let fdt = get()?;
+    let node = pci_msi_node(fdt)?;
+    let kind = if has_compatible(node, "arm,gic-v3-its") {
+        MsiKind::Its
+    } else if has_compatible(node, "arm,gic-v2m-frame") {
+        MsiKind::V2m
+    } else if has_compatible(node, "riscv,imsics") && !machine_level(node) {
+        MsiKind::Imsic
+    } else {
+        return None;
+    };
+    let (base, size) = node_reg(node, 0)?;
+    let spis = match (prop(node, "arm,msi-base-spi"), prop(node, "arm,msi-num-spis")) {
+        (Some(b), Some(n)) => Some((b.get(0)?, n.get(0)?)),
+        _ => None,
+    };
+    Some(Msi { kind, base, size, spis })
+}
+
+/// The device id the MSI controller knows PCI requester id `rid` by (the
+/// GICv3 ITS's): through the host's `msi-map`, the requester id itself
+/// without one.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn pci_msi_devid(rid: u16) -> u32 {
+    let rid = u32::from(rid);
+    let map = get().and_then(pci_host_node).and_then(|h| prop(h, "msi-map"));
+    let Some(map) = map else {
+        return rid;
+    };
+    let mut i = 0;
+    while let (Some(base), Some(_), Some(out), Some(n)) = (map.get(i), map.get(i + 1), map.get(i + 2), map.get(i + 3)) {
+        if (base..base.saturating_add(n)).contains(&rid) {
+            return out + (rid - base);
+        }
+        i += 4;
+    }
+    rid
+}
+
+/// The supervisor-level IMSIC page of hart `hartid` (riscv64): the page
+/// its MSIs are written to, from the IMSICs' `reg` and the hart's place in
+/// their `interrupts-extended` (its `cpu` node's interrupt controller),
+/// each hart's page `4 KiB << riscv,guest-index-bits` after the last.
+#[cfg(target_arch = "riscv64")]
+pub fn imsic_hart_page(hartid: u64) -> Option<u64> {
+    let fdt = get()?;
+    let node = fdt
+        .all_nodes()
+        .find(|n| enabled(*n) && has_compatible(*n, "riscv,imsics") && !machine_level(*n))?;
+    let (base, _) = node_reg(node, 0)?;
+    let guest_bits = prop(node, "riscv,guest-index-bits").and_then(|c| c.get(0)).unwrap_or(0);
+    let ints = prop(node, "interrupts-extended")?;
+    let cpus = fdt.find_node("/cpus")?;
+    for index in 0..ints.len() / 2 {
+        let phandle = ints.get(index * 2)?;
+        let hart = cpus.children().find(|cpu| {
+            cpu.children().any(|c| prop(c, "phandle").and_then(|p| p.get(0)) == Some(phandle))
+        });
+        if hart.and_then(|cpu| prop(cpu, "reg")?.get(0)).is_some_and(|id| u64::from(id) == hartid) {
+            return Some(base + (index as u64) * (0x1000 << guest_bits));
+        }
+    }
+    None
+}
+
+/// A number property of the first enabled supervisor-level node compatible
+/// with `compat` (`riscv,num-sources`, `riscv,num-ids`).
+#[cfg(target_arch = "riscv64")]
+pub fn aia_count(compat: &str, name: &str) -> Option<u32> {
+    let fdt = get()?;
+    let node = fdt.all_nodes().find(|n| enabled(*n) && has_compatible(*n, compat) && !machine_level(*n))?;
+    prop(node, name)?.get(0)
+}
+
 /// `timebase-frequency` of the CPUs (riscv64: the `time` CSR rate).
 pub fn timebase_frequency() -> Option<u64> {
     let cpus = get()?.find_node("/cpus")?;
@@ -659,6 +748,19 @@ fn console_uart(fdt: &Fdt<'static>) -> Option<Uart> {
         .or_else(|| uart_of(fdt, find_enabled(fdt, NS16550_COMPAT)?))
 }
 
+/// A RISC-V AIA node of the machine level, which the M-mode firmware
+/// drives: the APLIC domain with child domains (`riscv,children`), the
+/// IMSICs that take machine external interrupts (cause 11). The kernel's
+/// are the supervisor level's.
+fn machine_level(node: FdtNode<'_, 'static>) -> bool {
+    const IRQ_M_EXT: u32 = 11;
+    if !has_compatible(node, "riscv,aplic") && !has_compatible(node, "riscv,imsics") {
+        return false;
+    }
+    node.property("riscv,children").is_some()
+        || prop(node, "interrupts-extended").is_some_and(|c| c.len() >= 2 && c.get(1) == Some(IRQ_M_EXT))
+}
+
 /// `driver`'s description from the tree: every node it is made of, enabled,
 /// with the `reg` entries it takes.
 fn intc_of(fdt: &Fdt<'static>, driver: &crate::irqchip::Driver) -> Option<crate::platform::Intc> {
@@ -666,7 +768,9 @@ fn intc_of(fdt: &Fdt<'static>, driver: &crate::irqchip::Driver) -> Option<crate:
     let mut regs = [Reg { base: 0, size: 0 }; 4];
     let mut n = 0;
     for dt_node in driver.dt {
-        let node = find_enabled(fdt, dt_node.compatible)?;
+        let node = fdt
+            .all_nodes()
+            .find(|n| enabled(*n) && !machine_level(*n) && dt_node.compatible.iter().any(|c| has_compatible(*n, c)))?;
         for i in 0..dt_node.regs {
             let (base, size) = node_reg(node, i)?;
             *regs.get_mut(n)? = Reg { base, size };
@@ -735,6 +839,10 @@ pub fn fill(p: &mut Platform) {
         Some("hvc") => offer_psci(p, PsciConduit::Hvc, from),
         Some("smc") => offer_psci(p, PsciConduit::Smc, from),
         _ => {}
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    if let Some(msi) = msi() {
+        offer_msi(p, msi, from);
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(s) = smmu() {

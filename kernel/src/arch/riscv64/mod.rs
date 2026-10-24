@@ -4,6 +4,7 @@ mod interrupts;
 pub use interrupts::enable_ipi;
 pub mod paging;
 pub mod pci;
+mod aia;
 mod plic;
 mod power;
 pub use power::POWER_METHODS;
@@ -48,6 +49,15 @@ pub fn early_init() {
     paging::map_devices();
 }
 
+/// The MSI controller, once the root controller runs
+/// (`irqchip::start_msi`): none of its own, the AIA's IMSIC is the
+/// root's (`aia`), which says so here.
+pub fn start_msi(_p: &crate::platform::Platform) {
+    if crate::irqchip::root().name() == "aia" {
+        aia::report();
+    }
+}
+
 pub fn init_interrupts() {
     interrupts::init();
 }
@@ -67,13 +77,13 @@ pub fn ap_init(logical: usize) {
 pub const PREFER_ACPI: bool = false;
 
 /// The interrupt controllers the kernel drives (`irqchip`).
-pub static IRQCHIPS: &[&crate::irqchip::Driver] = &[&plic::DRIVER];
+pub static IRQCHIPS: &[&crate::irqchip::Driver] = &[&plic::DRIVER, &aia::DRIVER];
 
 /// A riscv64 board's interrupt controller is always described.
 pub const IRQCHIP_DEFAULT: Option<&crate::irqchip::Driver> = None;
 
 /// Take the board's device bases from the platform description: the
-/// interrupt controller (`IRQCHIPS`: the PLIC),
+/// interrupt controller (`IRQCHIPS`: the PLIC or the AIA),
 /// the 16550 console, the goldfish RTC, the `time` CSR rate and the PCIe
 /// host bridge (ECAM, bus range, 64-bit MMIO window). Required: a board
 /// the description does not cover does not boot.
@@ -139,13 +149,21 @@ pub fn phys_map(_phys: u64, _len: usize) -> Option<usize> {
     None
 }
 
+/// A PCI function's interrupt: its MSI-X, else its MSI, through the
+/// board's MSI controller where it has one (`msi::pci_setup`), else its
+/// INTx line where the device tree routes it.
 pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
-    crate::irq::pci_intx_setup(bus, slot, func)
+    crate::msi::pci_setup(bus, slot, func).or_else(|| crate::irq::pci_intx_setup(bus, slot, func))
 }
 
-/// A PCI function's interrupt given back (`irq::pci_irq_disable`): its
-/// INTx off. The controller's line is not allocated, only its handlers.
-pub fn pci_irq_release(bus: u8, slot: u8, func: u8, _irq: u32, _last: bool) {
+/// A PCI function's interrupt given back (`irq::pci_irq_disable`): once
+/// `last` (no handler of `irq` left) its MSI-X or MSI off and the
+/// controller's interrupt freed; its INTx off. An INTx line is not
+/// allocated, only its handlers.
+pub fn pci_irq_release(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
+    if last && crate::msi::pci_release(bus, slot, func, irq) {
+        return;
+    }
     crate::irq::pci_intx_release(bus, slot, func);
 }
 

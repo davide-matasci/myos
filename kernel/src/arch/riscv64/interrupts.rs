@@ -409,8 +409,8 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
         }
         if code == 9 {
             // Supervisor external interrupt: claim from the interrupt
-            // controller (the PLIC), dispatch, complete. Loop: several
-            // sources may be pending.
+            // controller (the PLIC, the AIA's IMSIC), dispatch, complete.
+            // Loop: several sources may be pending.
             let chip = crate::irqchip::root();
             while let Some(src) = chip.claim() {
                 crate::irq::dispatch(src);
