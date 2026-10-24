@@ -142,8 +142,9 @@ build_arch() {
     "$out/usr/lib/pkgconfig" "$out/usr/lib"/libpython*
   # pip, installed: the wheel ensurepip carries (pure Python), unpacked
   # into site-packages, as `python -m ensurepip` would; `python -m pip`
-  # runs it (there is no pip script: the app's commands are its own).
-  "$BUILD_PYTHON" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+  # runs it (there is no pip script: the app's commands are its own). The
+  # host's python3 unpacks it: a build python made here may lack zlib.
+  python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
     "$(ls "$lib"/ensurepip/_bundled/pip-*.whl)" "$lib/site-packages"
   find "$lib" -name __pycache__ -type d -prune -exec rm -rf {} +
   # The modules that must be there: configure leaves out one whose library
