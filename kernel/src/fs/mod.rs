@@ -240,6 +240,7 @@ pub fn blk_id_from_path(path: &str) -> Option<u32> {
 }
 
 pub const S_IFBLK: u32 = 0o060000;
+pub const S_IFDIR: u32 = 0o040000;
 pub const S_IFMT: u32 = 0o170000;
 
 /// Resolve `path` against `dir` (a canonical absolute path in the task's
@@ -278,8 +279,28 @@ pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Option<usize> {
 
 /// [`resolve_user_path`] relative to `dir` (see
 /// [`resolve_user_path_virtual`]), the last component followed when it is
-/// a symlink if `follow_last`.
+/// a symlink if `follow_last`. A trailing slash names a directory (POSIX):
+/// the last component is followed then too, and a path to anything else
+/// that exists does not resolve ([`trailing_slash_fails`]).
 pub fn resolve_user_path_at(dir: Option<&str>, path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
+    let n = resolve_user_path_walk(dir, path, out, follow_last || trailing_slash(path))?;
+    let real = core::str::from_utf8(&out[..n]).ok()?;
+    (!(trailing_slash(path) && trailing_slash_fails(real))).then_some(n)
+}
+
+/// `path` ends in `/` after a component (`d/`, not `/`).
+pub fn trailing_slash(path: &str) -> bool {
+    path.ends_with('/') && !path.trim_end_matches('/').is_empty()
+}
+
+/// A path that ended in `/` resolved to `real`, which exists and is no
+/// directory: `ENOTDIR`, where the path to something not there yet (`mkdir
+/// d/`) goes on.
+pub fn trailing_slash_fails(real: &str) -> bool {
+    stat(real).is_some_and(|st| st.mode & S_IFMT != S_IFDIR)
+}
+
+fn resolve_user_path_walk(dir: Option<&str>, path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
     // The whole tree and no symlinks anywhere (the common case): resolve
     // straight into `out` — no extra buffers on the kernel stack of every
     // path syscall.

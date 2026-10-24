@@ -9,7 +9,7 @@
  * in a program the process execs, dup2's copy and the others are not;
  * O_NOFOLLOW refuses a symlink (ELOOP) and O_DIRECTORY anything but a
  * directory (ENOTDIR), and a directory opened to write, create or truncate
- * is EISDIR; flock and fcntl record locks (kernel/src/fs/lock.rs) conflict
+ * is EISDIR; a trailing slash resolves to a directory only (ENOTDIR); flock and fcntl record locks (kernel/src/fs/lock.rs) conflict
  * across processes, wait, and go with their owner; a file is its inode, not
  * its name: an fd follows it through a rename and keeps it after an unlink,
  * and its inode number stays; a read of a file gives all that was asked
@@ -291,6 +291,45 @@ static void open_flags(void) {
     check(open(dir, O_RDONLY | O_TRUNC) < 0 && errno == EISDIR, "O_TRUNC of a directory: EISDIR");
     unlink(l);
     unlink(f);
+}
+
+/* A trailing slash names a directory (issue #583): a file, or a symlink to
+ * one, with one is ENOTDIR for open, stat and access; a directory and a
+ * symlink to one resolve through it, and mkdir takes it. */
+static void trailing_slash(void) {
+    char f[200], fs[200], l[200], ls[200], d[200], ds[200], dl[200], dls[200];
+    struct stat st;
+    int fd;
+
+    snprintf(f, sizeof f, "%s/slash-file", dir);
+    snprintf(fs, sizeof fs, "%s/", f);
+    snprintf(l, sizeof l, "%s/slash-link", dir);
+    snprintf(ls, sizeof ls, "%s/", l);
+    snprintf(d, sizeof d, "%s/slash-dir", dir);
+    snprintf(ds, sizeof ds, "%s//", d);
+    snprintf(dl, sizeof dl, "%s/slash-dirlink", dir);
+    snprintf(dls, sizeof dls, "%s/", dl);
+    unlink(l);
+    unlink(dl);
+    rmdir(d);
+    close(open(f, O_WRONLY | O_CREAT | O_TRUNC, 0644));
+    check(symlink("slash-file", l) == 0 && symlink("slash-dir", dl) == 0, "symlinks for the slash checks");
+    check(stat(fs, &st) < 0 && errno == ENOTDIR, "stat of FILE/: ENOTDIR");
+    check(open(fs, O_RDONLY) < 0 && errno == ENOTDIR, "open of FILE/: ENOTDIR");
+    check(access(fs, F_OK) < 0, "access of FILE/ fails");
+    check(stat(ls, &st) < 0 && errno == ENOTDIR, "stat of LINK-TO-FILE/: ENOTDIR");
+    check(stat(f, &st) == 0 && S_ISREG(st.st_mode), "the file without the slash");
+    check(mkdir(ds, 0755) == 0, "mkdir DIR//");
+    check(stat(ds, &st) == 0 && S_ISDIR(st.st_mode), "stat of DIR//");
+    check(stat(dls, &st) == 0 && S_ISDIR(st.st_mode), "stat of LINK-TO-DIR/ follows the link");
+    fd = open(ds, O_RDONLY | O_DIRECTORY);
+    check(fd >= 0, "open of DIR//");
+    close(fd);
+    check(chdir(fs) < 0 && errno == ENOTDIR, "chdir to FILE/: ENOTDIR");
+    unlink(dl);
+    unlink(l);
+    unlink(f);
+    check(rmdir(ds) == 0, "rmdir DIR//");
 }
 
 /* Run `test` in a child (which has its own locks, and fds of its own
@@ -700,6 +739,7 @@ int main(int argc, char **argv) {
     cloexec("/bin/etc/fileio_smoke");
     many_fds();
     open_flags();
+    trailing_slash();
     locks();
     inodes();
     whole_reads();

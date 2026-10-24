@@ -1273,6 +1273,14 @@ static void check_toolchain_calls(char *self) {
               open("/tmp/linux-smoke.link", O_RDONLY | O_NOFOLLOW) < 0 && errno == ELOOP,
           "O_NOFOLLOW");
     check(open("/tmp/linux-smoke.trunc", O_RDONLY | O_DIRECTORY) < 0 && errno == ENOTDIR, "O_DIRECTORY");
+    /* A trailing slash names a directory: a file with one is ENOTDIR, a
+     * symlink to a directory is followed through it (issue #583). */
+    check(stat("/tmp/linux-smoke.trunc/", &st) < 0 && errno == ENOTDIR, "stat of FILE/: ENOTDIR");
+    check(open("/tmp/linux-smoke.trunc/", O_RDONLY) < 0 && errno == ENOTDIR, "open of FILE/: ENOTDIR");
+    check(symlink("/tmp", "/tmp/linux-smoke.dirlink") == 0 && stat("/tmp/linux-smoke.dirlink/", &st) == 0 &&
+              S_ISDIR(st.st_mode) && lstat("/tmp/linux-smoke.dirlink/", &st) == 0 && S_ISDIR(st.st_mode),
+          "LINK-TO-DIR/ follows the link");
+    unlink("/tmp/linux-smoke.dirlink");
     unlink("/tmp/linux-smoke.link");
     unlink("/tmp/linux-smoke.trunc");
     /* A dangling link's own owner and mode can be set (apk sets a .so.N
