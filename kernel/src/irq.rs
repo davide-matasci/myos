@@ -40,7 +40,8 @@ pub type Handler = unsafe extern "C" fn(ctx: *mut core::ffi::c_void);
 
 /// Handlers on every arch together: as many as x86_64 has device vectors
 /// (a shared INTx line on aarch64 and riscv64 takes one per device on it).
-/// `dispatch` copies the table onto the interrupted stack, 2.5 KiB.
+/// `dispatch` copies the table onto the interrupted stack: 4 KiB of a
+/// 64 KiB kernel stack.
 const MAX_HANDLERS: usize = 64;
 
 #[derive(Clone, Copy)]
