@@ -1,4 +1,5 @@
-# myos Phase-1 local porcelain: no network helpers, no scripting runtimes.
+# myos: the porcelain and SSH remotes (git runs dropbear's client as
+# `ssh`); no HTTP(S) helper (README.md: issue #591), no scripting runtimes.
 # Sourced after config.mak.uname — override host Linux detections that do not
 # apply to freestanding myos.
 NO_GETTEXT = YesPlease
@@ -58,8 +59,9 @@ INSTALL_SYMLINKS =
 # Guest install layout: single multicall binary at /bin/custom/git (and /bin/git).
 # Absolute gitexecdir so setup_path / dashed lookup never uses missing
 # /usr/libexec/git-core (classic ENOENT when a non-builtin is dispatched).
-# Builtins for Phase-1 porcelain stay linked into the one binary
-# (SKIP_DASHED_BUILT_INS above); no dashed helper ELFs are packed.
+# Builtins stay linked into the one binary (SKIP_DASHED_BUILT_INS above);
+# the dashed names an SSH remote runs (git-upload-pack, git-receive-pack)
+# are aliases of it.
 prefix = /bin/custom
 bindir = /bin/custom
 gitexecdir = /bin/custom
