@@ -49,6 +49,15 @@ pub trait Bus {
     fn set_clock(&mut self, hz: u32);
     /// The 4-bit bus (else 1-bit).
     fn set_wide(&mut self, wide: bool);
+    /// Whether the controller can run the bus at high speed (50 MHz, the
+    /// card's outputs on the clock's rising edge): a card is switched to
+    /// it only then.
+    fn high_speed(&self) -> bool {
+        false
+    }
+    /// The controller's timing for a card at high speed (`on`) or the
+    /// default; the clock is [`Bus::set_clock`]'s.
+    fn set_high_speed(&mut self, _on: bool) {}
     /// Send command `index` with `arg` and wait for its response: the
     /// response's bits, `[31:0]` first, a long one's whole 128 (the CRC's
     /// byte as 0); `data`'s blocks moved after it.
@@ -246,9 +255,10 @@ impl Io {
         }
         // High speed where the card has it.
         let speed = io.read_byte(bus, 0, cccr::SPEED)?;
-        if speed & cccr::SPEED_SHS != 0 {
+        if speed & cccr::SPEED_SHS != 0 && bus.high_speed() {
             io.write_byte(bus, 0, cccr::SPEED, speed | cccr::SPEED_EHS)?;
             io.high_speed = true;
+            bus.set_high_speed(true);
         }
         bus.set_clock(if io.high_speed { CLOCK_HIGH } else { CLOCK_DEFAULT });
         if let Some((m, p)) = io.manfid(bus)? {
@@ -357,6 +367,8 @@ mod tests {
         state: State,
         clock: u32,
         wide: bool,
+        /// The controller's high-speed timing.
+        hs: bool,
         f0: [u8; 0x2000],
         f1: Vec<u8>,
         fifo: Vec<u8>,
@@ -385,7 +397,7 @@ mod tests {
             f0[cccr::CIS_POINTER as usize] = 0x00;
             f0[cccr::CIS_POINTER as usize + 1] = 0x10;
             f0[0x1000..0x1008].copy_from_slice(&[cccr::CISTPL_NULL, cccr::CISTPL_MANFID, 4, 0xd0, 0x02, 0xbf, 0xa9, cccr::CISTPL_END]);
-            Model { state: State::Idle, clock: 0, wide: false, f0, f1: vec![0; 0x10000], fifo: Vec::new(), log: Vec::new(), powered_at: 0 }
+            Model { state: State::Idle, clock: 0, wide: false, hs: false, f0, f1: vec![0; 0x10000], fifo: Vec::new(), log: Vec::new(), powered_at: 0 }
         }
 
         fn reg(&mut self, func: u8, addr: u32) -> &mut u8 {
@@ -406,6 +418,12 @@ mod tests {
         }
         fn set_wide(&mut self, wide: bool) {
             self.wide = wide;
+        }
+        fn high_speed(&self) -> bool {
+            true
+        }
+        fn set_high_speed(&mut self, on: bool) {
+            self.hs = on;
         }
         fn delay_ms(&mut self, _ms: u32) {}
         fn command(&mut self, index: u8, arg: u32, response: Response, data: Option<Data>) -> Result<[u32; 4], Error> {
@@ -496,7 +514,7 @@ mod tests {
         assert_eq!((io.rca, io.functions, io.memory_present), (RCA, 2, false));
         assert_eq!((io.manufacturer, io.product), (0x02d0, 0xa9bf));
         assert!(io.wide && io.high_speed);
-        assert!(m.wide);
+        assert!(m.wide && m.hs);
         assert_eq!(m.clock, CLOCK_HIGH);
         assert_eq!(m.f0[cccr::BUS_INTERFACE as usize] & 3, cccr::BUS_WIDTH_4);
         assert_eq!(m.f0[cccr::SPEED as usize], cccr::SPEED_SHS | cccr::SPEED_EHS);

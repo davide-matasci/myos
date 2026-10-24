@@ -4,9 +4,12 @@
 //! by the card layer ([`card`]) behind the controller's driver: a standard
 //! SDHCI one ([`sdhci`]: by PCI class `0x08` / `0x05`, or the device tree's
 //! `brcm,bcm2711-emmc2`) or the Raspberry Pi 3's sdhost ([`sdhost`], from
-//! the device tree). The data moves by the CPU, completion by polling; no
-//! DMA, no interrupt for the data (issue #549). Cap [`MAX_SLOTS`]
-//! controllers.
+//! the device tree). A memory card's blocks move by ADMA2 on an SDHCI
+//! controller that has it (through the CPU otherwise, and on the sdhost:
+//! issue #576), its waits sleep on the controller's interrupt where it is
+//! routed, and it runs at high speed (CMD6, 50 MHz) when card and
+//! controller can; the Pi's firmware says the controllers' clocks. Cap
+//! [`MAX_SLOTS`] controllers.
 //!
 //! An SDIO card (the `sdio` crate's layer) is not a disk: it goes to
 //! `/dev/sdio` ([`io`]) for a driver that is a program. The Raspberry Pi's
@@ -25,8 +28,8 @@ mod sdhost;
 use core::fmt::Write;
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, DiskInfo, KernelApi, Lock, MmioDevice, ModuleBlkOps, RPI_FIRMWARE_SERVICE, RPI_FIRMWARE_VERSION,
-    RPI_GPIO_WL_ON, RpiFirmwareOps, status_ok,
+    ABI_VERSION, ApiCell, DiskInfo, DmaDevice, KernelApi, Lock, MmioDevice, ModuleBlkOps, RPI_CLOCK_CORE, RPI_CLOCK_EMMC,
+    RPI_CLOCK_EMMC2, RPI_FIRMWARE_SERVICE, RPI_FIRMWARE_VERSION, RPI_GPIO_WL_ON, RpiFirmwareOps, status_ok,
 };
 
 use card::{BLOCK, Card, Host};
@@ -35,8 +38,8 @@ use sdhost::Sdhost;
 
 pub const MAX_SLOTS: usize = 4;
 /// The most blocks one command moves (SDHCI counts 16 bits of them, the
-/// sdhost 9).
-const MAX_BLOCKS: usize = 128;
+/// sdhost 9; the ADMA2 bounce buffer holds as many).
+pub const MAX_BLOCKS: usize = 128;
 
 /// Where a controller is: its PCI function, or its registers' physical
 /// address (a device tree node); a rescan leaves a known one alone.
@@ -73,6 +76,56 @@ impl Controller {
             Controller::Sdhost(_) => None,
         }
     }
+
+    /// A memory card's controller set up for its transfers, as slot
+    /// `slot`: DMA through `dma` where it has it, its interrupt from
+    /// `irq` routed to its handler.
+    fn route(&mut self, api: &KernelApi, slot: usize, dma: DmaDevice, irq: Irq) {
+        let ctx = slot as *mut core::ffi::c_void;
+        match self {
+            Controller::Sdhci(h) => {
+                h.use_dma(api.dma_attach(&dma));
+                let routed = match irq {
+                    Irq::Pci(bus, dev, func) => {
+                        let mut msix = 0u16;
+                        api.pci_irq_enable(bus, dev, func, "sdmmc", sdhci::irq_handler, ctx, &mut msix) == 0
+                    }
+                    Irq::Line(0) => false,
+                    Irq::Line(line) => api.irq_enable(line, "sdmmc", sdhci::irq_handler, ctx) == 0,
+                };
+                if routed {
+                    h.irq_routed(slot);
+                }
+            }
+            Controller::Sdhost(h) => {
+                if let Irq::Line(line @ 1..) = irq
+                    && api.irq_enable(line, "sdmmc", sdhost::irq_handler, ctx) == 0
+                {
+                    h.irq_routed();
+                }
+            }
+        }
+    }
+
+    /// `clock HZ dma adma2|none irq on|off`, for `/dev/<disk>/info`.
+    fn describe(&self, info: &mut DiskInfo) {
+        let (clock, dma, irq) = match self {
+            Controller::Sdhci(h) => {
+                let (dma, irq) = h.modes();
+                (h.clock(), dma, irq)
+            }
+            Controller::Sdhost(h) => (h.clock(), "none", h.irq_mode()),
+        };
+        let _ = write!(info, " clock {clock} dma {dma} irq {irq}");
+    }
+}
+
+/// Where a controller's interrupt comes from: its PCI function's, or a
+/// device tree line (0: none).
+#[derive(Clone, Copy)]
+pub enum Irq {
+    Pci(u8, u8, u8),
+    Line(u32),
 }
 
 struct Slot {
@@ -125,15 +178,27 @@ fn known(place: Place) -> bool {
     SLOTS.iter().any(|s| s.lock().as_ref().is_some_and(|s| s.place == place)) || io::known(place)
 }
 
+/// The Raspberry Pi's firmware (`rpi_firmware`), when its module is there.
+fn firmware(api: &KernelApi) -> Option<&'static RpiFirmwareOps> {
+    let table = api.service_lookup(RPI_FIRMWARE_SERVICE) as *const RpiFirmwareOps;
+    if table.is_null() || unsafe { (*table).version } != RPI_FIRMWARE_VERSION {
+        return None;
+    }
+    Some(unsafe { &*table })
+}
+
+/// Clock `id`'s rate (`RPI_CLOCK_*`) as the firmware says it.
+fn firmware_clock(api: &KernelApi, id: u32) -> Option<u32> {
+    firmware(api)?.clock_rate(id)
+}
+
 /// Power the Pi's Wi-Fi chip through the firmware's GPIO expander
 /// (`WL_REG_ON`, held low then high, then the chip's own start-up), when
 /// the firmware module is there and takes the line (QEMU's does not).
 fn power_wifi(api: &KernelApi) {
-    let table = api.service_lookup(RPI_FIRMWARE_SERVICE) as *const RpiFirmwareOps;
-    if table.is_null() || unsafe { (*table).version } != RPI_FIRMWARE_VERSION {
+    let Some(fw) = firmware(api) else {
         return;
-    }
-    let fw: &RpiFirmwareOps = unsafe { &*table };
+    };
     if !fw.gpio_output(RPI_GPIO_WL_ON, false) {
         return;
     }
@@ -142,14 +207,23 @@ fn power_wifi(api: &KernelApi) {
     sleep_ms(100);
 }
 
-/// Bring up the memory card behind `controller` into a free slot and
-/// register it as `/dev/mmcblk<slot>`; the controller comes back when no
-/// card came up.
-fn attach(api: &KernelApi, place: Place, mut controller: Controller) -> Result<(), Controller> {
+/// Bring up the memory card behind `controller` into a free slot, its
+/// DMA (`dma`) and interrupt (`irq`) set up, and register it as
+/// `/dev/mmcblk<slot>`; the controller comes back when no card came up.
+fn attach(api: &KernelApi, place: Place, mut controller: Controller, dma: DmaDevice, irq: Irq) -> Result<(), Controller> {
     let now_ms = || now_ns() / 1_000_000;
     let Some(card) = Card::init(controller.host(), &now_ms) else {
         return Err(controller);
     };
+    let Some((n, mut free)) = SLOTS.iter().enumerate().find_map(|(i, s)| {
+        let s = s.lock();
+        s.is_none().then_some((i, s))
+    }) else {
+        return Err(controller);
+    };
+    // Before the disk is known: the function's interrupt is set up while
+    // nothing else uses it.
+    controller.route(api, n, dma, irq);
     let mut info = DiskInfo::new();
     let _ = match place {
         Place::Pci(bus, slot, func) => write!(info, "{} pci {bus:02x}:{slot:02x}.{func:x}", controller.host().name()),
@@ -161,12 +235,8 @@ fn attach(api: &KernelApi, place: Place, mut controller: Controller) -> Result<(
         *b = b"0123456789abcdef"[(card.serial >> (28 - 4 * i)) as usize & 0xf];
     }
     info.quoted("serial", &serial);
-    let Some((n, mut free)) = SLOTS.iter().enumerate().find_map(|(i, s)| {
-        let s = s.lock();
-        s.is_none().then_some((i, s))
-    }) else {
-        return Err(controller);
-    };
+    let _ = write!(info, " speed {}", if card.high_speed { "high" } else { "default" });
+    controller.describe(&mut info);
     *free = Some(Slot { place, controller, card });
     drop(free);
     // mmcblk{n} (n < 10: MAX_SLOTS is 4).
@@ -202,8 +272,9 @@ fn probe(api: &KernelApi) -> usize {
         if api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size) != 0 {
             continue;
         }
-        if let Some(h) = Sdhci::new(va) {
-            new += usize::from(attach_any(api, place, Controller::Sdhci(h), 0));
+        if let Some(h) = Sdhci::new(va, None, false) {
+            let (dma, irq) = (DmaDevice::pci(bus, slot, func), Irq::Pci(bus, slot, func));
+            new += usize::from(attach_any(api, place, Controller::Sdhci(h), dma, irq));
         }
     }
     let mut dt = |compatible: &str, kind: Dt| {
@@ -219,18 +290,20 @@ fn probe(api: &KernelApi) -> usize {
             if kind == Dt::Wifi {
                 power_wifi(api);
             }
-            let controller = if kind == Dt::Sdhost {
-                Controller::Sdhost(Sdhost::new(dev.base))
-            } else {
-                match Sdhci::new(dev.base) {
-                    Some(h) => Controller::Sdhci(h),
-                    None => continue,
+            let controller = match kind {
+                Dt::Sdhost => Controller::Sdhost(Sdhost::new(dev.base, firmware_clock(api, RPI_CLOCK_CORE))),
+                Dt::Sdhci | Dt::Wifi => {
+                    let clock = firmware_clock(api, if kind == Dt::Wifi { RPI_CLOCK_EMMC } else { RPI_CLOCK_EMMC2 });
+                    match Sdhci::new(dev.base, clock, kind == Dt::Wifi) {
+                        Some(h) => Controller::Sdhci(h),
+                        None => continue,
+                    }
                 }
             };
             new += usize::from(if kind == Dt::Wifi {
                 io::attach(api, place, controller, dev.irq)
             } else {
-                attach_any(api, place, controller, dev.irq)
+                attach_any(api, place, controller, DmaDevice::mmio(dev.phys), Irq::Line(dev.irq))
             });
         }
     };
@@ -251,11 +324,12 @@ enum Dt {
     Wifi,
 }
 
-/// A slot's card: a memory card, else an SDIO card.
-fn attach_any(api: &KernelApi, place: Place, controller: Controller, irq: u32) -> bool {
-    match attach(api, place, controller) {
+/// A slot's card: a memory card, else an SDIO card (its interrupt the
+/// card's, a device tree line's).
+fn attach_any(api: &KernelApi, place: Place, controller: Controller, dma: DmaDevice, irq: Irq) -> bool {
+    match attach(api, place, controller, dma, irq) {
         Ok(()) => true,
-        Err(controller) => io::attach(api, place, controller, irq),
+        Err(controller) => io::attach(api, place, controller, if let Irq::Line(line) = irq { line } else { 0 }),
     }
 }
 

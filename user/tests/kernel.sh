@@ -254,7 +254,10 @@ sdmmc() {
 	d=/dev/mmcblk0
 	[ -e $d/data ] || { ls /dev; return 1; }
 	if grep -q ' sdhost ' $d/info; then
-		grep -q "^$d/p2 /boot fat " /proc/mounts && [ -s /boot/EFI/BOOT/BOOTAA64.EFI ] ||
+		# High speed (CMD6), the controller's interrupt routed, the data
+		# through the FIFO.
+		grep -Eq ' speed high clock [1-9][0-9]* dma none irq on$' $d/info &&
+			grep -q "^$d/p2 /boot fat " /proc/mounts && [ -s /boot/EFI/BOOT/BOOTAA64.EFI ] ||
 			{ cat $d/info /proc/partitions /proc/mounts; return 1; }
 		read -r _ size _ < $d/info
 		n=$((size / 512))
@@ -262,7 +265,9 @@ sdmmc() {
 		[ "$(dd if=$d/data bs=512 skip=$n count=1 2> /dev/null | wc -c)" -eq 0 ] || { echo "past the end"; return 1; }
 		return 0
 	fi
-	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}"$' $d/info ||
+	# High speed (CMD6 and the host control's bit), the blocks by ADMA2,
+	# the waits on the controller's interrupt.
+	grep -Eq '^mmcblk0 4294967296 sdhci pci [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] model "QEMU!" serial "[0-9a-f]{8}" speed high clock [1-9][0-9]* dma adma2 irq on$' $d/info ||
 		{ cat $d/info; return 1; }
 	seq 40000 > /tmp/sd.seq && dd if=/tmp/sd.seq of=/tmp/sd.in bs=512 count=300 2> /dev/null || return 1
 	for at in 1:1 4000:300 5242880:300; do

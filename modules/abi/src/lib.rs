@@ -2191,6 +2191,8 @@ pub const RPI_CLOCK_EMMC: u32 = 1;
 pub const RPI_CLOCK_UART: u32 = 2;
 pub const RPI_CLOCK_ARM: u32 = 3;
 pub const RPI_CLOCK_CORE: u32 = 4;
+/// The BCM2711's EMMC2 controller's (the Pi 4's card slot).
+pub const RPI_CLOCK_EMMC2: u32 = 12;
 
 /// The firmware, for the drivers (the [`RPI_FIRMWARE_SERVICE`] table).
 /// Task context only: a call waits for the firmware's answer.
