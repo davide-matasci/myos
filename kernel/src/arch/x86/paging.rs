@@ -80,6 +80,25 @@ fn map_one(pa: u64, va: u64) {
     }
 }
 
+/// Whether kernel virtual address `va` is mapped (a 4 KiB, 2 MiB or 1 GiB
+/// page): a walk of the tables, changing nothing.
+pub fn mapped(va: u64) -> bool {
+    let index = |shift: u32| ((va >> shift) & 0x1ff) as usize;
+    let mut table = table_at(cr3_phys());
+    for (level, shift) in [39u32, 30, 21, 12].into_iter().enumerate() {
+        let entry = unsafe { (*table)[index(shift)] };
+        if entry & 1 == 0 {
+            return false;
+        }
+        // A huge page (1 GiB at the PDPT, 2 MiB at the PD), or the PTE.
+        if level == 3 || (level > 0 && entry & (1 << 7) != 0) {
+            return true;
+        }
+        table = table_at(entry);
+    }
+    false
+}
+
 /// Map `[phys, phys+size)` as UC MMIO at HHDM+phys. Device memory is not HHDM.
 pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
     if size == 0 {

@@ -16,6 +16,11 @@ bench = false
 [dependencies]
 myos-abi = { path = "../abi" }
 
+# The AML interpreter (`aml.rs`): x86_64 only, the arch whose firmware
+# hands over ACPI tables with routes and power methods in them.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+acpi = "=6.1.1"
+
 [profile.dev]
 panic = "abort"
 opt-level = "s"

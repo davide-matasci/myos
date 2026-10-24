@@ -56,6 +56,29 @@ pcidev_test() {
 	{ grep -q '^pcidev$' /proc/modules || insmod /lib/modules/pcidev; } && $SMOKES/pcidev_smoke
 }
 t -t pcidev pcidev pcidev_test
+# No interrupt storm after it: the devices' interrupts in a second stay
+# few. A PCI INTx line is shared and level-triggered, and a function on
+# one a driver unmasked (on a PC, the SD controller's) that does not use
+# it must not hold it asserted, or CPU 0 takes its interrupt for ever: the
+# kernel turns those functions' INTx off (arch/x86/intx.rs). On QEMU's PC
+# with VT-d the polled virtio disk beside the edu device raises its line
+# during the test above.
+irq_quiet() {
+	a=$(irq_total)
+	sleep 1
+	b=$(irq_total)
+	[ $((b - a)) -lt 1000 ] || { echo "$((b - a)) interrupts in 1 s"; cat /proc/interrupts; return 1; }
+}
+irq_total() {
+	t=0
+	while read -r n count _; do
+		case $n in
+		[0-9]*:) t=$((t + count)) ;;
+		esac
+	done < /proc/interrupts
+	echo $t
+}
+t -t pcidev irq_quiet irq_quiet
 # /dev/tap: a virtual NIC a program drives: its address and link through
 # ctl, frames both ways whole, none through a link that is down, the NIC
 # gone with its program (tap_smoke.c).

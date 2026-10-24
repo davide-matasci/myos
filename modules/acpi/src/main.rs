@@ -1,7 +1,10 @@
 //! Minimal ACPI: RSDP → XSDT/RSDT, MADT/MCFG/FADT/DSDT summary + AML `_S5`,
 //! and the ACPI power-off and reset methods (`power`).
 //!
-//! The AML read (see docs/pci-acpi-smp.md): `Name (_S5, Package ...)`
+//! On x86_64 the `acpi` crate's AML interpreter runs the firmware's AML
+//! (`aml`): the PCI interrupt routes (`_PRT`) for the kernel, and `_S5`.
+//! Without it (another arch, or the interpreter failed) `_S5` comes from
+//! the AML read (see docs/pci-acpi-smp.md): `Name (_S5, Package ...)`
 //! found by its bytes, its integers (Zero, One, Ones, Byte/Word/DWord/
 //! QWordPrefix, ReturnOp) read.
 
@@ -9,9 +12,37 @@
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use myos_abi::{status_info, status_ok, status_warn, ABI_VERSION, KernelApi};
+extern crate alloc;
 
+use core::alloc::{GlobalAlloc, Layout};
+
+use myos_abi::{status_info, status_ok, status_warn, ApiCell, ABI_VERSION, KernelApi};
+
+#[cfg(target_arch = "x86_64")]
+mod aml;
 mod power;
+
+static API: ApiCell = ApiCell::new();
+
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+fn api() -> &'static KernelApi {
+    API.get()
+}
+
+/// The kernel heap, through the ABI: the interpreter's namespace.
+struct KernelHeap;
+
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        API.get().alloc(layout.size(), layout.align())
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { (API.get().dealloc)(ptr, layout.size(), layout.align()) }
+    }
+}
+
+#[global_allocator]
+static HEAP: KernelHeap = KernelHeap;
 
 const AML_ZERO: u8 = 0x00;
 const AML_ONE: u8 = 0x01;
@@ -28,13 +59,14 @@ const AML_RETURN: u8 = 0xA4;
 
 #[inline(never)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
-    let Some(api) = (unsafe { api.as_ref() }) else {
+pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
+    let Some(api) = (unsafe { api_ptr.as_ref() }) else {
         return -1;
     };
     if api.abi_version != ABI_VERSION {
         return -2;
     }
+    unsafe { API.set(api_ptr) };
 
     let rsdp = api.acpi_rsdp();
     if rsdp == 0 {
@@ -151,17 +183,31 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
 
     let mut s5_buf = [0u8; 128];
     let mut s5_len = 0usize;
-    let (typa, typb, aml_ok) = if dsdt_phys != 0 {
+    #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
+    let (mut typa, mut typb, mut aml_ok) = if dsdt_phys != 0 {
         eval_s5(phys_to_va(dsdt_phys, hhdm))
     } else {
         (0, 0, false)
     };
+    #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
+    let mut source: &[u8] = b"AML _S5 scan";
+    #[cfg(target_arch = "x86_64")]
+    {
+        let report = interpret(api, rsdp as u64, hhdm);
+        if let Some((a, b)) = report.0 {
+            (typa, typb, aml_ok) = (a, b, true);
+            source = b"AML interpreter";
+        }
+        publish_alloc(api, "acpi/aml", report.1.as_bytes());
+    }
     if aml_ok {
         push(&mut s5_buf, &mut s5_len, b"slp_typa: ");
         dec_u32(&mut s5_buf, &mut s5_len, typa as u32);
         push(&mut s5_buf, &mut s5_len, b"\nslp_typb: ");
         dec_u32(&mut s5_buf, &mut s5_len, typb as u32);
-        push(&mut s5_buf, &mut s5_len, b"\nsource: AML _S5\n");
+        push(&mut s5_buf, &mut s5_len, b"\nsource: ");
+        push(&mut s5_buf, &mut s5_len, source);
+        push(&mut s5_buf, &mut s5_len, b"\n");
     } else {
         push(
             &mut s5_buf,
@@ -184,6 +230,23 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     }
     let _ = status_info;
     0
+}
+
+/// Run the interpreter on the tables of the RSDP at `rsdp` (an address of
+/// the higher half): `_S5`'s sleep types when it found them, and the
+/// report for `/proc/acpi/aml`. The deadline bounds the wait; the PCI
+/// routes went to the kernel as found.
+#[cfg(target_arch = "x86_64")]
+fn interpret(api: &KernelApi, rsdp: u64, hhdm: u64) -> (Option<(u8, u8)>, alloc::string::String) {
+    let phys = if hhdm != 0 && rsdp >= hhdm { rsdp - hhdm } else { rsdp };
+    if !aml::start(api, phys) {
+        return (None, "interpreter: no thread\n".into());
+    }
+    let (s5, report) = aml::wait(api, api.monotonic_ns() + aml::DEADLINE_NS);
+    if s5.is_none() {
+        status_warn(api, "acpi: AML interpreter failed (/proc/acpi/aml)");
+    }
+    (s5, report)
 }
 
 fn publish(api: &KernelApi, name: &str, data: &'static [u8]) {
@@ -418,5 +481,14 @@ pub extern "C" fn _start() -> ! {
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // The interpreter's thread sleeps for good: the module's init goes on
+    // without it.
+    #[cfg(target_arch = "x86_64")]
+    if aml::panicked(_info) {
+        let api = api();
+        loop {
+            api.task_sleep_until(api.monotonic_ns() + 1_000_000_000_000);
+        }
+    }
     loop {}
 }
