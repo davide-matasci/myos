@@ -1,7 +1,10 @@
 /* getrandom(2): both libcs lack it (newlib's getentropy and mlibc's are
- * their own, over the same device). */
+ * their own, over the same device). And the BSDs' arc4random family, which
+ * newlib has of its own and mlibc lacks (LibreSSL takes it from the libc). */
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <sys/random.h>
 #include <unistd.h>
 
@@ -43,3 +46,42 @@ ssize_t __myos_getrandom(void *buf, size_t buflen, unsigned int flags) {
 }
 
 MYOS_PUBLIC(getrandom)
+
+/* arc4random_buf(3): `n` bytes from the kernel's generator, every call
+ * (no generator of its own in the process: nothing to reseed after a
+ * fork). It cannot fail: a generator that does not answer aborts. */
+void __myos_arc4random_buf(void *buf, size_t n) {
+    while (n > 0) {
+        ssize_t got = __myos_getrandom(buf, n, 0);
+        if (got <= 0) {
+            abort();
+        }
+        buf = (char *)buf + got;
+        n -= (size_t)got;
+    }
+}
+
+uint32_t __myos_arc4random(void) {
+    uint32_t r;
+    __myos_arc4random_buf(&r, sizeof(r));
+    return r;
+}
+
+/* A number below `upper` without modulo bias: the values under
+ * 2^32 mod upper are drawn again. */
+uint32_t __myos_arc4random_uniform(uint32_t upper) {
+    if (upper < 2) {
+        return 0;
+    }
+    uint32_t min = -upper % upper;
+    for (;;) {
+        uint32_t r = __myos_arc4random();
+        if (r >= min) {
+            return r % upper;
+        }
+    }
+}
+
+MYOS_MLIBC_PUBLIC(arc4random_buf)
+MYOS_MLIBC_PUBLIC(arc4random)
+MYOS_MLIBC_PUBLIC(arc4random_uniform)
