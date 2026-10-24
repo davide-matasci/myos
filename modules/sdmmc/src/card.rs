@@ -11,8 +11,21 @@ use sdio_host::sd_cmd::{self, R6, R7};
 pub const BLOCK: usize = 512;
 /// The identification clock, at most 400 kHz.
 const CLOCK_IDENT: u32 = 400_000;
-/// The default-speed clock every card takes.
+/// The default-speed clock every card takes, and the high-speed one.
 const CLOCK_DATA: u32 = 25_000_000;
+const CLOCK_HIGH: u32 = 50_000_000;
+/// The CSD's command class 10: the card takes CMD6 (switch function).
+const CCC_SWITCH: u32 = 1 << 10;
+/// CMD6 in set mode: function 1 of group 1 (high speed), every other
+/// group left as it is (0xf).
+const SWITCH_HIGH_SPEED: u32 = 0x80ff_fff1;
+/// CMD6's answer: 512 bits of status.
+const SWITCH_STATUS: usize = 64;
+/// How long a write may keep the card programming (the specification's
+/// 250 ms for SDSC, 500 ms for SDHC and SDXC, with room).
+const PROGRAM_TIMEOUT_MS: u32 = 1000;
+/// Status polls of a card still programming before the waits sleep.
+const PROGRAM_SPINS: u32 = 8;
 
 pub use sdio::{Bus as Host, Data, Error, Response};
 
@@ -49,6 +62,8 @@ pub struct Card {
     /// The CID's product name and serial number (`/dev/<disk>/info`).
     pub product: [u8; 5],
     pub serial: u32,
+    /// Switched to high speed (CMD6), the bus at 50 MHz.
+    pub high_speed: bool,
 }
 
 fn run<R: Resp + Kind>(host: &mut dyn Host, cmd: Cmd<R>) -> Result<[u32; 4], Error> {
@@ -105,14 +120,22 @@ impl Card {
         };
         let cid = CID::<SD>::from(long(run(host, common_cmd::all_send_cid()).ok()?));
         let rca = RCA::<SD>::from(run(host, sd_cmd::send_relative_address()).ok()?[0]).address();
-        let csd = CSD::<SD>::from(long(run(host, common_cmd::send_csd(rca)).ok()?));
+        let csd_bits = long(run(host, common_cmd::send_csd(rca)).ok()?);
+        let csd = CSD::<SD>::from(csd_bits);
         checked(run_busy(host, common_cmd::select_card(rca)).ok()?).ok()?;
         // Every SD memory card has the 4-bit bus.
         run(host, common_cmd::app_cmd(rca)).ok()?;
         checked(run(host, sd_cmd::set_bus_width(true)).ok()?).ok()?;
         host.set_wide(true);
         checked(run(host, common_cmd::set_block_length(BLOCK as u32)).ok()?).ok()?;
-        host.set_clock(CLOCK_DATA);
+        // High speed when the card can switch to it and the controller
+        // runs it; the default speed otherwise, or when the switch fails.
+        let ccc = (csd_bits >> 84) as u32 & 0xfff;
+        let high_speed = ccc & CCC_SWITCH != 0 && host.high_speed() && switch_high_speed(host);
+        if high_speed {
+            host.set_high_speed(true);
+        }
+        host.set_clock(if high_speed { CLOCK_HIGH } else { CLOCK_DATA });
         let mut product = [0u8; 5];
         product.copy_from_slice(cid.product_name().as_bytes().get(..5).unwrap_or(b"     "));
         Some(Card {
@@ -121,6 +144,7 @@ impl Card {
             capacity: csd.card_size() / BLOCK as u64,
             product,
             serial: cid.serial(),
+            high_speed,
         })
     }
 
@@ -151,14 +175,37 @@ impl Card {
     }
 
     /// Until the card has programmed what it was sent: back in the
-    /// transfer state, ready for data.
+    /// transfer state, ready for data. A few polls in a row (a block is
+    /// usually programmed by then), then one a millisecond, sleeping
+    /// between.
     fn wait_ready(&self, host: &mut dyn Host) -> Result<(), Error> {
-        for _ in 0..1_000_000 {
+        for i in 0..PROGRAM_SPINS + PROGRAM_TIMEOUT_MS {
             let status = checked(run(host, common_cmd::card_status(self.rca, false))?)?;
             if status.ready_for_data() && status.state() == CurrentState::Transfer {
                 return Ok(());
             }
+            if i >= PROGRAM_SPINS {
+                host.delay_ms(1);
+            }
         }
         Err(Error::Timeout)
     }
+}
+
+/// Switch the card (selected, 4-bit bus) to high speed with CMD6: whether
+/// its status says function 1 of group 1 is now the one (bits 379:376,
+/// the low nibble of byte 16).
+fn switch_high_speed(host: &mut dyn Host) -> bool {
+    let mut status = [0u8; SWITCH_STATUS];
+    let cmd = sd_cmd::cmd6(SWITCH_HIGH_SPEED);
+    let data = Data { buf: &mut status, write: false, block: SWITCH_STATUS };
+    if host.command(cmd.cmd, cmd.arg, Response::Short, Some(data)).and_then(checked).is_err() {
+        return false;
+    }
+    if status[16] & 0xf != 1 {
+        return false;
+    }
+    // The card takes the new timing within 8 clocks of the status.
+    host.delay_ms(1);
+    true
 }
