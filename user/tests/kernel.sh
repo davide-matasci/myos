@@ -882,9 +882,9 @@ proc_pid() {
 	cat /proc/$kid/status
 	kill $kid
 	wait $kid
-	# The USB bus's kernel thread, where xhci found a controller (it
-	# publishes /proc/usb; the Raspberry Pi 3 has none).
-	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel$"; }
+	# The USB bus's kernel thread, where a controller was found (it
+	# publishes /proc/usb): a kernel thread, with a fault count after.
+	[ $rc -eq 0 ] && { [ ! -e /proc/usb ] || cat /proc/*/status | grep -q " usb .* kernel [0-9]*$"; }
 }
 t -t proc,smoke proc_pid proc_pid
 
