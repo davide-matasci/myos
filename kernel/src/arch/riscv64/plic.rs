@@ -113,13 +113,17 @@ impl IrqChip for Plic {
         w(CONTEXT + ctx() * CONTEXT_STRIDE + 4, src);
     }
 
-    /// A supervisor software interrupt through the SBI; which IPI it is
-    /// travels in `smp`'s mailbox (`smp::ipi_mark_tlb`, ...).
     fn send_ipi(&self, to: Target, _ipi: Ipi) {
-        match to {
-            Target::Cpu(cpu) => sbi_send_ipi(1, crate::smp::cpu_hw_id(cpu)),
-            Target::Others => ipi_others(),
-        }
+        send_ipi(to);
+    }
+}
+
+/// A supervisor software interrupt through the SBI; which IPI it is
+/// travels in `smp`'s mailbox (`smp::ipi_mark_tlb`, ...). The AIA's too.
+pub(super) fn send_ipi(to: Target) {
+    match to {
+        Target::Cpu(cpu) => sbi_send_ipi(1, crate::smp::cpu_hw_id(cpu)),
+        Target::Others => ipi_others(),
     }
 }
 

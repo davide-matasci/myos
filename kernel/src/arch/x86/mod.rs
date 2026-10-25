@@ -50,6 +50,10 @@ pub const QEMU_FAILURE: u32 = 0x11;
 pub fn early_init() {}
 
 /// After the heap: the ECAM window's page tables need frames.
+/// The MSI controller, once the root controller runs
+/// (`irqchip::start_msi`): none, the local APIC takes the messages.
+pub fn start_msi(_p: &crate::platform::Platform) {}
+
 pub fn init_interrupts() {
     pci::ecam_ready();
     crate::console::status_info(&alloc::format!("pci config: {}", pci::config_source()));

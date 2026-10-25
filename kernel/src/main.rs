@@ -25,6 +25,7 @@ mod limine_boot;
 /// Optional Linux syscall compatibility layer (`--features linux_compat`).
 mod personality;
 mod mm;
+mod msi;
 mod pci;
 mod modules;
 mod pipe;
@@ -157,6 +158,7 @@ pub(crate) fn kernel_main() -> ! {
     // the x86 LAPIC tick period is derived from it.
     time::init();
     arch::init_interrupts();
+    irqchip::start_msi();
     arch::wait_for_interrupt_proof();
     console::status_ok("interrupts");
 

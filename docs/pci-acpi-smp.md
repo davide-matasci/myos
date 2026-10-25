@@ -40,6 +40,11 @@ Each arch lists the drivers it has in `arch::IRQCHIPS`:
 | aarch64 | `gicv3` | `arm,gic-v3` | MADT GICD + GICR | `arch/aarch64/gic.rs` |
 | aarch64 | `bcm2836`: the Raspberry Pi 3's local and peripheral controllers | `brcm,bcm2836-l1-intc` + `brcm,bcm2836-armctrl-ic` | — | `arch/aarch64/bcm2836.rs` |
 | riscv64 | `plic` (with the SBI's IPIs) | `sifive,plic-1.0.0`, `riscv,plic0` | — | `arch/riscv64/plic.rs` |
+| riscv64 | `aia`: the APLIC and the IMSICs (with the SBI's IPIs; the MSI controller too, "MSI controllers" below) | `riscv,aplic` + `riscv,imsics` (the supervisor level's) | — | `arch/riscv64/aia.rs` |
+
+An MSI controller, the GICv3's ITS or a GICv2m frame, is not the root:
+`irqchip::MsiChip` ("MSI controllers" below), which the platform
+description names (`msi its ...`).
 
 A driver (`irqchip::Driver`) is what is known before the controller runs:
 its name, the device tree nodes it is made of (each with its
@@ -103,8 +108,8 @@ use an MSI-X table entry or the INTx line:
 | Arch | Mechanism | Numbering |
 |------|-----------|-----------|
 | x86_64 | MSI-X entry 0 → LAPIC vector on the BSP (`DEVICE_VECTOR_BASE` 48 + n, 64 vectors shared with the I/O APIC pins below and the IOMMU's own interrupt; no PIRQ routing; the message through the IOMMU's interrupt remapping where the board has one, `iommu::remap_msi`, "The IOMMU" below: a BSP with an x2APIC id above 255 is reached only that way, in extended interrupt mode, and gets no MSI otherwise); a function without MSI-X gets its one MSI message the same way (`MYOS_IRQ_MSI`); a function with neither its INTx line through an I/O APIC pin, level and active low as the firmware's `_PRT` says ("AML" below; the pin's vector shared by the functions on it, remapped like the ISA pins; the line's other functions, a driver's that polls or is on MSI, have their INTx turned off, the command register's disable bit, so none holds the level line asserted), or none when the acpi module gave no route for it (its driver polls) | vector |
-| aarch64 | INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38) |
-| riscv64 | INTx → PLIC source for the boot hart's S-mode context, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC source |
+| aarch64 | MSI-X entry 0, else MSI, through the board's MSI controller ("MSI controllers" below): a GICv3's ITS (an LPI) or a GICv2m frame (an SPI, edge-triggered); without one, or with its interrupts all taken, INTx → GIC SPI, level, priority 0x80, delivered to the BSP (GICv2: `ITARGETSR` CPU 0; GICv3: `IROUTER` to its affinity); the SPI comes from the device tree's PCIe `interrupt-map` (QEMU `virt`: SPI 3 + (slot + pin − 1) mod 4) | INTID (35..38 for INTx; the GICv2m frame's SPIs, QEMU's 80..143; LPIs from 8192) |
+| riscv64 | MSI-X entry 0, else MSI, through the AIA's IMSIC (an identity of the boot hart's interrupt file, "MSI controllers" below); else, and on a board with a PLIC, INTx → the PLIC source for the boot hart's S-mode context, or the AIA's APLIC source, from the same `interrupt-map` (`virt`: 32 + (slot + pin − 1) mod 4), `sie.SEIE` | PLIC or APLIC source (an IMSIC identity of the same number); an MSI's identity above the APLIC's sources |
 
 A board device's own interrupt goes through `irq::enable` (modules:
 `KernelApi::irq_enable`, ABI 33), which registers the handler before the
@@ -227,8 +232,8 @@ the matching tree); CI boots both versions (`aarch64`, `aarch64-gicv3`).
 The GICv3 boots also have no ACPI tables (`acpi=off`): the firmware
 hands the device tree alone (`source dt`), so CI boots an aarch64 board
 described by the tree only, and the board has the PL061 (above).
-The ITS (message-signalled interrupts) is not driven: PCI devices use
-INTx on aarch64.
+Both have an MSI controller for the PCI devices: the GICv3 its ITS, the
+GICv2 a GICv2m frame ("MSI controllers" below).
 
 The EDK2 firmware boots (AAVMF, RISC-V EDK2) hand Limine no tree, so the
 host tool dumps QEMU's (`-machine ...,dumpdtb`, same machine options,
@@ -259,14 +264,15 @@ interrupt has no handler left what the arch took for it is free for the
 next device. On x86_64 that is the device vector (64 of them, a bitmap,
 the lowest free one given out), the IOMMU's interrupt remapping entry
 (VT-d's or AMD-Vi's, 256 a table, the lowest free one reused) and, for an
-INTx line, its I/O APIC pin; aarch64's and riscv64's GIC SPIs and PLIC
-sources are not allocated, only their handlers, and a line with no
-handler left is masked (another slot's device may still be on a shared
-INTx line). A board device's interrupt is given back with
+INTx line, its I/O APIC pin; on aarch64 and riscv64 an MSI's controller
+interrupt (an ITS LPI, a GICv2m SPI, an IMSIC identity), while the
+INTx lines (GIC SPIs, PLIC and APLIC sources) are not allocated, only
+their handlers, and a line with no handler left is masked (another
+slot's device may still be on a shared INTx line). A board device's interrupt is given back with
 `KernelApi::irq_disable` (ABI 56, `irq::disable`): the handler leaves the
 table the same way and the line is masked once no handler is left on it,
 through the controller (`IrqChip::mask`: a GIC SPI's `ICENABLER`, the
-Raspberry Pi's disable registers, the PLIC's enable bit, an ISA pin of
+Raspberry Pi's disable registers, the PLIC's or the APLIC's enable bit, an ISA pin of
 the I/O APIC, which keeps its vector for its next enable) or the domain's
 `mask`. Either call lowers the registration count of the module that
 enabled the interrupt. `/dev/pci` gives a function's interrupt back when
@@ -363,8 +369,10 @@ function its `ctl` refused, the id, liveness and
 factorial registers, an interrupt it raises, a DMA copy through a buffer
 and back with the interrupt at its end, and, where `ctl` names an IOMMU
 domain, a copy to the page after the buffer that the IOMMU refuses
-(`/proc/iommu` counts it, the buffer stays untouched). It takes MSI on x86 (`edu` has no
-MSI-X) and a shared INTx line on aarch64 and riscv64.
+(`/proc/iommu` counts it, the buffer stays untouched). It takes MSI (`edu` has no
+MSI-X) on every board with an MSI controller (`pcidev_msi`: x86_64's
+local APIC, the aarch64 GICs', the riscv64 AIA's IMSIC), and a shared
+INTx line on the riscv64 PLIC board.
 
 ## The IOMMU
 
@@ -409,11 +417,19 @@ entry, the address its handle); QEMU's AMD unit logs none. QEMU's units
 let plain-format messages through (hardware refuses them), so
 `pcidev_smoke` checks the entry instead: the device's message rewritten
 to the next entry is not delivered (and counted, on VT-d), its own arrives
-again afterwards. On aarch64 and riscv64 the devices' interrupts are INTx
-lines, which carry no address: nothing to remap (the SMMUv3's and the
-RISC-V IOMMU's MSI translation stay unused), and a DMA to the interrupt
-controller's registers (where a forged message would land) is refused
-like any other, which the smoke checks too.
+again afterwards. On aarch64 and riscv64 a message is a write to the MSI
+controller's doorbell (the ITS's `GITS_TRANSLATER`, the GICv2m frame's
+`MSI_SETSPI_NS`, the boot hart's IMSIC page), a DMA like any other: a
+function in a domain of its own reaches it because the doorbell's page is
+mapped into the domain when its interrupt is routed
+(`iommu::map_msi_doorbell`), at its own address. Nothing is remapped
+(the SMMUv3's and the RISC-V IOMMU's MSI translation stay unused): the
+ITS tells the devices apart by their requester id, so a confined
+function raises its own events and no other's, but a GICv2m frame or an
+IMSIC takes any SPI or identity it is sent, so a confined function could
+raise another device's interrupt there (issue #590). A DMA to the
+interrupt controller's other registers is refused like any other, which
+the smoke checks too.
 
 | Arch | Unit | Where it is described |
 |---|---|---|
@@ -449,6 +465,31 @@ loader runs. On the `[ OK ]` line at
 boot: `iommu: vt-d, 1 unit(s), 3-level tables, 1 GiB superpages, memory
 to 0x..., interrupts remapped`; a board without a DMAR table prints
 nothing and `/proc/iommu` says `none`.
+
+## MSI controllers
+
+On aarch64 and riscv64 a PCI function's MSI-X or MSI is programmed the
+same way as on x86_64 (`kernel/src/msi.rs`: the table entry or the
+capability, a 64-bit address where the function takes one) with the
+message the board's MSI controller gives (`irqchip::MsiChip`, started
+after the root controller, `irqchip::start_msi`); a function without
+either, or a board without a controller, keeps its INTx. A function's
+interrupt given back (`KernelApi::pci_irq_disable`) frees the
+controller's interrupt.
+
+| Controller | Arch | What a message is | Described by |
+|---|---|---|---|
+| GICv3 ITS (`arch/aarch64/gic_msi.rs`) | aarch64 | the event id written to `GITS_TRANSLATER`, the device id the requester id through the host's `msi-map`: an LPI (256 from 8192, priority 0xa0) of collection 0, the BSP's redistributor. The kernel gives the ITS flat device (12 bits of device id) and collection tables and a page of commands (`MAPD` a device's translation table of 8 events, `MAPC`, `MAPTI`, `INV`, `SYNC`, `DISCARD`), the redistributor its LPI configuration and pending tables (14 bits of interrupt id), each written back for an ITS that does not snoop | the MADT's GIC ITS entry, the tree's `arm,gic-v3-its` node the PCIe host's `msi-map` names: `/proc/platform`'s `msi its ...` line |
+| GICv2m frame (`gic_msi.rs`) | aarch64 | an SPI's INTID written to the frame's `MSI_SETSPI_NS`: the SPI, edge-triggered, to the BSP (QEMU's frame: 64 from 80) | the MADT's GIC MSI frame entry, the tree's `arm,gic-v2m-frame` node (`arm,msi-base-spi`, `arm,msi-num-spis`, else the frame's `MSI_TYPER`): `msi v2m ...` |
+| RISC-V AIA (`arch/riscv64/aia.rs`) | riscv64 | an identity written to the boot hart's supervisor-level IMSIC page. The AIA is the board's root controller: the APLIC (its supervisor domain, MSI delivery mode) turns wired source `n` into identity `n`, so the tree's numbers stay the `irq::dispatch` numbers, a level-triggered source sent again at its end while still asserted; the identities above the sources are the MSIs. The boot hart's interrupt file has every identity enabled (its CSRs are its own: `siselect`/`sireg`, the claim through `stopei`), the other harts' are off; the IPIs stay the SBI's | the tree's supervisor-level `riscv,aplic` and `riscv,imsics` nodes (the machine level's are the firmware's), the hart's place in the IMSICs' `interrupts-extended`: `intc aia ...`, `msi imsic ...` |
+
+QEMU `virt` has the ITS with `gic-version=3` and the GICv2m frame with a
+GICv2 (both aarch64 machines of CI, the boot lines `[ OK ] msi: its, 256
+LPIs from 8192` and `[ OK ] msi: gicv2m, SPIs 80-143`), and the AIA with
+`aia=aplic-imsic`, which the launcher's riscv64 machine is
+(`MYOS_RISCV_INTC`: `aia`, the default, or `plic` for the PLIC alone,
+INTx only; CI boots both, `riscv64` and `riscv64-plic`; the boot line
+`[ OK ] msi: imsic, identities 97-255`). The Raspberry Pi 3 has no PCI.
 
 ## AML
 

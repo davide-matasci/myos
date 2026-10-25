@@ -178,8 +178,8 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   tag from the changed paths (a port's directory its tests and its
   dependents', a module's its tag, the kernel or the toolchain
   everything, documentation nothing) and runs them on each arch's
-  primary machine (uefi, aarch64-gicv3, riscv64; the variants bios,
-  bios-amd with AMD's IOMMU and aarch64 with GICv2 boot the smoke set for
+  primary machine (uefi, aarch64-gicv3, riscv64 with the AIA; the variants bios,
+  bios-amd with AMD's IOMMU, aarch64 with GICv2 and riscv64-plic boot the smoke set for
   a kernel change, everything on every machine for a change to what sets
   them apart), the long groups (os-test, the Alpine apk installs, the
   packages with the install tests) each in a boot of its own, on x86

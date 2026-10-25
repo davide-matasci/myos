@@ -537,6 +537,12 @@ pub fn map(domain: u32, phys: u64, len: usize) -> bool {
     true
 }
 
+/// The domain `bus:slot.func` is confined to ([`attach`]), if any.
+pub fn domain_of(bus: u8, slot: u8, func: u8) -> Option<u32> {
+    let guard = STATE.lock();
+    guard.as_ref()?.domains.iter().find(|d| d.dev == (bus, slot, func)).map(|d| u32::from(d.vmid))
+}
+
 pub fn detach(bus: u8, slot: u8, func: u8) {
     let mut guard = STATE.lock();
     let Some(st) = guard.as_mut() else {

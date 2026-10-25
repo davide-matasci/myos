@@ -524,6 +524,8 @@ platform() {
 	if grep -q '^intc gic' /proc/platform; then
 		grep -q '^psci [hs][vm]c ([a-z]*)$' /proc/platform || return 1
 	fi
+	# The MSI controller (aarch64, riscv64), where the board has one.
+	! grep '^msi ' /proc/platform | grep -Evq '^msi (its|v2m|imsic) 0x[0-9a-f]* \((acpi|dt)\)$' || return 1
 	! grep '^dma ' /proc/platform | grep -Evq '^dma (pci [0-9a-f:.]*|mmio 0x[0-9a-f]*)( 0x[0-9a-f]* 0x[0-9a-f]*( bus 0x[0-9a-f]*)?)* (non)?coherent$' || return 1
 	if grep -q 'dma=noncoherent' /proc/cmdline; then
 		! grep -q '^dma .* coherent$' /proc/platform || return 1

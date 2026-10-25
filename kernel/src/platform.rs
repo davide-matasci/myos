@@ -181,6 +181,39 @@ pub const DIFFERS_INTC: u8 = 2;
 pub const DIFFERS_UART: u8 = 4;
 pub const DIFFERS_PCI: u8 = 8;
 pub const DIFFERS_IOMMU: u8 = 16;
+pub const DIFFERS_MSI: u8 = 32;
+
+/// An MSI controller (`irqchip::MsiChip`): the GICv3's ITS, a GICv2m frame
+/// or the RISC-V IMSICs (the supervisor-level files, a page per hart).
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+pub enum MsiKind {
+    Its,
+    V2m,
+    Imsic,
+}
+
+#[derive(Clone, Copy)]
+pub struct Msi {
+    pub kind: MsiKind,
+    pub base: u64,
+    /// 0 where the source gives none (the MADT's ITS).
+    pub size: u64,
+    /// A GICv2m frame's SPIs (first INTID, count) where the source says,
+    /// else the frame's `MSI_TYPER`.
+    pub spis: Option<(u32, u32)>,
+}
+
+/// The same controller: the same kind at the same base, and the same size
+/// and SPIs where both sources give them.
+impl PartialEq for Msi {
+    fn eq(&self, other: &Msi) -> bool {
+        self.kind == other.kind
+            && self.base == other.base
+            && (self.size == 0 || other.size == 0 || self.size == other.size)
+            && (self.spis.is_none() || other.spis.is_none() || self.spis == other.spis)
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Platform {
@@ -203,6 +236,8 @@ pub struct Platform {
     /// aarch64: PSCI (power-off, reboot: `crate::power`).
     pub psci: Option<Component<PsciConduit>>,
     pub iommu: Option<Component<Iommu>>,
+    /// aarch64, riscv64: the MSI controller (`crate::msi`).
+    pub msi: Option<Component<Msi>>,
     /// `DIFFERS_*` bits: the second source disagreed with the first there.
     pub differs: u8,
 }
@@ -222,6 +257,7 @@ impl Platform {
         pci_windows: None,
         psci: None,
         iommu: None,
+        msi: None,
         differs: 0,
     };
 }
@@ -305,6 +341,14 @@ fn fill_acpi(p: &mut Platform) {
         };
         if let Some(intc) = intc {
             offer(&mut p.intc, intc, from, &mut p.differs, DIFFERS_INTC);
+        }
+        let msi = match (m.its, m.msi_frame) {
+            (Some(base), _) => Some(Msi { kind: MsiKind::Its, base, size: 0, spis: None }),
+            (None, Some((base, spis))) => Some(Msi { kind: MsiKind::V2m, base, size: 0, spis }),
+            _ => None,
+        };
+        if let Some(msi) = msi {
+            offer(&mut p.msi, msi, from, &mut p.differs, DIFFERS_MSI);
         }
     }
     if let Some(s) = acpi::spcr() {
@@ -426,6 +470,11 @@ pub fn offer_iommu(p: &mut Platform, iommu: Iommu, from: Source) {
     offer(&mut p.iommu, iommu, from, &mut p.differs, DIFFERS_IOMMU);
 }
 
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+pub fn offer_msi(p: &mut Platform, msi: Msi, from: Source) {
+    offer(&mut p.msi, msi, from, &mut p.differs, DIFFERS_MSI);
+}
+
 pub fn offer_psci(p: &mut Platform, conduit: PsciConduit, from: Source) {
     if p.psci.is_none() {
         p.psci = Some(Component { value: conduit, from });
@@ -453,6 +502,7 @@ pub fn differs_text(p: &Platform) -> alloc::string::String {
         (DIFFERS_UART, "uart"),
         (DIFFERS_PCI, "pci"),
         (DIFFERS_IOMMU, "iommu"),
+        (DIFFERS_MSI, "msi"),
     ] {
         if p.differs & bit != 0 {
             if !s.is_empty() {
@@ -561,6 +611,14 @@ pub fn text() -> alloc::vec::Vec<u8> {
             }
         }
         s += &format!(" rid 0x{:x}+0x{:x} sid 0x{:x} {}\n", i.rid_base, i.rid_count, i.sid_base, tag(c.from, DIFFERS_IOMMU));
+    }
+    if let Some(c) = p.msi {
+        let kind = match c.value.kind {
+            MsiKind::Its => "its",
+            MsiKind::V2m => "v2m",
+            MsiKind::Imsic => "imsic",
+        };
+        s += &format!("msi {kind} 0x{:x} {}\n", c.value.base, tag(c.from, DIFFERS_MSI));
     }
     s += &crate::dma::text();
     s.into_bytes()

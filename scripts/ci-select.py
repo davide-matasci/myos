@@ -11,8 +11,9 @@ everything, documentation nothing. `smoke` (the quick basics) is always
 in. A push to master, the daily run, a dispatch with full_boot and a pull
 request labelled `ci:full` run everything.
 
-Each arch has a primary machine (uefi, aarch64 with GICv3, riscv64) and
-variants (bios, bios with AMD's IOMMU, aarch64 with GICv2). A run of
+Each arch has a primary machine (uefi, aarch64 with GICv3, riscv64 with
+the AIA) and variants (bios, bios with AMD's IOMMU, aarch64 with GICv2,
+riscv64 with the PLIC). A run of
 everything boots everything on every machine, as does a change to what
 differs between an arch's machines (MACHINE_SPECIFIC: the IOMMUs, the
 boot files, the launcher, the workflows). A pull request's change
@@ -53,12 +54,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The boot machines: id, the launcher's arch word, the arch, the variant
 # (aarch64: the GIC version, `MYOS_AARCH64_GIC`; x86_64: the IOMMU,
-# `MYOS_X86_IOMMU`), and whether it is the arch's primary machine, the one
+# `MYOS_X86_IOMMU`; riscv64: the interrupt controllers, `MYOS_RISCV_INTC`),
+# and whether it is the arch's primary machine, the one
 # a pull request's selection boots on (`plan`). The variants differ from
 # it in the firmware, the IOMMU or the interrupt controller: what a
 # MACHINE_SPECIFIC path or a run of everything exercises. The AMD IOMMU
-# machine boots the light tests only: the long groups exercise nothing
-# the unit changes.
+# machine and the riscv64 PLIC one boot the light tests only: the long
+# groups exercise nothing the unit or the controller changes.
 MACHINES = [
     ("bios", "", "x86_64", "", False),
     ("uefi", "uefi", "x86_64", "", True),
@@ -66,6 +68,7 @@ MACHINES = [
     ("aarch64", "aarch64", "aarch64", "", False),
     ("aarch64-gicv3", "aarch64", "aarch64", "3", True),
     ("riscv64", "riscv64", "riscv64", "", True),
+    ("riscv64-plic", "riscv64", "riscv64", "plic", False),
 ]
 # Paths whose change is every machine's, not the primaries' alone: what
 # differs between an arch's machines (the IOMMUs, the boot protocol and
@@ -347,6 +350,7 @@ def shards(mid, names, tests, tags_arg):
             "id": f"{mid}-{shard}", "machine": mid, "arch": machine[2], "args": args,
             "gic": machine[3] if machine[2] == "aarch64" else "",
             "iommu": machine[3] if machine[2] == "x86_64" else "",
+            "intc": machine[3] if machine[2] == "riscv64" else "",
             # The x86 boots run on the runner's CPU through KVM (`/dev/kvm`,
             # which GitHub's Linux runners expose and the boot job's container
             # takes): the light list in 400 s instead of 670 to 950 under TCG.
@@ -354,7 +358,7 @@ def shards(mid, names, tests, tags_arg):
             "alpine": "true" if disk else "false", "required": True,
         })
 
-    groups = [] if machine[3] == "amd" else [g for g in HEAVY_GROUPS if any(group_of(tests[n]) == g for n in names)]
+    groups = [] if machine[3] in ("amd", "plic") else [g for g in HEAVY_GROUPS if any(group_of(tests[n]) == g for n in names)]
     light = {n for n in names if group_of(tests[n]) is None}
     skip = ",".join(t for gtags in HEAVY_GROUPS.values() for t in gtags)
     if light:
@@ -423,7 +427,7 @@ def main(argv):
             boots += shards(mid, names, tests, mode)
     if any(b["arch"] == "aarch64" for b in boots):
         boots.append({
-            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "", "iommu": "", "accel": "",
+            "id": "rpi3-smoke", "machine": "rpi3", "arch": "aarch64", "args": RPI3_ARGS, "gic": "", "iommu": "", "intc": "", "accel": "",
             "alpine": "false", "required": True,
         })
 

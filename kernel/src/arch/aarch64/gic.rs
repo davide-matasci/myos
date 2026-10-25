@@ -18,6 +18,9 @@ static GICD_BASE: AtomicUsize = AtomicUsize::new(0);
 static GICC_BASE: AtomicUsize = AtomicUsize::new(0);
 static GICR_BASE: AtomicUsize = AtomicUsize::new(0);
 static GICR_SIZE: AtomicUsize = AtomicUsize::new(0);
+/// The redistributor region's physical base (the ITS names a CPU's
+/// redistributor by its address: `gic_msi`).
+static GICR_PHYS: AtomicU64 = AtomicU64::new(0);
 static GICD_V3_DONE: AtomicBool = AtomicBool::new(false);
 /// The BSP's affinity, where SPIs are routed (GICv3 `GICD_IROUTER`).
 static BSP_AFFINITY: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +66,8 @@ const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
 
 /// INTIDs from 1020 are special (1023: nothing pending).
 const SPECIAL: u32 = 1020;
+/// The first LPI (GICv3: the ITS's message-signalled interrupts, `gic_msi`).
+pub(super) const LPI_FIRST: u32 = 8192;
 
 pub static GICV2: Driver = Driver {
     name: "gicv2",
@@ -109,6 +114,7 @@ fn start_v3(intc: &Intc) -> Result<&'static dyn IrqChip, &'static str> {
     GICD_BASE.store(map(d.base, 0x1_0000, "platform: cannot map the GIC distributor")?, Ordering::SeqCst);
     GICR_BASE.store(map(r.base, r.size, "platform: cannot map the GIC redistributors")?, Ordering::SeqCst);
     GICR_SIZE.store(r.size as usize, Ordering::SeqCst);
+    GICR_PHYS.store(r.base, Ordering::SeqCst);
     Ok(&GicV3)
 }
 
@@ -287,6 +293,20 @@ fn this_redistributor() -> Option<usize> {
     None
 }
 
+/// The interrupt ID bits the distributor implements (`GICD_TYPER.IDbits`),
+/// which bound the LPIs (GICv3).
+pub(super) fn id_bits() -> u32 {
+    ((read32(gicd() + GICD_TYPER) >> 19) & 0x1F) + 1
+}
+
+/// This CPU's redistributor (GICv3): the RD frame mapped, and its
+/// physical address.
+pub(super) fn redistributor() -> Option<(usize, u64)> {
+    let va = this_redistributor()?;
+    let phys = GICR_PHYS.load(Ordering::Relaxed) + (va - GICR_BASE.load(Ordering::Relaxed)) as u64;
+    Some((va, phys))
+}
+
 /// `ICC_SGI1R_EL1`.
 fn sgi1r(value: u64) {
     unsafe {
@@ -360,7 +380,7 @@ impl IrqChip for GicV3 {
             asm!("mrs {i}, S3_0_C12_C12_0", i = out(reg) iar, options(nomem, nostack)); // ICC_IAR1_EL1
         }
         let id = (iar & 0xFF_FFFF) as u32;
-        (id < SPECIAL).then_some(id)
+        (id < SPECIAL || id >= LPI_FIRST).then_some(id)
     }
 
     fn complete(&self, id: u32) {

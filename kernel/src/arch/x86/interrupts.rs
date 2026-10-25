@@ -448,27 +448,6 @@ device_stubs!(
     48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63
 );
 
-/// The offset of the PCI function's capability `id` in configuration
-/// space, if it has one.
-fn pci_cap(bus: u8, slot: u8, func: u8, id: u32) -> Option<u8> {
-    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
-    let status = (cfg(4) >> 16) as u16;
-    if status & 0x10 == 0 {
-        return None;
-    }
-    let mut cap = (cfg(0x34) & 0xFC) as u8;
-    let mut hops = 0;
-    while cap != 0 && hops < 48 {
-        hops += 1;
-        let w0 = cfg(cap);
-        if w0 & 0xFF == id {
-            return Some(cap);
-        }
-        cap = ((w0 >> 8) & 0xFC) as u8;
-    }
-    None
-}
-
 /// The local APICs run in x2APIC mode.
 pub fn x2apic_mode() -> bool {
     X2APIC.load(Ordering::Relaxed)
@@ -500,85 +479,50 @@ pub fn alloc_msi() -> Option<(u32, u32)> {
     Some((u32::from(alloc_vector()?), address))
 }
 
-/// Program MSI-X table entry 0 of the PCI function to raise a fresh LAPIC
-/// vector on the BSP, and enable MSI-X. Returns the vector (`irq::dispatch`
-/// number). The caller still has to point the device's queue at entry 0
-/// (virtio: `queue_msix_vector`).
-pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
-    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
-    let cap = pci_cap(bus, slot, func, 0x11)?;
-    let table = cfg(cap.wrapping_add(4));
-    let bir = (table & 0x7) as u8;
-    let offset = (table & !0x7) as u64;
-    let (va, size) = crate::pci::bar_map(bus, slot, func, bir)?;
-    if offset.saturating_add(16) > size {
+/// A fresh LAPIC vector on the BSP for the PCI function, and the message
+/// that raises it, programmed by `enable` (MSI-X or MSI): the vector
+/// (`irq::dispatch` number). Nothing is kept when `enable` fails.
+fn pci_message_setup(bus: u8, slot: u8, func: u8, enable: fn(u8, u8, u8, crate::msi::Message) -> bool) -> Option<u32> {
+    let vector = alloc_vector()?;
+    let Some((address, data)) = msi_message(bus, slot, func, vector) else {
+        free_vector(vector);
+        return None;
+    };
+    if !enable(bus, slot, func, crate::msi::Message { address: u64::from(address), data }) {
+        crate::iommu::unremap_msi(bus, slot, func, vector);
+        free_vector(vector);
         return None;
     }
-    let vector = alloc_vector()?;
-    let (address, data) = msi_message(bus, slot, func, vector)?;
-    let entry = va + offset as usize;
-    unsafe {
-        // Mask the entry while programming it (vector control bit 0).
-        core::ptr::write_volatile((entry + 12) as *mut u32, 1);
-        core::ptr::write_volatile(entry as *mut u32, address);
-        core::ptr::write_volatile((entry + 4) as *mut u32, 0);
-        core::ptr::write_volatile((entry + 8) as *mut u32, data);
-        core::ptr::write_volatile((entry + 12) as *mut u32, 0);
+    Some(u32::from(vector))
+}
+
+/// MSI-X table entry 0 of the PCI function raising a fresh LAPIC vector
+/// on the BSP, MSI-X on (`msi::msix_enable`). Returns the vector. The
+/// caller still has to point the device's queue at entry 0 (virtio:
+/// `queue_msix_vector`).
+pub fn pci_msix_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
+    if !crate::msi::has_msix(bus, slot, func) {
+        return None;
     }
-    let vector = u32::from(vector);
-    // Message control (cap+2): bit 15 MSI-X enable, bit 14 function mask.
-    let w0 = cfg(cap);
-    let ctrl = ((w0 >> 16) as u16 | 0x8000) & !0x4000;
-    crate::pci::cfg_write32(bus, slot, func, cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
-    Some(vector)
+    pci_message_setup(bus, slot, func, crate::msi::msix_enable)
 }
 
 /// A function with MSI and no MSI-X (QEMU's `edu`): its one message raises
 /// a fresh LAPIC vector on the BSP. Returns the vector.
 pub fn pci_msi_setup(bus: u8, slot: u8, func: u8) -> Option<u32> {
-    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
-    let write = |off: u8, v: u32| crate::pci::cfg_write32(bus, slot, func, off, v);
-    let cap = pci_cap(bus, slot, func, 0x05)?;
-    let vector = alloc_vector()?;
-    let (address, message) = msi_message(bus, slot, func, vector)?;
-    // Message control (cap+2): bit 0 enable, bits 4..6 the vectors enabled
-    // (0: one), bit 7 a 64-bit address (the data then at cap+12, not +8).
-    let w0 = cfg(cap);
-    let ctrl = (w0 >> 16) as u16;
-    write(cap.wrapping_add(4), address);
-    let data = if ctrl & 0x80 != 0 {
-        write(cap.wrapping_add(8), 0);
-        cap.wrapping_add(12)
-    } else {
-        cap.wrapping_add(8)
-    };
-    write(data, (cfg(data) & 0xFFFF_0000) | message);
-    let ctrl = (ctrl & !0x70) | 1;
-    write(cap, (w0 & 0xFFFF) | (u32::from(ctrl) << 16));
-    Some(u32::from(vector))
+    if !crate::msi::has_msi(bus, slot, func) {
+        return None;
+    }
+    pci_message_setup(bus, slot, func, crate::msi::msi_enable)
 }
 
 /// The function's MSI-X or MSI turned off, if one is on (what
-/// [`pci_msix_setup`] or [`pci_msi_setup`] turned on), and `vector` given
-/// back with the IOMMU's remapping entry for it: whether one was on.
+/// [`pci_msix_setup`] or [`pci_msi_setup`] turned on, `msi::disable`), and
+/// `vector` given back with the IOMMU's remapping entry for it: whether
+/// one was on.
 pub fn pci_msi_release(bus: u8, slot: u8, func: u8, vector: u8) -> bool {
-    let cfg = |off: u8| crate::pci::cfg_read32(bus, slot, func, off);
-    let write = |off: u8, v: u32| crate::pci::cfg_write32(bus, slot, func, off, v);
-    let on = if let Some(cap) = pci_cap(bus, slot, func, 0x11).filter(|cap| cfg(*cap) & 1 << 31 != 0) {
-        // MSI-X off (message control bit 15), its function mask on (14).
-        let w0 = cfg(cap);
-        write(cap, (w0 & !(1 << 31)) | 1 << 30);
-        true
-    } else if let Some(cap) = pci_cap(bus, slot, func, 0x05).filter(|cap| cfg(*cap) & 1 << 16 != 0) {
-        write(cap, cfg(cap) & !(1 << 16));
-        true
-    } else {
-        false
-    };
+    let on = crate::msi::disable(bus, slot, func);
     if on {
-        // Without its messages the function would fall back to its INTx:
-        // off too (the command register's disable bit).
-        write(4, (cfg(4) & 0xFFFF) | 1 << 10);
         crate::iommu::unremap_msi(bus, slot, func, vector);
         free_vector(vector);
     }
