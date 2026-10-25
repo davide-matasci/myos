@@ -680,7 +680,9 @@ fn handle_clone(
     release_conv(convs, sockets, lingering, i);
     match proto {
         PROTO_ICMP => {
-            let rx = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
+            // Room for two: to a local address the socket also takes its
+            // own echo request (its ident matches), then the reply.
+            let rx = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; 2], vec![0; 512]);
             let tx = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
             let handle = sockets.add(icmp::Socket::new(rx, tx));
             convs[i] = Conv {
