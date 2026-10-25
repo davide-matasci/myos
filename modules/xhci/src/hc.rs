@@ -173,11 +173,13 @@ pub struct Pending {
     /// An isochronous endpoint: a TD per packet, each interrupting; the
     /// handler counts the ones done (from the slot of the next one,
     /// `iso_next`): since the core last took the count (`iso_done`,
-    /// `isoch_reap`), and in all (`iso_total`, wrapping).
+    /// `isoch_reap`), and in all (`iso_total`, wrapping); `iso_queued`
+    /// the ones queued in all (less `iso_total`: those on the ring).
     pub iso: AtomicBool,
     pub iso_next: AtomicU32,
     pub iso_done: AtomicU32,
     pub iso_total: AtomicU32,
+    pub iso_queued: AtomicU32,
 }
 
 impl Pending {
@@ -198,6 +200,7 @@ impl Pending {
             iso_next: AtomicU32::new(0),
             iso_done: AtomicU32::new(0),
             iso_total: AtomicU32::new(0),
+            iso_queued: AtomicU32::new(0),
         }
     }
 
@@ -279,14 +282,12 @@ pub struct Endpoint {
 pub const ISO_PAGES: usize = 4;
 
 /// An isochronous endpoint's packet buffers: [`ISO_PAGES`] pages of
-/// `slot`-byte slots, used in turn; `queued` packets so far (wrapping:
-/// less the record's `iso_total`, the ones on the ring).
+/// `slot`-byte slots, used in turn.
 pub struct IsoBuffers {
     pub pages: [(u64, *mut u8); ISO_PAGES],
     pub slot: usize,
     pub slots: usize,
     pub next: usize,
-    pub queued: u32,
 }
 
 impl IsoBuffers {
@@ -495,7 +496,7 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
                 return;
             };
             if p.iso.load(Ordering::Acquire) {
-                isoch_event(c, p, e.trb_pointer());
+                isoch_event(c, p, e.trb_pointer(), code);
                 return;
             }
             if !p.active.load(Ordering::Acquire) || p.done.load(Ordering::Acquire) {
@@ -565,7 +566,13 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
 /// expected up to the one it names are done (sent, or missed: a Missed
 /// Service event names the last TD it skipped). An event naming no TD of
 /// the ring (a ring underrun: it ran dry) completes none.
-fn isoch_event(c: &Controller, p: &Pending, trb: u64) {
+fn isoch_event(c: &Controller, p: &Pending, trb: u64, code: u8) {
+    // Ring underrun or overrun, a missed interval (its TRB pointer may be
+    // anything: the next TD's event counts the skipped ones), a stopped
+    // endpoint (its TD did not complete): nothing to count here.
+    if matches!(code, 14 | 15 | 23 | 26 | 27 | 28) {
+        return;
+    }
     let Some(idx) = Ring::index_in(p.ring_phys.load(Ordering::Relaxed), trb) else {
         return;
     };
@@ -577,6 +584,11 @@ fn isoch_event(c: &Controller, p: &Pending, trb: u64) {
     while at != idx && n < TRBS {
         at = next_slot(at);
         n += 1;
+    }
+    // A TD counted already (behind `iso_next`) would count the ring over.
+    let on_ring = p.iso_queued.load(Ordering::Acquire).wrapping_sub(p.iso_total.load(Ordering::Acquire));
+    if n as u32 > on_ring {
+        return;
     }
     p.iso_next.store(next_slot(idx) as u32, Ordering::Relaxed);
     p.iso_done.fetch_add(n as u32, Ordering::Release);

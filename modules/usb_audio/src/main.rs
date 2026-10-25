@@ -109,7 +109,7 @@ fn find_setting(cfg: &[u8], interface: u8) -> Option<Setting> {
     let mut i = 0usize;
     let mut cur: Option<Setting> = None;
     let mut found: Option<Setting> = None;
-    let mut take = |s: Option<Setting>, found: &mut Option<Setting>| {
+    let take = |s: Option<Setting>, found: &mut Option<Setting>| {
         if let Some(s) = s.filter(|s| s.endpoint != 0 && s.rates != 0 && s.channels != 0) {
             found.get_or_insert(s);
         }
@@ -177,7 +177,7 @@ fn fill(c: &mut Card) {
         return;
     };
     let mut data = [0u8; BATCH * USB_ISOCH_PACKET_MAX];
-    while run.queued.wrapping_sub(run.done) + BATCH as u32 <= AHEAD {
+    while run.queued.wrapping_sub(run.done) <= AHEAD - BATCH as u32 {
         let mut lens = [0u16; BATCH];
         let mut at = 0;
         for len in lens.iter_mut() {
@@ -215,6 +215,10 @@ unsafe extern "C" fn isoch_done(ctx: *mut c_void, packets: i32) {
         return;
     }
     run.done = run.done.wrapping_add(packets as u32);
+    // Never more done than queued (the host counts what left the ring).
+    if run.queued.wrapping_sub(run.done) > AHEAD {
+        run.done = run.queued;
+    }
     fill(c);
 }
 
@@ -395,9 +399,11 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
 pub unsafe extern "C" fn module_exit() {}
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     let api = api();
-    status_fail(api, "usb_audio: panic");
+    let mut line = Name([0; 32], 0);
+    let _ = write!(line, "usb_audio: panic at {}", info.location().map_or(0, |l| l.line()));
+    status_fail(api, core::str::from_utf8(&line.0[..line.1]).unwrap_or("usb_audio: panic"));
     loop {
         api.task_yield();
     }

@@ -237,6 +237,7 @@ fn install_endpoint(s: &Slot, dev: &mut Device, ep: Endpoint) {
     p.iso_next.store(0, Ordering::Relaxed);
     p.iso_done.store(0, Ordering::Relaxed);
     p.iso_total.store(0, Ordering::Relaxed);
+    p.iso_queued.store(0, Ordering::Relaxed);
     p.iso.store(ep.kind == 1, Ordering::Release);
     dev.eps[dci] = Some(ep);
 }
@@ -679,12 +680,12 @@ pub fn isoch_queue(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data
             *p = (phys, va);
         }
         let slots = (hc::ISO_PAGES * (4096 / size)).min(USB_ISOCH_MAX);
-        ep.iso = Some(hc::IsoBuffers { pages, slot: size, slots, next: 0, queued: 0 });
+        ep.iso = Some(hc::IsoBuffers { pages, slot: size, slots, next: 0 });
     }
     let p = &s.pending[dci_of(address)];
     let max_packet = usize::from(ep.max_packet);
     let iso = ep.iso.as_mut().unwrap();
-    let inflight = iso.queued.wrapping_sub(p.iso_total.load(Ordering::Acquire)) as usize;
+    let inflight = p.iso_queued.load(Ordering::Acquire).wrapping_sub(p.iso_total.load(Ordering::Acquire)) as usize;
     if inflight + lens.len() > iso.slots {
         return USB_EBUSY;
     }
@@ -694,12 +695,12 @@ pub fn isoch_queue(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data
         let iso = ep.iso.as_mut().unwrap();
         let (phys, va) = iso.at(iso.next);
         iso.next = (iso.next + 1) % iso.slots;
-        iso.queued = iso.queued.wrapping_add(1);
         unsafe {
             core::ptr::copy_nonoverlapping(data[at..].as_ptr(), va, len);
         }
         dma::clean(c.dma, va, len.max(1));
         hc::enqueue_isoch(ep, phys, len);
+        p.iso_queued.fetch_add(1, Ordering::Release);
         at += len;
     }
     hc::ring_doorbell(c, slot, dci_of(address) as u8);
