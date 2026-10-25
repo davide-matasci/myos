@@ -285,15 +285,17 @@ fn pump(card: &mut Card) -> bool {
     running
 }
 
-/// The card's thread: pump while a stream runs, woken by the interrupt.
+/// The card's thread: pump while a stream runs, woken by the interrupt
+/// (and every few milliseconds, for a device without one); with nothing
+/// running it sleeps until `card_start` wakes it.
 unsafe extern "C" fn card_thread(ctx: *mut core::ffi::c_void) {
     let slot = ctx as usize;
     let api = api();
     loop {
         let seq = api.wait_seq();
         let running = CARDS[slot].lock().as_mut().is_some_and(pump);
-        let wait = if running { 5_000_000 } else { 200_000_000 };
-        api.block_until(key(slot), seq, api.monotonic_ns() + wait);
+        let deadline = if running { api.monotonic_ns() + 5_000_000 } else { 0 };
+        api.block_until(key(slot), seq, deadline);
     }
 }
 

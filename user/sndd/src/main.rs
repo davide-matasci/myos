@@ -528,7 +528,10 @@ fn main() -> ! {
                 fds.push(PollFd { fd: r.conv.data as i32, events: POLLIN, revents: 0 });
             }
         }
-        poll(&mut fds, 100);
+        // A running stream is looked at every 100 ms (it stops once idle
+        // long enough); with none the server sleeps until a program comes.
+        let busy = streams.iter().any(|s| s.open.is_some());
+        poll(&mut fds, if busy { 100 } else { -1 });
         if revents(&fds, 0) & POLLIN != 0 {
             while let Some(conv) = listener.accept() {
                 serve(&mut streams, conv);
