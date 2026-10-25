@@ -1,6 +1,8 @@
 //! The NICs netd drives: the virtio NIC `/dev/net0` (wired) and the virtual
 //! NICs of `/dev/tap` (the Wi-Fi link, `docs/wifi.md`), each with its own
-//! interface and DHCP lease over the one socket set.
+//! interface and DHCP lease over the one socket set. There may be none: a
+//! board without a network (the Raspberry Pi 3 under QEMU) still has the
+//! loopback interface, and a NIC that appears later is taken then.
 //!
 //! The default route is the preferred NIC's: the wired one when it has a
 //! lease, else the first other one with a lease. A connection leaves
@@ -53,9 +55,11 @@ pub struct Nics {
 }
 
 impl Nics {
-    pub fn new(net0: Net0Device, sockets: &mut SocketSet<'_>, now: Instant) -> Self {
+    pub fn new(net0: Option<Net0Device>, sockets: &mut SocketSet<'_>, now: Instant) -> Self {
         let mut nics = Nics { list: Vec::new(), scanned_at: now };
-        nics.add(String::from("net0"), Vec::from(b"/dev/net0" as &[u8]), net0, true, sockets, now);
+        if let Some(net0) = net0 {
+            nics.add(String::from("net0"), Vec::from(b"/dev/net0" as &[u8]), net0, true, sockets, now);
+        }
         nics
     }
 
@@ -136,13 +140,14 @@ impl Nics {
     }
 
     /// The context of the NIC whose address `src` is, else the preferred
-    /// one's (a TCP connect: its sequence numbers).
-    pub fn context_for(&mut self, src: Option<Ipv4Address>) -> &mut Context {
+    /// one's, else the first's (a TCP connect: its sequence numbers); none
+    /// without a NIC.
+    pub fn context_for(&mut self, src: Option<Ipv4Address>) -> Option<&mut Context> {
         let i = src
             .and_then(|a| self.list.iter().position(|n| n.iface.has_ip_addr(a)))
             .or_else(|| self.preferred())
             .unwrap_or(0);
-        self.list[i].iface.context()
+        self.list.get_mut(i).map(|n| n.iface.context())
     }
 
     /// The DHCP events of every NIC; on a change, the routes, the
@@ -251,8 +256,9 @@ impl Nics {
         s
     }
 
-    /// Once a [`RESCAN`]: take the virtual NICs that came up, let go of
-    /// those that went (their program gone, their link down).
+    /// Once a [`RESCAN`]: take the wired NIC once it is there, and the
+    /// virtual NICs that came up; let go of the virtual ones that went
+    /// (their program gone, their link down).
     pub fn rescan(&mut self, now: Instant, sockets: &mut SocketSet<'_>, lo: &mut Interface, chan: usize) {
         if now - self.scanned_at < RESCAN {
             return;
@@ -269,6 +275,11 @@ impl Nics {
             gone = true;
             false
         });
+        if !self.list.iter().any(|n| n.wired) {
+            if let Some(dev) = Net0Device::open() {
+                self.add(String::from("net0"), Vec::from(b"/dev/net0" as &[u8]), dev, true, sockets, now);
+            }
+        }
         for t in 0..TAPS {
             let mut dir = Vec::from(b"/dev/tap/" as &[u8]);
             dir.push(b'0' + t as u8);

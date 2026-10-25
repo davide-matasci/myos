@@ -456,27 +456,25 @@ fn open_chan() -> Option<usize> {
     open_flags(b"/dev/netd/data", O_RDWR)
 }
 
-fn wait_devices() -> (Net0Device, usize) {
-    let mut printed_net0 = false;
-    let mut printed_netd = false;
-    // Bound inner tries so a missing chrdev does not look like a hang; keep
-    // retrying (daemon) without panicking the kernel.
+/// netfs's channel, and the wired NIC when the board has one. Without
+/// `/dev/net0` netd starts all the same: loopback works, and a request to
+/// another address is refused at once instead of waiting on a netd that
+/// never came (issue #538); the NIC is taken if it appears (`Nics::rescan`).
+fn wait_devices() -> (Option<Net0Device>, usize) {
+    let mut printed = false;
     loop {
-        for _ in 0..4096 {
-            if let Some(dev) = Net0Device::open() {
-                if let Some(fd) = open_chan() {
-                    return (dev, fd);
-                }
-                close(dev.fd());
-                if !printed_netd {
-                    write(b"netd: no /dev/netd/data\n");
-                    printed_netd = true;
-                }
-            } else if !printed_net0 {
-                write(b"netd: no /dev/net0/data\n");
-                printed_net0 = true;
+        if let Some(fd) = open_chan() {
+            let dev = Net0Device::open();
+            if dev.is_none() {
+                write(b"netd: no /dev/net0/data, loopback only\n");
             }
+            return (dev, fd);
         }
+        if !printed {
+            write(b"netd: no /dev/netd/data\n");
+            printed = true;
+        }
+        myos_user::sleep_ns(10_000_000, false);
     }
 }
 
@@ -1098,14 +1096,17 @@ fn handle_ctl(
             let local = IpListenEndpoint { addr: nics.source_for(addr).map(IpAddress::Ipv4), port };
             let remote = IpEndpoint::new(IpAddress::Ipv4(addr), p);
             // The loopback interface carries a local connection.
-            let cx = if is_local(nics, addr) {
-                lo.context()
-            } else {
-                nics.context_for(nics.source_for(addr))
-            };
+            let src = nics.source_for(addr);
+            let cx = if is_local(nics, addr) { Some(lo.context()) } else { nics.context_for(src) };
             if let Some(h) = convs[i].handle {
                 let s = sockets.get_mut::<tcp::Socket>(h);
-                match s.connect(cx, remote, local) {
+                // No NIC to leave through: refused at once, like a connect
+                // without a route.
+                let r = match cx {
+                    Some(cx) => s.connect(cx, remote, local),
+                    None => Err(tcp::ConnectError::Unaddressable),
+                };
+                match r {
                     Ok(()) => reply(chan, REP_STATUS, conv, 0, b"connecting"),
                     Err(_) => reply(chan, REP_ERR, conv, -1, b"tcp connect"),
                 }
@@ -1946,7 +1947,9 @@ fn main() -> ! {
     let mut lingering: Vec<Lingering> = Vec::new();
     let mut local_ports = LOCAL_PORT_BASE;
     let mut ticks: u32 = 0;
-    poll_dhcp(&mut nics, &mut lo, &mut sockets, chan, &mut clock);
+    if !nics.list.is_empty() {
+        poll_dhcp(&mut nics, &mut lo, &mut sockets, chan, &mut clock);
+    }
 
     // Daemon poll: nic, /dev/netd requests, sockets. Bound work per tick.
     loop {
