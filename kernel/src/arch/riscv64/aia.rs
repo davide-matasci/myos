@@ -62,6 +62,7 @@ const SOURCECFG: usize = 0x0004;
 const SETIPNUM: usize = 0x1CDC;
 const IN_CLRIP: usize = 0x1D00;
 const SETIENUM: usize = 0x1EDC;
+const CLRIENUM: usize = 0x1FDC;
 const TARGET: usize = 0x3004;
 /// `domaincfg`: interrupts enabled (IE), MSI delivery mode (DM).
 const DOMAINCFG_IE: u32 = 1 << 8;
@@ -183,6 +184,12 @@ impl IrqChip for Aia {
         w(SOURCECFG + 4 * i, mode);
         w(TARGET + 4 * i, BSP_INDEX.load(Ordering::Relaxed) << 18 | src);
         w(SETIENUM, src);
+    }
+
+    fn mask(&self, src: u32) {
+        if (1..=SOURCES.load(Ordering::Relaxed)).contains(&src) {
+            w(CLRIENUM, src);
+        }
     }
 
     /// The BSP's highest pending identity, claimed (`stopei`, CSR 0x15C,

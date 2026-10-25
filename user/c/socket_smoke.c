@@ -28,7 +28,7 @@ int main(void) {
     int fd = -1;
     const char *req =
         "GET / HTTP/1.1\r\n"
-        "Host: example.com\r\n"
+        "Host: github.com\r\n"
         "Connection: close\r\n"
         "\r\n";
     char buf[512];
@@ -41,7 +41,7 @@ int main(void) {
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo("example.com", "80", &hints, &res) != 0 || res == NULL) {
+    if (getaddrinfo("github.com", "80", &hints, &res) != 0 || res == NULL) {
         die("getaddrinfo fail");
     }
 

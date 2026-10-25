@@ -35,7 +35,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 
 | tag | the tests that |
 |---|---|
-| `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
+| `net` | need the host's network: the package mirror and the test web server the launcher serves, GitHub, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
 | `pkg` | need the packages of this build: installed as apps (`packages`, the first test of a run that has one, installs from the mirror those the selected `pkg` tests name in their tags; every package's own test has it and its package's name), or the mirror itself (get-myos's, which name none); in CI the `pkg` boot's |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
@@ -44,7 +44,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
 | a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port: its `test.sh` (every test of the file, set by the runner) |
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests, each also tagged with its newlib test's name: `docs/mlibc.md`) |
-| `alpine`, `python`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
+| `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
 
 A quick run (`heavy` and `net` skipped) has a budget of 6 minutes (7 with
 the Linux layer; half as much again on riscv64, the slowest under TCG, as
@@ -122,6 +122,20 @@ names `get-alpine`, the X clients `tinyx`); one that names none gets
 none (get-myos's own install into roots of their own). The tests run
 their programs with `run-myos`.
 
+The tests that fetch over HTTP(S) do it from the launcher's test web
+server (`src/test_www.rs`), not from a site on the internet, whose
+answers vary from run to run (a rate limit, a 503): plain HTTP on the
+host's port 8766 and HTTPS on 8767, the guest's `10.0.2.2:8766` and
+`10.0.2.2:8767`. HTTPS presents a certificate of the test CA
+(`user/tests/tls`, made by its `make.sh` and committed, like dropbear's
+test key); the tests trust that CA alone (`/lib/myos-tests/test-ca.pem`:
+curl's `--cacert`, Python's `cafile`), never the
+image's bundle. It serves `/hello.txt`. What needs the real internet
+uses GitHub, which CI cannot run without anyway: `dns` and the Linux
+layer's lookups resolve `github.com`, and the kernel's own HTTPS client
+(`https`) fetches `https://github.com/robots.txt` against the image's
+bundle.
+
 The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
 interactive shell on a pty the way a person types at the console: history
 recall and in-line editing with the arrow keys, backspace, `^C` on a
@@ -175,7 +189,7 @@ AMD's under `MYOS_X86_IOMMU=amd`, aarch64: `virt` with an SMMUv3, riscv64: `virt
 where QEMU is 9.2 or later, `docs/pci-acpi-smp.md`), the disks, the network with the port
 forwards, the simulated Wi-Fi radio and its access points
 (`src/wifi_sim.rs`, `docs/wifi.md`), unless `net` is skipped the package
-mirror and, with the
+mirror and the test web server, and, with the
 Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
 `linux-compat/alpine-disks.sh` builds it once into
 `target/alpine-<arch>.img`, the roots of rustc, Python and an X client
@@ -281,12 +295,14 @@ light one), one that touches a package 5 times, four of them smoke boots.
 
 A machine's selection runs in parallel boots: the long tests' groups
 (`ostest` and `alpine`: the curated os-test list and the apk installs,
-whose tests build on each other; `pkg`: the packages' install from the
+whose tests build on each other; `rust`: the rust package's, which sets
+the toolchain up in the guest, a download of some 230 MB, and builds with
+it under the Linux layer, 11 minutes under TCG; `pkg`: the packages' install from the
 mirror, the packages' and get-myos's tests on it and the `install` tests
 of the boot disk, a boot of 13 minutes on riscv64 that the light boot
 no longer carries) each in a boot of their own, whole, and one light
-boot with everything else (9 minutes on riscv64), so a full run is four
-boots of at most twenty minutes per machine instead of one of thirty.
+boot with everything else (9 minutes on riscv64), so a full run is five
+boots per machine instead of one.
 Each boot
 gets a budget from what it runs (riscv64 half as much again); a
 selection without `net` tests skips the mirror, one without `alpine-disk`

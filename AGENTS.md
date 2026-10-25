@@ -31,7 +31,7 @@ match the surrounding code's naming, idiom and comment density.
 | `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, mlibc (`toolchain/mlibc`, the second C library a port opts into with `PORT_LIBC=mlibc`), the C both libcs share (`toolchain/libmyos`), the Rust `std` port (`toolchain/std`); all ports too (`port.env`: newlib and the sysroot of kind `toolchain`, with CI jobs of their own; mlibc a plain one, built and cached as any port) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
-| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, openssl, acme, python, ncurses, pcre2, sqlite, libedit; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
+| `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, openssl, acme, python, rust, ncurses, pcre2, sqlite, libedit; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
 | `linux-compat/` | optional Linux syscall layer userspace (launcher, musl build, tests, `get-alpine`) |
 | `scripts/` | CI scripts, registry, `ports.sh` (reads the descriptors), thin wrappers for port builds |
 | `targets/` | custom Rust target specs for userspace |
@@ -104,9 +104,10 @@ cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patch
   the curated lists
   (`packages/os-test/overlay/misc/*.tests`). A test's output is shown only
   when it fails: keep passing tests quiet.
-- The full mode needs the network (`https://example.com/`, the Alpine
-  mirror for `get-alpine`); the packages come from the build itself, served
-  by the launcher to the guest (`docs/packages.md`). In a sandbox with a
+- The full mode needs the network (GitHub, the Alpine mirror for
+  `get-alpine`); the packages come from the build itself, served by the
+  launcher to the guest (`docs/packages.md`), and the HTTP(S) tests fetch
+  from the launcher's test web server (`src/test_www.rs`, `docs/testing.md`). In a sandbox with a
   TLS-intercepting proxy, append its CA to `target/cacert.pem` for local
   runs only and restore it afterwards; never commit it.
 

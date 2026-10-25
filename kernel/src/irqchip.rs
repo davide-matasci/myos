@@ -68,6 +68,10 @@ pub trait IrqChip: Sync {
     fn unmask_edge(&self, irq: u32) {
         self.unmask(irq);
     }
+    /// Deliver device interrupt `irq` no more (its last handler went:
+    /// `irq::disable`, `irq::pci_irq_disable`); [`IrqChip::unmask`]
+    /// delivers it again.
+    fn mask(&self, irq: u32);
     /// The pending interrupt this CPU takes, acknowledged: `None` when
     /// nothing is pending. The controllers the CPU asks (the GIC, the
     /// PLIC, the Pi's); x86_64's vectors say which one it is.
@@ -120,6 +124,7 @@ impl IrqChip for NoChip {
         None
     }
     fn unmask(&self, _irq: u32) {}
+    fn mask(&self, _irq: u32) {}
     fn claim(&self) -> Option<u32> {
         None
     }
@@ -217,6 +222,15 @@ pub fn unmask(irq: u32) {
     }
 }
 
+/// Stop device interrupt `irq` (its last handler went): through its
+/// domain, or the root ([`IrqChip::mask`]).
+pub fn mask(irq: u32) {
+    match domain_of(irq) {
+        Some(d) => unsafe { (d.mask)(d.ctx as *mut core::ffi::c_void, irq - d.first) },
+        None => root().mask(irq),
+    }
+}
+
 /// The first interrupt number of the domains: above every root
 /// controller's (an x86 vector, a GIC INTID, a PLIC source).
 pub const DOMAIN_FIRST: u32 = 4096;
@@ -232,10 +246,14 @@ struct Domain {
     phandle: u32,
     first: u32,
     count: u32,
-    /// Deliver line `line` (`0..count`) of the controller.
-    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
+    /// Deliver line `line` (`0..count`) of the controller, or no more.
+    unmask: LineFn,
+    mask: LineFn,
     ctx: usize,
 }
+
+/// A domain's `unmask` or `mask` of one of its lines.
+pub type LineFn = unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32);
 
 static DOMAINS: Mutex<[Option<Domain>; MAX_DOMAINS]> = Mutex::new([None; MAX_DOMAINS]);
 
@@ -244,16 +262,12 @@ fn domain_of(irq: u32) -> Option<Domain> {
 }
 
 /// A domain of `count` lines for the device tree node `phandle` (0 for a
-/// controller without one), whose line `n` `unmask(ctx, n)` delivers: its
+/// controller without one), whose line `n` `unmask(ctx, n)` delivers and
+/// `mask(ctx, n)` stops: its
 /// first interrupt number, `None` when the domains are full or the node
 /// has one already. A domain stays for as long as the kernel runs (its
 /// module stays loaded: a registration).
-pub fn domain_register(
-    phandle: u32,
-    count: u32,
-    unmask: unsafe extern "C" fn(ctx: *mut core::ffi::c_void, line: u32),
-    ctx: usize,
-) -> Option<u32> {
+pub fn domain_register(phandle: u32, count: u32, unmask: LineFn, mask: LineFn, ctx: usize) -> Option<u32> {
     let mut domains = DOMAINS.lock();
     if count == 0 || (phandle != 0 && domains.iter().flatten().any(|d| d.phandle == phandle)) {
         return None;
@@ -263,6 +277,6 @@ pub fn domain_register(
         return None;
     }
     let slot = domains.iter_mut().find(|d| d.is_none())?;
-    *slot = Some(Domain { phandle, first, count, unmask, ctx });
+    *slot = Some(Domain { phandle, first, count, unmask, mask, ctx });
     Some(first)
 }

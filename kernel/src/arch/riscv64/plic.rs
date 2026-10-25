@@ -96,6 +96,14 @@ impl IrqChip for Plic {
         }
     }
 
+    fn mask(&self, src: u32) {
+        if src == 0 || src >= SOURCES {
+            return;
+        }
+        let en = ENABLE + ctx() * ENABLE_STRIDE + (src as usize / 32) * 4;
+        w(en, r(en) & !(1 << (src % 32)));
+    }
+
     fn claim(&self) -> Option<u32> {
         let src = r(CONTEXT + ctx() * CONTEXT_STRIDE + 4);
         (src != 0).then_some(src)

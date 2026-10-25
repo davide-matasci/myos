@@ -556,10 +556,13 @@ t -t smoke acpi acpi_aml
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
 # their own, behind the controller's one. Its probe sets an idle input to
 # interrupt while low and enables that line's interrupt through the
-# kernel; the handler turns it off. Both the controller's interrupt and
-# the line's (a domain number, 4096 and up) were taken. Only a board
-# without ACPI tables has the PL061 (QEMU's aarch64 GICv3 boots); on the
-# others the module finds none.
+# kernel; the handler quietens the line. A thread of the module then
+# gives the line's interrupt back (KernelApi::irq_disable): the kernel
+# masks it through the domain, and the line asserted again interrupts
+# nobody (/proc/pl061: `check given back`). The controller's interrupt
+# was taken, and the line's handler (a domain number, 4096 and up) is
+# gone. Only a board without ACPI tables has the PL061 (QEMU's aarch64
+# GICv3 boots); on the others the module finds none.
 irq_counts() {
 	# The count of the handler called "$1" ("$2" its second word) at an
 	# interrupt of at least $3.
@@ -572,11 +575,13 @@ irq_domain() {
 	insmod /lib/modules/pl061 && grep -q "^pl061$" /proc/modules || return 1
 	grep -q '^source dt$' /proc/platform && grep -q '^intc gicv' /proc/platform || return 0
 	i=0
-	while [ $i -lt 5 ] && ! irq_counts pl061 check 4096; do
+	while [ $i -lt 5 ] && ! [ -e /proc/pl061 ]; do
 		sleep 1
 		i=$((i + 1))
 	done
-	irq_counts pl061 check 4096 && irq_counts pl061 "" 32 || { cat /proc/interrupts; return 1; }
+	grep -qx 'check given back' /proc/pl061 && irq_counts pl061 "" 32 &&
+		! grep -q ' pl061 check$' /proc/interrupts ||
+		{ cat /proc/pl061 /proc/interrupts; return 1; }
 }
 t -t irq,modules irq_domain irq_domain
 
@@ -1452,7 +1457,7 @@ lx_dns_root() {
 	# What the smoke's probes do not say: the system's resolver, and musl
 	# without the dead server, right after.
 	cat /net/ndb
-	dns example.com
+	dns github.com
 	printf 'nameserver %s\n' "$ns" > /tmp/lxroot/etc/resolv.conf
 	linux --root /tmp/lxroot /linux-smoke dns "$ns" 192.0.2.1
 	return 1
@@ -1542,10 +1547,11 @@ lx_python() {
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]
 }
-# ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP).
+# ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP) from the
+# launcher's test server (src/test_www.rs).
 lx_python_net() {
 	alpine_disk || return 1
-	out=$(linux --root /tmp/alpine/python python3 -c 'import urllib.request as u;print("HTTP",u.urlopen("http://example.com/").status)')
+	out=$(linux --root /tmp/alpine/python python3 -c 'import socket,urllib.request as u;socket.gethostbyname("github.com");print("HTTP",u.urlopen("http://10.0.2.2:8766/hello.txt").status)')
 	echo "$out"
 	[ "$out" = "HTTP 200" ]
 }

@@ -50,5 +50,11 @@ t = re.sub(r'^channel = ".*"', 'channel = "' + probe + '"', t, count=1, flags=re
 open(p, "w").write(t)
 PYEDIT
 echo "Updated $file"
+# The rust package's toolchain is the same nightly (its std is this sysroot).
+if [[ "$PROBE" =~ ^nightly-([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+  "$ROOT/packages/rust/pin.sh" "${BASH_REMATCH[1]}"
+else
+  echo "warning: $PROBE has no date: pin packages/rust/versions.env with packages/rust/pin.sh YYYY-MM-DD" >&2
+fi
 rm -f "$MYOS_SYSROOT/.myos-sysroot-version"
 echo "Removed sysroot version stamp — run ./toolchain/std/build-sysroot.sh next."

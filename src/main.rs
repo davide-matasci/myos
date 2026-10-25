@@ -21,6 +21,7 @@ mod ports;
 mod wifi_net;
 mod wifi_sim;
 mod release;
+mod test_www;
 
 use boot_test::{Board, Mode, Selection};
 
@@ -580,14 +581,16 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
 ///
 /// The `packages` test installs this build's packages: pack them for `arch`
 /// and serve `target/packages/` on the host loopback, which the guest
-/// reaches as http://10.0.2.2:8765. A run that skips `net` stays
-/// network-free.
+/// reaches as http://10.0.2.2:8765, and the test web server
+/// (`test_www`). A run that skips `net` stays network-free.
 fn start_package_mirror(arch: &str, mode: &Mode) {
     let Mode::Tests(sel) = mode else { return };
     if !sel.needs_network() {
         return;
     }
-    let dir = packages::build(&PathBuf::from(env!("CARGO_MANIFEST_DIR")), arch);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    test_www::start(&root);
+    let dir = packages::build(&root, arch);
     if packages::serve_mirror(dir, arch) {
         eprintln!("package mirror: serving target/packages on 127.0.0.1:{}", packages::MIRROR_PORT);
     } else {
@@ -624,7 +627,7 @@ fn add_wifi_radio(cmd: &mut Command) {
 fn add_virtio_net(cmd: &mut Command) {
     // Local boot-stress packs socket_smoke → 10.0.2.100:80 with host http.server
     // on :8765 and starts that server *before* QEMU. Only add guestfwd when the
-    // host port is already listening so CI (example.com via user-net, no :8765)
+    // host port is already listening so CI (the internet via user-net, no :8765)
     // does not abort QEMU before the kernel runs.
     // The DNS server moves off QEMU's default 10.0.2.3, the address the
     // resolvers fall back to without a lease: name lookups then show they

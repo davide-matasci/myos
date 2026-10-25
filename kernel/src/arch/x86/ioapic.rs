@@ -146,6 +146,20 @@ pub fn unmask(irq: u8) {
     program(reg, low, vector, &ISA_REMAP[irq as usize]);
 }
 
+/// Mask ISA `irq`'s pin again (its last handler went). Its vector and
+/// remapping entry stay the pin's, for the next [`unmask`]: at most one
+/// per ISA IRQ.
+pub fn mask(irq: u8) {
+    if irq >= 16 {
+        return;
+    }
+    let Some((reg, low)) = entry(irq) else {
+        return;
+    };
+    ISA_UNMASKED[irq as usize].store(false, Ordering::SeqCst);
+    write(reg, low | RED_MASKED);
+}
+
 /// Write redirection entry `reg` for `vector` with trigger and polarity
 /// `low`, unmasked: fixed delivery to the BSP's LAPIC, physical
 /// destination mode, or through the IOMMU's interrupt remapping where

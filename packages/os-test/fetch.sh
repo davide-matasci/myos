@@ -48,5 +48,9 @@ cp -R "$OSTEST_SRC/." "$EMBED/"
 rm -f "$EMBED"/BSDmakefile "$EMBED"/GNUmakefile "$EMBED"/GNUmakefile.os "$EMBED"/BSDmakefile.os
 # Upstream ships Makefile as a symlink to the (removed) OS makefiles.
 find "$EMBED" -maxdepth 1 -type l -delete
+# Not runtime suites, and run by nothing (SUITES.md): the header corpus
+# and its pollution checks are half the package's files, each one more for
+# get-myos to unpack.
+rm -rf "$EMBED"/include "$EMBED"/namespace
 cp -R "$HERE/overlay/." "$EMBED/"
 echo "os-test embed tree -> $EMBED"

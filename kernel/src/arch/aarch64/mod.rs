@@ -168,13 +168,18 @@ pub fn pci_irq_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> 
 
 /// A PCI function's interrupt given back (`irq::pci_irq_disable`): once
 /// `last` (no handler of `irq` left) its MSI-X or MSI off and the
-/// controller's interrupt freed; its INTx off. An INTx line is not
-/// allocated, only its handlers.
+/// controller's interrupt freed; else its INTx off, and the controller's
+/// line masked once no handler is left on it (`last`: another slot's
+/// device may share the line). An INTx line is not allocated, only its
+/// handlers.
 pub fn pci_irq_release(bus: u8, slot: u8, func: u8, irq: u32, last: bool) {
     if last && crate::msi::pci_release(bus, slot, func, irq) {
         return;
     }
     crate::irq::pci_intx_release(bus, slot, func);
+    if last {
+        crate::irqchip::mask(irq);
+    }
 }
 
 pub fn wait_interrupt() {
