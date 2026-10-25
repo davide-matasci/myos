@@ -704,7 +704,8 @@ Python root of the Alpine disk the launcher prepares (below; python3 and
 its 19 dependencies, ~45 MB, mounted at `/tmp/alpine/python`), runs
 `python3 -c 'import json,sqlite3;print("PYTHON",json.loads("[42]")[0])'`
 (the standard library and two C extension modules), expecting `PYTHON 42`,
-and fetches `http://example.com/` with `urllib` (DNS over UDP, then TCP),
+and resolves `github.com` (DNS over UDP) and fetches the launcher's test
+server's `http://10.0.2.2:8766/hello.txt` with `urllib` (TCP, `docs/testing.md`),
 expecting `HTTP 200`, and runs an asyncio script (`alpine_python_asyncio`:
 the end-to-end test of the event fds, `docs/events.md`), whose selector is
 `select.epoll` over `/dev/wait`, whose signal handler is a wakeup fd in it
@@ -719,7 +720,7 @@ is `target/alpine-ARCH.img`, made on the host by
 roots, `get-alpine -n`: no install script runs, which rustc, Python and
 xdpyinfo do without; `docs/testing.md` says how CI caches it) and
 attached as `/dev/nvme2n1/data` (writes go to a QEMU snapshot). The jq
-test and the Python fetch need the Alpine mirror and `example.com` to be
+test needs the Alpine mirror and the Python one `github.com`'s name to be
 reachable.
 
 Without the feature (the quick list, the normal PR CI), the test instead

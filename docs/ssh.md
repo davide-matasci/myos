@@ -1,7 +1,8 @@
 # SSH into myos
 
 dropbear (`ports/dropbear`) is in the image, as `/bin/custom/dropbear`,
-`dbclient` and `dropbearkey`. The boot script's default `rc.local`
+`dbclient` (also `ssh`: what git runs for an SSH remote,
+`packages/git/README.md`) and `dropbearkey`. The boot script's default `rc.local`
 (`docs/install.md`) starts it on port 2222:
 
 ```sh
