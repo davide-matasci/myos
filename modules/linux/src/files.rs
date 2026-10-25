@@ -10,6 +10,7 @@
 //! that lock) while holding `PATHS` or `FLAGS`: the pid is read first.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use myos_abi::Lock as Mutex;
 
@@ -24,6 +25,11 @@ pub struct FdPath {
     pub dir: bool,
     /// Directory read position (entries already returned).
     pub pos: usize,
+    /// A directory's names as its first read found them (`.` and `..`
+    /// first), kept until it is read again from the start: removing
+    /// entries while reading (`rm -rf`) must not shift the ones not yet
+    /// returned below the position.
+    pub listing: Option<Arc<Vec<Vec<u8>>>>,
     /// A socket: `path` is its `/net` conversation (see `net`).
     pub sock: Option<Sock>,
 }
@@ -119,11 +125,11 @@ pub fn get(fd: usize) -> Option<FdPath> {
 }
 
 pub fn set(fd: usize, path: String, dir: bool) {
-    put(FdPath { fd, path, dir, pos: 0, sock: None });
+    put(FdPath { fd, path, dir, pos: 0, listing: None, sock: None });
 }
 
 pub fn set_sock(fd: usize, conv: String, sock: Sock) {
-    put(FdPath { fd, path: conv, dir: false, pos: 0, sock: Some(sock) });
+    put(FdPath { fd, path: conv, dir: false, pos: 0, listing: None, sock: Some(sock) });
 }
 
 fn put(e: FdPath) {
@@ -154,7 +160,7 @@ pub fn remove(fd: usize) {
 pub fn dup(old: usize, new: usize) {
     let nb = nonblock(old);
     match get(old) {
-        Some(e) => put(FdPath { fd: new, pos: 0, ..e }),
+        Some(e) => put(FdPath { fd: new, pos: 0, listing: None, ..e }),
         None => remove(new),
     }
     set_cloexec(new, false);
@@ -162,10 +168,24 @@ pub fn dup(old: usize, new: usize) {
     set_sigfd(new, sigfd(old));
 }
 
+/// Move a directory fd's read position; back to the start, its listing is
+/// taken anew at the next read.
 pub fn set_pos(fd: usize, pos: usize) {
     let me = task::current_pid();
     let mut t = PATHS.lock();
     if let Some(e) = t[me].iter_mut().find(|e| e.fd == fd) {
         e.pos = pos;
+        if pos == 0 {
+            e.listing = None;
+        }
+    }
+}
+
+/// Keep `listing` as the names a directory fd reads from.
+pub fn set_listing(fd: usize, listing: Arc<Vec<Vec<u8>>>) {
+    let me = task::current_pid();
+    let mut t = PATHS.lock();
+    if let Some(e) = t[me].iter_mut().find(|e| e.fd == fd) {
+        e.listing = Some(listing);
     }
 }

@@ -24,6 +24,7 @@ pub const ESPIPE: usize = 29;
 pub const EROFS: usize = 30;
 pub const ERANGE: usize = 34;
 pub const ENOSYS: usize = 38;
+pub const ENOTEMPTY: usize = 39;
 pub const ELOOP: usize = 40;
 
 /// `open` / `pipe2` / `dup3` flags.

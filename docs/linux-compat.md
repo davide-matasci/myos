@@ -244,7 +244,9 @@ forms of the legacy calls). The set:
 
 Files: `read`, `write`, `readv`, `writev`, `open`, `openat`, `close`, `stat`,
 `lstat`, `fstat`, `newfstatat`, `statfs`, `fstatfs` (no filesystem magic in
-`f_type`), `lseek`, `getdents64`, `ioctl` (the tty
+`f_type`), `lseek`, `getdents64` (a directory fd reads the listing its
+first read took, whole, until it is rewound: entries removed while it is
+read do not shift the rest), `ioctl` (the tty
 requests from the terminal's ctl file, `docs/tty.md`; `FIONBIO` on sockets;
 the console keymap and module devices natively), `access`,
 `faccessat`, `pipe`, `pipe2`, `eventfd(2)`, `timerfd_create`,
