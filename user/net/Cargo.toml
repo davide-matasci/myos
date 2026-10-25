@@ -19,6 +19,7 @@ smoltcp = { version = "=0.12.0", default-features = false, features = [
   "medium-ethernet",
   "medium-ip",
   "proto-ipv4",
+  "proto-ipv6",
   "proto-dhcpv4",
   "proto-dns",
   "socket-icmp",
@@ -26,9 +27,10 @@ smoltcp = { version = "=0.12.0", default-features = false, features = [
   "socket-tcp",
   "socket-dhcpv4",
   "socket-dns",
-  # The loopback interface carries 127.0.0.1 and every NIC's address
-  # (the multi-home patch): room for three NICs.
-  "iface-max-addr-count-4",
+  # The loopback interface carries 127.0.0.1, ::1 and every NIC's
+  # addresses (the multi-home patch), a NIC its IPv4 one, its link-local
+  # and its SLAAC one: room for two NICs' three.
+  "iface-max-addr-count-8",
 ] }
 
 [profile.dev]

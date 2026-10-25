@@ -15,9 +15,10 @@ use core::fmt::Write;
 use myos_net::smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use myos_net::smoltcp::socket::{dhcpv4, icmp, tcp, udp};
 use myos_net::smoltcp::time::{Duration, Instant};
+use myos_net::smoltcp::phy::ChecksumCapabilities;
 use myos_net::smoltcp::wire::{
-    HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint,
-    Ipv4Address, Ipv4Cidr,
+    HardwareAddress, Icmpv4Packet, Icmpv4Repr, Icmpv6Packet, Icmpv6Repr, IpAddress, IpCidr, IpEndpoint,
+    IpListenEndpoint, IpVersion, Ipv4Address, Ipv6Address,
 };
 use myos_net::{device_capabilities, Net0Device, VirtualInstant};
 
@@ -54,18 +55,20 @@ const REP_NDB: u8 = 6;
 const REP_SOERR: u8 = 7;
 /// The interfaces as `/net/ifaddrs` text, see [`ifaddrs_text`].
 const REP_IFADDRS: u8 = 8;
-/// A UDP conv's new peer (address, port big-endian): netfs drops the
-/// datagrams it queued from anyone else, as later ones are here.
+/// A UDP conv's new peer (its address as in [`UDP_HDR`], its port
+/// big-endian): netfs drops the datagrams it queued from anyone else, as
+/// later ones are here.
 const REP_PEER: u8 = 9;
 /// netd's conversation table as `/net/convs` text, see [`convs_text`].
 const REP_CONVS: u8 = 10;
 
 /// The per-datagram header on a UDP conv's REQ_SEND and REP_DATA (Plan 9's
-/// udp "headers" layout): remote address, local address, remote port,
-/// local port, the ports big-endian. netfs shows it to readers and takes it
-/// from writers of a conv in "headers" mode, and adds a zero one (the
-/// connected peer) for the others.
-const UDP_HDR: usize = 12;
+/// udp "headers" without its interface address): remote address, local
+/// address (16 bytes each, an IPv4 one as `::ffff:a.b.c.d`, all zeros for
+/// none), remote port, local port, the ports big-endian. netfs shows it to
+/// readers and takes it from writers of a conv in "headers" mode, and adds
+/// a zero one (the connected peer) for the others.
+const UDP_HDR: usize = 36;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
@@ -170,7 +173,7 @@ enum Kind {
 struct Conv {
     kind: Kind,
     handle: Option<SocketHandle>,
-    remote4: Ipv4Address,
+    remote: IpAddress,
     remote_port: u16,
     have_remote: bool,
     ident: u16,
@@ -226,11 +229,18 @@ struct Conv {
     held: bool,
     /// REQ_CLOSE arrived: the holder let go.
     released: bool,
-    /// UDP: the local address (unspecified: any) and port (0: not bound
-    /// yet; the first connect or send picks one). A TCP listener: the
-    /// address it listens on (unspecified: any), its port `listen_port`.
-    local4: Ipv4Address,
+    /// UDP: the local address (unspecified: any of its version, see
+    /// `v6only`) and port (0: not bound yet; the first connect or send
+    /// picks one). A TCP listener: the address it listens on, its port
+    /// `listen_port`.
+    local: IpAddress,
     local_port: u16,
+    /// On `::`, IPv6 only (`IPV6_V6ONLY`); otherwise IPv4 too, as on Linux.
+    /// On `0.0.0.0`, IPv4 only.
+    v6only: bool,
+    /// UDP: an IPv6 socket's (bound or autobound on an IPv6 address): its
+    /// any address, which a disconnect goes back to, is `::`.
+    inet6: bool,
     /// UDP: a `bind` named that address / port; otherwise connect chose
     /// the address and an unconnect gives both up, as on Linux.
     addr_bound: bool,
@@ -243,7 +253,7 @@ impl Conv {
     const EMPTY: Self = Self {
         kind: Kind::Empty,
         handle: None,
-        remote4: Ipv4Address::new(0, 0, 0, 0),
+        remote: ANY4,
         remote_port: 0,
         have_remote: false,
         ident: 0,
@@ -263,8 +273,10 @@ impl Conv {
         from_accept: false,
         held: false,
         released: false,
-        local4: Ipv4Address::UNSPECIFIED,
+        local: ANY4,
         local_port: 0,
+        v6only: false,
+        inet6: false,
         addr_bound: false,
         port_bound: false,
         reuse: false,
@@ -302,37 +314,77 @@ struct Lingering {
     since: Option<Instant>,
 }
 
-fn parse_u8(s: &[u8]) -> Option<(u8, usize)> {
-    if s.is_empty() || !s[0].is_ascii_digit() {
-        return None;
+const ANY4: IpAddress = IpAddress::Ipv4(Ipv4Address::UNSPECIFIED);
+const ANY6: IpAddress = IpAddress::Ipv6(Ipv6Address::UNSPECIFIED);
+
+/// 127.0.0.1 or ::1.
+fn localhost(v: IpVersion) -> IpAddress {
+    match v {
+        IpVersion::Ipv4 => IpAddress::Ipv4(Ipv4Address::LOCALHOST),
+        IpVersion::Ipv6 => IpAddress::Ipv6(Ipv6Address::LOCALHOST),
     }
-    let mut n = 0u32;
-    let mut i = 0usize;
-    while i < s.len() && s[i].is_ascii_digit() {
-        n = n.checked_mul(10)?.checked_add((s[i] - b'0') as u32)?;
-        i += 1;
-        if n > 255 {
-            return None;
-        }
-    }
-    Some((n as u8, i))
 }
 
-fn parse_ipv4(s: &[u8]) -> Option<(Ipv4Address, usize)> {
-    let mut o = 0usize;
-    let mut oct = [0u8; 4];
-    for i in 0..4 {
-        let (v, n) = parse_u8(&s[o..])?;
-        oct[i] = v;
-        o += n;
-        if i != 3 {
-            if o >= s.len() || s[o] != b'.' {
-                return None;
-            }
-            o += 1;
-        }
+/// 127.0.0.0/8 or ::1.
+fn is_loopback(a: IpAddress) -> bool {
+    match a {
+        IpAddress::Ipv4(a) => a.is_loopback(),
+        IpAddress::Ipv6(a) => a.is_loopback(),
     }
-    Some((Ipv4Address::new(oct[0], oct[1], oct[2], oct[3]), o))
+}
+
+/// An unspecified address is this host, as on Linux: the loopback address
+/// of its version.
+fn or_localhost(a: IpAddress) -> IpAddress {
+    if a.is_unspecified() { localhost(a.version()) } else { a }
+}
+
+/// `a.b.c.d` or an IPv6 address in its text form.
+fn parse_addr(s: &[u8]) -> Option<IpAddress> {
+    match core::str::from_utf8(s).ok()?.parse::<core::net::IpAddr>().ok()? {
+        core::net::IpAddr::V4(a) => Some(IpAddress::Ipv4(a)),
+        core::net::IpAddr::V6(a) => Some(IpAddress::Ipv6(a)),
+    }
+}
+
+/// An address as in [`UDP_HDR`]: an IPv4 one as `::ffff:a.b.c.d`.
+fn addr16(a: IpAddress) -> [u8; 16] {
+    match a {
+        IpAddress::Ipv4(a) => a.to_ipv6_mapped().octets(),
+        IpAddress::Ipv6(a) => a.octets(),
+    }
+}
+
+/// The address of [`UDP_HDR`]'s 16 bytes `b`: `None` for all zeros.
+fn from_addr16(b: &[u8]) -> Option<IpAddress> {
+    let a = Ipv6Address::from(<[u8; 16]>::try_from(b).ok()?);
+    if a.is_unspecified() {
+        return None;
+    }
+    Some(match a.to_ipv4_mapped() {
+        Some(v4) => IpAddress::Ipv4(v4),
+        None => IpAddress::Ipv6(a),
+    })
+}
+
+/// The IP version a conv on address `local` takes (`None`: either): its
+/// own when it names one; on `0.0.0.0` IPv4, on `::` IPv6 and, unless
+/// `v6only`, IPv4 too, as on Linux.
+fn version_of(local: IpAddress, v6only: bool) -> Option<IpVersion> {
+    match local {
+        IpAddress::Ipv6(a) if a.is_unspecified() && !v6only => None,
+        a => Some(a.version()),
+    }
+}
+
+/// Whether convs on `a` (`a6only`) and on `b` (`b6only`) would both take
+/// some packet to a port they share: a version both take, and an address
+/// both do (the same one, or either on any).
+fn overlaps(a: IpAddress, a6only: bool, b: IpAddress, b6only: bool) -> bool {
+    let takes = |l: IpAddress, only: bool, v: IpVersion| version_of(l, only).is_none_or(|x| x == v);
+    [IpVersion::Ipv4, IpVersion::Ipv6].into_iter().any(|v| {
+        takes(a, a6only, v) && takes(b, b6only, v) && (a.is_unspecified() || b.is_unspecified() || a == b)
+    })
 }
 
 fn parse_port(s: &[u8]) -> Option<u16> {
@@ -352,62 +404,26 @@ fn parse_port(s: &[u8]) -> Option<u16> {
     Some(n as u16)
 }
 
-/// `connect 10.0.2.2` or `connect 10.0.2.2!80`
-fn parse_connect(cmd: &[u8]) -> Option<(Ipv4Address, Option<u16>)> {
-    let rest = cmd.strip_prefix(b"connect")?;
-    let rest = trim(rest);
-    let (addr, n) = parse_ipv4(rest)?;
-    let rest = &rest[n..];
-    if rest.is_empty() {
-        return Some((addr, None));
+/// `connect 10.0.2.2`, `connect 10.0.2.2!80`, `connect fec0::2!80`
+fn parse_connect(cmd: &[u8]) -> Option<(IpAddress, Option<u16>)> {
+    let rest = trim(cmd.strip_prefix(b"connect")?);
+    match rest.iter().rposition(|&b| b == b'!') {
+        Some(n) => Some((parse_addr(&rest[..n])?, Some(parse_port(&rest[n + 1..])?))),
+        None => Some((parse_addr(rest)?, None)),
     }
-    if rest[0] != b'!' {
-        return None;
-    }
-    let port = parse_port(&rest[1..])?;
-    Some((addr, Some(port)))
 }
 
 /// Status payload for an accepted connection:
 /// "accepted <N> <ip>!<port> <seq>".
-/// Hand-rolled decimal formatting keeps the image free of fmt/memcpy deps.
-fn accept_reply(convs: &mut [Conv; MAX_CONV], n: u16, seq: u32) -> alloc::vec::Vec<u8> {
-    fn push_dec(out: &mut alloc::vec::Vec<u8>, mut v: u32) {
-        let mut tmp = [0u8; 10];
-        let mut i = 0;
-        if v == 0 {
-            out.push(b'0');
-            return;
-        }
-        while v > 0 {
-            tmp[i] = b'0' + (v % 10) as u8;
-            v /= 10;
-            i += 1;
-        }
-        while i > 0 {
-            i -= 1;
-            out.push(tmp[i]);
-        }
-    }
-    let mut out = alloc::vec::Vec::with_capacity(32);
-    out.extend_from_slice(b"accepted ");
-    push_dec(&mut out, n as u32);
+fn accept_reply(convs: &mut [Conv; MAX_CONV], n: u16, seq: u32) -> Vec<u8> {
+    let mut out = String::new();
+    let _ = write!(out, "accepted {n}");
     let c = &convs[n as usize];
     if c.have_remote {
-        let o = c.remote4.octets();
-        out.push(b' ');
-        for (k, b) in o.iter().enumerate() {
-            if k > 0 {
-                out.push(b'.');
-            }
-            push_dec(&mut out, *b as u32);
-        }
-        out.push(b'!');
-        push_dec(&mut out, c.remote_port as u32);
+        let _ = write!(out, " {}!{}", c.remote, c.remote_port);
     }
-    out.push(b' ');
-    push_dec(&mut out, seq);
-    out
+    let _ = write!(out, " {seq}");
+    out.into_bytes()
 }
 
 fn trim(s: &[u8]) -> &[u8] {
@@ -496,6 +512,7 @@ fn poll_dhcp(
             // Nothing arrived: wait a little instead of spinning on the NIC.
             myos_user::sleep_ns(1_000_000, false);
         }
+        nics.slaac(now, lo, chan);
         if nics.dhcp(sockets, lo, chan) {
             return;
         }
@@ -503,24 +520,26 @@ fn poll_dhcp(
 }
 
 /// The loopback interface (`lo`): smoltcp's `local-pair` patch has it carry
-/// everything to 127.0.0.0/8 and to the host's own address, which the NIC's
-/// interface then leaves alone.
+/// everything to 127.0.0.0/8, ::1 and the host's own addresses, which the
+/// NIC's interface then leaves alone.
 fn build_loopback(dev: &mut LoopDevice, now: Instant) -> Interface {
     let mut config = Config::new(HardwareAddress::Ip);
     config.random_seed = 0x6c6f;
     let mut lo = Interface::new(config, dev, now);
     lo.set_local_only(true);
-    // Every NIC's address joins 127.0.0.1 with its lease (`Nics`).
+    // Every NIC's addresses join these with its lease (`Nics`).
     lo.update_ip_addrs(|addrs| {
         let _ = addrs.push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8));
+        let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(Ipv6Address::LOCALHOST), 128));
     });
     lo
 }
 
 /// netd's conversation table as `/net/convs` text, a line per index in
 /// use: `N tcp|udp|icmp [STATE] flags`, STATE a TCP socket's (`-`: none, a
-/// tombstone), then `listen a.b.c.d!p` (a listener, `*` for any address),
-/// `peer a.b.c.d!p`, `accept` (netd accepted it), `held` (a process has
+/// tombstone), then `listen a.b.c.d!p` (a listener on an address, IPv4 or
+/// IPv6, `*` for any IPv4 one, `[::]` for any IPv6 one and IPv4 too,
+/// `[::]6` for IPv6 only), `peer a.b.c.d!p`, `accept` (netd accepted it), `held` (a process has
 /// its files), `released` (that process closed them), `connected`,
 /// `hungup`, `closing Ns` (closing for N seconds). netfs's view
 /// (`/net/tcp/N/status`) ends at the close's acknowledgement, netd's at the
@@ -552,14 +571,21 @@ fn convs_text(
             }
         }
         if c.listen_port != 0 {
-            if c.local4.is_unspecified() {
-                let _ = write!(s, " listen *!{}", c.listen_port);
-            } else {
-                let _ = write!(s, " listen {}!{}", c.local4, c.listen_port);
+            match c.local {
+                IpAddress::Ipv4(a) if a.is_unspecified() => {
+                    let _ = write!(s, " listen *!{}", c.listen_port);
+                }
+                IpAddress::Ipv6(a) if a.is_unspecified() => {
+                    let only = if c.v6only { "6" } else { "" };
+                    let _ = write!(s, " listen [::]{only}!{}", c.listen_port);
+                }
+                a => {
+                    let _ = write!(s, " listen {a}!{}", c.listen_port);
+                }
             }
         }
         if c.have_remote {
-            let _ = write!(s, " peer {}!{}", c.remote4, c.remote_port);
+            let _ = write!(s, " peer {}!{}", c.remote, c.remote_port);
         }
         for (flag, on) in [
             ("accept", c.from_accept),
@@ -588,8 +614,8 @@ fn convs_text(
             let _ = write!(s, " tx {} rxroom {}", c.pending.len(), c.rx_room);
             if let Some(h) = c.handle {
                 let sock = sockets.get::<tcp::Socket>(h);
-                if let Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) = sock.local_endpoint() {
-                    let _ = write!(s, " local {a}!{port}");
+                if let Some(IpEndpoint { addr, port }) = sock.local_endpoint() {
+                    let _ = write!(s, " local {addr}!{port}");
                 }
                 let _ = write!(s, " sendq {} recvq {}", sock.send_queue(), sock.recv_queue());
             }
@@ -599,8 +625,8 @@ fn convs_text(
     for hs in handshakes {
         let sock = sockets.get::<tcp::Socket>(hs.handle);
         let _ = write!(s, "- tcp {:?}", sock.state());
-        if let Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) = sock.remote_endpoint() {
-            let _ = write!(s, " peer {a}!{port}");
+        if let Some(IpEndpoint { addr, port }) = sock.remote_endpoint() {
+            let _ = write!(s, " peer {addr}!{port}");
         }
         let l = hs.listener as usize;
         let _ = writeln!(s, " port {} handshake {}s", convs[l].listen_port, (now - hs.since).secs());
@@ -608,8 +634,8 @@ fn convs_text(
     for l in lingering {
         let sock = sockets.get::<tcp::Socket>(l.handle);
         let _ = write!(s, "- tcp {:?}", sock.state());
-        if let Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) = sock.remote_endpoint() {
-            let _ = write!(s, " peer {a}!{port}");
+        if let Some(IpEndpoint { addr, port }) = sock.remote_endpoint() {
+            let _ = write!(s, " peer {addr}!{port}");
         }
         let secs = l.since.map_or(0, |t| (now - t).secs());
         let _ = writeln!(s, " closing {secs}s tx {} sendq {}", l.pending.len(), sock.send_queue());
@@ -617,19 +643,27 @@ fn convs_text(
     s
 }
 
-/// An address of this host's: 127.0.0.0/8, a NIC's, and 0.0.0.0 (which
-/// a connect or send means as 127.0.0.1, as on Linux).
-fn is_local(nics: &Nics, a: Ipv4Address) -> bool {
-    a.is_loopback() || a.is_unspecified() || nics.has_ip_addr(a)
+/// An address of this host's: 127.0.0.0/8, ::1, a NIC's, and 0.0.0.0 or
+/// :: (which a connect or send means as the loopback address, as on
+/// Linux).
+fn is_local(nics: &Nics, a: IpAddress) -> bool {
+    is_loopback(a) || a.is_unspecified() || nics.has_ip_addr(a)
 }
 
 /// Where TCP listener conv `c` listens: its port, on the address its
 /// announce named (any when that was unspecified).
 fn listen_endpoint(c: &Conv) -> IpListenEndpoint {
     IpListenEndpoint {
-        addr: (!c.local4.is_unspecified()).then_some(IpAddress::Ipv4(c.local4)),
+        addr: (!c.local.is_unspecified()).then_some(c.local),
         port: c.listen_port,
     }
+}
+
+/// Make `s` TCP listener conv `c`'s: on its endpoint, for the IP version
+/// it takes (`version_of`).
+fn listen_on(s: &mut tcp::Socket, c: &Conv) -> Result<(), tcp::ListenError> {
+    s.set_listen_version(version_of(c.local, c.v6only));
+    s.listen(listen_endpoint(c))
 }
 
 fn handle_clone(
@@ -935,13 +969,18 @@ fn handle_ctl(
         return;
     }
     // Plan 9 announce: start a TCP listener on this conv ("announce
-    // [a.b.c.d!]<port>": on that address, one of the host's, else on any).
+    // [addr!]<port>[ v6only]": on that address, one of the host's, else on
+    // any IPv4 one; `::` is any IPv6 one, and IPv4 too unless v6only).
     if let Some(rest) = cmd.strip_prefix(b"announce") {
         let rest = trim(rest);
+        let (rest, v6only) = match rest.strip_suffix(b"v6only") {
+            Some(r) => (trim(r), true),
+            None => (rest, false),
+        };
         let (addr, port) = match parse_endpoint(rest) {
             Some((a, p)) if p != 0 => (a, p),
             _ => match parse_port(rest) {
-                Some(p) if p != 0 => (Ipv4Address::UNSPECIFIED, p),
+                Some(p) if p != 0 => (ANY4, p),
                 _ => {
                     reply(chan, REP_ERR, conv, -1, b"need port");
                     return;
@@ -962,25 +1001,28 @@ fn handle_ctl(
                 // taken (Linux's EADDRINUSE, SO_REUSEADDR or not): a second
                 // nginx used to start beside the first and take over its pid
                 // file, so `nginx -s quit` left the first one running.
+                // IPv4 and IPv6 apart: `0.0.0.0` beside `::` with v6only.
                 let taken = convs.iter().enumerate().any(|(j, c)| {
                     j != i
                         && matches!(c.kind, Kind::Tcp)
                         && c.listen_port == port
-                        && (c.local4.is_unspecified() || addr.is_unspecified() || c.local4 == addr)
+                        && overlaps(c.local, c.v6only, addr, v6only)
                 });
                 if taken {
                     reply(chan, REP_ERR, conv, -1, b"addrinuse");
                     return;
                 }
-                convs[i].local4 = addr;
+                convs[i].local = addr;
+                convs[i].v6only = v6only;
                 convs[i].listen_port = port;
                 let s = sockets.get_mut::<tcp::Socket>(h);
-                match s.listen(listen_endpoint(&convs[i])) {
+                match listen_on(s, &convs[i]) {
                     Ok(()) => {
                         reply(chan, REP_STATUS, conv, 0, b"listening");
                     }
                     Err(_) => {
-                        convs[i].local4 = Ipv4Address::UNSPECIFIED;
+                        convs[i].local = ANY4;
+                        convs[i].v6only = false;
                         convs[i].listen_port = 0;
                         reply(chan, REP_ERR, conv, -1, b"listen");
                     }
@@ -1066,7 +1108,7 @@ fn handle_ctl(
             reply(chan, REP_ERR, conv, -1, b"no conv");
         }
         Kind::Icmp => {
-            convs[i].remote4 = addr;
+            convs[i].remote = addr;
             convs[i].have_remote = true;
             if let Some(h) = convs[i].handle {
                 let s = sockets.get_mut::<icmp::Socket>(h);
@@ -1087,14 +1129,13 @@ fn handle_ctl(
                     return;
                 }
             };
-            // 0.0.0.0 is this host, as on Linux.
-            let addr = if addr.is_unspecified() { Ipv4Address::LOCALHOST } else { addr };
-            convs[i].remote4 = addr;
+            let addr = or_localhost(addr);
+            convs[i].remote = addr;
             convs[i].remote_port = p;
             convs[i].have_remote = true;
             let port = next_local_port(local_ports);
-            let local = IpListenEndpoint { addr: nics.source_for(addr).map(IpAddress::Ipv4), port };
-            let remote = IpEndpoint::new(IpAddress::Ipv4(addr), p);
+            let local = IpListenEndpoint { addr: nics.source_for(addr), port };
+            let remote = IpEndpoint::new(addr, p);
             // The loopback interface carries a local connection.
             let src = nics.source_for(addr);
             let cx = if is_local(nics, addr) { Some(lo.context()) } else { nics.context_for(src) };
@@ -1121,13 +1162,14 @@ fn handle_ctl(
 /// back; `connect` without a tag is the plain
 /// Plan 9 one (DNS, the Linux layer), answered "connected".
 ///
-/// - `bind <addr>!<port>[ reuse]`: port 0 picks a free one; `reuse` is
-///   SO_REUSEADDR (the port is shared with others bound so).
+/// - `bind <addr>!<port>[ reuse][ v6only]`: port 0 picks a free one;
+///   `reuse` is SO_REUSEADDR (the port is shared with others bound so),
+///   `v6only` IPV6_V6ONLY (on `::`, no IPv4 datagrams).
 /// - `connect <addr>!<port>`: the peer, the only one datagrams come from
 ///   and the one a header-less send goes to; binds a port first if none.
 /// - `disconnect`: no peer; gives up an address or port bind did not set.
-/// - `autobind`: a port, as a first send would bind (the socket library
-///   asks first, to know it).
+/// - `autobind[ ::[ v6only]]`: a port, as a first send would bind (the
+///   socket library asks first, to know it); on `::` for an IPv6 socket.
 /// - `local`: nothing; the answer (an fd's socket the library learns of
 ///   after an exec).
 fn handle_udp_ctl(
@@ -1144,13 +1186,15 @@ fn handle_udp_ctl(
         _ => (cmd, None),
     };
     let result = if let Some(rest) = cmd.strip_prefix(b"bind") {
-        let rest = trim(rest);
-        let (ep, reuse) = match rest.strip_suffix(b"reuse") {
-            Some(ep) => (trim(ep), true),
-            None => (rest, false),
-        };
+        let mut words = trim(rest).split(|&b| b == b' ').filter(|w| !w.is_empty());
+        let ep = words.next().unwrap_or(b"");
+        let (mut reuse, mut v6only) = (false, false);
+        for w in words {
+            reuse |= w == b"reuse";
+            v6only |= w == b"v6only";
+        }
         match parse_endpoint(ep) {
-            Some((addr, port)) => udp_bind(convs, sockets, nics, i, addr, port, reuse, local_ports),
+            Some((addr, port)) => udp_bind(convs, sockets, nics, i, addr, port, reuse, v6only, local_ports),
             None => Err("inval"),
         }
     } else if let Some((addr, port)) = parse_connect(cmd) {
@@ -1158,16 +1202,26 @@ fn handle_udp_ctl(
         let r = udp_connect(convs, sockets, nics, i, addr, port, local_ports);
         if r.is_ok() {
             let c = &convs[i];
-            let mut peer = [0u8; 6];
-            peer[..4].copy_from_slice(&c.remote4.octets());
-            peer[4..].copy_from_slice(&c.remote_port.to_be_bytes());
+            let mut peer = [0u8; 18];
+            peer[..16].copy_from_slice(&addr16(c.remote));
+            peer[16..].copy_from_slice(&c.remote_port.to_be_bytes());
             reply(chan, REP_PEER, i as u16, 0, &peer);
         }
         r
     } else if cmd == b"disconnect" {
         udp_disconnect(convs, sockets, i);
         Ok(())
-    } else if cmd == b"autobind" {
+    } else if let Some(rest) = cmd.strip_prefix(b"autobind") {
+        let rest = trim(rest);
+        let (rest, v6only) = match rest.strip_suffix(b"v6only") {
+            Some(r) => (trim(r), true),
+            None => (rest, false),
+        };
+        if convs[i].local_port == 0 && rest == b"::" {
+            convs[i].local = ANY6;
+            convs[i].v6only = v6only;
+            convs[i].inet6 = true;
+        }
         udp_autobind(convs, sockets, i, local_ports)
     } else if cmd == b"local" {
         Ok(())
@@ -1187,9 +1241,9 @@ fn handle_udp_ctl(
     match result {
         Ok(()) => {
             let c = &convs[i];
-            let _ = write!(out, " ok {}!{}", c.local4, c.local_port);
+            let _ = write!(out, " ok {}!{}", c.local, c.local_port);
             if c.have_remote {
-                let _ = write!(out, " {}!{}", c.remote4, c.remote_port);
+                let _ = write!(out, " {}!{}", c.remote, c.remote_port);
             }
         }
         Err(why) => {
@@ -1199,27 +1253,27 @@ fn handle_udp_ctl(
     reply(chan, REP_STATUS, i as u16, 0, out.as_bytes());
 }
 
-/// `a.b.c.d!port`
-fn parse_endpoint(s: &[u8]) -> Option<(Ipv4Address, u16)> {
-    let (addr, n) = parse_ipv4(s)?;
-    let port = parse_port(s[n..].strip_prefix(b"!")?)?;
-    Some((addr, port))
+/// `a.b.c.d!port` or `ipv6!port`
+fn parse_endpoint(s: &[u8]) -> Option<(IpAddress, u16)> {
+    let n = s.iter().rposition(|&b| b == b'!')?;
+    Some((parse_addr(&s[..n])?, parse_port(&s[n + 1..])?))
 }
 
 /// What a UDP conv may bind to, as on Linux: any address, 127.0.0.0/8,
-/// a NIC's address, and the broadcast addresses (all ones, and the
-/// first and last of a NIC's prefix).
-fn udp_bindable(nics: &Nics, a: Ipv4Address) -> bool {
-    a.is_unspecified() || a.is_loopback() || a.is_broadcast() || nics.bindable(a)
+/// ::1, a NIC's address, and the IPv4 broadcast addresses (all ones, and
+/// the first and last of a NIC's prefix).
+fn udp_bindable(nics: &Nics, a: IpAddress) -> bool {
+    a.is_unspecified() || is_loopback(a) || a.is_broadcast() || nics.bindable(a)
 }
 
-/// Whether UDP conv `i` may have `addr`!`port`: no other conv has that
-/// port on that address or on any address (or has any address), unless
+/// Whether UDP conv `i` may have `addr`!`port` (`v6only`): no other conv
+/// would take a datagram to that port that it would (`overlaps`), unless
 /// both were bound with SO_REUSEADDR.
 fn udp_port_free(
     convs: &[Conv; MAX_CONV],
     i: usize,
-    addr: Ipv4Address,
+    addr: IpAddress,
+    v6only: bool,
     port: u16,
     reuse: bool,
 ) -> bool {
@@ -1228,7 +1282,7 @@ fn udp_port_free(
             || !matches!(c.kind, Kind::Udp)
             || c.local_port != port
             || (reuse && c.reuse)
-            || !(c.local4 == addr || c.local4.is_unspecified() || addr.is_unspecified())
+            || !overlaps(c.local, c.v6only, addr, v6only)
     })
 }
 
@@ -1238,11 +1292,11 @@ fn udp_set_local(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
     i: usize,
-    addr: Ipv4Address,
+    addr: IpAddress,
     port: u16,
 ) {
     let c = &mut convs[i];
-    c.local4 = addr;
+    c.local = addr;
     c.local_port = port;
     let Some(h) = c.handle else {
         return;
@@ -1251,22 +1305,19 @@ fn udp_set_local(
     s.close();
     if port != 0 {
         // Only a bound address filters what arrives; connect's does not
-        // (it filters on the peer).
-        let addr = (c.addr_bound && !addr.is_unspecified()).then_some(IpAddress::Ipv4(addr));
-        let _ = s.bind(IpListenEndpoint { addr, port });
+        // (it filters on the peer), but a socket's version does.
+        let bound = c.addr_bound && !addr.is_unspecified();
+        s.set_ip_version(if bound { None } else { version_of(c.local, c.v6only) });
+        let _ = s.bind(IpListenEndpoint { addr: bound.then_some(addr), port });
     }
 }
 
-/// A free ephemeral port for UDP conv `i` at `addr`.
-fn udp_free_port(
-    convs: &[Conv; MAX_CONV],
-    i: usize,
-    addr: Ipv4Address,
-    local_ports: &mut u16,
-) -> Option<u16> {
+/// A free ephemeral port for UDP conv `i` at its address.
+fn udp_free_port(convs: &[Conv; MAX_CONV], i: usize, local_ports: &mut u16) -> Option<u16> {
+    let (addr, v6only) = (convs[i].local, convs[i].v6only);
     (0..u16::MAX - LOCAL_PORT_BASE)
         .map(|_| next_local_port(local_ports))
-        .find(|&p| udp_port_free(convs, i, addr, p, false))
+        .find(|&p| udp_port_free(convs, i, addr, v6only, p, false))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1275,9 +1326,10 @@ fn udp_bind(
     sockets: &mut SocketSet<'_>,
     nics: &Nics,
     i: usize,
-    addr: Ipv4Address,
+    addr: IpAddress,
     port: u16,
     reuse: bool,
+    v6only: bool,
     local_ports: &mut u16,
 ) -> Result<(), &'static str> {
     if convs[i].local_port != 0 {
@@ -1286,9 +1338,12 @@ fn udp_bind(
     if !udp_bindable(nics, addr) {
         return Err("addrnotavail");
     }
+    convs[i].local = addr;
+    convs[i].v6only = v6only;
+    convs[i].inet6 = addr.version() == IpVersion::Ipv6;
     let port = match port {
-        0 => udp_free_port(convs, i, addr, local_ports).ok_or("addrinuse")?,
-        p if udp_port_free(convs, i, addr, p, reuse) => p,
+        0 => udp_free_port(convs, i, local_ports).ok_or("addrinuse")?,
+        p if udp_port_free(convs, i, addr, v6only, p, reuse) => p,
         _ => return Err("addrinuse"),
     };
     convs[i].addr_bound = !addr.is_unspecified();
@@ -1309,8 +1364,8 @@ fn udp_autobind(
     if convs[i].local_port != 0 {
         return Ok(());
     }
-    let addr = convs[i].local4;
-    let port = udp_free_port(convs, i, addr, local_ports).ok_or("addrinuse")?;
+    let addr = convs[i].local;
+    let port = udp_free_port(convs, i, local_ports).ok_or("addrinuse")?;
     udp_set_local(convs, sockets, i, addr, port);
     Ok(())
 }
@@ -1320,19 +1375,18 @@ fn udp_connect(
     sockets: &mut SocketSet<'_>,
     nics: &Nics,
     i: usize,
-    addr: Ipv4Address,
+    addr: IpAddress,
     port: u16,
     local_ports: &mut u16,
 ) -> Result<(), &'static str> {
-    // 0.0.0.0 is this host, as on Linux.
-    let addr = if addr.is_unspecified() { Ipv4Address::LOCALHOST } else { addr };
+    let addr = or_localhost(addr);
     // The source address a send there would have, unless bind chose one.
     if !convs[i].addr_bound {
-        convs[i].local4 = nics.source_for(addr).ok_or("netunreach")?;
+        convs[i].local = nics.source_for(addr).ok_or("netunreach")?;
     }
     udp_autobind(convs, sockets, i, local_ports)?;
     let c = &mut convs[i];
-    c.remote4 = addr;
+    c.remote = addr;
     c.remote_port = port;
     c.have_remote = true;
     c.connected = true;
@@ -1343,9 +1397,13 @@ fn udp_disconnect(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: 
     let c = &mut convs[i];
     c.have_remote = false;
     c.connected = false;
-    let addr = if c.addr_bound { c.local4 } else { Ipv4Address::UNSPECIFIED };
+    let addr = match (c.addr_bound, c.inet6) {
+        (true, _) => c.local,
+        (false, true) => ANY6,
+        (false, false) => ANY4,
+    };
     let port = if c.port_bound { c.local_port } else { 0 };
-    if (addr, port) != (c.local4, c.local_port) {
+    if (addr, port) != (c.local, c.local_port) {
         udp_set_local(convs, sockets, i, addr, port);
     }
 }
@@ -1354,7 +1412,6 @@ fn udp_disconnect(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: 
 /// Listen state, an incoming connection landed. Hand it to a fresh conv,
 /// re-arm a listener on the same port, and complete any parked "accept".
 fn rearm_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
-    let ep = listen_endpoint(&convs[i]);
     if let Some(h) = convs[i].handle.take() {
         {
             let s = sockets.get_mut::<tcp::Socket>(h);
@@ -1367,10 +1424,7 @@ fn rearm_listener(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: 
     let rx = tcp::SocketBuffer::new(vec![0; TCP_RX]);
     let tx = tcp::SocketBuffer::new(vec![0; TCP_TX]);
     let nh = sockets.add(tcp::Socket::new(rx, tx));
-    {
-        let ls = sockets.get_mut::<tcp::Socket>(nh);
-        let _ = ls.listen(ep);
-    }
+    let _ = listen_on(sockets.get_mut::<tcp::Socket>(nh), &convs[i]);
     convs[i].handle = Some(nh);
 }
 
@@ -1458,9 +1512,9 @@ fn hand_off(
     h: SocketHandle,
 ) -> bool {
     // Peer endpoint captured from the connected socket.
-    let (remote4, remote_port) = match sockets.get_mut::<tcp::Socket>(h).remote_endpoint() {
-        Some(IpEndpoint { addr: IpAddress::Ipv4(a), port }) => (a, port),
-        _ => (Ipv4Address::new(0, 0, 0, 0), 0),
+    let (remote, remote_port) = match sockets.get_mut::<tcp::Socket>(h).remote_endpoint() {
+        Some(IpEndpoint { addr, port }) => (addr, port),
+        None => (ANY4, 0),
     };
     // Park up to two handoffs (dropbear decoding sessions); a third
     // connection is reset rather than kept waiting.
@@ -1502,7 +1556,7 @@ fn hand_off(
     convs[n] = Conv {
         kind: Kind::Tcp,
         handle: Some(h),
-        remote4,
+        remote,
         remote_port,
         have_remote: true,
         // pump_sockets owns the connected flag: it sets it on its next pass
@@ -1587,8 +1641,7 @@ fn pump_accepts(
         let done = match s.state() {
             tcp::State::Listen => continue,
             tcp::State::Closed => {
-                let ep = listen_endpoint(&convs[i]);
-                let _ = s.listen(ep);
+                let _ = listen_on(s, &convs[i]);
                 continue;
             }
             tcp::State::SynReceived => false,
@@ -1646,7 +1699,7 @@ fn handle_send(
             let ident = convs[i].ident;
             convs[i].seq = convs[i].seq.wrapping_add(1);
             let seq = convs[i].seq;
-            let dst = IpAddress::Ipv4(convs[i].remote4);
+            let dst = convs[i].remote;
             let checksum = device_capabilities().checksum;
             let s = sockets.get_mut::<icmp::Socket>(h);
             if !s.is_open() {
@@ -1654,18 +1707,27 @@ fn handle_send(
             }
             // From the NIC whose subnet holds the destination (a NIC's
             // interface sends only from its own addresses).
-            s.set_source(nics.source_for(convs[i].remote4).map(IpAddress::Ipv4));
+            let src = nics.source_for(dst);
+            s.set_source(src);
             if !s.can_send() {
                 return;
             }
-            let echo = Icmpv4Repr::EchoRequest {
-                ident,
-                seq_no: seq,
-                data: payload,
-            };
-            if let Ok(buf) = s.send(echo.buffer_len(), dst) {
-                let mut pkt = Icmpv4Packet::new_unchecked(buf);
-                echo.emit(&mut pkt, &checksum);
+            match (dst, src) {
+                (IpAddress::Ipv4(_), _) => {
+                    let echo = Icmpv4Repr::EchoRequest { ident, seq_no: seq, data: payload };
+                    if let Ok(buf) = s.send(echo.buffer_len(), dst) {
+                        echo.emit(&mut Icmpv4Packet::new_unchecked(buf), &checksum);
+                    }
+                }
+                // The socket checksums an ICMPv6 message itself, once it
+                // knows the source.
+                (IpAddress::Ipv6(d), Some(IpAddress::Ipv6(src))) => {
+                    let echo = Icmpv6Repr::EchoRequest { ident, seq_no: seq, data: payload };
+                    if let Ok(buf) = s.send(echo.buffer_len(), dst) {
+                        echo.emit(&src, &d, &mut Icmpv6Packet::new_unchecked(buf), &checksum);
+                    }
+                }
+                _ => {}
             }
         }
         Kind::Udp => {
@@ -1675,30 +1737,39 @@ fn handle_send(
                 return;
             }
             let (hdr, data) = payload.split_at(UDP_HDR);
-            let raddr = Ipv4Address::new(hdr[0], hdr[1], hdr[2], hdr[3]);
-            let rport = u16::from_be_bytes([hdr[8], hdr[9]]);
-            let (dst, port) = if raddr.is_unspecified() && rport == 0 {
-                if !convs[i].have_remote {
-                    return;
+            let rport = u16::from_be_bytes([hdr[32], hdr[33]]);
+            // No address: the peer (no port either), else `::` (this
+            // host, as `::ffff:0.0.0.0` is).
+            let (dst, port) = match from_addr16(&hdr[..16]) {
+                None if rport == 0 => {
+                    if !convs[i].have_remote {
+                        return;
+                    }
+                    (convs[i].remote, convs[i].remote_port)
                 }
-                (convs[i].remote4, convs[i].remote_port)
-            } else if raddr.is_unspecified() {
-                (Ipv4Address::LOCALHOST, rport)
-            } else {
-                (raddr, rport)
+                None => (localhost(IpVersion::Ipv6), rport),
+                Some(a) => (or_localhost(a), rport),
             };
+            // A first send to an IPv6 address binds on `::`: the socket is
+            // an IPv6 one (an IPv4 one has none to send to), whose port
+            // takes IPv4 datagrams too, as on Linux.
+            let c = &mut convs[i];
+            if c.local_port == 0 && !c.addr_bound && dst.version() == IpVersion::Ipv6 {
+                c.local = ANY6;
+                c.inet6 = true;
+            }
             if port == 0 || udp_autobind(convs, sockets, i, local_ports).is_err() {
                 return;
             }
             let Some(h) = convs[i].handle else {
                 return;
             };
-            let mut meta = udp::UdpMetadata::from(IpEndpoint::new(IpAddress::Ipv4(dst), port));
-            let src = convs[i].local4;
-            meta.local_address = if !src.is_unspecified() && !src.is_broadcast() {
-                Some(IpAddress::Ipv4(src))
+            let mut meta = udp::UdpMetadata::from(IpEndpoint::new(dst, port));
+            let src = convs[i].local;
+            meta.local_address = if !src.is_unspecified() && !src.is_broadcast() && src.version() == dst.version() {
+                Some(src)
             } else {
-                nics.source_for(dst).map(IpAddress::Ipv4)
+                nics.source_for(dst)
             };
             let s = sockets.get_mut::<udp::Socket>(h);
             if s.can_send() {
@@ -1735,14 +1806,25 @@ fn pump_sockets(
                 };
                 let s = sockets.get_mut::<icmp::Socket>(h);
                 if s.can_recv() {
-                    if let Ok((payload, _)) = s.recv() {
-                        if let Ok(pkt) = Icmpv4Packet::new_checked(payload) {
-                            if let Ok(Icmpv4Repr::EchoReply { data, .. }) =
-                                Icmpv4Repr::parse(&pkt, &checksum)
-                            {
-                                reply(chan, REP_DATA, conv, 0, data);
+                    match s.recv() {
+                        Ok((payload, IpAddress::Ipv4(_))) => {
+                            if let Ok(pkt) = Icmpv4Packet::new_checked(payload) {
+                                if let Ok(Icmpv4Repr::EchoReply { data, .. }) = Icmpv4Repr::parse(&pkt, &checksum) {
+                                    reply(chan, REP_DATA, conv, 0, data);
+                                }
                             }
                         }
+                        // The interface checked the checksum.
+                        Ok((payload, IpAddress::Ipv6(src))) => {
+                            if let Ok(pkt) = Icmpv6Packet::new_checked(payload) {
+                                let dst = Ipv6Address::UNSPECIFIED;
+                                let ignored = ChecksumCapabilities::ignored();
+                                if let Ok(Icmpv6Repr::EchoReply { data, .. }) = Icmpv6Repr::parse(&src, &dst, &pkt, &ignored) {
+                                    reply(chan, REP_DATA, conv, 0, data);
+                                }
+                            }
+                        }
+                        Err(_) => {}
                     }
                 }
             }
@@ -1756,18 +1838,15 @@ fn pump_sockets(
                     let Ok((data, meta)) = s.recv() else {
                         break;
                     };
-                    let IpAddress::Ipv4(src) = meta.endpoint.addr;
+                    let src = meta.endpoint.addr;
                     // A connected socket hears its peer only.
-                    if c.have_remote && (src, meta.endpoint.port) != (c.remote4, c.remote_port) {
+                    if c.have_remote && (src, meta.endpoint.port) != (c.remote, c.remote_port) {
                         continue;
                     }
-                    let dst = match meta.local_address {
-                        Some(IpAddress::Ipv4(a)) => a,
-                        _ => c.local4,
-                    };
+                    let dst = meta.local_address.unwrap_or(c.local);
                     let mut msg = Vec::with_capacity(UDP_HDR + data.len());
-                    msg.extend_from_slice(&src.octets());
-                    msg.extend_from_slice(&dst.octets());
+                    msg.extend_from_slice(&addr16(src));
+                    msg.extend_from_slice(&addr16(dst));
                     msg.extend_from_slice(&meta.endpoint.port.to_be_bytes());
                     msg.extend_from_slice(&c.local_port.to_be_bytes());
                     msg.extend_from_slice(data);
@@ -1960,6 +2039,7 @@ fn main() -> ! {
         nics.poll(now, &mut sockets);
         poll_loopback(&mut lo, &mut lodev, &mut sockets, now, &convs, chan);
         nics.dhcp(&mut sockets, &mut lo, chan);
+        nics.slaac(now, &mut lo, chan);
 
         let mut req = [0u8; FILE_IO];
         // Drain a few queued reqs per tick (ring is 8); 0 = nothing ready.
@@ -2192,7 +2272,7 @@ fn poll_loopback(
         for (i, c) in convs.iter().enumerate() {
             if matches!(c.kind, Kind::Udp)
                 && c.have_remote
-                && (c.local_port, c.remote4, c.remote_port) == (r.src_port, r.dst, r.dst_port)
+                && (c.local_port, c.remote, c.remote_port) == (r.src_port, r.dst, r.dst_port)
             {
                 reply(chan, REP_SOERR, i as u16, 0, b"refused");
             }

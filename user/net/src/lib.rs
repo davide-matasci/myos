@@ -14,7 +14,10 @@ use smoltcp::phy::{
     Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken,
 };
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress};
+use smoltcp::wire::{
+    EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, HardwareAddress, Icmpv6Packet,
+    Icmpv6Repr, IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr, NdiscRepr, RawHardwareAddress,
+};
 
 /// Re-export so `/ping` (and later netd) can use smoltcp 0.12 types without a
 /// second copy of the crate. There is no crate-root `Dhcpv4Socket` alias in
@@ -84,6 +87,39 @@ pub struct Net0Device {
     mac: [u8; 6],
     /// `irq on` in `ctl`: a `poll` on `data` wakes when a frame arrives.
     rx_irq: bool,
+    /// The last router advertisement received ([`take_router_advert`]),
+    /// which smoltcp leaves alone.
+    ///
+    /// [`take_router_advert`]: Self::take_router_advert
+    router_advert: Option<RouterAdvert>,
+}
+
+/// What a router advertisement (RFC 4861) says: the router, how long it is
+/// a default router (seconds, 0: not one), the prefix whose addresses are
+/// on the link and how long they are valid (the first prefix a host may
+/// form an address in, RFC 4862), and up to three DNS servers (RDNSS,
+/// RFC 8106).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouterAdvert {
+    pub router: Ipv6Address,
+    pub router_lifetime: u16,
+    pub prefix: Option<(Ipv6Address, u8, u32)>,
+    pub dns: [Option<Ipv6Address>; 3],
+}
+
+/// The link-local address of the NIC with hardware address `mac`, its
+/// modified EUI-64 interface identifier (RFC 4291) under fe80::/64.
+pub fn link_local(mac: EthernetAddress) -> Ipv6Address {
+    in_prefix(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), mac)
+}
+
+/// The address of the NIC with hardware address `mac` in the /64 `prefix`
+/// (SLAAC: the prefix, then the modified EUI-64 interface identifier).
+pub fn in_prefix(prefix: Ipv6Address, mac: EthernetAddress) -> Ipv6Address {
+    let m = mac.0;
+    let mut a = prefix.octets();
+    a[8..].copy_from_slice(&[m[0] ^ 2, m[1], m[2], 0xff, 0xfe, m[3], m[4], m[5]]);
+    Ipv6Address::from(a)
 }
 
 impl Net0Device {
@@ -119,7 +155,44 @@ impl Net0Device {
             rx_frames: 0,
             mac,
             rx_irq,
+            router_advert: None,
         })
+    }
+
+    /// The router advertisement received since the last call, if any.
+    pub fn take_router_advert(&mut self) -> Option<RouterAdvert> {
+        self.router_advert.take()
+    }
+
+    /// Ask the routers of the link to advertise (RFC 4861 router
+    /// solicitation), from link-local address `src`: a host would wait up
+    /// to minutes for the next unsolicited advertisement.
+    pub fn send_router_solicit(&mut self, src: Ipv6Address) {
+        let mac = self.mac();
+        let dst = Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 2);
+        let icmp = Icmpv6Repr::Ndisc(NdiscRepr::RouterSolicit { lladdr: Some(RawHardwareAddress::from(mac)) });
+        let ip = Ipv6Repr {
+            src_addr: src,
+            dst_addr: dst,
+            next_header: IpProtocol::Icmpv6,
+            payload_len: icmp.buffer_len(),
+            hop_limit: 255,
+        };
+        let eth = EthernetRepr {
+            src_addr: mac,
+            // The all-routers group's multicast MAC (RFC 2464).
+            dst_addr: EthernetAddress([0x33, 0x33, 0, 0, 0, 2]),
+            ethertype: EthernetProtocol::Ipv6,
+        };
+        let mut buf = [0u8; 128];
+        let len = eth.buffer_len() + ip.buffer_len() + icmp.buffer_len();
+        let mut frame = EthernetFrame::new_unchecked(&mut buf[..len]);
+        eth.emit(&mut frame);
+        let mut pkt = Ipv6Packet::new_unchecked(frame.payload_mut());
+        ip.emit(&mut pkt);
+        let mut msg = Icmpv6Packet::new_unchecked(pkt.payload_mut());
+        icmp.emit(&src, &dst, &mut msg, &device_capabilities().checksum);
+        let _ = write_fd(self.fd, &buf[..len]);
     }
 
     pub fn fd(&self) -> usize {
@@ -258,6 +331,59 @@ pub fn device_capabilities() -> DeviceCapabilities {
     caps
 }
 
+/// The router advertisement Ethernet frame `frame` carries, if it is one
+/// a host takes (RFC 4861 6.1.2: from a link-local address, hop limit 255,
+/// a valid checksum).
+fn router_advert(frame: &[u8]) -> Option<RouterAdvert> {
+    // Ethernet (14), IPv6 (40, ICMPv6 next), ICMPv6 type 134: most frames
+    // are not one, and go no further than this.
+    if frame.len() < 14 + 40 + 16 || frame[12..14] != [0x86, 0xdd] || frame[20] != 58 || frame[54] != 134 {
+        return None;
+    }
+    let ip = Ipv6Packet::new_checked(&frame[14..]).ok()?;
+    let src = ip.src_addr();
+    if !src.is_unicast_link_local() || ip.hop_limit() != 255 {
+        return None;
+    }
+    let icmp = Icmpv6Packet::new_checked(ip.payload()).ok()?;
+    if !icmp.verify_checksum(&src, &ip.dst_addr()) {
+        return None;
+    }
+    let body = ip.payload();
+    let mut ra = RouterAdvert {
+        router: src,
+        router_lifetime: u16::from_be_bytes([body[6], body[7]]),
+        prefix: None,
+        dns: [None; 3],
+    };
+    // The options after the 16-byte header: type, length in 8-byte units.
+    let mut opts = &body[16..];
+    while opts.len() >= 8 {
+        let len = opts[1] as usize * 8;
+        if len == 0 || len > opts.len() {
+            break;
+        }
+        let opt = &opts[..len];
+        match opt[0] {
+            // Prefix information: on-link and autonomous flags set.
+            3 if len == 32 && ra.prefix.is_none() && opt[3] & 0xc0 == 0xc0 => {
+                let valid = u32::from_be_bytes([opt[4], opt[5], opt[6], opt[7]]);
+                let prefix = Ipv6Address::from(<[u8; 16]>::try_from(&opt[16..32]).ok()?);
+                ra.prefix = Some((prefix, opt[2], valid));
+            }
+            // Recursive DNS servers: 16 bytes each after the 8 of the header.
+            25 => {
+                for (slot, a) in ra.dns.iter_mut().filter(|d| d.is_none()).zip(opt[8..].chunks_exact(16)) {
+                    *slot = Some(Ipv6Address::from(<[u8; 16]>::try_from(a).ok()?));
+                }
+            }
+            _ => {}
+        }
+        opts = &opts[len..];
+    }
+    Some(ra)
+}
+
 pub struct Net0RxToken<'a> {
     buf: &'a [u8],
 }
@@ -278,6 +404,9 @@ impl Device for Net0Device {
         }
         self.rx_len = n.min(FRAME_BUF);
         self.rx_frames += 1;
+        if let Some(ra) = router_advert(&self.rx[..self.rx_len]) {
+            self.router_advert = Some(ra);
+        }
         Some((
             Net0RxToken {
                 buf: &self.rx[..self.rx_len],

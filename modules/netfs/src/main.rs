@@ -73,15 +73,16 @@ const REP_NDB: u8 = 6;
 const REP_SOERR: u8 = 7;
 /// netd's interfaces as `/net/ifaddrs` text; conv is unused.
 const REP_IFADDRS: u8 = 8;
-/// A udp conv's new peer (address, port big-endian): its queued datagrams
-/// from anyone else go.
+/// A udp conv's new peer (its address as in [`UDP_HDR`], its port
+/// big-endian): its queued datagrams from anyone else go.
 const REP_PEER: u8 = 9;
 /// netd's conversation table as `/net/convs` text (docs/sockets-curl.md).
 const REP_CONVS: u8 = 10;
 
 /// The header of a udp conv's datagrams to and from netd: remote address,
-/// local address, remote port, local port (Plan 9's udp "headers").
-const UDP_HDR: usize = 12;
+/// local address (16 bytes each, an IPv4 one as `::ffff:a.b.c.d`), remote
+/// port, local port (Plan 9's udp "headers" without its interface address).
+const UDP_HDR: usize = 36;
 
 const REQ_HDR: usize = 6;
 const REP_HDR: usize = 9;
@@ -97,11 +98,12 @@ const DATA_CAP: usize = 32768;
 /// TCP bytes a conv's writers may have queued in netd at once: a write
 /// takes what fits and a full conv refuses it (the writer waits for POLLOUT).
 const TX_CAP: u16 = 32768;
-const STATUS_CAP: usize = 64;
-/// `/net/ndb`: an address line and a few `dns=` lines.
-const NDB_CAP: usize = 256;
-/// `/net/ifaddrs`: a line per interface.
-const IFADDRS_CAP: usize = 256;
+/// A status line: two IPv6 endpoints fit (a udp conv's `#<n> ok` answer).
+const STATUS_CAP: usize = 128;
+/// `/net/ndb`: the address lines and a few `dns=` lines.
+const NDB_CAP: usize = 512;
+/// `/net/ifaddrs`: a line per address of each interface.
+const IFADDRS_CAP: usize = 1024;
 /// `/net/convs`: netd's table, a line per index in use and per handshake
 /// in progress (128 + 64 lines of up to 80 bytes).
 const CONVS_CAP: usize = 16384;
@@ -707,14 +709,14 @@ fn append_data(c: &mut Conv, src: &[u8]) {
 
 /// Drop a udp conv's queued datagrams from anyone but `addr`!`port` (its
 /// header's remote address and port).
-fn keep_from(c: &mut Conv, addr: [u8; 4], port: [u8; 2]) {
+fn keep_from(c: &mut Conv, addr: &[u8], port: &[u8]) {
     compact(c);
     let have = c.data_len as usize;
     let (mut from, mut to) = (0, 0);
     while from + 2 <= have {
         let len = u16::from_le_bytes([c.data[from], c.data[from + 1]]) as usize;
         let d = from + 2;
-        let keep = len >= UDP_HDR && c.data[d..d + 4] == addr && c.data[d + 8..d + 10] == port;
+        let keep = len >= UDP_HDR && c.data[d..d + 16] == *addr && c.data[d + 32..d + 34] == *port;
         if keep {
             c.data.copy_within(from..d + len, to);
             to += 2 + len;
@@ -871,8 +873,8 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
             }
         }
         REP_PEER => {
-            if let [a, b, c4, d, p0, p1] = *payload {
-                keep_from(c, [a, b, c4, d], [p0, p1]);
+            if payload.len() == 18 {
+                keep_from(c, &payload[..16], &payload[16..]);
             }
         }
         REP_SOERR => {
