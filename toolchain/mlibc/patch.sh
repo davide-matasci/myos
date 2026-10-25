@@ -347,3 +347,20 @@ if off not in s:
     open(path, "w").write(s.replace(check, check + off))
     print("patched meson.build: no ifuncs")
 PY
+
+# inet_pton's IPv6 with an embedded IPv4 address (::ffff:10.0.2.2) checks
+# each octet's leading zero against the hex group parsed before it, not the
+# octet, so an octet "0" after the first is refused; each checks its own.
+python3 - "$SRC/options/posix/generic/arpa-inet.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "if ((ipv4end - src) > 3 || (src[0] == '0' && value))"
+if s.count(old) == 4:
+    for k in range(4):
+        s = s.replace(old, f"if ((ipv4end - src) > 3 || (src[0] == '0' && value{k}))", 1)
+    open(path, "w").write(s)
+    print("patched arpa-inet.cpp: inet_pton's IPv4 octets checked each")
+else:
+    assert "src[0] == '0' && value3" in s, "arpa-inet.cpp: inet_pton's octet checks not found"
+PY
