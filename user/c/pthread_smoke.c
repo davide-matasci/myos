@@ -52,6 +52,19 @@ static long now_ms(void) {
     return tv.tv_sec * 1000L + tv.tv_usec / 1000L;
 }
 
+/* Signals a condition variable nobody waits on until told to stop: every
+ * signal is a wake in the kernel, for another address (issue #520). */
+static pthread_cond_t elsewhere = PTHREAD_COND_INITIALIZER;
+static volatile int noise_stop;
+
+static void *noise(void *arg) {
+    (void)arg;
+    while (!noise_stop) {
+        pthread_cond_signal(&elsewhere);
+    }
+    return NULL;
+}
+
 static int once_runs;
 
 static void once_fn(void) {
@@ -173,6 +186,28 @@ static int alone(void) {
             printf("[ FAIL ] pthread timedwait %d returned after %ld ms of 20\n", i, waited);
             return 1;
         }
+    }
+    /* The same while wakes for other addresses keep coming: none of them
+     * ends this wait (issue #520: one returned 0 on a busy machine). */
+    pthread_t noisy;
+    if ((rc = pthread_create(&noisy, NULL, noise, NULL)) != 0) {
+        return fail("noise thread", rc);
+    }
+    for (int i = 0; i < 25; i++) {
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_nsec += 20000000L;
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+        if ((rc = pthread_cond_timedwait(&c, &m, &deadline)) != ETIMEDOUT) {
+            break;
+        }
+    }
+    noise_stop = 1;
+    pthread_join(noisy, NULL);
+    if (rc != ETIMEDOUT) {
+        return fail("timedwait among other wakes", rc);
     }
     pthread_mutex_unlock(&m);
 
