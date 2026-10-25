@@ -38,6 +38,8 @@ t -t tap,netfs,mlibc,multihome_clock mlibc_multihome_clock mlibc_run multihome_c
 t -t fs,mlibc,uio mlibc_uio $MLIBC/uio_smoke
 t -t sched,mlibc,pthread mlibc_pthread $MLIBC/pthread_smoke
 t -t netfs,mlibc,netconv mlibc_netconv $MLIBC/netconv_smoke
+t -t netfs,mlibc,ipv6 mlibc_ipv6 $MLIBC/ipv6_smoke
+t -t net,netfs,mlibc,ipv6_dns mlibc_ipv6_dns $MLIBC/ipv6_smoke dns
 t -t netfs,mlibc,loopback mlibc_loopback $MLIBC/loopback_smoke
 t -t sched,mlibc,child mlibc_child $MLIBC/child_smoke
 t -t smoke,mlibc,libc mlibc_libc $MLIBC/libc_smoke
