@@ -4,10 +4,17 @@
  * stream sockets over /net/unix, which the kernel serves itself
  * (docs/sockets-unix.md).
  *
+ * AF_INET and AF_INET6 are the same conversations: netd names an address
+ * in its text form either way (`a.b.c.d!port`, `fec0::2!port`). An
+ * AF_INET6 socket on `::` takes IPv4 peers too (unless IPV6_V6ONLY), which
+ * it names `::ffff:a.b.c.d`, as on Linux; one connected or sending to such
+ * an address talks IPv4 to netd.
+ *
  * A UDP socket keeps its ctl open, and an fd of the conversation's hdata
  * (close-on-exec): there each datagram read or written carries netd's
- * 12-byte header (remote address, local address, remote port, local port:
- * Plan 9's udp headers), which recvfrom and sendto turn into addresses. The
+ * 36-byte header (remote address, local address: 16 bytes each, IPv4 as
+ * ::ffff:a.b.c.d; remote port, local port: Plan 9's udp headers without
+ * the interface address), which recvfrom and sendto turn into addresses. The
  * socket's own fd, its data, has bare datagrams (to the peer when written),
  * which is all a program it is passed to by exec sees until it uses it as a
  * socket (sock_adopt). Binding, connecting and their undoing are netd's
@@ -46,8 +53,13 @@
 #define CONNECT_TIMEOUT_MS 30000
 /* A UDP datagram's header to and from netd, and the most one netfs
  * message carries behind it. */
-#define UDP_HDR 12
-#define UDP_MAX 2030
+#define UDP_HDR 36
+#define UDP_MAX 2006
+/* netd's text of an endpoint: an IPv6 address, '!', a port. */
+#define EP_TEXT (INET6_ADDRSTRLEN + 6)
+/* A status line of netd's: an accept's or a UDP ctl answer's, two
+ * endpoints. */
+#define STATUS_LINE 160
 /* How long netd may take to answer a UDP ctl command, or a listen. */
 #define UDP_CTL_TIMEOUT_MS 5000
 
@@ -57,6 +69,14 @@ enum {
     SOCK_CONNECTING, /* nonblock connect in flight; wait for Established */
     SOCK_CONNECTED,
     SOCK_LISTENING,  /* announced (bound + listening); __myos_accept() incoming */
+};
+
+/* An IP endpoint as netd has it: IPv4 (the address in the first four bytes
+ * of addr) or IPv6, the port in network order. */
+struct ep {
+    int v6;
+    unsigned char addr[16];
+    unsigned short port;
 };
 
 struct myos_sock {
@@ -69,20 +89,20 @@ struct myos_sock {
     int so_error;   /* pending SO_ERROR (connect failure); cleared on read */
     unsigned short conv;
     char proto_path[16]; /* "/net/tcp" or "/net/udp" */
-    struct sockaddr_in peer;
+    struct ep peer;
     int peer_set;
-    struct in_addr bind_addr; /* TCP: the address and port __myos_bind() named */
-    unsigned short bind_port;
+    struct ep bound; /* TCP: the address and port __myos_bind() named */
     int accept_armed;  /* listener: "accept" ctl written, waiting for status */
     int last_accept_seq; /* listener: seq of the last accepted handoff */
     int taken_seq;     /* listener: seq named by the last "taken <seq>" sent */
     struct timeval taken_tv; /* listener: when that "taken" was sent */
-    int family;     /* AF_INET or AF_UNIX */
+    int family;     /* AF_INET, AF_INET6 or AF_UNIX */
+    int v6only;     /* AF_INET6: IPV6_V6ONLY, no IPv4 peers */
     char un_name[UN_NAME_CAP + 1]; /* AF_UNIX: bound (listener's) name */
     char un_peer[UN_NAME_CAP + 1]; /* AF_UNIX: the name connected to */
     /* UDP: */
     int hdata_fd;   /* /net/udp/N/hdata: datagrams with their headers */
-    struct sockaddr_in local; /* local address and port, netd's answers */
+    struct ep local; /* local address and port, netd's answers */
     int shut;       /* __myos_shutdown(): SHUT_RD_BIT, SHUT_WR_BIT */
     int reuse;      /* SO_REUSEADDR, for bind */
     int broadcast;  /* SO_BROADCAST (kept for getsockopt) */
@@ -101,7 +121,7 @@ static int is_dgram(int fd) {
     return fd >= 0 && fd < MYOS_MAX_SOCKS && dgram_fds[fd];
 }
 
-static int udp_bind(struct myos_sock *s, const struct sockaddr_in *in);
+static int udp_bind(struct myos_sock *s, const struct ep *ep);
 static int udp_connect(struct myos_sock *s, const struct sockaddr *addr, socklen_t addrlen);
 static int udp_take_error(struct myos_sock *s);
 static int udp_open_hdata(struct myos_sock *s);
@@ -111,6 +131,176 @@ static ssize_t udp_send(struct myos_sock *s, const void *buf, size_t len, int fl
     const struct sockaddr *dest, socklen_t destlen);
 static ssize_t udp_recv(struct myos_sock *s, void *buf, size_t len, int flags,
     struct sockaddr *from, socklen_t *fromlen);
+
+static const unsigned char v4mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+
+static int ep_unspecified(const struct ep *ep) {
+    static const unsigned char zero[16];
+    return memcmp(ep->addr, zero, ep->v6 ? 16 : 4) == 0;
+}
+
+/* The loopback address of `ep`'s version (an unspecified address is this
+ * host, netd's way and Linux's). */
+static void ep_localhost(struct ep *ep) {
+    memset(ep->addr, 0, sizeof ep->addr);
+    if (ep->v6) {
+        ep->addr[15] = 1;
+    } else {
+        ep->addr[0] = 127;
+        ep->addr[3] = 1;
+    }
+}
+
+/* `addr` (`len` bytes) as an endpoint of `s`'s family: an AF_INET socket
+ * takes a sockaddr_in, an AF_INET6 one a sockaddr_in6, whose IPv4-mapped
+ * address is the IPv4 one (which a v6only socket cannot reach). 0, or -1
+ * with errno set. */
+static int ep_from(const struct myos_sock *s, const struct sockaddr *addr, socklen_t len, struct ep *ep) {
+    memset(ep, 0, sizeof *ep);
+    if (addr == NULL || addr->sa_family != s->family) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    if (s->family == AF_INET) {
+        const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
+        if (len < sizeof *in) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(ep->addr, &in->sin_addr, 4);
+        ep->port = in->sin_port;
+        return 0;
+    }
+    {
+        const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
+        if (len < sizeof *in6) {
+            errno = EINVAL;
+            return -1;
+        }
+        ep->port = in6->sin6_port;
+        if (memcmp(in6->sin6_addr.s6_addr, v4mapped, 12) == 0) {
+            if (s->v6only) {
+                errno = ENETUNREACH;
+                return -1;
+            }
+            memcpy(ep->addr, in6->sin6_addr.s6_addr + 12, 4);
+            return 0;
+        }
+        ep->v6 = 1;
+        memcpy(ep->addr, in6->sin6_addr.s6_addr, 16);
+        return 0;
+    }
+}
+
+/* `ep` as a sockaddr of `s`'s family into `addr` (`*len` bytes of room),
+ * `*len` its whole size. An AF_INET6 socket names an IPv4 address
+ * ::ffff:a.b.c.d (0.0.0.0 is ::). */
+static void ep_put(const struct myos_sock *s, const struct ep *ep, struct sockaddr *addr, socklen_t *len) {
+    union {
+        struct sockaddr_in in;
+        struct sockaddr_in6 in6;
+    } u;
+    socklen_t n;
+    if (addr == NULL || len == NULL) {
+        return;
+    }
+    memset(&u, 0, sizeof u);
+    if (s->family == AF_INET6) {
+        u.in6.sin6_family = AF_INET6;
+        u.in6.sin6_port = ep->port;
+        if (ep->v6) {
+            memcpy(u.in6.sin6_addr.s6_addr, ep->addr, 16);
+        } else if (!ep_unspecified(ep)) {
+            memcpy(u.in6.sin6_addr.s6_addr, v4mapped, 12);
+            memcpy(u.in6.sin6_addr.s6_addr + 12, ep->addr, 4);
+        }
+        n = sizeof u.in6;
+    } else {
+        u.in.sin_family = AF_INET;
+        u.in.sin_port = ep->port;
+        if (!ep->v6) {
+            memcpy(&u.in.sin_addr, ep->addr, 4);
+        }
+        n = sizeof u.in;
+    }
+    memcpy(addr, &u, *len < n ? *len : n);
+    *len = n;
+}
+
+/* The any address of `s`'s family, port 0. */
+static void ep_any(const struct myos_sock *s, struct ep *ep) {
+    memset(ep, 0, sizeof *ep);
+    ep->v6 = s->family == AF_INET6;
+}
+
+/* "<verb>addr!port" into `cmd`; its length, or -1. */
+static int ep_cmd(char *cmd, size_t cap, const char *verb, const struct ep *ep) {
+    char ip[INET6_ADDRSTRLEN];
+    size_t pos;
+    int n;
+    if (inet_ntop(ep->v6 ? AF_INET6 : AF_INET, ep->addr, ip, sizeof ip) == NULL) {
+        return -1;
+    }
+    n = myos_cpy(cmd, cap, verb);
+    if (n < 0) {
+        return -1;
+    }
+    pos = (size_t)n;
+    n = myos_cpy(cmd + pos, cap - pos, ip);
+    if (n < 0 || pos + (size_t)n + 1 >= cap) {
+        return -1;
+    }
+    pos += (size_t)n;
+    cmd[pos++] = '!';
+    n = myos_u16_dec(cmd + pos, cap - pos, ntohs(ep->port));
+    return n < 0 ? -1 : (int)(pos + (size_t)n);
+}
+
+/* netd's "addr!port" at `t` into `ep`; the text after it, or NULL. */
+static const char *ep_parse(const char *t, struct ep *ep) {
+    char ip[INET6_ADDRSTRLEN];
+    const char *bang = strchr(t, '!');
+    unsigned port = 0;
+    size_t n;
+    if (bang == NULL || (n = (size_t)(bang - t)) >= sizeof ip) {
+        return NULL;
+    }
+    memcpy(ip, t, n);
+    ip[n] = '\0';
+    memset(ep, 0, sizeof *ep);
+    if (inet_pton(AF_INET, ip, ep->addr) != 1) {
+        if (inet_pton(AF_INET6, ip, ep->addr) != 1) {
+            return NULL;
+        }
+        ep->v6 = 1;
+    }
+    for (bang++; *bang >= '0' && *bang <= '9'; bang++) {
+        port = port * 10 + (unsigned)(*bang - '0');
+    }
+    ep->port = htons((unsigned short)port);
+    return bang;
+}
+
+/* `ep`'s address as in netd's datagram header (16 bytes, IPv4 as
+ * ::ffff:a.b.c.d), and back. */
+static void ep_to_hdr(const struct ep *ep, unsigned char *out) {
+    if (ep->v6) {
+        memcpy(out, ep->addr, 16);
+    } else {
+        memcpy(out, v4mapped, 12);
+        memcpy(out + 12, ep->addr, 4);
+    }
+}
+
+static void ep_from_hdr(const unsigned char *in, struct ep *ep) {
+    memset(ep, 0, sizeof *ep);
+    if (memcmp(in, v4mapped, 12) == 0) {
+        memcpy(ep->addr, in + 12, 4);
+    } else {
+        ep->v6 = 1;
+        memcpy(ep->addr, in, 16);
+    }
+}
 
 static struct myos_sock *sock_by_fd(int fd) {
     int i;
@@ -698,7 +888,7 @@ int __myos_socket(int domain, int type, int protocol) {
             return -1;
         }
         proto = "/net/unix";
-    } else if (domain != AF_INET) {
+    } else if (domain != AF_INET && domain != AF_INET6) {
         errno = EAFNOSUPPORT;
         return -1;
     } else if (type == SOCK_STREAM) {
@@ -761,8 +951,9 @@ int __myos_socket(int domain, int type, int protocol) {
     s->type = type;
     s->family = domain;
     s->state = SOCK_OPEN;
+    ep_any(s, &s->bound);
+    ep_any(s, &s->local);
     if (type == SOCK_DGRAM) {
-        s->local.sin_family = AF_INET;
         if (data_fd >= MYOS_MAX_SOCKS || udp_open_hdata(s) < 0) {
             close(data_fd);
             errno = EMFILE;
@@ -817,20 +1008,28 @@ static void un_put_name(const char *name, struct sockaddr *addr, socklen_t *addr
     *addrlen = len;
 }
 
-/* What a TCP socket may bind, as on Linux: any address, 127.0.0.0/8 and
- * the host's own (/net/ifaddrs). */
-static int host_addr(struct in_addr a) {
+/* What a TCP socket may bind, as on Linux: any address, 127.0.0.0/8, ::1
+ * and the host's own (/net/ifaddrs). */
+static int host_addr(const struct ep *a) {
+    static const unsigned char lo6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     struct ifaddrs *ifs, *p;
     int found = 0;
-    if (a.s_addr == INADDR_ANY || (ntohl(a.s_addr) >> 24) == 127) {
+    if (ep_unspecified(a) || (!a->v6 && a->addr[0] == 127) || (a->v6 && memcmp(a->addr, lo6, 16) == 0)) {
         return 1;
     }
     if (getifaddrs(&ifs) != 0) {
         return 0;
     }
     for (p = ifs; p != NULL; p = p->ifa_next) {
-        if (p->ifa_addr != NULL && p->ifa_addr->sa_family == AF_INET
-            && ((struct sockaddr_in *)p->ifa_addr)->sin_addr.s_addr == a.s_addr) {
+        if (p->ifa_addr == NULL) {
+            continue;
+        }
+        if (!a->v6 && p->ifa_addr->sa_family == AF_INET
+            && memcmp(&((struct sockaddr_in *)p->ifa_addr)->sin_addr, a->addr, 4) == 0) {
+            found = 1;
+        }
+        if (a->v6 && p->ifa_addr->sa_family == AF_INET6
+            && memcmp(((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr.s6_addr, a->addr, 16) == 0) {
             found = 1;
         }
     }
@@ -856,52 +1055,30 @@ int __myos_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         }
         return 0;
     }
-    if (s->type == SOCK_DGRAM) {
-        if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
+    {
+        struct ep ep;
+        if (addr == NULL) {
             errno = EINVAL;
             return -1;
         }
-        if (addr->sa_family != AF_INET) {
-            errno = EAFNOSUPPORT;
+        if (ep_from(s, addr, addrlen, &ep) < 0) {
+            /* An IPv4-mapped address a v6only socket cannot have. */
+            if (errno == ENETUNREACH) {
+                errno = EADDRNOTAVAIL;
+            }
             return -1;
         }
-        return udp_bind(s, (const struct sockaddr_in *)addr);
-    }
-    if (addr != NULL && addr->sa_family == AF_INET) {
-        const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
-        if (!host_addr(in->sin_addr)) {
+        if (s->type == SOCK_DGRAM) {
+            return udp_bind(s, &ep);
+        }
+        if (!host_addr(&ep)) {
             errno = EADDRNOTAVAIL;
             return -1;
         }
         /* Remembered; the listener is started by __myos_listen(). */
-        s->bind_addr = in->sin_addr;
-        s->bind_port = in->sin_port;
+        s->bound = ep;
     }
     return 0;
-}
-
-/* "<verb> a.b.c.d!port" into `cmd`. */
-static int endpoint_cmd(char *cmd, size_t cap, const char *verb,
-    const struct sockaddr_in *in) {
-    char ip[INET_ADDRSTRLEN];
-    size_t pos;
-    int n;
-    if (inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip) == NULL) {
-        return -1;
-    }
-    n = myos_cpy(cmd, cap, verb);
-    if (n < 0) {
-        return -1;
-    }
-    pos = (size_t)n;
-    n = myos_cpy(cmd + pos, cap - pos, ip);
-    if (n < 0 || pos + (size_t)n + 1 >= cap) {
-        return -1;
-    }
-    pos += (size_t)n;
-    cmd[pos++] = '!';
-    n = myos_u16_dec(cmd + pos, cap - pos, ntohs(in->sin_port));
-    return n < 0 ? -1 : (int)(pos + (size_t)n);
 }
 
 /* Listener ctl helper: write a command to the conv's ctl file. */
@@ -976,7 +1153,7 @@ static void listener_retry_taken(struct myos_sock *ls, int seq) {
 /* Read the listener conv's status text ("listening" / "accepted <N> <ip>!<p>"). */
 static int listener_status(struct myos_sock *s, char *out, size_t cap) {
     char path[64];
-    char sbuf[80];
+    char sbuf[STATUS_LINE];
     int st;
     ssize_t nr;
     if (conv_path(path, sizeof path, s->proto_path, s->conv, "status") < 0) {
@@ -1122,7 +1299,7 @@ int __myos_socketpair(int domain, int type, int protocol, int sv[2]) {
 
 int __myos_listen(int sockfd, int backlog) {
     struct myos_sock *s = sock_lookup(sockfd);
-    char cmd[sizeof "announce 255.255.255.255!65535"];
+    char cmd[sizeof "announce " + EP_TEXT + sizeof " v6only"];
     (void)backlog; /* netd keeps a one-connection ready queue (smoltcp listener) */
     if (s == NULL) {
         errno = ENOTSOCK;
@@ -1150,21 +1327,20 @@ int __myos_listen(int sockfd, int backlog) {
     if (s->state == SOCK_LISTENING) {
         return 0; /* already listening: Linux takes the new backlog */
     }
-    if (s->bind_port == 0) {
+    if (s->bound.port == 0) {
         errno = EINVAL;
         return -1;
     }
     {
-        /* "announce a.b.c.d!port": netd listens on that address (0.0.0.0:
-         * any) and port. */
-        struct sockaddr_in in;
-        memset(&in, 0, sizeof in);
-        in.sin_family = AF_INET;
-        in.sin_addr = s->bind_addr;
-        in.sin_port = s->bind_port;
-        if (endpoint_cmd(cmd, sizeof cmd, "announce ", &in) < 0) {
+        /* "announce addr!port": netd listens on that address (0.0.0.0: any
+         * IPv4 one; ::, any IPv6 one and IPv4 too unless v6only) and port. */
+        int n = ep_cmd(cmd, sizeof cmd - sizeof " v6only", "announce ", &s->bound);
+        if (n < 0) {
             errno = EINVAL;
             return -1;
+        }
+        if (s->bound.v6 && s->v6only) {
+            memcpy(cmd + n, " v6only", sizeof " v6only");
         }
     }
     if (listener_ctl(s, cmd) < 0) {
@@ -1175,7 +1351,7 @@ int __myos_listen(int sockfd, int backlog) {
          * "accepted"), or why not, in place of the conv's "cloned"
          * ("addrinuse": another listener has the port). */
         struct timeval start;
-        char st[80];
+        char st[STATUS_LINE];
         (void)gettimeofday(&start, NULL);
         for (;;) {
             if (listener_status(s, st, sizeof st) == 0 && strcmp(st, "cloned") != 0) {
@@ -1219,7 +1395,7 @@ static int accept_body(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     }
     if (ls->nonblock) {
         /* Nonblocking accept: one check, EAGAIN when nothing is pending. */
-        char stbuf[80];
+        char stbuf[STATUS_LINE];
         if (!ls->accept_armed) {
             if (listener_ctl(ls, "accept") != 0) {
                 return -1;
@@ -1256,7 +1432,7 @@ static int accept_body(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         ls->accept_armed = 1;
     }
     for (;;) {
-        char stbuf[80];
+        char stbuf[STATUS_LINE];
         if (listener_status(ls, stbuf, sizeof stbuf) == 0
             && strncmp(stbuf, "accepted", 8) == 0) {
             if (status_accept_seq(stbuf) != ls->last_accept_seq) {
@@ -1328,8 +1504,10 @@ static int accept_from_status(struct myos_sock *ls, char *status,
     s->conv = (unsigned short)n;
     s->ctl_fd = -1;
     s->type = SOCK_STREAM;
-    s->family = AF_INET;
+    s->family = ls->family;
+    s->v6only = ls->v6only;
     s->state = SOCK_CONNECTED;
+    s->bound = ls->bound;
     if (conv_path(path, sizeof path, s->proto_path, s->conv, "data") < 0) {
         sock_free(s);
         errno = EIO;
@@ -1351,60 +1529,17 @@ static int accept_from_status(struct myos_sock *ls, char *status,
     while (*p == ' ') {
         p++;
     }
-    if (*p != '\0') {
-        unsigned b[4] = {0, 0, 0, 0};
-        int port = 0;
-        int k = 0;
-        int ok = 1;
-        for (const char *q = p; *q; q++) {
-            if (*q >= '0' && *q <= '9') {
-                if (k == 4) {
-                    port = port * 10 + (*q - '0');
-                } else {
-                    b[k] = b[k] * 10 + (*q - '0');
-                }
-            } else if (*q == '.') {
-                k++;
-                if (k > 3) {
-                    ok = 0;
-                    break;
-                }
-            } else if (*q == '!') {
-                k = 4;
-            } else {
-                ok = 0;
-                break;
-            }
-        }
-        if (ok && k == 4) {
-            s->peer_set = 1;
-            memset(&s->peer, 0, sizeof s->peer);
-            s->peer.sin_family = AF_INET;
-            s->peer.sin_port = (unsigned short)((port >> 8) | ((port & 0xff) << 8));
-            s->peer.sin_addr.s_addr = (b[0]) | ((unsigned)b[1] << 8)
-                | ((unsigned)b[2] << 16) | ((unsigned)b[3] << 24);
-            if (addr != NULL) {
-                struct sockaddr_in sa;
-                memset(&sa, 0, sizeof sa);
-                sa.sin_family = AF_INET;
-                sa.sin_port = (unsigned short)((port >> 8) | ((port & 0xff) << 8));
-                sa.sin_addr.s_addr = (b[0]) | ((unsigned)b[1] << 8)
-                    | ((unsigned)b[2] << 16) | ((unsigned)b[3] << 24);
-                memcpy(addr, &sa, sizeof sa);
-                if (addrlen != NULL) {
-                    *addrlen = (socklen_t)sizeof sa;
-                }
-            }
-        }
+    if (*p != '\0' && ep_parse(p, &s->peer) != NULL) {
+        s->peer_set = 1;
+        ep_put(s, &s->peer, addr, addrlen);
     }
     return data_fd;
 }
 
 static int connect_body(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     struct myos_sock *s = sock_lookup(sockfd);
-    const struct sockaddr_in *in;
-    char cmd[48];
-    char ip[INET_ADDRSTRLEN];
+    struct ep ep;
+    char cmd[sizeof "connect " + EP_TEXT];
     int cm;
 
     (void)addrlen;
@@ -1443,26 +1578,12 @@ static int connect_body(int sockfd, const struct sockaddr *addr, socklen_t addrl
         finish_connect(s);
         return 0;
     }
-    in = (const struct sockaddr_in *)addr;
-    if (inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip) == NULL) {
-        errno = EINVAL;
+    if (ep_from(s, addr, addrlen, &ep) < 0) {
         return -1;
     }
-    {
-        size_t pos = 0;
-        int n;
-        n = myos_cpy(cmd, sizeof cmd, "connect ");
-        if (n < 0) { errno = EINVAL; return -1; }
-        pos = (size_t)n;
-        n = myos_cpy(cmd + pos, sizeof cmd - pos, ip);
-        if (n < 0) { errno = EINVAL; return -1; }
-        pos += (size_t)n;
-        if (pos + 1 >= sizeof cmd) { errno = EINVAL; return -1; }
-        cmd[pos++] = '!';
-        n = myos_u16_dec(cmd + pos, sizeof cmd - pos, ntohs(in->sin_port));
-        if (n < 0) { errno = EINVAL; return -1; }
-        pos += (size_t)n;
-        cm = (int)pos;
+    if ((cm = ep_cmd(cmd, sizeof cmd, "connect ", &ep)) < 0) {
+        errno = EINVAL;
+        return -1;
     }
     if (s->ctl_fd < 0) {
         errno = EBADF;
@@ -1473,7 +1594,10 @@ static int connect_body(int sockfd, const struct sockaddr *addr, socklen_t addrl
         return -1;
     }
     /* Stash peer early; peer_set stays 0 until Established (getpeername). */
-    s->peer = *in;
+    s->peer = ep;
+    if (ep_unspecified(&s->peer)) {
+        ep_localhost(&s->peer);
+    }
     s->so_error = 0;
 
     if (s->nonblock) {
@@ -1541,6 +1665,19 @@ int __myos_setsockopt(int sockfd, int level, int optname, const void *optval, so
         }
         *(optname == SO_REUSEADDR ? &s->reuse : &s->broadcast) = *(const int *)optval != 0;
     }
+    /* Taken at the bind or listen, as on Linux (where a bound socket
+     * refuses it). */
+    if (level == IPPROTO_IPV6 && optname == IPV6_V6ONLY) {
+        if (s->family != AF_INET6) {
+            errno = ENOPROTOOPT;
+            return -1;
+        }
+        if (optval == NULL || optlen < sizeof(int)) {
+            errno = EINVAL;
+            return -1;
+        }
+        s->v6only = *(const int *)optval != 0;
+    }
     return 0;
 }
 
@@ -1583,6 +1720,15 @@ int __myos_getsockopt(int sockfd, int level, int optname, void *optval, socklen_
         s->so_error = 0;
         return 0;
     }
+    if (level == IPPROTO_IPV6 && optname == IPV6_V6ONLY && s->family == AF_INET6) {
+        if (*optlen < sizeof(int)) {
+            errno = EINVAL;
+            return -1;
+        }
+        *(int *)optval = s->v6only;
+        *optlen = sizeof(int);
+        return 0;
+    }
     if (optname == SO_REUSEADDR || optname == SO_BROADCAST) {
         if (*optlen < sizeof(int)) {
             errno = EINVAL;
@@ -1611,7 +1757,6 @@ int __myos_getsockopt(int sockfd, int level, int optname, void *optval, socklen_
 }
 
 int __myos_getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    struct sockaddr_in local;
     struct myos_sock *s = sock_lookup(sockfd);
     if (s == NULL) {
         errno = ENOTSOCK;
@@ -1625,21 +1770,9 @@ int __myos_getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         un_put_name(s->un_name, addr, addrlen);
         return 0;
     }
-    memset(&local, 0, sizeof local);
-    local.sin_family = AF_INET;
-    local.sin_addr.s_addr = INADDR_ANY;
-    local.sin_port = 0;
-    if (s->type == SOCK_DGRAM) {
-        local = s->local;
-    } else if (s->bind_port != 0) {
-        /* A bound or listening TCP socket: what __myos_bind() named. */
-        local.sin_addr = s->bind_addr;
-        local.sin_port = s->bind_port;
-    }
-    if (*addrlen > sizeof local) {
-        *addrlen = sizeof local;
-    }
-    memcpy(addr, &local, *addrlen);
+    /* A UDP socket's is netd's; a TCP one's what __myos_bind() named (a
+     * connected one's is not known: any). */
+    ep_put(s, s->type == SOCK_DGRAM ? &s->local : &s->bound, addr, addrlen);
     return 0;
 }
 
@@ -1650,7 +1783,7 @@ int __myos_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         return -1;
     }
     /* A UDP socket connected to port 0 has no peer, as on Linux. */
-    if (!s->peer_set || (s->type == SOCK_DGRAM && s->peer.sin_port == 0)) {
+    if (!s->peer_set || (s->type == SOCK_DGRAM && s->peer.port == 0)) {
         errno = ENOTCONN;
         return -1;
     }
@@ -1662,10 +1795,7 @@ int __myos_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         un_put_name(s->un_peer, addr, addrlen);
         return 0;
     }
-    if (*addrlen > sizeof s->peer) {
-        *addrlen = sizeof s->peer;
-    }
-    memcpy(addr, &s->peer, *addrlen);
+    ep_put(s, &s->peer, addr, addrlen);
     return 0;
 }
 
@@ -1726,7 +1856,7 @@ ssize_t __myos_recv(int sockfd, void *buf, size_t len, int flags) {
     if (is_dgram(sockfd)) {
         return udp_recv(s, buf, len, flags, NULL, NULL);
     }
-    if (s != NULL && (flags & MSG_PEEK) && s->family == AF_INET && s->state == SOCK_CONNECTED) {
+    if (s != NULL && (flags & MSG_PEEK) && s->family != AF_UNIX && s->state == SOCK_CONNECTED) {
         return tcp_peek(s, buf, len, flags);
     }
     /* MSG_DONTWAIT: force nonblock for this call only (read path checks s->nonblock). */
@@ -1977,7 +2107,7 @@ ssize_t __myos_recvfrom(int sockfd, void *buf, size_t len, int flags,
     }
     /* As __myos_recv: a peek leaves the bytes (mlibc's recv is a recvfrom
      * without an address). */
-    if (s != NULL && (flags & MSG_PEEK) && s->family == AF_INET && s->state == SOCK_CONNECTED) {
+    if (s != NULL && (flags & MSG_PEEK) && s->family != AF_UNIX && s->state == SOCK_CONNECTED) {
         n = tcp_peek(s, buf, len, flags);
     } else {
         if (s != NULL && (flags & MSG_DONTWAIT) && !s->nonblock) {
@@ -1992,10 +2122,7 @@ ssize_t __myos_recvfrom(int sockfd, void *buf, size_t len, int flags,
     if (n >= 0 && src_addr != NULL && addrlen != NULL) {
         s = sock_lookup(sockfd);
         if (s != NULL && s->peer_set) {
-            if (*addrlen > sizeof s->peer) {
-                *addrlen = sizeof s->peer;
-            }
-            memcpy(src_addr, &s->peer, *addrlen);
+            ep_put(s, &s->peer, src_addr, addrlen);
         }
     }
     (void)flags;
@@ -2065,40 +2192,17 @@ static int udp_take_error(struct myos_sock *s) {
     return netd_errno(b);
 }
 
-/* "a.b.c.d!port" at `t` into `sin`; the text after it, or NULL. */
-static const char *udp_parse_endpoint(const char *t, struct sockaddr_in *sin) {
-    char ip[INET_ADDRSTRLEN];
-    const char *bang = strchr(t, '!');
-    unsigned port = 0;
-    size_t n;
-    if (bang == NULL || (n = (size_t)(bang - t)) >= sizeof ip) {
-        return NULL;
-    }
-    memcpy(ip, t, n);
-    ip[n] = '\0';
-    memset(sin, 0, sizeof *sin);
-    sin->sin_family = AF_INET;
-    if (inet_pton(AF_INET, ip, &sin->sin_addr) != 1) {
-        return NULL;
-    }
-    for (bang++; *bang >= '0' && *bang <= '9'; bang++) {
-        port = port * 10 + (unsigned)(*bang - '0');
-    }
-    sin->sin_port = htons((unsigned short)port);
-    return bang;
-}
-
 /* netd's answer to a udp_ctl command: "ok <addr>!<port>", the local
  * address after it, then the peer's if connected, or "fail <why>". */
 static int udp_answer(struct myos_sock *s, const char *a) {
     if (strncmp(a, "ok ", 3) == 0) {
-        struct sockaddr_in peer;
-        const char *rest = udp_parse_endpoint(a + 3, &s->local);
+        struct ep peer;
+        const char *rest = ep_parse(a + 3, &s->local);
         if (rest == NULL) {
             errno = EIO;
             return -1;
         }
-        if (*rest == ' ' && udp_parse_endpoint(rest + 1, &peer) != NULL) {
+        if (*rest == ' ' && ep_parse(rest + 1, &peer) != NULL) {
             s->peer = peer;
             s->peer_set = 1;
         }
@@ -2111,7 +2215,7 @@ static int udp_answer(struct myos_sock *s, const char *a) {
 /* Run netd command `cmd` for `s` and wait for its answer (udp_answer):
  * tagged "#<n>" so the status that carries it is this command's. */
 static int udp_ctl(struct myos_sock *s, const char *cmd) {
-    char line[80];
+    char line[sizeof "bind " + EP_TEXT + sizeof " reuse v6only #4294967295"];
     char want[16];
     char path[64];
     struct timeval start;
@@ -2137,7 +2241,7 @@ static int udp_ctl(struct myos_sock *s, const char *cmd) {
     w = (size_t)t + 2;
     (void)gettimeofday(&start, NULL);
     for (;;) {
-        char st[80];
+        char st[STATUS_LINE];
         ssize_t r;
         int fd = open(path, O_RDONLY);
         if (fd >= 0) {
@@ -2162,23 +2266,35 @@ static int udp_ctl(struct myos_sock *s, const char *cmd) {
     }
 }
 
-static int udp_bind(struct myos_sock *s, const struct sockaddr_in *in) {
-    char cmd[48];
-    int n = endpoint_cmd(cmd, sizeof cmd - 6, "bind ", in);
+static int udp_bind(struct myos_sock *s, const struct ep *ep) {
+    char cmd[sizeof "bind " + EP_TEXT + sizeof " reuse v6only"];
+    int n = ep_cmd(cmd, sizeof cmd - sizeof " reuse v6only", "bind ", ep);
     if (n < 0) {
         errno = EINVAL;
         return -1;
     }
+    cmd[n] = '\0';
     if (s->reuse) {
-        memcpy(cmd + n, " reuse", 7);
+        strcat(cmd, " reuse");
+    }
+    if (ep->v6 && s->v6only) {
+        strcat(cmd, " v6only");
     }
     return udp_ctl(s, cmd);
 }
 
+/* A port, as a first send binds it: an AF_INET6 socket's on ::. */
+static int udp_autobind(struct myos_sock *s) {
+    if (s->family != AF_INET6) {
+        return udp_ctl(s, "autobind");
+    }
+    return udp_ctl(s, s->v6only ? "autobind :: v6only" : "autobind ::");
+}
+
 /* connect, or with AF_UNSPEC undo it: the peer is netd's. */
 static int udp_connect(struct myos_sock *s, const struct sockaddr *addr, socklen_t addrlen) {
-    const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
-    char cmd[48];
+    struct ep ep;
+    char cmd[sizeof "connect " + EP_TEXT];
     if (addr == NULL) {
         errno = EINVAL;
         return -1;
@@ -2191,23 +2307,25 @@ static int udp_connect(struct myos_sock *s, const struct sockaddr *addr, socklen
         s->state = SOCK_OPEN;
         return 0;
     }
-    if (addr->sa_family != AF_INET) {
-        errno = EAFNOSUPPORT;
+    if (ep_from(s, addr, addrlen, &ep) < 0) {
         return -1;
     }
-    if (addrlen < sizeof *in || endpoint_cmd(cmd, sizeof cmd, "connect ", in) < 0) {
+    /* An AF_INET6 socket's port is on :: before its connect takes an
+     * address. */
+    if (s->family == AF_INET6 && s->local.port == 0 && udp_autobind(s) < 0) {
+        return -1;
+    }
+    if (ep_cmd(cmd, sizeof cmd, "connect ", &ep) < 0) {
         errno = EINVAL;
         return -1;
     }
     if (udp_ctl(s, cmd) < 0) {
         return -1;
     }
-    memset(&s->peer, 0, sizeof s->peer);
-    s->peer.sin_family = AF_INET;
-    s->peer.sin_port = in->sin_port;
-    /* 0.0.0.0 is this host (netd's way, and Linux's). */
-    s->peer.sin_addr.s_addr = in->sin_addr.s_addr != INADDR_ANY
-        ? in->sin_addr.s_addr : htonl(INADDR_LOOPBACK);
+    s->peer = ep;
+    if (ep_unspecified(&s->peer)) {
+        ep_localhost(&s->peer);
+    }
     s->peer_set = 1;
     s->state = SOCK_CONNECTED;
     return 0;
@@ -2218,6 +2336,7 @@ static int udp_connect(struct myos_sock *s, const struct sockaddr *addr, socklen
 static ssize_t udp_send(struct myos_sock *s, const void *buf, size_t len, int flags,
     const struct sockaddr *dest, socklen_t destlen) {
     unsigned char msg[UDP_HDR + UDP_MAX];
+    struct ep to;
     size_t off = 0;
     long r;
     (void)flags;
@@ -2230,12 +2349,7 @@ static ssize_t udp_send(struct myos_sock *s, const void *buf, size_t len, int fl
         errno = EDESTADDRREQ;
         return -1;
     }
-    if (dest != NULL && dest->sa_family != AF_INET) {
-        errno = EAFNOSUPPORT;
-        return -1;
-    }
-    if (dest != NULL && destlen < sizeof(struct sockaddr_in)) {
-        errno = EINVAL;
+    if (dest != NULL && ep_from(s, dest, destlen, &to) < 0) {
         return -1;
     }
     if (len > UDP_MAX) {
@@ -2243,14 +2357,16 @@ static ssize_t udp_send(struct myos_sock *s, const void *buf, size_t len, int fl
         return -1;
     }
     /* The port a first send binds, for getsockname. */
-    if (s->local.sin_port == 0 && udp_ctl(s, "autobind") < 0) {
+    if (s->local.port == 0 && udp_autobind(s) < 0) {
         return -1;
     }
     if (dest != NULL) {
-        const struct sockaddr_in *in = (const struct sockaddr_in *)dest;
         memset(msg, 0, UDP_HDR);
-        memcpy(msg, &in->sin_addr, 4);
-        memcpy(msg + 8, &in->sin_port, 2);
+        /* :: is all zeros, which with a port is this host to netd. */
+        if (!(to.v6 && ep_unspecified(&to))) {
+            ep_to_hdr(&to, msg);
+        }
+        memcpy(msg + 32, &to.port, 2);
         off = UDP_HDR;
     }
     memcpy(msg + off, buf, len);
@@ -2289,21 +2405,15 @@ static ssize_t udp_recv(struct myos_sock *s, void *buf, size_t len, int flags,
             }
         }
         if (r >= UDP_HDR) {
-            struct sockaddr_in src;
+            struct ep src;
             const unsigned char *data = msg + UDP_HDR;
             size_t n = (size_t)r - UDP_HDR;
             size_t copy;
-            memset(&src, 0, sizeof src);
-            src.sin_family = AF_INET;
-            memcpy(&src.sin_addr, msg, 4);
-            memcpy(&src.sin_port, msg + 8, 2);
+            ep_from_hdr(msg, &src);
+            memcpy(&src.port, msg + 32, 2);
             copy = n < len ? n : len;
             memcpy(buf, data, copy);
-            if (from != NULL && fromlen != NULL) {
-                socklen_t l = *fromlen < sizeof src ? *fromlen : sizeof src;
-                memcpy(from, &src, l);
-                *fromlen = sizeof src;
-            }
+            ep_put(s, &src, from, fromlen);
             return (ssize_t)((flags & MSG_TRUNC) ? n : copy);
         }
         if (s->nonblock || (flags & MSG_DONTWAIT)) {
@@ -2379,10 +2489,12 @@ static struct myos_sock *sock_adopt(int fd) {
     s->conv = id;
     s->data_fd = fd;
     s->type = type;
+    /* A TCP one's family is not known (taken for AF_INET); a UDP one's is
+     * its address's. */
     s->family = AF_INET;
     s->state = SOCK_OPEN;
     if (type == SOCK_STREAM) {
-        char st[80];
+        char st[STATUS_LINE];
         if (listener_status(s, st, sizeof st) == 0) {
             if (strncmp(st, "connected", 9) == 0) {
                 s->state = SOCK_CONNECTED;
@@ -2394,7 +2506,6 @@ static struct myos_sock *sock_adopt(int fd) {
         return s;
     }
     /* UDP: its ctl and hdata, then what netd knows of it. */
-    s->local.sin_family = AF_INET;
     if (conv_path(path, sizeof path, s->proto_path, id, "ctl") < 0
         || (s->ctl_fd = open(path, O_RDWR)) < 0 || udp_open_hdata(s) < 0
         || udp_ctl(s, "local") < 0) {
@@ -2409,6 +2520,9 @@ static struct myos_sock *sock_adopt(int fd) {
         return NULL;
     }
     (void)fcntl(s->ctl_fd, F_SETFD, FD_CLOEXEC);
+    if (s->local.v6) {
+        s->family = AF_INET6;
+    }
     if (s->peer_set) {
         s->state = SOCK_CONNECTED;
     }
