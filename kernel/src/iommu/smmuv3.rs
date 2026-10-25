@@ -538,10 +538,22 @@ pub fn map(domain: u32, phys: u64, len: usize) -> bool {
 }
 
 /// The domain `bus:slot.func` is confined to ([`attach`]), if any.
-pub fn domain_of(bus: u8, slot: u8, func: u8) -> Option<u32> {
+fn domain_of(bus: u8, slot: u8, func: u8) -> Option<u32> {
     let guard = STATE.lock();
     guard.as_ref()?.domains.iter().find(|d| d.dev == (bus, slot, func)).map(|d| u32::from(d.vmid))
 }
+
+/// A confined function's messages reach the doorbell's page, mapped into
+/// its domain: the ITS or GICv2m frame decides what they raise.
+pub fn msi_message(bus: u8, slot: u8, func: u8, _irq: u32, msg: crate::msi::Message) -> crate::msi::Message {
+    if let Some(domain) = domain_of(bus, slot, func) {
+        map(domain, msg.address & !0xfff, PAGE as usize);
+    }
+    msg
+}
+
+/// The doorbell stays mapped until the domain goes.
+pub fn msi_release(_bus: u8, _slot: u8, _func: u8) {}
 
 pub fn detach(bus: u8, slot: u8, func: u8) {
     let mut guard = STATE.lock();

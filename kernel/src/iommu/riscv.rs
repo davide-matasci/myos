@@ -16,11 +16,23 @@
 //! its own; [`map`] puts pages in it one-to-one, so a bus address stays a
 //! physical one.
 //!
+//! A confined function's interrupt messages are the unit's too (the
+//! architecture's MSI translation, chapter 2.3; issue #590). The IMSIC's
+//! page would take any identity it is written, the APLIC's wired sources
+//! and the other functions' MSIs included, so where the unit has
+//! memory-resident interrupt files (`CAP.MSI_MRIF`) the function's
+//! messages go to one of its own ([`msi_message`]): a 512-byte page of
+//! pending and enable bits in memory, one identity of it enabled, whose
+//! write the unit turns into a *notice*, a message of its own raising the
+//! function's IMSIC identity. Whatever the function writes, it raises that
+//! identity or nothing. A unit without them maps the IMSIC page into the
+//! domain instead, and the IMSIC decides.
+//!
 //! The unit takes commands from a queue in memory (invalidate a context,
 //! a domain's translations, a fence) and reports refused DMAs through a
 //! fault queue. The PCI unit signals the queue by MSI only (`CAP.IGS`),
 //! which the riscv64 kernel does not take (the PLIC has no message
-//! interrupts): the queue is drained when `/proc/iommu` is read ([`text`])
+//! interrupts; the AIA's IMSIC could, issue #597): the queue is drained when `/proc/iommu` is read ([`text`])
 //! and when a function is let go ([`detach`]), which is when the counts
 //! are looked at. The unit's walks are coherent with the harts' caches, as
 //! the architecture has them.
@@ -28,11 +40,13 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use spin::Mutex;
 
 use super::Fault;
 use crate::mm;
+use crate::msi::Message;
 
 // The registers (chapter 5), 64-bit ones read and written whole.
 const CAP: usize = 0x00;
@@ -49,6 +63,7 @@ const FQCSR: usize = 0x4C;
 const CAP_SV39X4: u64 = 1 << 17;
 const CAP_SV48X4: u64 = 1 << 18;
 const CAP_MSI_FLAT: u64 = 1 << 22;
+const CAP_MSI_MRIF: u64 = 1 << 23;
 /// The directory pointer: the mode in bits 0-3 (`4` three levels), busy
 /// in bit 4, the root's PPN from bit 10.
 const DDTP_3LVL: u64 = 4;
@@ -86,6 +101,26 @@ const PTE_PAGE: u64 = 1 | 1 << 1 | 1 << 2 | 1 << 4 | 1 << 6 | 1 << 7;
 const PTE_PPN: u64 = 0x003F_FFFF_FFFF_FC00;
 
 const PAGE: u64 = 4096;
+
+// The device context's MSI translation (its 64-byte format): the MSI page
+// table (`msiptp`, flat), and the addresses that are an interrupt file's,
+// a page number matched under a mask (`msi_addr_mask`, `msi_addr_pattern`).
+const DC_MSIPTP: usize = 4;
+const DC_MSI_MASK: usize = 5;
+const DC_MSI_PATTERN: usize = 6;
+const MSIPTP_FLAT: u64 = 1 << 60;
+/// An MSI page table entry in MRIF mode (valid, `M` 1), the MRIF's
+/// address from bit 7 (its 512-byte number); its second doubleword the
+/// notice's IMSIC page from bit 10, its identity's low 10 bits at bit 0
+/// and the 11th at bit 60.
+const MSI_PTE_MRIF: u64 = 1 | 1 << 1;
+const NOTICE_ID_MSB: u64 = 1 << 60;
+/// Where in its frame (after the MSI page table's one entry) the MRIF
+/// is, and the one identity of it the function's messages carry (in the
+/// first 64, whose pending and enable doublewords are the MRIF's first
+/// two in every reading of its layout).
+const MRIF_OFFSET: u64 = 512;
+const MRIF_ID: u32 = 1;
 /// The identity domain's number (its contexts have no GSCID); the
 /// functions programs drive get the next.
 const IDENTITY: u16 = 1;
@@ -102,6 +137,10 @@ struct Domain {
     root: u64,
     dev: (u8, u8, u8),
     pages: usize,
+    /// The function's MRIF while its interrupt is routed: the frame of
+    /// its MSI page table and MRIF, and the IMSIC identity the notices
+    /// raise.
+    mrif: Option<(u64, u32)>,
 }
 
 struct State {
@@ -125,11 +164,20 @@ struct State {
     levels: u8,
     gpa_bits: u8,
     domains: Vec<Domain>,
+    /// Whether the unit has memory-resident interrupt files, and the
+    /// frames of the MRIFs given back, for the next ones: never freed, so
+    /// [`msi_notice`] may still clear one it read before it went.
+    mrif: bool,
+    spare: Vec<u64>,
 }
 
 unsafe impl Send for State {}
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+/// Each IMSIC identity's MRIF (where the HHDM maps it) while a function's
+/// notices raise it, for [`msi_notice`]; 0 for none.
+static NOTICES: [AtomicUsize; 2048] = [const { AtomicUsize::new(0) }; 2048];
 
 fn read32(va: usize) -> u32 {
     unsafe { core::ptr::read_volatile(va as *const u32) }
@@ -394,6 +442,8 @@ pub fn init() {
         levels,
         gpa_bits,
         domains: Vec::new(),
+        mrif: cap & CAP_MSI_FLAT != 0 && cap & CAP_MSI_MRIF != 0,
+        spare: Vec::new(),
     };
     // Every device id of a bus with a function on it: the ones there and
     // the ones a later rescan may find.
@@ -444,12 +494,13 @@ pub fn init() {
     }
     invalidate(&mut st, None, None);
     crate::console::status_ok(&alloc::format!(
-        "iommu: riscv unit at {:02x}:{:02x}.{}, {} device ids, Sv{}x4 second stage",
+        "iommu: riscv unit at {:02x}:{:02x}.{}, {} device ids, Sv{}x4 second stage{}",
         unit.0,
         unit.1,
         unit.2,
         st.devices,
-        if levels == 3 { 39 } else { 48 }
+        if levels == 3 { 39 } else { 48 },
+        if st.mrif { ", MRIFs" } else { "" }
     ));
     *STATE.lock() = Some(st);
 }
@@ -477,7 +528,7 @@ pub fn attach(bus: u8, slot: u8, func: u8) -> Option<u32> {
         free_tables(st, root, 0);
         return None;
     }
-    st.domains.push(Domain { gscid, root, dev, pages: 0 });
+    st.domains.push(Domain { gscid, root, dev, pages: 0, mrif: None });
     Some(u32::from(gscid))
 }
 
@@ -498,12 +549,6 @@ pub fn map(domain: u32, phys: u64, len: usize) -> bool {
     true
 }
 
-/// The domain `bus:slot.func` is confined to ([`attach`]), if any.
-pub fn domain_of(bus: u8, slot: u8, func: u8) -> Option<u32> {
-    let guard = STATE.lock();
-    guard.as_ref()?.domains.iter().find(|d| d.dev == (bus, slot, func)).map(|d| u32::from(d.gscid))
-}
-
 pub fn detach(bus: u8, slot: u8, func: u8) {
     let mut guard = STATE.lock();
     let Some(st) = guard.as_mut() else {
@@ -517,6 +562,104 @@ pub fn detach(bus: u8, slot: u8, func: u8) {
     poll(st);
     set_context(st, devid_of(bus, slot, func), 0, Some(d.gscid));
     free_tables(st, d.root, 0);
+    if let Some((frame, irq)) = d.mrif {
+        NOTICES[irq as usize].store(0, Ordering::SeqCst);
+        st.spare.push(frame);
+    }
+}
+
+/// The message confined function `bus:slot.func` writes for its IMSIC
+/// identity `irq`, whose message is `msg` (the IMSIC page, the identity).
+/// With MRIFs: an MRIF of the function's own, its identity [`MRIF_ID`]
+/// enabled and noticed as `irq` at `msg`'s page, which the function's
+/// context makes the one interrupt file its writes to that page reach;
+/// the message names that page and [`MRIF_ID`]. Without: `msg`, the
+/// IMSIC page mapped into the domain. A function in passthrough writes
+/// `msg` as it is.
+pub fn msi_message(bus: u8, slot: u8, func: u8, irq: u32, msg: Message) -> Message {
+    let mut guard = STATE.lock();
+    let Some(st) = guard.as_mut() else {
+        return msg;
+    };
+    let Some(i) = st.domains.iter().position(|d| d.dev == (bus, slot, func)) else {
+        return msg;
+    };
+    let devid = devid_of(bus, slot, func);
+    let dc = context(st, devid, false);
+    let (Some(dc), true, true) = (dc, st.mrif, (irq as usize) < NOTICES.len()) else {
+        let root = st.domains[i].root;
+        if map_pages(st, root, msg.address & !0xfff, PAGE) {
+            st.domains[i].pages += 1;
+        }
+        return msg;
+    };
+    release_mrif(st, i);
+    let frame = st.spare.pop().unwrap_or_else(mm::alloc_frame);
+    let mrif = frame + MRIF_OFFSET;
+    unsafe {
+        let t = mm::hhdm(frame) as *mut u64;
+        core::ptr::write_bytes(t, 0, PAGE as usize / 8);
+        // The MSI page table's one entry (interrupt file 0: the mask
+        // below is 0), then the MRIF's enable bits for identities 0..63.
+        t.write_volatile(MSI_PTE_MRIF | (mrif >> 9) << 7);
+        t.add(1).write_volatile(
+            (msg.address >> 12) << 10 | u64::from(irq & 0x3ff) | if irq >> 10 != 0 { NOTICE_ID_MSB } else { 0 },
+        );
+        t.add((MRIF_OFFSET / 8 + 1) as usize).write_volatile(1 << MRIF_ID);
+        crate::dma::cache::barrier();
+        dc.add(DC_MSI_MASK).write_volatile(0);
+        dc.add(DC_MSI_PATTERN).write_volatile(msg.address >> 12);
+        crate::dma::cache::barrier();
+        dc.add(DC_MSIPTP).write_volatile(MSIPTP_FLAT | frame >> 12);
+    }
+    crate::dma::cache::barrier();
+    NOTICES[irq as usize].store(mm::hhdm(mrif) as usize, Ordering::SeqCst);
+    let gscid = st.domains[i].gscid;
+    invalidate(st, Some(devid), Some(gscid));
+    st.domains[i].mrif = Some((frame, irq));
+    Message { address: msg.address, data: MRIF_ID }
+}
+
+/// Domain `i`'s MRIF gone: its function's context translates no messages
+/// (they reach no interrupt file: the IMSIC page is not in the domain).
+fn release_mrif(st: &mut State, i: usize) {
+    let Some((frame, irq)) = st.domains[i].mrif.take() else {
+        return;
+    };
+    let (dev, gscid) = (st.domains[i].dev, st.domains[i].gscid);
+    let devid = devid_of(dev.0, dev.1, dev.2);
+    if let Some(dc) = context(st, devid, false) {
+        unsafe { dc.add(DC_MSIPTP).write_volatile(0) };
+        crate::dma::cache::barrier();
+        invalidate(st, Some(devid), Some(gscid));
+    }
+    NOTICES[irq as usize].store(0, Ordering::SeqCst);
+    st.spare.push(frame);
+}
+
+/// The function's interrupt given back (`msi::pci_release`): its MRIF, if
+/// it has one.
+pub fn msi_release(bus: u8, slot: u8, func: u8) {
+    let mut guard = STATE.lock();
+    let Some(st) = guard.as_mut() else {
+        return;
+    };
+    if let Some(i) = st.domains.iter().position(|d| d.dev == (bus, slot, func)) {
+        release_mrif(st, i);
+    }
+}
+
+/// IMSIC identity `id` claimed (`aia`): when it is a function's notice,
+/// its MRIF's pending bits cleared before its handlers run, so the
+/// function's next message is noticed again. From interrupt context.
+pub fn msi_notice(id: u32) {
+    let Some(n) = NOTICES.get(id as usize) else {
+        return;
+    };
+    let va = n.load(Ordering::SeqCst);
+    if va != 0 {
+        unsafe { (va as *mut u64).write_volatile(0) };
+    }
 }
 
 pub fn text() -> String {
@@ -529,18 +672,25 @@ pub fn text() -> String {
     poll(st);
     let _ = writeln!(
         s,
-        "riscv {:02x}:{:02x}.{} 0x{:x} devices {} sv{}x4 {}-bit",
+        "riscv {:02x}:{:02x}.{} 0x{:x} devices {} sv{}x4 {}-bit{}",
         st.unit.0,
         st.unit.1,
         st.unit.2,
         st.base,
         st.devices,
         if st.levels == 3 { 39 } else { 48 },
-        st.gpa_bits
+        st.gpa_bits,
+        if st.mrif { " mrif" } else { "" }
     );
     let _ = writeln!(s, "domain {} bare", IDENTITY);
     for d in &st.domains {
-        let _ = writeln!(s, "domain {} {:02x}:{:02x}.{} pages {}", d.gscid, d.dev.0, d.dev.1, d.dev.2, d.pages);
+        let _ = write!(s, "domain {} {:02x}:{:02x}.{} pages {}", d.gscid, d.dev.0, d.dev.1, d.dev.2, d.pages);
+        if let Some((frame, irq)) = d.mrif {
+            // The MRIF's pending bits for identities 0..63.
+            let pending = unsafe { (mm::hhdm(frame + MRIF_OFFSET) as *const u64).read_volatile() };
+            let _ = write!(s, " mrif {irq} pending 0x{pending:x}");
+        }
+        s.push('\n');
     }
     s
 }
