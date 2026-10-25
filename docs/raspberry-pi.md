@@ -193,7 +193,7 @@ checked there, by CI too (the smoke tests it can run, `docs/testing.md`
 
 ```sh
 cargo run -- rpi3        # builds the boot files and boots QEMU raspi3b
-cargo run -- rpi3 test --tags smoke --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini
+cargo run -- rpi3 test --tags smoke --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,heap_mini
                          # CI's boot test of it
 ```
 
