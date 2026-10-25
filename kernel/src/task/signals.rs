@@ -213,7 +213,6 @@ pub fn signal_next(id: usize) -> SigNext {
         return SigNext::None;
     }
     with_sig(|tasks, tabs| {
-        let pid = tasks[id].tgid;
         loop {
             let set = deliverable(&tasks[id]);
             if set == 0 {
@@ -232,26 +231,56 @@ pub fn signal_next(id: usize) -> SigNext {
                 Disposition::Ignore => continue,
                 Disposition::Terminate => return SigNext::Terminate(sig),
                 Disposition::Catch(act) => {
-                    let t = &mut tasks[id];
-                    let old_blocked = t.sig_blocked;
-                    let mut add = act.mask;
-                    if act.flags & signal::SA_NODEFER == 0 {
-                        add |= bit;
-                    }
-                    t.sig_blocked = (t.sig_blocked | add) & !UNBLOCKABLE;
-                    let tab = &mut tabs[pid];
-                    if act.flags & signal::SA_RESETHAND != 0 {
-                        tab.act[sig as usize] = NO_ACTION;
-                    }
+                    let (tramp, old_blocked) = catch(tasks, tabs, id, sig, &act);
                     return SigNext::Deliver {
                         sig,
                         act,
-                        tramp: tab.tramp,
+                        tramp,
                         old_blocked,
                     };
                 }
             }
         }
+    })
+}
+
+/// `sig` is about to run the caught handler `act` in `id`: block what the
+/// handler's mask says (and `sig` itself, unless `SA_NODEFER`), drop the
+/// handler for `SA_RESETHAND`. Returns the trampoline and the blocked mask
+/// the handler's return restores.
+fn catch(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usize, sig: u32, act: &SigAction) -> (usize, u32) {
+    let pid = tasks[id].tgid;
+    let t = &mut tasks[id];
+    let old_blocked = t.sig_blocked;
+    let mut add = act.mask;
+    if act.flags & signal::SA_NODEFER == 0 {
+        add |= 1 << sig;
+    }
+    t.sig_blocked = (t.sig_blocked | add) & !UNBLOCKABLE;
+    let tab = &mut tabs[pid];
+    if act.flags & signal::SA_RESETHAND != 0 {
+        tab.act[sig as usize] = NO_ACTION;
+    }
+    (tab.tramp, old_blocked)
+}
+
+/// A synchronous fault in `id` raises `sig` (`signal::on_fault`): the
+/// handler to run now, its trampoline and the mask its return restores,
+/// or `None` when `sig` is blocked or not caught, and the fault ends the
+/// task. Nothing goes pending: the faulting instruction cannot go on.
+pub fn signal_catch_fault(id: usize, sig: u32) -> Option<(SigAction, usize, u32)> {
+    if id >= MAX_TASKS {
+        return None;
+    }
+    with_sig(|tasks, tabs| {
+        if tasks[id].sig_blocked & (1 << sig) != 0 {
+            return None;
+        }
+        let Disposition::Catch(act) = disposition(tasks, tabs, id, sig) else {
+            return None;
+        };
+        let (tramp, old_blocked) = catch(tasks, tabs, id, sig, &act);
+        Some((act, tramp, old_blocked))
     })
 }
 

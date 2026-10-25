@@ -16,13 +16,7 @@ pub fn fatal_line(line: &str) -> ! {
     arch::halt();
 }
 
-/// Terminate the current user task after a synchronous fault in EL0/U-mode.
-///
-/// Prefer this over [`fatal_line`] for translation/permission faults at FAR=0
-/// and friends: a userspace null deref must not halt the whole machine (that
-/// turned `cat | cat` + ^C into a CI `[ FAIL ] exception` on aarch64). Exit
-/// status matches the shell convention for SIGSEGV (`128 + 11`).
-/// Warn-only variant: print and return. Used before `user_fault_kill` when
+/// Warn-only variant of [`user_fault_kill`]: print and return. Used before it when
 /// the detail is split across two lines and the harness may kill QEMU on the
 /// first WARN before the second line reaches serial.
 #[allow(dead_code)]
@@ -31,17 +25,24 @@ pub fn user_fault_warn(kind: &str, detail: &str) {
     console::flush();
 }
 
+/// Terminate the current user task with `sig` after a synchronous fault in
+/// EL0/U-mode that the program does not catch (`signal::on_fault`), as the
+/// signal's default action does (the status `128 + sig`).
+///
+/// Prefer this over [`fatal_line`] for translation/permission faults at FAR=0
+/// and friends: a userspace null deref must not halt the whole machine (that
+/// turned `cat | cat` + ^C into a CI `[ FAIL ] exception` on aarch64).
+///
 /// `pc` is where the task faulted: when it lies in a file mapping (a shared
 /// library, a program mapped like one) the line names the file and the
 /// address in it, which `addr2line` or a disassembler take as they are
 /// (`docs/linux-compat.md`, Debugging).
-pub fn user_fault_kill(kind: &str, pc: u64, detail: &str) -> ! {
+pub fn user_fault_kill(sig: u32, kind: &str, pc: u64, detail: &str) -> ! {
     // Avoid the substring `exception:` so the boot test host, which ends the run on it,
     // treat any `exception:` as a hard fail stay quiet when a *child* faults.
     console::status_warn(&format!("user fault: {kind}{} {detail}", location(pc)));
     console::flush();
-    crate::user::set_syscall_frame(core::ptr::null_mut());
-    task::user_exit(128u8.wrapping_add(11));
+    crate::signal::terminate(sig);
 }
 
 /// ` in FILE+0xADDR` for an address in a file mapping of the current

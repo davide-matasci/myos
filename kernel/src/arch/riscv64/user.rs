@@ -56,7 +56,16 @@ pub const SYSCALL_TP_REG: Option<usize> = Some(4);
 /// The fourth to sixth arguments: a3, a4, a5 (x13..x15).
 pub const SYSCALL_ARGS_3_5: [usize; 3] = [13, 14, 15];
 /// The result register (a0).
-const SYSCALL_RESULT: usize = 10;
+pub const SYSCALL_RET: usize = 10;
+/// Nothing the return path takes from the frame is out of the signal
+/// trampoline's reach (there are no flags): `SyscallRegs::kept`.
+pub const SYSCALL_KEPT: [usize; 0] = [];
+
+/// A kept word as it goes back (none here).
+pub fn kept_word(_i: usize, v: u64) -> u64 {
+    v
+}
+
 /// Length of the `ecall` instruction.
 pub const SYSCALL_INSN_LEN: usize = 4;
 /// A rewound syscall restarts with its first argument in the result register.
@@ -89,7 +98,7 @@ pub fn syscall_frame() -> *mut usize {
 /// forked child resumes with them (result 0).
 pub fn caller_regs(frame: *mut u64) -> UserRegs {
     let mut f = copy_fork_syscall_frame(frame as *const u64);
-    f[SYSCALL_RESULT] = 0;
+    f[SYSCALL_RET] = 0;
     UserRegs {
         rip: f[SYSCALL_PC] as usize,
         rsp: f[SYSCALL_SP] as usize,

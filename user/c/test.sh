@@ -208,9 +208,10 @@ t -t mm mmap $SMOKES/mmap_smoke
 # (shm_smoke.c).
 t -t mm,fs shm $SMOKES/shm_smoke
 # A write to a pty whose master is open but never read blocks, and a signal
-# ends it: the writer stays killable (fault_smoke.c; a CPU fault from
-# userspace is contained the same way, but a test cannot fault on purpose:
-# the host treats the kernel's `user fault` line as a failure).
+# ends it: the writer stays killable. CPU faults raise their signals
+# (SIGILL, SIGTRAP, SIGSEGV with si_code and si_addr, x86's SIGFPE), whose
+# handlers leave with siglongjmp or return to the faulting store, which
+# resumes with its registers (fault_smoke.c).
 t -t mm fault $SMOKES/fault_smoke
 # A JIT's pattern from two threads: one makes a range of pages not touched
 # yet executable with mprotect while the other reads them, then code

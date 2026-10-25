@@ -19,7 +19,7 @@ pub const SIGACTION_HAS_RESTORER: bool = true;
 pub const TRAMP_CODE: &[u8] = &[0xb8, 0x0f, 0x00, 0x00, 0x00, 0x0f, 0x05];
 
 // `SyscallRegs` block (see `syscall_entry`): user rsp, rip, r8, r9, rflags,
-// r10, rdx, rsi, rdi.
+// r10, rdx, rsi, rdi, rax, rcx, r11.
 const R_RSP: usize = 0;
 const R_RIP: usize = 1;
 const R_R8: usize = 2;
@@ -29,6 +29,8 @@ const R_R10: usize = 5;
 const R_RDX: usize = 6;
 const R_RSI: usize = 7;
 const R_RDI: usize = 8;
+const R_RCX: usize = 10;
+const R_R11: usize = 11;
 
 /// Syscall arguments: rdi, rsi, rdx, r10, r8, r9.
 pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
@@ -277,6 +279,7 @@ const MC_RIP: usize = 16;
 const MC_EFLAGS: usize = 17;
 const MC_CSGSFS: usize = 18;
 const MC_OLDMASK: usize = 21;
+const MC_CR2: usize = 22;
 const MC_FPSTATE: usize = 23;
 /// Below the interrupted stack pointer: the SysV red zone.
 const RED_ZONE: usize = 128;
@@ -313,17 +316,18 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     mc[MC_R8] = regs.word(R_R8);
     mc[MC_R9] = regs.word(R_R9);
     mc[MC_R10] = regs.word(R_R10);
-    mc[MC_R11] = regs.word(R_RFLAGS);
+    mc[MC_R11] = regs.word(R_R11);
     mc[MC_RDI] = regs.word(R_RDI);
     mc[MC_RSI] = regs.word(R_RSI);
     mc[MC_RDX] = regs.word(R_RDX);
     mc[MC_RAX] = f.ret as u64;
-    mc[MC_RCX] = f.pc as u64;
+    mc[MC_RCX] = regs.word(R_RCX);
     mc[MC_RSP] = sp as u64;
     mc[MC_RIP] = f.pc as u64;
     mc[MC_EFLAGS] = regs.word(R_RFLAGS);
     mc[MC_CSGSFS] = f.arch;
     mc[MC_OLDMASK] = f.mask;
+    mc[MC_CR2] = f.addr as u64;
     mc[MC_FPSTATE] = fp_va as u64;
     // rbx, rbp, r12-r15 stay 0: the handler preserves them (SysV ABI), and
     // rt_sigreturn keeps the live ones.
@@ -333,7 +337,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     put_u64(&mut uc, UC_SIGMASK, f.mask);
 
     sys::put(fp_va, &fx.0).ok()?;
-    sys::put(info_va, &siginfo(f.sig)).ok()?;
+    sys::put(info_va, &siginfo(f.sig, f.code, f.addr)).ok()?;
     sys::put(uc_va, &uc).ok()?;
     sys::put(frame_va, &(f.restorer as u64).to_le_bytes()).ok()?;
 
@@ -380,6 +384,10 @@ pub fn sigreturn(regs: &mut SyscallRegs) -> Option<(usize, u64)> {
     regs.set_word(R_RDI, mc(MC_RDI));
     regs.set_word(R_RSI, mc(MC_RSI));
     regs.set_word(R_RDX, mc(MC_RDX));
+    // rcx and r11 as the context had them (the kernel returns with iretq
+    // when they are not the rip and rflags sysret would load).
+    regs.set_word(R_RCX, mc(MC_RCX));
+    regs.set_word(R_R11, mc(MC_R11));
     regs.set_word(R_RSP, rsp);
     regs.set_word(R_RIP, rip);
     regs.set_word(R_RFLAGS, (mc(MC_EFLAGS) & FLAGS_USER) | FLAGS_IF);
