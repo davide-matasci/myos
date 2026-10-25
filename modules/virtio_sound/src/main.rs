@@ -410,6 +410,16 @@ fn probe_one(api: &KernelApi, slot: usize, id: Id, mut transport: Device) -> Opt
     transport.finish_init();
     // `struct virtio_snd_config`: jacks, streams, chmaps.
     let count: u32 = transport.read_config_space(4).ok()?;
+    // The used buffers raise the interrupt (one MSI-X entry for all the
+    // queues); without it the thread polls. Its handler is there before
+    // the first request: an INTx line the control queue's answer raises
+    // would otherwise stay asserted with nobody to acknowledge it.
+    ACK[slot].store(IrqAck::of(id).to_usize(), Ordering::Release);
+    if let Some(IrqRoute::Msix(entry)) = myos_virtio::irq_enable(id, "virtio-sound", card_irq, slot as *mut core::ffi::c_void) {
+        for q in [CONTROL_QUEUE, TX_QUEUE, RX_QUEUE] {
+            myos_virtio::set_queue_msix_vector(id, q, entry);
+        }
+    }
     let ctl = myos_virtio::dma_pages(1)?.1.as_ptr();
     let mut card = Card { id, transport, control, tx, rx, ctl, streams: [const { None }; MAX_STREAMS], card: -1 };
     let mut found = [(0, SoundStreamInfo::default()); MAX_STREAMS];
@@ -422,14 +432,6 @@ fn probe_one(api: &KernelApi, slot: usize, id: Id, mut transport: Device) -> Opt
     if n == 0 {
         api.write_str("virtio-sound: a device without a stream the driver takes\n");
         return None;
-    }
-    // The used buffers raise the interrupt (one MSI-X entry for all the
-    // queues); without it the thread polls.
-    ACK[slot].store(IrqAck::of(id).to_usize(), Ordering::Release);
-    if let Some(IrqRoute::Msix(entry)) = myos_virtio::irq_enable(id, "virtio-sound", card_irq, slot as *mut core::ffi::c_void) {
-        for q in [CONTROL_QUEUE, TX_QUEUE, RX_QUEUE] {
-            myos_virtio::set_queue_msix_vector(id, q, entry);
-        }
     }
     Some(card)
 }
@@ -522,6 +524,13 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    let api = api();
+    let mut line = Name([0; 40], 0);
+    let _ = write!(line, "virtio-sound: panic at {}", info.location().map_or(0, |l| l.line()));
+    api.write_str(core::str::from_utf8(&line.0[..line.1]).unwrap_or("virtio-sound: panic"));
+    api.write_str("\n");
+    loop {
+        api.task_yield();
+    }
 }
