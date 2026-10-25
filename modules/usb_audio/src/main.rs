@@ -346,8 +346,9 @@ unsafe extern "C" fn probe(dev: *const UsbDeviceInfo, intf: *const UsbInterfaceI
     if let Some(c) = CARDS[slot].lock().as_mut() {
         c.card = card;
     }
+    // `/proc/usb` names it; a console line here would land in the middle
+    // of whatever the console prints (the probe runs on the host's thread).
     host().interface_label(dev.id, intf.number, b"snd");
-    status_ok(api(), "usb_audio: a speaker");
     0
 }
 
