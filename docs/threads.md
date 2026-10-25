@@ -97,8 +97,14 @@ whose action is to terminate ends the whole process.
 threads of the same process waiting on it. Together with atomic operations
 in user space they make locks, condition variables and joins (they are what
 Linux `futex` maps onto). A wait re-reads the word under the scheduler's
-wake sequence, so a wake between the check and the sleep is never lost;
-wakes may be spurious, so callers re-check their condition.
+wake sequence, so a wake between the check and the sleep is never lost.
+That sequence counts every wake in the system, so a wake for something else
+in the same window would end the sleep too: the kernel then sleeps again
+while the word still holds `expected` and the timeout has not passed
+(issue #520). A wait ends in `0` only on a `wake_addr` for its address or
+when the word changed while it slept, which is why a waker changes the word
+before it wakes (as Linux `futex` asks). Callers still re-check their
+condition, as with any futex.
 
 ## Syscalls
 

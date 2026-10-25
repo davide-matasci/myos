@@ -365,14 +365,17 @@ static int check_clocks(void) {
     if (clock_gettime(CLOCK_REALTIME, &wall) != 0 || clock_gettime(CLOCK_MONOTONIC, &mono0) != 0) {
         return fail("clock_gettime");
     }
-    /* Since boot, not since 1970: the wall clock is years ahead. */
-    if (mono0.tv_nsec < 0 || mono0.tv_nsec >= 1000000000L || mono0.tv_sec >= wall.tv_sec / 2) {
+    /* Since boot, not since 1970: the wall clock is years ahead, when it
+     * is set (a board without a real-time clock, the Raspberry Pi 3's,
+     * starts at 1970 too). */
+    if (mono0.tv_nsec < 0 || mono0.tv_nsec >= 1000000000L
+            || (wall.tv_sec > 946684800 && mono0.tv_sec >= wall.tv_sec / 2)) {
         return fail("CLOCK_MONOTONIC counts from boot");
     }
-    /* The wall clock a day back: the monotonic clock goes on, a day
-     * ahead of the wall clock's step. */
+    /* The wall clock a day back (ahead on a clock still at 1970, before
+     * which it cannot go): the monotonic clock goes on regardless. */
     back = wall;
-    back.tv_sec -= 86400;
+    back.tv_sec += wall.tv_sec > 2 * 86400 ? -86400 : 86400;
     if (clock_settime(CLOCK_REALTIME, &back) != 0) {
         return fail("clock_settime");
     }

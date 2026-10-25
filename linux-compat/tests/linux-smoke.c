@@ -14,6 +14,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <sched.h>
 #include <signal.h>
 #include <spawn.h>
@@ -1418,6 +1419,114 @@ static void dns_sender(const char *ns, const char *dead) {
     close(fd);
 }
 
+/* CPU faults raise their signals (user/c/fault_smoke.c natively): SIGILL
+ * for an undefined instruction and SIGSEGV for a PROT_NONE page, with
+ * si_code and si_addr, left with siglongjmp; then a SIGSEGV handler that
+ * makes the page writable and returns, after which the store has run with
+ * the registers it had (the ones a syscall's return does not keep: x86's
+ * rcx, r11 and flags, aarch64's NZCV, the result and number registers). */
+static sigjmp_buf fault_env;
+static volatile int fault_sig, fault_code;
+static void *volatile fault_addr;
+static char *fault_page;
+
+static void on_fault_leave(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    fault_sig = sig;
+    fault_code = si->si_code;
+    fault_addr = si->si_addr;
+    siglongjmp(fault_env, 1);
+}
+
+static void on_fault_fix(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    fault_sig = sig;
+    fault_addr = si->si_addr;
+    mprotect(fault_page, 4096, PROT_READ | PROT_WRITE);
+}
+
+static void fault_catch(int sig, void (*fn)(int, siginfo_t *, void *)) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = fn;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(sig, &sa, NULL);
+}
+
+static int fault_store_resumes(volatile char *p) {
+#if defined(__x86_64__)
+    register unsigned long rax __asm__("rax") = 0x1111111111111111UL;
+    register unsigned long rcx __asm__("rcx") = 0x2222222222222222UL;
+    register unsigned long r11 __asm__("r11") = 0x3333333333333333UL;
+    unsigned char cf;
+    __asm__ volatile("stc\n\tmovb $1, (%[p])\n\tsetc %[cf]"
+                     : "+r"(rax), "+r"(rcx), "+r"(r11), [cf] "=r"(cf)
+                     : [p] "r"(p)
+                     : "memory");
+    return rax == 0x1111111111111111UL && rcx == 0x2222222222222222UL && r11 == 0x3333333333333333UL && cf == 1 &&
+           p[0] == 1;
+#elif defined(__aarch64__)
+    register unsigned long x0 __asm__("x0") = 0x1111111111111111UL;
+    register unsigned long x8 __asm__("x8") = 0x2222222222222222UL;
+    unsigned long nzcv;
+    __asm__ volatile("cmp xzr, xzr\n\tstrb %w[one], [%[p]]\n\tmrs %[f], nzcv"
+                     : "+r"(x0), "+r"(x8), [f] "=r"(nzcv)
+                     : [p] "r"(p), [one] "r"(1)
+                     : "memory", "cc");
+    return x0 == 0x1111111111111111UL && x8 == 0x2222222222222222UL && nzcv >> 28 == 0x6 && p[0] == 1;
+#else
+    register unsigned long a0 __asm__("a0") = 0x1111111111111111UL;
+    register unsigned long a7 __asm__("a7") = 0x2222222222222222UL;
+    __asm__ volatile("sb %[one], 0(%[p])" : "+r"(a0), "+r"(a7) : [p] "r"(p), [one] "r"(1) : "memory");
+    return a0 == 0x1111111111111111UL && a7 == 0x2222222222222222UL && p[0] == 1;
+#endif
+}
+
+static void check_faults(void) {
+    fault_catch(SIGILL, on_fault_leave);
+    fault_sig = 0;
+    if (sigsetjmp(fault_env, 1) == 0) {
+#if defined(__x86_64__)
+        __asm__ volatile("ud2");
+#elif defined(__aarch64__)
+        __asm__ volatile("udf #0");
+#else
+        __asm__ volatile("unimp");
+#endif
+    }
+    signal(SIGILL, SIG_DFL);
+#if defined(__x86_64__)
+    int ill = ILL_ILLOPN;
+#else
+    int ill = ILL_ILLOPC;
+#endif
+    check(fault_sig == SIGILL && fault_code == ill && fault_addr != NULL, "SIGILL from an undefined instruction");
+
+    fault_page = mmap(NULL, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    check(fault_page != MAP_FAILED, "mmap PROT_NONE");
+    if (fault_page == MAP_FAILED) {
+        return;
+    }
+    fault_catch(SIGSEGV, on_fault_leave);
+    fault_sig = 0;
+    if (sigsetjmp(fault_env, 1) == 0) {
+        (void)*(volatile char *)(fault_page + 8);
+    }
+    sigset_t now;
+    sigprocmask(SIG_BLOCK, NULL, &now);
+    check(fault_sig == SIGSEGV && fault_code == SEGV_ACCERR && fault_addr == fault_page + 8 &&
+              !sigismember(&now, SIGSEGV),
+          "SIGSEGV from a PROT_NONE page, si_addr, mask back after siglongjmp");
+
+    fault_catch(SIGSEGV, on_fault_fix);
+    fault_sig = 0;
+    int kept = fault_store_resumes(fault_page + 16);
+    signal(SIGSEGV, SIG_DFL);
+    check(fault_sig == SIGSEGV && fault_addr == fault_page + 16 && kept,
+          "a SIGSEGV handler returns to the store, registers kept");
+    munmap(fault_page, 4096);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -1712,6 +1821,7 @@ int main(int argc, char **argv) {
 
     check_interrupted_read(0);
     check_interrupted_read(1);
+    check_faults();
     check_threads();
 
     check(unlink(path) == 0 && stat(path, &st) == -1 && errno == ENOENT, "unlink/ENOENT");

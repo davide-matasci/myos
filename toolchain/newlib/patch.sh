@@ -268,6 +268,43 @@ struct sigaction
 #define SA_NOCLDWAIT 0x20       /* SIGCHLD: no zombies, the kernel reaps */' 1
     echo "patched sys/signal.h: SA_NOCLDWAIT"
   fi
+  # A fault's signal (kernel/src/signal.rs `on_fault`) says where in
+  # si_addr, and why in si_code: POSIX's codes, at Linux's values (as
+  # mlibc's myos header has them).
+  if ! grep -q 'signal-myos-fault' "$f"; then
+    patch_edit "$f" \
+'  union sigval si_value;    /* Signal value */
+} siginfo_t;' \
+'  union sigval si_value;    /* Signal value */
+  void         *si_addr;    /* signal-myos-fault: the faulting address */
+} siginfo_t;
+
+#define SI_KERNEL   0x80 /* Raised by the kernel (x86 #GP) */
+#define ILL_ILLOPC  1    /* Illegal opcode */
+#define ILL_ILLOPN  2    /* Illegal operand */
+#define ILL_ILLADR  3    /* Illegal addressing mode */
+#define ILL_ILLTRP  4    /* Illegal trap */
+#define ILL_PRVOPC  5    /* Privileged opcode */
+#define ILL_PRVREG  6    /* Privileged register */
+#define ILL_COPROC  7    /* Coprocessor error */
+#define ILL_BADSTK  8    /* Internal stack error */
+#define FPE_INTDIV  1    /* Integer divide by zero */
+#define FPE_INTOVF  2    /* Integer overflow */
+#define FPE_FLTDIV  3    /* Floating-point divide by zero */
+#define FPE_FLTOVF  4    /* Floating-point overflow */
+#define FPE_FLTUND  5    /* Floating-point underflow */
+#define FPE_FLTRES  6    /* Floating-point inexact result */
+#define FPE_FLTINV  7    /* Invalid floating-point operation */
+#define FPE_FLTSUB  8    /* Subscript out of range */
+#define SEGV_MAPERR 1    /* Address not mapped */
+#define SEGV_ACCERR 2    /* Invalid permissions for the mapping */
+#define BUS_ADRALN  1    /* Invalid address alignment */
+#define BUS_ADRERR  2    /* Nonexistent physical address */
+#define BUS_OBJERR  3    /* Object-specific hardware error */
+#define TRAP_BRKPT  1    /* Process breakpoint */
+#define TRAP_TRACE  2    /* Process trace trap */' 1
+    echo "patched sys/signal.h: si_addr + the fault si_codes"
+  fi
 }
 
 patch_search_h() {

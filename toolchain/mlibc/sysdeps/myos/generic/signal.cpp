@@ -39,6 +39,7 @@ extern "C" void __myos_sigdispatch(unsigned long *frame) {
 	info.si_signo = (int)(frame[FRAME_SIGINFO] & 0xffffffff);
 	info.si_code = (int)(frame[FRAME_SIGINFO] >> 32);
 	info.si_value.sival_ptr = (void *)frame[FRAME_SIGINFO + 1];
+	info.si_addr = (void *)frame[FRAME_SIGINFO + 2];
 	// The kernel keeps no sender. SIGCANCEL has one sender on myos, mlibc's
 	// pthread_cancel in this process (Tgkill), and its handler takes the
 	// signal only from there: what Linux's tgkill would say.
@@ -78,7 +79,16 @@ int Sysdeps<Sigaction>::operator()(int sig, const struct sigaction *__restrict a
 int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *__restrict set, sigset_t *__restrict retrieve) {
 	unsigned int kset = mask_of(set);
 	unsigned int kold = 0;
-	if (__myos_sigprocmask_k(how, set ? &kset : nullptr, retrieve ? &kold : nullptr) != 0)
+	// The kernel's `how` is newlib's (0 SIG_SETMASK, 1 SIG_BLOCK, 2
+	// SIG_UNBLOCK), mlibc's Linux's.
+	int khow;
+	switch (how) {
+	case SIG_SETMASK: khow = 0; break;
+	case SIG_BLOCK: khow = 1; break;
+	case SIG_UNBLOCK: khow = 2; break;
+	default: return EINVAL;
+	}
+	if (__myos_sigprocmask_k(khow, set ? &kset : nullptr, retrieve ? &kold : nullptr) != 0)
 		return errno;
 	if (retrieve != nullptr)
 		set_mask(retrieve, kold);

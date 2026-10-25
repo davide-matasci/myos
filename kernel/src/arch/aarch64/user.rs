@@ -55,7 +55,16 @@ pub const SYSCALL_TP_REG: Option<usize> = None;
 /// The fourth to sixth arguments: x3, x4, x5.
 pub const SYSCALL_ARGS_3_5: [usize; 3] = [3, 4, 5];
 /// The result register (x0).
-const SYSCALL_RESULT: usize = 0;
+pub const SYSCALL_RET: usize = 0;
+/// Nothing the return path takes from the frame is out of the signal
+/// trampoline's reach (it puts NZCV back itself): `SyscallRegs::kept`.
+pub const SYSCALL_KEPT: [usize; 0] = [];
+
+/// A kept word as it goes back (none here).
+pub fn kept_word(_i: usize, v: u64) -> u64 {
+    v
+}
+
 /// Length of the `svc` instruction.
 pub const SYSCALL_INSN_LEN: usize = 4;
 /// A rewound syscall restarts with its first argument in the result register.
@@ -88,7 +97,7 @@ pub fn syscall_frame() -> *mut usize {
 /// forked child resumes with them (result 0).
 pub fn caller_regs(frame: *mut u64) -> UserRegs {
     let mut f = copy_fork_syscall_frame(frame as *const u64);
-    f[SYSCALL_RESULT] = 0;
+    f[SYSCALL_RET] = 0;
     UserRegs {
         rip: f[SYSCALL_PC] as usize,
         rsp: f[SYSCALL_SP] as usize,

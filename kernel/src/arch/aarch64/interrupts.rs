@@ -572,9 +572,13 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
         }
         return;
     }
-    // EC 0x20/0x24: insn/data abort from EL0. Kill the faulting task (SIGSEGV
-    // convention) instead of halting QEMU — a userspace null deref during
-    // `cat | cat` must not be a machine-wide `[ FAIL ] exception`.
+    // EC 0x20/0x24: insn/data abort from EL0: SIGSEGV (SIGBUS for an
+    // alignment fault), or the task ends instead of halting QEMU: a
+    // userspace null deref during `cat | cat` must not be a machine-wide
+    // `[ FAIL ] exception`.
+    use crate::signal::{code::*, *};
+    let mut regs = crate::user::SyscallRegs::from_ptr(frame);
+    let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize });
     if ec == 0x20 || ec == 0x24 {
         // A translation fault (status 0b0001xx) on an mmap page not touched
         // yet: page it in and retry the instruction. A permission fault
@@ -594,21 +598,60 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
         if (translation || permission) && crate::user::fault_in(far as usize, access) {
             return;
         }
+        let (sig, si) = match esr & 0x3f {
+            0x21 => (SIGBUS, BUS_ADRALN),
+            _ => (SIGSEGV, segv_code(far as usize, !translation)),
+        };
+        if raise(sig, si, far) {
+            return;
+        }
         crate::exception::user_fault_kill(
+            sig,
             if ec == 0x20 { "insn abort" } else { "data abort" },
             elr,
             &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
         );
     }
-    // Any other synchronous exception from EL0 (an undefined instruction,
-    // EC 0x00; a `brk`, EC 0x3c; a trapped FP exception, ...): this is the
-    // lower-EL handler, so it always came from userspace — kill the task
-    // instead of halting the machine (`aarch64_sync_abort` is fatal).
+    // Any other synchronous exception from EL0: an undefined instruction
+    // (EC 0x00), a misaligned PC or SP (0x22, 0x26), a trapped FP exception
+    // (0x2c), a `brk` (0x3c), ... This is the lower-EL handler, so it always
+    // came from userspace: the signal, or the task ends instead of halting
+    // the machine (`aarch64_sync_abort` is fatal).
+    let (sig, si, addr) = match ec {
+        0x22 => (SIGBUS, BUS_ADRALN, elr),
+        0x26 => (SIGBUS, BUS_ADRALN, sp_el0),
+        0x2c => (SIGFPE, fpe_code(esr), elr),
+        0x30 | 0x32 | 0x34 | 0x3c => (SIGTRAP, TRAP_BRKPT, elr),
+        _ => (SIGILL, ILL_ILLOPC, elr),
+    };
+    if raise(sig, si, addr) {
+        return;
+    }
     crate::exception::user_fault_kill(
+        sig,
         "sync exception",
         elr,
         &alloc::format!("ec={ec:#x} esr={esr:#x} elr={elr:#x} far={far:#x} sp_el0={sp_el0:#x}"),
     );
+}
+
+/// The `si_code` of a trapped FP exception (EC 0x2c): its ISS flags IOF,
+/// DZF, OFF, UFF, IXF (bits 0-4) and IDF (7), the first in Linux's order.
+fn fpe_code(esr: u64) -> u32 {
+    use crate::signal::code::*;
+    if esr & 0x01 != 0 {
+        FPE_FLTINV
+    } else if esr & 0x02 != 0 {
+        FPE_FLTDIV
+    } else if esr & 0x04 != 0 {
+        FPE_FLTOVF
+    } else if esr & 0x88 != 0 {
+        FPE_FLTUND
+    } else if esr & 0x10 != 0 {
+        FPE_FLTRES
+    } else {
+        0
+    }
 }
 
 fn read_esr_elr_far() -> (u64, u64, u64) {

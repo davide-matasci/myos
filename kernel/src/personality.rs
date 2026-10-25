@@ -125,7 +125,7 @@ pub enum Deliver {
 
 pub fn deliver(
     regs: &mut SyscallRegs,
-    sig: u32,
+    info: crate::signal::Info,
     act: &SigAction,
     tramp: usize,
     restore_mask: u32,
@@ -139,8 +139,10 @@ pub fn deliver(
         return Deliver::Native;
     };
     let d = SignalDelivery {
-        sig,
+        sig: info.sig,
         flags: act.flags,
+        code: info.code,
+        addr: info.addr,
         handler: act.handler,
         tramp,
         restore_mask,

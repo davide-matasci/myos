@@ -11,6 +11,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Once;
+use x86_64::VirtAddr;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 use super::gdt;
@@ -180,25 +181,33 @@ pub fn init() {
 
     let idt = IDT.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
-        idt.breakpoint.set_handler_fn(breakpoint);
-        idt.page_fault.set_handler_fn(page_fault);
-        idt.general_protection_fault.set_handler_fn(general_protection);
-        // The exceptions a userspace instruction can raise that would
-        // otherwise hit a non-present IDT gate and escalate to a double
-        // fault (a `ud2` from EL0 took the whole machine down). Each kills
-        // the faulting task when it came from ring 3, like #GP/#PF.
-        idt.divide_error.set_handler_fn(divide_error);
-        idt.debug.set_handler_fn(debug_exc);
-        idt.overflow.set_handler_fn(overflow_exc);
-        idt.bound_range_exceeded.set_handler_fn(bound_range);
-        idt.invalid_opcode.set_handler_fn(invalid_opcode);
+        // The exceptions a userspace instruction can raise: from ring 3 a
+        // stub saves the registers and raises the fault's signal
+        // (`x86_user_trap`), from the kernel the stub goes on to the
+        // handler named. The others would hit a non-present IDT gate and
+        // escalate to a double fault; those that are not a program's
+        // signal kill the faulting task when it came from ring 3.
+        let addr = |stub: unsafe extern "C" fn()| VirtAddr::new(stub as usize as u64);
+        unsafe {
+            // `int3` from ring 3 too (a gate userspace may use): SIGTRAP.
+            idt.breakpoint
+                .set_handler_addr(addr(trap_breakpoint))
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            idt.page_fault.set_handler_addr(addr(trap_page_fault));
+            idt.general_protection_fault.set_handler_addr(addr(trap_general_protection));
+            idt.divide_error.set_handler_addr(addr(trap_divide_error));
+            idt.debug.set_handler_addr(addr(trap_debug));
+            idt.overflow.set_handler_addr(addr(trap_overflow));
+            idt.bound_range_exceeded.set_handler_addr(addr(trap_bound_range));
+            idt.invalid_opcode.set_handler_addr(addr(trap_invalid_opcode));
+            idt.x87_floating_point.set_handler_addr(addr(trap_x87_fp));
+            idt.alignment_check.set_handler_addr(addr(trap_alignment_check));
+            idt.simd_floating_point.set_handler_addr(addr(trap_simd_fp));
+        }
         idt.device_not_available.set_handler_fn(device_not_available);
-        idt.x87_floating_point.set_handler_fn(x87_fp);
-        idt.simd_floating_point.set_handler_fn(simd_fp);
         idt.invalid_tss.set_handler_fn(invalid_tss);
         idt.segment_not_present.set_handler_fn(segment_not_present);
         idt.stack_segment_fault.set_handler_fn(stack_segment);
-        idt.alignment_check.set_handler_fn(alignment_check);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault)
@@ -546,12 +555,14 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -
     );
 }
 
-/// A vector with no error code: kill the task if it faulted in ring 3.
+/// A vector with no error code: kill the task with `$sig` if it faulted in
+/// ring 3 (the vectors with a stub reach here from the kernel only).
 macro_rules! user_exc {
-    ($name:ident, $label:literal) => {
+    ($name:ident, $label:literal, $sig:ident) => {
         extern "x86-interrupt" fn $name(frame: InterruptStackFrame) {
             let user = frame.code_segment.0 & 3 == 3;
             super::exception::x86_exception(
+                crate::signal::$sig,
                 $label,
                 frame.instruction_pointer.as_u64(),
                 frame.stack_pointer.as_u64(),
@@ -563,10 +574,11 @@ macro_rules! user_exc {
 }
 /// A vector that pushes an error code.
 macro_rules! user_exc_code {
-    ($name:ident, $label:literal) => {
+    ($name:ident, $label:literal, $sig:ident) => {
         extern "x86-interrupt" fn $name(frame: InterruptStackFrame, code: u64) {
             let user = frame.code_segment.0 & 3 == 3;
             super::exception::x86_exception(
+                crate::signal::$sig,
                 $label,
                 frame.instruction_pointer.as_u64(),
                 frame.stack_pointer.as_u64(),
@@ -576,18 +588,197 @@ macro_rules! user_exc_code {
         }
     };
 }
-user_exc!(divide_error, "divide error");
-user_exc!(debug_exc, "debug");
-user_exc!(overflow_exc, "overflow");
-user_exc!(bound_range, "bound range exceeded");
-user_exc!(invalid_opcode, "invalid opcode");
-user_exc!(device_not_available, "device not available");
-user_exc!(x87_fp, "x87 floating point");
-user_exc!(simd_fp, "simd floating point");
-user_exc_code!(invalid_tss, "invalid tss");
-user_exc_code!(segment_not_present, "segment not present");
-user_exc_code!(stack_segment, "stack segment fault");
-user_exc_code!(alignment_check, "alignment check");
+user_exc!(divide_error, "divide error", SIGFPE);
+user_exc!(debug_exc, "debug", SIGTRAP);
+user_exc!(overflow_exc, "overflow", SIGSEGV);
+user_exc!(bound_range, "bound range exceeded", SIGSEGV);
+user_exc!(invalid_opcode, "invalid opcode", SIGILL);
+user_exc!(device_not_available, "device not available", SIGSEGV);
+user_exc!(x87_fp, "x87 floating point", SIGFPE);
+user_exc!(simd_fp, "simd floating point", SIGFPE);
+user_exc_code!(invalid_tss, "invalid tss", SIGSEGV);
+user_exc_code!(segment_not_present, "segment not present", SIGBUS);
+user_exc_code!(stack_segment, "stack segment fault", SIGBUS);
+user_exc_code!(alignment_check, "alignment check", SIGBUS);
+
+/// The entry of a fault a program can raise. From the kernel: `$kernel`,
+/// its `x86-interrupt` handler, with the stack as the CPU left it. From
+/// ring 3: `x86_user_trap_common` with the vector and the error code (0
+/// for a vector without one).
+macro_rules! trap_stub {
+    ($stub:ident, $vector:literal, $kernel:ident) => {
+        trap_stub!(@ $stub, $vector, $kernel, "8", "push 0");
+    };
+    ($stub:ident, $vector:literal, $kernel:ident, code) => {
+        trap_stub!(@ $stub, $vector, $kernel, "16", "");
+    };
+    (@ $stub:ident, $vector:literal, $kernel:ident, $cs:literal, $push_code:literal) => {
+        core::arch::global_asm!(
+            ".pushsection .text",
+            concat!(".global ", stringify!($stub)),
+            concat!(stringify!($stub), ":"),
+            concat!("test byte ptr [rsp + ", $cs, "], 3"),
+            "jz {kernel}",
+            $push_code,
+            concat!("push ", $vector),
+            "jmp x86_user_trap_common",
+            ".popsection",
+            kernel = sym $kernel,
+        );
+        unsafe extern "C" {
+            fn $stub();
+        }
+    };
+}
+trap_stub!(trap_divide_error, 0, divide_error);
+trap_stub!(trap_debug, 1, debug_exc);
+trap_stub!(trap_breakpoint, 3, breakpoint);
+trap_stub!(trap_overflow, 4, overflow_exc);
+trap_stub!(trap_bound_range, 5, bound_range);
+trap_stub!(trap_invalid_opcode, 6, invalid_opcode);
+trap_stub!(trap_general_protection, 13, general_protection, code);
+trap_stub!(trap_page_fault, 14, page_fault, code);
+trap_stub!(trap_x87_fp, 16, x87_fp);
+trap_stub!(trap_alignment_check, 17, alignment_check, code);
+trap_stub!(trap_simd_fp, 19, simd_fp);
+
+// A fault from ring 3. The stack holds the vector, the error code, then the
+// CPU's frame (rip, cs, rflags, rsp, ss); below them goes the block of user
+// registers a syscall's is (`user::SyscallRegs`: rsp, rip, r8, r9, rflags,
+// r10, rdx, rsi, rdi, rax, rcx, r11; rbx, rbp and r12-r15 the Rust code
+// keeps), which `x86_user_trap` may redirect to a signal handler. The rip,
+// rsp and rflags words go back into the CPU's frame for iretq.
+core::arch::global_asm!(
+    r#"
+    .pushsection .text
+    .global x86_user_trap_common
+x86_user_trap_common:
+    push r11
+    push rcx
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    push r10
+    push qword ptr [rsp + 88]   # rflags
+    push r9
+    push r8
+    push qword ptr [rsp + 96]   # rip
+    push qword ptr [rsp + 128]  # rsp
+    mov rdi, [rsp + 96]         # vector
+    mov rsi, [rsp + 104]        # error code
+    mov rdx, rsp
+    sub rsp, 8                  # the call's 16-byte alignment
+    cld
+    call {trap}
+    add rsp, 8
+    cli
+    mov rax, [rsp]
+    mov [rsp + 136], rax
+    mov rax, [rsp + 8]
+    mov [rsp + 112], rax
+    mov rax, [rsp + 32]
+    mov [rsp + 128], rax
+    add rsp, 16
+    pop r8
+    pop r9
+    add rsp, 8
+    pop r10
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
+    pop rcx
+    pop r11
+    add rsp, 16                 # vector, error code
+    iretq
+    .popsection
+    "#,
+    trap = sym x86_user_trap,
+);
+
+/// A fault from ring 3 (vector `vector`, error code `code`), the user
+/// registers in `block`: page in a page not touched yet; otherwise raise
+/// the fault's signal, and end the task if the program does not catch it.
+extern "C" fn x86_user_trap(vector: u64, code: u64, block: *mut u64) {
+    use crate::signal::{code::*, *};
+    let mut regs = crate::user::SyscallRegs::from_ptr(block);
+    let (rip, rsp) = (regs.pc() as u64, regs.sp() as u64);
+    let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize });
+    match vector {
+        14 => {
+            let cr2 = read_cr2();
+            let pf = PageFaultErrorCode::from_bits_truncate(code);
+            if crate::user::fault_in(cr2 as usize, pf_access(pf)) {
+                return;
+            }
+            let si = segv_code(cr2 as usize, pf.contains(PageFaultErrorCode::PROTECTION_VIOLATION));
+            if !raise(SIGSEGV, si, cr2) {
+                super::exception::x86_page_fault(cr2, rip, rsp, code, true);
+            }
+        }
+        13 => {
+            if !raise(SIGSEGV, SI_KERNEL, 0) {
+                super::exception::x86_general_protection(rip, rsp, code, 0, true);
+            }
+        }
+        _ => {
+            let (sig, si, addr, name) = match vector {
+                0 => (SIGFPE, FPE_INTDIV, rip, "divide error"),
+                1 => (SIGTRAP, TRAP_TRACE, rip, "debug"),
+                3 => (SIGTRAP, TRAP_BRKPT, rip, "breakpoint"),
+                4 => (SIGSEGV, SI_KERNEL, 0, "overflow"),
+                5 => (SIGSEGV, SI_KERNEL, 0, "bound range exceeded"),
+                6 => (SIGILL, ILL_ILLOPN, rip, "invalid opcode"),
+                16 => (SIGFPE, fpe_code(x87_exceptions()), rip, "x87 floating point"),
+                17 => (SIGBUS, BUS_ADRALN, 0, "alignment check"),
+                _ => (SIGFPE, fpe_code(simd_exceptions()), rip, "simd floating point"),
+            };
+            if !raise(sig, si, addr) {
+                super::exception::x86_exception(sig, name, rip, rsp, code, true);
+            }
+        }
+    }
+}
+
+/// The `si_code` of an FP exception from its unmasked status bits (x87 and
+/// SSE share them: invalid, denormal, divide by zero, overflow, underflow,
+/// precision), the first in Linux's order.
+fn fpe_code(e: u32) -> u32 {
+    use crate::signal::code::*;
+    if e & 0x01 != 0 {
+        FPE_FLTINV
+    } else if e & 0x04 != 0 {
+        FPE_FLTDIV
+    } else if e & 0x08 != 0 {
+        FPE_FLTOVF
+    } else if e & 0x12 != 0 {
+        FPE_FLTUND
+    } else if e & 0x20 != 0 {
+        FPE_FLTRES
+    } else {
+        0
+    }
+}
+
+/// The x87 exceptions raised and not masked.
+fn x87_exceptions() -> u32 {
+    let (mut sw, mut cw) = (0u16, 0u16);
+    unsafe {
+        core::arch::asm!("fnstsw [{}]", "fnstcw [{}]", in(reg) &mut sw, in(reg) &mut cw, options(nostack));
+    }
+    (sw & !cw & 0x3f) as u32
+}
+
+/// The SSE exceptions raised and not masked (MXCSR: flags in bits 0-5,
+/// their masks in 7-12).
+fn simd_exceptions() -> u32 {
+    let mut mxcsr = 0u32;
+    unsafe {
+        core::arch::asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack));
+    }
+    mxcsr & !(mxcsr >> 7) & 0x3f
+}
 
 extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u64) {
     let user = frame.code_segment.0 & 3 == 3;
@@ -613,16 +804,21 @@ extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, code: u
     );
 }
 
-extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
-    // A user mmap page not touched yet (from userspace, or a kernel copy of
-    // a user buffer): page it in and retry the access.
-    let access = if code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
+/// The access a page fault's error code says was refused.
+fn pf_access(code: PageFaultErrorCode) -> crate::user::Access {
+    if code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
         crate::user::Access::Exec
     } else if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
         crate::user::Access::Write
     } else {
         crate::user::Access::Read
-    };
+    }
+}
+
+extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
+    // A user mmap page not touched yet (a kernel copy of a user buffer;
+    // ring 3's go to `x86_user_trap`): page it in and retry the access.
+    let access = pf_access(code);
     // A page not mapped yet, or a protection fault from userspace: a store
     // to a present page the page cache or a fork shares read-only
     // (`fault_in` copies it), a fetch or a load a stale translation

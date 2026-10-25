@@ -37,14 +37,11 @@ die() {
 grep -q '^linux$' /proc/modules || die "the Linux layer is not loaded (insmod /lib/modules/linux)"
 
 # A command in the root, with the Linux environment, from directory $1.
-# OPENSSL_armcap: cargo's OpenSSL on aarch64 would probe the CPU's crypto
-# instructions under a SIGILL handler, and a fault ends a process instead
-# (issue #587); NEON alone, which every ARMv8 CPU has.
 in_root() {
 	d=$1
 	shift
 	linux --root "$R" /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin HOME=/root \
-		OPENSSL_armcap=1 /bin/sh -c 'cd "$0" && exec "$@"' "$d" "$@"
+		/bin/sh -c 'cd "$0" && exec "$@"' "$d" "$@"
 }
 
 if [ "$1" != setup ]; then

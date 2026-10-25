@@ -176,6 +176,10 @@ struct Task {
     /// A wake arrived while the task was still leaving a CPU (mid task
     /// switch); `finish_switch` turns it into `Ready`.
     wake_pending: bool,
+    /// The last `block_until` ended in a wake for its key (`wake`,
+    /// `wake_n`), not a signal, the deadline or an early return: what
+    /// `wait_addr` tells a real wake from a spurious one by.
+    key_woken: bool,
     /// The process (thread-group leader slot) this thread belongs to; its
     /// own slot for a single-threaded process. The process-wide state (the
     /// [`Process`] block: address-space layout, fds, cwd, job control,
@@ -216,6 +220,7 @@ const EMPTY: Task = Task {
     alarm_at: 0,
     alarm_every: 0,
     wake_pending: false,
+    key_woken: false,
     tgid: 0,
     group_exit: false,
     syscall_frame: 0,

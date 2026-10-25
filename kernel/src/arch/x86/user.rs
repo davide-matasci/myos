@@ -55,9 +55,24 @@ pub fn regs_thread_start(regs: &mut UserRegs, top: usize, arg: usize) {
 }
 
 // Layout of the block `syscall_entry` pushes (`user::SyscallRegs`): user
-// rsp, rip (rcx), r8, r9, rflags (r11), r10, rdx, rsi, rdi.
+// rsp, rip (rcx), r8, r9, rflags (r11), r10, rdx, rsi, rdi, rax, rcx, r11.
 pub const SYSCALL_PC: usize = 1;
 pub const SYSCALL_SP: usize = 0;
+/// The result register (rax): the number at a syscall's entry.
+pub const SYSCALL_RET: usize = 9;
+/// rflags, rcx and r11: the trampoline's `syscall` overwrites rcx and r11,
+/// and `sysret` loads rflags from the block (`SyscallRegs::kept`).
+pub const SYSCALL_KEPT: [usize; 3] = [4, 10, 11];
+/// The rflags bits a program may set (the Linux layer's too: the arithmetic
+/// flags, TF, DF and AC); IF is always on.
+const FLAGS_USER: u64 = 0x4_0dd5;
+const FLAGS_IF: u64 = 0x202;
+
+/// A kept word as it goes back: rflags with only the bits a program may
+/// set (a frame on the user stack can say anything).
+pub fn kept_word(i: usize, v: u64) -> u64 {
+    if i == 4 { (v & FLAGS_USER) | FLAGS_IF } else { v }
+}
 /// The number travels in rax, which the result overwrites.
 pub const SYSCALL_NR_REG: Option<usize> = None;
 /// The thread pointer is not in the block: it is the FS base.
@@ -125,12 +140,19 @@ struct CpuSyscallState {
     /// `syscall_entry` scratch (gs:[56]): the user rsp while the user
     /// registers are pushed and popped, so none of them is used as a temp.
     user_rsp: usize,
+    /// `syscall_entry` scratch (gs:[64], gs:[72]): rcx and r11 on the way
+    /// out through iretq.
+    out_rcx: usize,
+    out_r11: usize,
 }
 
-// `syscall_entry` addresses these fields as gs:[0], gs:[8..56] and gs:[56].
+// `syscall_entry` addresses these fields as gs:[0], gs:[8..56], gs:[56],
+// gs:[64] and gs:[72].
 const _: () = {
     assert!(core::mem::offset_of!(CpuSyscallState, fork) == 8);
     assert!(core::mem::offset_of!(CpuSyscallState, user_rsp) == 56);
+    assert!(core::mem::offset_of!(CpuSyscallState, out_rcx) == 64);
+    assert!(core::mem::offset_of!(CpuSyscallState, out_r11) == 72);
 };
 
 static mut CPU_SYSCALL: [CpuSyscallState; MAX_CPUS] = [
@@ -145,6 +167,8 @@ static mut CPU_SYSCALL: [CpuSyscallState; MAX_CPUS] = [
             r15: 0,
         },
         user_rsp: 0,
+        out_rcx: 0,
+        out_r11: 0,
     }; MAX_CPUS
 ];
 
@@ -167,7 +191,12 @@ syscall_entry:
     # Like Linux, a syscall changes only rax (result), rcx and r11 (sysret's
     # rip/rflags): userspace wrappers declare just those clobbered, so every
     # other register Rust may reuse is saved here and restored below. The
-    # lowest five words (user rsp, rip, r8, r9, rflags) are `SyscallRegs`.
+    # twelve words below the pad are `SyscallRegs`: rax, rcx and r11 as the
+    # syscall left them (the number, the rip, the rflags), then the rest.
+    push 0            # pad: the call's 16-byte alignment
+    push r11
+    push rcx
+    push rax
     push rdi
     push rsi
     push rdx
@@ -202,11 +231,45 @@ syscall_entry:
     pop rdx
     pop rsi
     pop rdi
+    # sysret puts the rip and rflags in rcx and r11. When the block wants
+    # other values there (a signal frame's return to a faulting
+    # instruction), iretq returns instead.
+    cmp rcx, [rsp + 8]
+    jne 1f
+    cmp r11, [rsp + 16]
+    jne 1f
     mov rsp, gs:[56]
     sysretq
+1:
+    # rsp is at the rax word (rax holds the result): rcx and r11 aside in
+    # gs:[64] and gs:[72], then the iret frame over the top five words.
+    mov [rsp], rcx
+    mov rcx, [rsp + 8]
+    mov gs:[64], rcx
+    mov rcx, [rsp + 16]
+    mov gs:[72], rcx
+    mov rcx, [rsp]
+    mov [rsp - 8], rcx
+    mov rcx, qword ptr [rip + {cs}]
+    mov [rsp], rcx
+    mov [rsp + 8], r11
+    mov rcx, gs:[56]
+    mov [rsp + 16], rcx
+    mov rcx, qword ptr [rip + {ss}]
+    mov [rsp + 24], rcx
+    sub rsp, 8
+    mov rcx, gs:[64]
+    mov r11, gs:[72]
+    iretq
     "#,
     dispatch = sym crate::user::syscall_dispatch,
+    cs = sym USER_CS,
+    ss = sym USER_SS,
 );
+
+/// The user code and stack selectors (RPL 3) for `syscall_entry`'s iretq.
+static mut USER_CS: u64 = 0;
+static mut USER_SS: u64 = 0;
 
 unsafe extern "C" {
     fn syscall_entry();
@@ -214,6 +277,10 @@ unsafe extern "C" {
 
 /// Enable user mode on the BSP (syscall MSRs, SSE).
 pub fn user_init() {
+    unsafe {
+        USER_CS = (super::gdt::user_cs() | 3) as u64;
+        USER_SS = (super::gdt::user_ss() | 3) as u64;
+    }
     init_syscall_msrs();
     init_user_sse();
 }

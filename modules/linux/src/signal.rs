@@ -49,18 +49,25 @@ pub struct Frame {
     pub restorer: usize,
     /// Linux blocked set to restore at `rt_sigreturn`.
     pub mask: u64,
-    /// Interrupted PC and the syscall result it will see.
+    /// Interrupted PC and the syscall result it will see (for a fault: the
+    /// faulting instruction and the result register's value).
     pub pc: usize,
     pub ret: usize,
+    /// A fault's `si_code` and `si_addr` (0, 0: a signal sent).
+    pub code: u32,
+    pub addr: usize,
     /// Arch word from the kernel (x86_64: the user CS; unused elsewhere).
     #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
     pub arch: u64,
 }
 
-/// `siginfo_t` for a signal sent with `kill` (`SI_USER`).
-pub fn siginfo(sig: usize) -> [u8; 128] {
+/// `siginfo_t` for a signal sent with `kill` (`code` 0, `SI_USER`) or a
+/// fault's (its `si_code`, and `si_addr` at offset 16).
+pub fn siginfo(sig: usize, code: u32, addr: usize) -> [u8; 128] {
     let mut b = [0u8; 128];
     b[..4].copy_from_slice(&(sig as i32).to_le_bytes());
+    b[8..12].copy_from_slice(&code.to_le_bytes());
+    b[16..24].copy_from_slice(&(addr as u64).to_le_bytes());
     b
 }
 
@@ -77,6 +84,8 @@ pub fn deliver(regs: &mut SyscallRegs, d: &myos_abi::SignalDelivery) -> Option<u
         mask: mask_to_linux(d.restore_mask),
         pc: d.pc,
         ret: d.ret,
+        code: d.code,
+        addr: d.addr,
         arch: d.arch,
     };
     arch::deliver(regs, &f)
@@ -242,7 +251,7 @@ pub fn rt_sigtimedwait(set: usize, info: usize, timeout: usize) -> R {
         if let Some(n) = task::signal_take_from(id, want) {
             let sig = sig_to_linux(n);
             if info != 0 {
-                put(info, &siginfo(sig))?;
+                put(info, &siginfo(sig, 0, 0))?;
             }
             return Ok(sig);
         }

@@ -90,14 +90,13 @@ GROUP_PATHS = re.compile(r"^(user/get-myos/|linux-compat/|packages/os-test/)")
 # among them), whenever an aarch64 machine
 # boots: the tests that need the scratch disk (`partitions`, `ext2_disk`,
 # `fstab_mount`, `fileio`), the ones that need the network (`boot_rc`: the
-# rc.local's dropbear), the ones that open a socket (`libc`'s resolver,
-# `heap_mini`'s ping and socket stages: they wait for a netd the board does
-# not have, issue #538), the other pointers' (`ps2_mouse`, `virtio_mouse`,
+# rc.local's dropbear; `heap_mini`: its ping and socket stages), the other
+# pointers' (`ps2_mouse`, `virtio_mouse`,
 # `xev_pointer`: a package's) and the USB tests of a root port of their
 # own (`usb_hotplug`, `usb_hotplug_busy_reuse`, `usb_hub_replug`) stay out.
 RPI3_ARGS = (
     "rpi3 test --tags smoke,usb_disk,mouse,usb_keyboard,usbdev"
-    " --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,libc,heap_mini,ps2_mouse,virtio_mouse,xev_pointer"
+    " --skip partitions,ext2_disk,fstab_mount,fileio,boot_rc,heap_mini,ps2_mouse,virtio_mouse,xev_pointer"
     " --budget 20"
 )
 # The long tests' groups, each a boot of its own: the group's name and the

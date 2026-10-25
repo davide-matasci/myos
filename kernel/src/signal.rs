@@ -17,6 +17,11 @@
 //! - **Blocking syscalls** stop waiting when a signal would act
 //!   ([`interrupt_wait`]) and return `EINTR`, or restart for `SA_RESTART`.
 //!
+//! - **Faults** (an undefined instruction, a bad access, a divide by zero)
+//!   raise `SIGILL`, `SIGSEGV`, `SIGBUS`, `SIGFPE` or `SIGTRAP` at once, from
+//!   the trap's own registers ([`on_fault`]); the handler returns to the
+//!   faulting instruction.
+//!
 //! A task looping in user mode without making syscalls is terminated by a
 //! signal whose action is to terminate when an interrupt preempts it
 //! ([`on_user_preempted`]); a caught signal waits for its next syscall.
@@ -28,7 +33,13 @@ use crate::user::SyscallRegs;
 
 pub const SIGHUP: u32 = 1;
 pub const SIGINT: u32 = 2;
+pub const SIGILL: u32 = 4;
+pub const SIGTRAP: u32 = 5;
+/// Not raised on riscv64, whose arithmetic does not trap.
+#[allow(dead_code)]
+pub const SIGFPE: u32 = 8;
 pub const SIGKILL: u32 = 9;
+pub const SIGBUS: u32 = 10;
 pub const SIGSEGV: u32 = 11;
 pub const SIGALRM: u32 = 14;
 pub const SIGTERM: u32 = 15;
@@ -55,6 +66,27 @@ pub const SA_RESETHAND: u32 = 0x8000_0000;
 /// On `SIGCHLD`: children leave no zombie (the kernel reaps them, as when
 /// `SIGCHLD` is ignored). Not Linux's 2, which is newlib's `SA_SIGINFO`.
 pub const SA_NOCLDWAIT: u32 = myos_abi::MYOS_SA_NOCLDWAIT;
+
+/// The `si_code` of a fault's signal (POSIX's names, Linux's values, which
+/// the myos headers of newlib and mlibc take too). Each arch raises some.
+#[allow(dead_code)]
+pub mod code {
+    pub const ILL_ILLOPC: u32 = 1;
+    pub const ILL_ILLOPN: u32 = 2;
+    pub const FPE_INTDIV: u32 = 1;
+    pub const FPE_FLTDIV: u32 = 3;
+    pub const FPE_FLTOVF: u32 = 4;
+    pub const FPE_FLTUND: u32 = 5;
+    pub const FPE_FLTRES: u32 = 6;
+    pub const FPE_FLTINV: u32 = 7;
+    pub const SEGV_MAPERR: u32 = 1;
+    pub const SEGV_ACCERR: u32 = 2;
+    pub const BUS_ADRALN: u32 = 1;
+    pub const TRAP_BRKPT: u32 = 1;
+    pub const TRAP_TRACE: u32 = 2;
+    /// Raised by the kernel for no reason the codes above name (x86 `#GP`).
+    pub const SI_KERNEL: u32 = 0x80;
+}
 
 /// Returned by a syscall interrupted by a caught signal (libgloss: `EINTR`).
 pub const SYSERR_EINTR: usize = usize::MAX - 3;
@@ -237,7 +269,7 @@ pub fn handle_ctrl_c() {
 /// Signal frame the kernel writes below the user stack pointer, as `u64`
 /// words. The libc trampoline starts with `sp` pointing at word 0 and must
 /// call `SYS_SIGRETURN` with `sp` back at word 0.
-const FRAME_WORDS: usize = 16;
+const FRAME_WORDS: usize = 20;
 const F_MAGIC: usize = 0;
 /// Signal number (first handler argument).
 const F_SIGNO: usize = 1;
@@ -245,21 +277,34 @@ const F_SIGNO: usize = 1;
 const F_HANDLER: usize = 2;
 /// Blocked mask to restore.
 const F_MASK: usize = 3;
-/// Interrupted context: where the syscall returns to, its stack pointer,
-/// its result, and the syscall-number register (`x8` / `a7`).
+/// Interrupted context: where the syscall (or the faulting instruction)
+/// returns to, its stack pointer, the result register's value, and the
+/// syscall-number register (`x8` / `a7`).
 const F_PC: usize = 4;
 const F_SP: usize = 5;
 const F_RET: usize = 6;
 const F_NR_REG: usize = 7;
-/// `siginfo_t` (newlib: `int si_signo; int si_code; union sigval si_value`),
-/// passed as the handler's second argument; words 10..13.
+/// `siginfo_t` (newlib: `int si_signo; int si_code; union sigval si_value;
+/// void *si_addr`), passed as the handler's second argument; words 10..13.
 const F_SIGINFO: usize = 10;
+/// The registers the return path takes from the block that the trampoline
+/// cannot put back ([`SyscallRegs::kept`]); words 16..19.
+const F_KEPT: usize = 16;
 const FRAME_MAGIC: u64 = u64::from_le_bytes(*b"MYOSSIG1");
 /// Skipped below the interrupted stack pointer: the x86-64 SysV red zone,
 /// where a leaf syscall wrapper may keep locals. Harmless elsewhere.
 const RED_ZONE: usize = 128;
 /// newlib `si_code` for a signal sent by `kill`/`raise`.
 const SI_USER: u64 = 1;
+
+/// Why a handler runs: a signal sent (`code` 0) or a fault's (`code` and
+/// the address `addr`, see [`code`]).
+#[derive(Clone, Copy)]
+pub struct Info {
+    pub sig: u32,
+    pub code: u32,
+    pub addr: usize,
+}
 
 /// Act on the current task's pending signals as its syscall `nr` (first
 /// argument `a0`) returns `ret` to user mode. Returns the value for the
@@ -302,39 +347,76 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
             };
             // After sigsuspend, the handler returns to the caller's mask.
             let restore_mask = suspend_mask.unwrap_or(old_blocked);
-            // A foreign-personality task gets its own frame (Linux `rt_sigframe`).
-            match crate::personality::deliver(regs, sig, &act, tramp, restore_mask, pc, ret) {
-                crate::personality::Deliver::Native => {}
-                crate::personality::Deliver::Done(v) => return v,
-                crate::personality::Deliver::Failed => terminate(SIGSEGV),
-            }
-            let sp = regs.sp();
-            let frame_va = (sp.wrapping_sub(RED_ZONE + FRAME_WORDS * 8)) & !15;
-            let mut frame = [0u64; FRAME_WORDS];
-            frame[F_MAGIC] = FRAME_MAGIC;
-            frame[F_SIGNO] = sig as u64;
-            frame[F_HANDLER] = act.handler as u64;
-            frame[F_MASK] = restore_mask as u64;
-            frame[F_PC] = pc as u64;
-            frame[F_SP] = sp as u64;
-            frame[F_RET] = ret as u64;
-            frame[F_NR_REG] = regs.nr_reg() as u64;
-            frame[F_SIGINFO] = sig as u64 | (SI_USER << 32);
-            if !write_frame(frame_va, &frame) {
-                // No room on the user stack: what Linux does too.
-                terminate(SIGSEGV);
-            }
-            // The trampoline is returned to directly (x86 `sysretq` loads it
-            // into RIP): a non-canonical address there would #GP in ring 0 on
-            // real hardware. It must be a mapped user address.
-            if !crate::user::buffer_ok(tramp, 1) {
-                terminate(SIGSEGV);
-            }
-            regs.set_pc(tramp);
-            regs.set_sp(frame_va);
-            ret
+            let info = Info { sig, code: 0, addr: 0 };
+            deliver(regs, info, &act, tramp, restore_mask, pc, ret)
         }
     }
+}
+
+/// A synchronous fault in user mode, at the instruction `regs` resumes:
+/// `info.sig` is `SIGILL`, `SIGSEGV`, `SIGBUS`, `SIGFPE` or `SIGTRAP`. A
+/// handler the program installed runs now, and its return resumes the
+/// faulting instruction, which runs again: the handler fixes the cause (an
+/// `mprotect`) or leaves with `siglongjmp`. False when the signal is not
+/// caught or is blocked: the caller ends the task, as the default action
+/// would (Linux also kills a task whose fault signal is blocked).
+pub fn on_fault(regs: &mut SyscallRegs, info: Info) -> bool {
+    let Some((act, tramp, old_blocked)) = task::signal_catch_fault(task::current_id(), info.sig) else {
+        return false;
+    };
+    let ret = deliver(regs, info, &act, tramp, old_blocked, regs.pc(), regs.ret());
+    regs.set_ret(ret);
+    true
+}
+
+/// `SIGSEGV`'s code for an access at `addr` refused: `SEGV_ACCERR` when a
+/// page is there (`page`) or a mapping covers it (a `PROT_NONE` region: its
+/// pages are never entered), as on Linux, else `SEGV_MAPERR`.
+pub fn segv_code(addr: usize, page: bool) -> u32 {
+    if page || task::mmap_backing(addr).is_some() { code::SEGV_ACCERR } else { code::SEGV_MAPERR }
+}
+
+/// Redirect `regs` to the handler `act` through the trampoline `tramp`,
+/// with a frame that resumes `pc` with `ret` in the result register and
+/// the blocked mask `restore_mask`. Returns the result register's value.
+/// Does not return if the frame does not fit.
+fn deliver(regs: &mut SyscallRegs, info: Info, act: &task::SigAction, tramp: usize, restore_mask: u32, pc: usize, ret: usize) -> usize {
+    // A foreign-personality task gets its own frame (Linux `rt_sigframe`).
+    match crate::personality::deliver(regs, info, act, tramp, restore_mask, pc, ret) {
+        crate::personality::Deliver::Native => {}
+        crate::personality::Deliver::Done(v) => return v,
+        crate::personality::Deliver::Failed => terminate(SIGSEGV),
+    }
+    let sp = regs.sp();
+    let frame_va = (sp.wrapping_sub(RED_ZONE + FRAME_WORDS * 8)) & !15;
+    let mut frame = [0u64; FRAME_WORDS];
+    frame[F_MAGIC] = FRAME_MAGIC;
+    frame[F_SIGNO] = info.sig as u64;
+    frame[F_HANDLER] = act.handler as u64;
+    frame[F_MASK] = restore_mask as u64;
+    frame[F_PC] = pc as u64;
+    frame[F_SP] = sp as u64;
+    frame[F_RET] = ret as u64;
+    frame[F_NR_REG] = regs.nr_reg() as u64;
+    let code = if info.code == 0 { SI_USER } else { info.code as u64 };
+    frame[F_SIGINFO] = info.sig as u64 | (code << 32);
+    frame[F_SIGINFO + 2] = info.addr as u64;
+    for (i, w) in regs.kept().into_iter().enumerate() {
+        frame[F_KEPT + i] = w;
+    }
+    if !write_frame(frame_va, &frame) {
+        // No room on the user stack: what Linux does too.
+        terminate(SIGSEGV);
+    }
+    // The trampoline is returned to directly (x86 `sysretq` loads it into
+    // RIP): a non-canonical address there would #GP in ring 0 on real
+    // hardware. It must be a mapped user address.
+    if !crate::user::buffer_ok(tramp, 1) {
+        terminate(SIGSEGV);
+    }
+    regs.set_pc(tramp);
+    regs.set_sp(frame_va);
+    ret
 }
 
 fn write_frame(va: usize, frame: &[u64; FRAME_WORDS]) -> bool {
@@ -380,6 +462,11 @@ pub fn sigreturn(regs: &mut SyscallRegs) -> usize {
     regs.set_pc(pc);
     regs.set_sp(word(F_SP) as usize);
     regs.set_nr_reg(word(F_NR_REG) as usize);
+    let mut kept = [0u64; SyscallRegs::KEPT_MAX];
+    for (i, w) in kept.iter_mut().enumerate() {
+        *w = word(F_KEPT + i);
+    }
+    regs.set_kept(&kept);
     word(F_RET) as usize
 }
 

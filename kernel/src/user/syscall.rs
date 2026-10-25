@@ -199,7 +199,9 @@ const WAIT_NOWAIT: usize = 2;
 /// code to read and redirect (delivery, sigreturn, restart).
 ///
 /// - x86_64: the block `syscall_entry` pushes: user rsp, rip (rcx), r8, r9,
-///   rflags (r11). The result travels in rax, which also carried the number.
+///   rflags (r11), r10, rdx, rsi, rdi, then rax, rcx and r11 (a fault's
+///   trap stub pushes the same block). The result travels in rax, which also
+///   carried the number.
 /// - aarch64 / riscv64: the full trap frame (`x0..x31`, pc at 32, sp at 34);
 ///   the number register is x8 / a7.
 pub struct SyscallRegs(*mut u64);
@@ -209,6 +211,10 @@ impl SyscallRegs {
     const SP: usize = crate::arch::SYSCALL_SP;
     const NR_REG: Option<usize> = crate::arch::SYSCALL_NR_REG;
     const TP_REG: Option<usize> = crate::arch::SYSCALL_TP_REG;
+    const RET: usize = crate::arch::SYSCALL_RET;
+    const KEPT: &'static [usize] = &crate::arch::SYSCALL_KEPT;
+    /// The most words [`Self::kept`] has on any arch.
+    pub const KEPT_MAX: usize = 4;
 
     /// Length of the syscall instruction (`syscall` / `svc` / `ecall`).
     pub const INSN_LEN: usize = crate::arch::SYSCALL_INSN_LEN;
@@ -239,6 +245,32 @@ impl SyscallRegs {
             return [0; 3];
         }
         crate::arch::SYSCALL_ARGS_3_5.map(|i| unsafe { *self.0.add(i) as usize })
+    }
+    /// The result register (x86 rax, x0, a0): where a syscall's result goes,
+    /// and what it held when a fault interrupted the program.
+    pub fn ret(&self) -> usize {
+        unsafe { *self.0.add(Self::RET) as usize }
+    }
+    pub fn set_ret(&mut self, v: usize) {
+        unsafe { *self.0.add(Self::RET) = v as u64 }
+    }
+    /// The registers the return path takes from the block that a signal's
+    /// trampoline cannot put back, for its frame to keep: x86's rflags, and
+    /// rcx and r11, which `syscall` overwrites (`syscall_entry` returns
+    /// with `iretq` when they are not the `sysret` ones); none elsewhere.
+    pub fn kept(&self) -> [u64; Self::KEPT_MAX] {
+        let mut w = [0; Self::KEPT_MAX];
+        for (w, &i) in w.iter_mut().zip(Self::KEPT) {
+            *w = unsafe { *self.0.add(i) };
+        }
+        w
+    }
+    /// Put back [`Self::kept`]'s words (from a signal frame the program
+    /// could change: the arch keeps the flags a program may set).
+    pub fn set_kept(&mut self, w: &[u64; Self::KEPT_MAX]) {
+        for (&v, &i) in w.iter().zip(Self::KEPT) {
+            unsafe { *self.0.add(i) = crate::arch::kept_word(i, v) }
+        }
     }
     pub fn nr_reg(&self) -> usize {
         Self::NR_REG.map_or(0, |i| unsafe { *self.0.add(i) as usize })

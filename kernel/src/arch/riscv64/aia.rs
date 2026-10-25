@@ -113,7 +113,9 @@ fn start(intc: &Intc) -> Result<&'static dyn IrqChip, &'static str> {
     }
     SOURCES.store(sources, Ordering::SeqCst);
     IDS.store(ids, Ordering::SeqCst);
-    let page = crate::dt::imsic_hart_page(crate::smp::cpu_hw_id(0)).ok_or("platform: no IMSIC page for the BSP")?;
+    // The boot hart's id: `smp::init`, which records it as CPU 0's, runs
+    // later.
+    let page = crate::dt::imsic_hart_page(crate::smp::bsp_hw_id()).ok_or("platform: no IMSIC page for the BSP")?;
     BSP_PAGE.store(page, Ordering::SeqCst);
     BSP_INDEX.store(((page - imsic.base) >> 12) as u32, Ordering::SeqCst);
     // Every source inactive and disabled until unmasked, then messages on.
@@ -193,14 +195,19 @@ impl IrqChip for Aia {
     }
 
     /// The BSP's highest pending identity, claimed (`stopei`, CSR 0x15C,
-    /// read and cleared).
+    /// read and cleared); a confined function's notice also clears the
+    /// function's memory-resident interrupt file (`iommu::msi_notice`).
     fn claim(&self) -> Option<u32> {
         let top: u64;
         unsafe {
             core::arch::asm!("csrrw {t}, 0x15C, zero", t = out(reg) top, options(nostack));
         }
         let id = (top >> 16) as u32 & 0x7FF;
-        (id != 0).then_some(id)
+        if id == 0 {
+            return None;
+        }
+        crate::iommu::msi_notice(id);
+        Some(id)
     }
 
     /// A level-triggered source still asserted after its handlers ran

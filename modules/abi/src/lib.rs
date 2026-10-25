@@ -97,7 +97,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 56: [`KernelApi::irq_disable`] gives a board device's interrupt back;
 /// [`KernelApi::irq_domain_register`] takes the domain's `mask` beside its
 /// `unmask`.
-pub const ABI_VERSION: u32 = 56;
+/// 57: a fault raises its signal: [`SignalDelivery`] carries the
+/// siginfo's `code` and `addr`.
+pub const ABI_VERSION: u32 = 57;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -586,12 +588,20 @@ pub const MYOS_WAIT_FAULT: i32 = 4;
 /// personality (`PersonalityOps::deliver`): native signal number, the
 /// handler and its `sigaction` flags, the sigreturn trampoline (the
 /// registered `sa_restorer`, or the kernel's), the native blocked mask the
-/// handler's return restores, and the interrupted PC and syscall result.
+/// handler's return restores, and the interrupted PC and syscall result
+/// (for a fault: the faulting instruction, the result register's value).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SignalDelivery {
     pub sig: u32,
     pub flags: u32,
+    /// The siginfo's `si_code` for a fault (POSIX's, at Linux's values:
+    /// `SEGV_MAPERR`, `ILL_ILLOPC`, ..., or `SI_KERNEL`); 0 for a signal
+    /// sent (`kill`, `SI_USER`).
+    pub code: u32,
+    /// Its `si_addr`: the faulting address or instruction; 0 for a signal
+    /// sent.
+    pub addr: usize,
     pub handler: usize,
     pub tramp: usize,
     pub restore_mask: u32,

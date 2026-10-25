@@ -419,24 +419,45 @@ let plain-format messages through (hardware refuses them), so
 to the next entry is not delivered (and counted, on VT-d), its own arrives
 again afterwards. On aarch64 and riscv64 a message is a write to the MSI
 controller's doorbell (the ITS's `GITS_TRANSLATER`, the GICv2m frame's
-`MSI_SETSPI_NS`, the boot hart's IMSIC page), a DMA like any other: a
-function in a domain of its own reaches it because the doorbell's page is
-mapped into the domain when its interrupt is routed
-(`iommu::map_msi_doorbell`), at its own address. Nothing is remapped
-(the SMMUv3's and the RISC-V IOMMU's MSI translation stay unused): the
-ITS tells the devices apart by their requester id, so a confined
-function raises its own events and no other's, but a GICv2m frame or an
-IMSIC takes any SPI or identity it is sent, so a confined function could
-raise another device's interrupt there (issue #590). A DMA to the
-interrupt controller's other registers is refused like any other, which
-the smoke checks too.
+`MSI_SETSPI_NS`, the boot hart's IMSIC page), a DMA like any other, which
+the unit sees when the function is in a domain of its own
+(`iommu::msi_message`, when its interrupt is routed):
+
+- On aarch64 the doorbell's page is mapped into the domain, at its own
+  address (the SMMUv3's MSI translation stays unused). The ITS tells the
+  devices apart by their requester id, so a confined function raises its
+  own events and no other's. A GICv2m frame takes any SPI of its range it
+  is sent, so a confined function could raise another device's MSI there:
+  spurious interrupts, which handlers take as such (they check their
+  device's status); the frame has nothing to tell the senders apart, and
+  INTx instead would take MSI from the confined functions (issue #590).
+- On riscv64 the RISC-V IOMMU translates the function's messages (its
+  device context's MSI page table, flat, chapter 2.3 of the
+  specification) where it has memory-resident interrupt files
+  (`CAP.MSI_MRIF`; `mrif` on its `/proc/iommu` line): the IMSIC page's
+  writes go to an MRIF of the function's own, a 512-byte page in memory
+  holding a pending and an enable bit per identity, one identity of it
+  enabled, which the unit *notices* with a message of its own raising the
+  function's IMSIC identity (its domain's line says `mrif ID pending
+  0xBITS`, the file's first 64 pending bits). Whatever the function writes
+  it raises that identity or nothing; the IMSIC's page itself is not in
+  the domain. The kernel clears the file's pending bits when it claims the
+  notice, before the handlers run, so the next message is noticed again.
+  A unit without MRIFs gets the IMSIC page mapped into the domain as on
+  aarch64, the IMSIC then taking any identity. `pcidev_smoke` rewrites the
+  device's message to the console UART's identity: it lands as a pending
+  bit of the device's file and nothing arrives, the device's own arrives
+  once it is put back.
+
+A DMA to the interrupt controller's other registers is refused like any
+other, which the smoke checks too.
 
 | Arch | Unit | Where it is described |
 |---|---|---|
 | x86_64 | Intel VT-d (`iommu/vtd.rs`): a root table per unit (one entry per bus), a context table per bus (one entry per device and function), second-level page tables of the CPU's shape (3 levels for 39-bit addresses, 4 for 48, 2 MiB and 1 GiB superpages where `CAP.SLLPS` has them), invalidation through the queue where the unit has one (`ECAP.QI`; the registers otherwise; whole: the context cache, the IOTLB, the interrupt entry cache), interrupt remapping (`ECAP.IR` and the DMAR's `INTR_REMAP` flag; a table of 256 entries per unit, one per message or I/O APIC pin routed, extended interrupt mode where the unit has it, `ECAP.EIM`, and the BSP runs in x2APIC mode), the tables' cache lines flushed for a unit whose walks do not snoop (`ECAP.C` clear) | the ACPI DMAR table: each DRHD's registers and device scopes (endpoints and bridges), the `INCLUDE_PCI_ALL` one for the rest |
 | x86_64 (AMD) | AMD-Vi (`iommu/amdvi.rs`, specification revision 3): a flat device table (a 32-byte entry per device id, for the buses with a function on them), *passthrough* for every function (mode 0: no table walked) and a 4-level page table of AMD's format for one a program holds (a domain id each); the command buffer for invalidations (an entry, a domain's pages, an interrupt table, everything where the unit has `IASup`), each batch ended by a completion wait; the event log for the refused DMAs, its interrupt the MSI of the unit's own PCI function (class 08.06, claimed by the kernel); an interrupt remapping table per device (4-byte entries, no guest mode) | the ACPI IVRS table: each IVHD's registers, own device id and device entries (all, select, range, the I/O APIC as a special device) |
 | aarch64 | Arm SMMUv3 (`iommu/smmuv3.rs`): a linear stream table, one entry per requester id, *bypass* for every function (no table walked) and a *stage-2* entry (VMSAv8, 4 KiB granule, a VMID per domain) for one a program holds; the command queue for invalidations and syncs, the event queue (its interrupt, which the SMMU pulses, taken edge-triggered) for the refused DMAs; the tables and queues written back for a unit that does not snoop (`IDR0.COHACC` clear) | the IORT's SMMUv3 node (registers, the event and global error GSIVs) and the root complex node's ID mapping to it, or the tree's `arm,smmu-v3` node and the PCIe host's `iommu-map`: a `platform::Iommu` component, `/proc/platform`'s `iommu smmuv3 ...` line |
-| riscv64 | the RISC-V IOMMU (`iommu/riscv.rs`, specification 1.0): a three-level device directory, one 64-byte context per device id (32 bytes for a unit without MSI translation), *bare* for every function of a populated bus (no table walked) and a *second-stage* context (a G-stage table in the CPU's Sv39x4 or Sv48x4 format, a GSCID per domain) for one a program holds; the command queue for invalidations and fences, the fault queue for the refused DMAs, read when `/proc/iommu` is (the PCI unit signals it by MSI only, which the riscv64 kernel does not take) | a PCI function of class 08.06 (system peripheral, IOMMU), its registers in BAR 0, claimed by the kernel so `/dev/pci` cannot hand it out; nothing from the tree |
+| riscv64 | the RISC-V IOMMU (`iommu/riscv.rs`, specification 1.0): a three-level device directory, one 64-byte context per device id (32 bytes for a unit without MSI translation), *bare* for every function of a populated bus (no table walked) and a *second-stage* context (a G-stage table in the CPU's Sv39x4 or Sv48x4 format, a GSCID per domain) for one a program holds; the command queue for invalidations and fences, the fault queue for the refused DMAs, read when `/proc/iommu` is (the PCI unit signals it by MSI only, which the riscv64 kernel does not take); MSI translation through memory-resident interrupt files for the confined functions (`CAP.MSI_MRIF`, above) | a PCI function of class 08.06 (system peripheral, IOMMU), its registers in BAR 0, claimed by the kernel so `/dev/pci` cannot hand it out; nothing from the tree |
 
 QEMU's `q35` carries the unit (`-device intel-iommu,intremap=on`, 39-bit,
 3-level, both superpage sizes, snooping walks, queued invalidation,
@@ -452,11 +473,11 @@ snooping, SPIs 74 to 77 for its queues) on every aarch64 boot, where
 `[ OK ] iommu: smmuv3 at 0x9050000, 4096 streams, 44-bit stage 2` is the
 boot line, and the riscv64 `virt` the RISC-V IOMMU (`-device
 riscv-iommu-pci`, first on the bus as `00:01.0`, Sv39x4 to Sv57x4, MSI
-translation) on every boot whose QEMU has it: the device is QEMU 9.2's and later
+translation, flat and through MRIFs) on every boot whose QEMU has it: the device is QEMU 9.2's and later
 (CI's image has it, Ubuntu 24.04's 8.2 has not); without it the launcher
 says so once and boots without, `/proc/iommu` saying `none`.
 Its boot line: `[ OK ] iommu: riscv unit at 00:01.0, 256 device ids,
-Sv39x4 second stage`; `-device intel-iommu` is not for the `pc` machine
+Sv39x4 second stage, MRIFs`; `-device intel-iommu` is not for the `pc` machine
 (`MYOS_X86_MACHINE=pc`), whose boot has no IOMMU. The UEFI boots run
 OVMF from edk2-stable202505 (the launcher's `OVMF` constant): the
 edk2-stable202605 build raises an invalid-opcode exception inside the
@@ -732,11 +753,7 @@ so a syscall that blocked and resumes (on any CPU) finds its own frame.
 `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 4` on x86/aarch64 (interactive
 + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for
 BSP` at 4). The packed `boot/virt.dtb` is always dumped with `-smp 2` so
-OpenSBI BSP hartid=1 still has a hart node. The boot hart is whichever hart
-won OpenSBI's cold-boot lottery, so `kernel_main` records the BSP's hardware
-id first (`smp::init_bsp`), before the interrupt controller starts: the
-AIA's APLIC targets and IMSIC page, and the PLIC's context, are that hart's.
-The WFI park stub stays compiled
+OpenSBI BSP hartid=1 still has a hart node. The WFI park stub stays compiled
 for riscv64 (flip `RISCV_PARK_APS` to retreat).
 On every arch the BSP timer drains UART RX into a staging ring
 (`input::drain_uart_irq`) and wakes the console reader (`KEY_CONSOLE`), so a

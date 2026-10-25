@@ -153,26 +153,28 @@ pub fn pci_setup(bus: u8, slot: u8, func: u8) -> Option<crate::irq::PciIrq> {
     let rid = u16::from(bus) << 8 | u16::from(slot) << 3 | u16::from(func);
     let (irq, msg) = chip.alloc(rid)?;
     // A device behind the IOMMU in a domain of its own reaches the
-    // doorbell only where the domain maps it.
-    crate::iommu::map_msi_doorbell(bus, slot, func, msg.address);
+    // controller through the unit, which may give it a message of its own.
+    let msg = crate::iommu::msi_message(bus, slot, func, irq, msg);
     if msix && msix_enable(bus, slot, func, msg) {
         return Some(PciIrq { irq, delivery: Delivery::MsiX(0) });
     }
     if msi && msi_enable(bus, slot, func, msg) {
         return Some(PciIrq { irq, delivery: Delivery::Msi });
     }
+    crate::iommu::msi_release(bus, slot, func);
     chip.free(irq);
     None
 }
 
 /// Give back what [`pci_setup`] took for the function's interrupt `irq`:
-/// its MSI-X or MSI off, the controller's interrupt freed. Whether it had
-/// one on.
+/// its MSI-X or MSI off, what the IOMMU made for it, the controller's
+/// interrupt freed. Whether it had one on.
 #[cfg(not(target_arch = "x86_64"))]
 pub fn pci_release(bus: u8, slot: u8, func: u8, irq: u32) -> bool {
     if !disable(bus, slot, func) {
         return false;
     }
+    crate::iommu::msi_release(bus, slot, func);
     if let Some(chip) = crate::irqchip::msi() {
         chip.free(irq);
     }

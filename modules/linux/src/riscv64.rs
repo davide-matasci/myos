@@ -75,7 +75,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     unsafe { fp_save(fp.0.as_mut_ptr()) };
     uc[MC_FP..MC_FP + FP_BYTES].copy_from_slice(&fp.0);
 
-    sys::put(frame_va, &siginfo(f.sig)).ok()?;
+    sys::put(frame_va, &siginfo(f.sig, f.code, f.addr)).ok()?;
     sys::put(uc_va, &uc).ok()?;
 
     regs.set_word(1, f.restorer as u64); // ra
