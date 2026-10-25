@@ -227,6 +227,11 @@ typedef struct __stack {
 #define ILL_BADSTK 8
 #define ILL_BADIADDR 9
 
+/* mlibc's posix_signal.h has these for x86_64 alone; a breakpoint raises
+ * SIGTRAP on every arch (the same values: an identical redefinition). */
+#define TRAP_BRKPT 1
+#define TRAP_TRACE 2
+
 /* The kernel's masks are 32 bits. */
 #define _NSIG 32
 #if defined(_DEFAULT_SOURCE)
