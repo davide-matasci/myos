@@ -1042,7 +1042,7 @@ fn exec_path_depth(
     let mapped = mapped_program(&path);
     // Static lookup for rootfs (`/bin/tcc/tcc`); VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
-    // by the image limits (`MAX_EXPAND_PAGES`). A successful exec never
+    // by the image limit (`MAX_ELF_PAGES`). A successful exec never
     // returns, so the copy is freed explicitly before the new image runs.
     const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
     let mut owned: Option<Vec<u8>> = None;

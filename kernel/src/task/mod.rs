@@ -44,10 +44,11 @@ use crate::arch::switch::{seed_stack, task_switch};
 
 pub const MAX_TASKS: usize = myos_abi::MYOS_MAX_TASKS;
 /// Exec from a syscall runs `load_user_elf` / `copy_user_aspace` on the task
-/// stack (exception frame + `[MAX_INIT_PAGES]`/`[USER_STACK_PAGES]` frame arrays).
-/// 8 KiB overflowed after widening the user stack to 64 KiB; 16 KiB then overflowed
-/// once `MAX_INIT_PAGES` grew to 1024 for ripgrep (`[u64; 1024]` is 8 KiB alone,
-/// plus stack frames and a nested timer IRQ). Overflow hangs with no serial.
+/// stack (exception frame + the `[USER_STACK_PAGES]` frame array; the image's
+/// frames are on the heap). 8 KiB overflowed after widening the user stack to
+/// 64 KiB; 16 KiB then overflowed with a 1024-entry image frame array on the
+/// stack (8 KiB alone, plus stack frames and a nested timer IRQ). Overflow
+/// hangs with no serial.
 pub const STACK_SIZE: usize = 64 * 1024;
 /// oksh `FDBASE` is 10 (`fcntl(F_DUPFD)` for tty/script fds). 8 was enough for
 /// the tiny Rust shell; raise further for dropbear: a session holds stdio +

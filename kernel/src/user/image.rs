@@ -27,10 +27,10 @@ pub(super) fn image_base(bytes: &[u8]) -> Option<u64> {
 pub(super) fn load_user_elf(bytes: &[u8], base: u64, relocate: bool) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let code_pages = info.span.div_ceil(PAGE);
-    if code_pages == 0 || code_pages > MAX_INIT_PAGES {
+    if code_pages == 0 || code_pages > MAX_ELF_PAGES {
         return None;
     }
-    let n_pages = code_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let n_pages = code_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_ELF_PAGES);
 
     let stack_off = (n_pages * PAGE) as u64;
 
@@ -51,7 +51,7 @@ pub(super) fn load_user_elf(bytes: &[u8], base: u64, relocate: bool) -> Option<(
         Err(_) => return None,
     };
 
-    // Heap, not kstack: MAX_INIT_PAGES×8 ≈ 8KiB would sit on the same
+    // Heap, not kstack: MAX_ELF_PAGES×8 = 32 KiB would sit on the same
     // 64KiB stack as the live syscall trap frame (riscv64 exec→load fallback).
     let mut frames = alloc::vec![0u64; n_pages];
     for i in 0..n_pages {
@@ -291,7 +291,7 @@ fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
     }
 }
 
-/// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
+/// Grow the current aspace and load a large ELF (up to [`MAX_ELF_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
 /// (post-fork exec of release uutils / ripgrep).
 /// Free the old image's pages past the new code span, and stack/heap pages
@@ -351,10 +351,10 @@ pub(super) fn expand_user_elf(
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
-    if image_pages == 0 || image_pages > MAX_EXPAND_PAGES {
+    if image_pages == 0 || image_pages > MAX_ELF_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_EXPAND_PAGES);
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_ELF_PAGES);
     let new_stack_off = (n_pages * PAGE) as u64;
     if info.span > ELF_SCRATCH_BYTES {
         return None;
