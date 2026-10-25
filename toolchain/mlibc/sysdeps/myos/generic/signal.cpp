@@ -79,7 +79,16 @@ int Sysdeps<Sigaction>::operator()(int sig, const struct sigaction *__restrict a
 int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *__restrict set, sigset_t *__restrict retrieve) {
 	unsigned int kset = mask_of(set);
 	unsigned int kold = 0;
-	if (__myos_sigprocmask_k(how, set ? &kset : nullptr, retrieve ? &kold : nullptr) != 0)
+	// The kernel's `how` is newlib's (0 SIG_SETMASK, 1 SIG_BLOCK, 2
+	// SIG_UNBLOCK), mlibc's Linux's.
+	int khow;
+	switch (how) {
+	case SIG_SETMASK: khow = 0; break;
+	case SIG_BLOCK: khow = 1; break;
+	case SIG_UNBLOCK: khow = 2; break;
+	default: return EINVAL;
+	}
+	if (__myos_sigprocmask_k(khow, set ? &kset : nullptr, retrieve ? &kold : nullptr) != 0)
 		return errno;
 	if (retrieve != nullptr)
 		set_mask(retrieve, kold);
