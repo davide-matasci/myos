@@ -1,0 +1,186 @@
+smoltcp: a listener on no address of one IP version
+
+netd listens and binds for IPv4 and IPv6 sockets over one socket set.
+Upstream, a TCP listener or a UDP socket on no address takes what comes
+to its port in either IP version, so an IPv4 socket on 0.0.0.0 took
+IPv6 connections it cannot name, and an IPv4 server and an IPv6-only
+one (IPV6_V6ONLY: nginx's `listen [::]:80` beside `listen 80`) could not
+share a port: the first socket of the set took both families' traffic.
+tcp::Socket::set_listen_version() and udp::Socket::set_ip_version() make
+such a socket take one version only. Unchanged without them. With tests.
+Derived from smoltcp, so under smoltcp's license (0BSD).
+
+diff --git a/src/socket/tcp.rs b/src/socket/tcp.rs
+index d50631d..d72a142 100644
+--- a/src/socket/tcp.rs
++++ b/src/socket/tcp.rs
+@@ -13,8 +13,8 @@ use crate::socket::{Context, PollAt};
+ use crate::storage::{Assembler, RingBuffer};
+ use crate::time::{Duration, Instant};
+ use crate::wire::{
+-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, TcpControl, TcpRepr, TcpSeqNumber,
+-    TcpTimestampGenerator, TcpTimestampRepr, TCP_HEADER_LEN,
++    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, IpVersion, TcpControl, TcpRepr,
++    TcpSeqNumber, TcpTimestampGenerator, TcpTimestampRepr, TCP_HEADER_LEN,
+ };
+ 
+ mod congestion;
+@@ -429,6 +429,9 @@ pub struct Socket<'a> {
+     /// Address passed to listen(). Listen address is set when listen() is called and
+     /// used every time the socket is reset back to the LISTEN state.
+     listen_endpoint: IpListenEndpoint,
++    /// myos: the IP version a listener on no address takes connections of
++    /// (`set_listen_version`); `None`: either.
++    listen_version: Option<IpVersion>,
+     /// Current 4-tuple (local and remote endpoints).
+     tuple: Option<Tuple>,
+     /// The sequence number corresponding to the beginning of the transmit buffer.
+@@ -528,6 +531,7 @@ impl<'a> Socket<'a> {
+             keep_alive: None,
+             hop_limit: None,
+             listen_endpoint: IpListenEndpoint::default(),
++            listen_version: None,
+             tuple: None,
+             local_seq_no: TcpSeqNumber::default(),
+             remote_seq_no: TcpSeqNumber::default(),
+@@ -700,6 +704,14 @@ impl<'a> Socket<'a> {
+         Some(u16::try_from(last_win_adjusted >> self.remote_win_shift).unwrap_or(u16::MAX))
+     }
+ 
++    /// myos: take only connections of IP version `version` while listening
++    /// on no address (`None`: either, the default). An IPv4 listener and an
++    /// IPv6-only one (`IPV6_V6ONLY`) on the same port each take their own
++    /// family's connections, as on Linux.
++    pub fn set_listen_version(&mut self, version: Option<IpVersion>) {
++        self.listen_version = version;
++    }
++
+     /// Set the timeout duration.
+     ///
+     /// A socket with a timeout duration set will abort the connection if either of the following
+@@ -1468,7 +1480,8 @@ impl<'a> Socket<'a> {
+             // We're listening, reject packets not matching the listen endpoint.
+             let addr_ok = match self.listen_endpoint.addr {
+                 Some(addr) => ip_repr.dst_addr() == addr,
+-                None => true,
++                // myos: of the version it listens for (`set_listen_version`).
++                None => self.listen_version.is_none_or(|v| v == ip_repr.version()),
+             };
+             addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
+         }
+@@ -3163,6 +3176,29 @@ mod test {
+         sanity!(s, socket_syn_received());
+     }
+ 
++    /// myos: a listener on no address takes the connections of the IP
++    /// version `set_listen_version` names, of either without one.
++    #[test]
++    #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
++    fn test_listen_version() {
++        let mut s = socket_listen();
++        let tcp_repr = TcpRepr {
++            control: TcpControl::Syn,
++            seq_number: REMOTE_SEQ,
++            ack_number: None,
++            ..SEND_TEMPL
++        };
++        assert!(s.socket.accepts(&mut s.cx, &SEND_IP_TEMPL, &tcp_repr));
++        s.socket.set_listen_version(Some(SEND_IP_TEMPL.version()));
++        assert!(s.socket.accepts(&mut s.cx, &SEND_IP_TEMPL, &tcp_repr));
++        let other = match SEND_IP_TEMPL.version() {
++            IpVersion::Ipv4 => IpVersion::Ipv6,
++            IpVersion::Ipv6 => IpVersion::Ipv4,
++        };
++        s.socket.set_listen_version(Some(other));
++        assert!(!s.socket.accepts(&mut s.cx, &SEND_IP_TEMPL, &tcp_repr));
++    }
++
+     #[test]
+     fn test_listen_syn_reject_ack() {
+         let mut s = socket_listen();
+diff --git a/src/socket/udp.rs b/src/socket/udp.rs
+index b1a8439..afda9a5 100644
+--- a/src/socket/udp.rs
++++ b/src/socket/udp.rs
+@@ -8,7 +8,9 @@ use crate::socket::PollAt;
+ #[cfg(feature = "async")]
+ use crate::socket::WakerRegistration;
+ use crate::storage::Empty;
+-use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr};
++use crate::wire::{
++    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, IpVersion, UdpRepr,
++};
+ 
+ /// Metadata for a sent or received UDP packet.
+ #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+@@ -119,6 +121,9 @@ impl std::error::Error for RecvError {}
+ #[derive(Debug)]
+ pub struct Socket<'a> {
+     endpoint: IpListenEndpoint,
++    /// myos: the IP version a socket bound to no address takes datagrams
++    /// of (`set_ip_version`); `None`: either.
++    ip_version: Option<IpVersion>,
+     rx_buffer: PacketBuffer<'a>,
+     tx_buffer: PacketBuffer<'a>,
+     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
+@@ -134,6 +139,7 @@ impl<'a> Socket<'a> {
+     pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
+         Socket {
+             endpoint: IpListenEndpoint::default(),
++            ip_version: None,
+             rx_buffer,
+             tx_buffer,
+             hop_limit: None,
+@@ -179,6 +185,14 @@ impl<'a> Socket<'a> {
+         self.tx_waker.register(waker)
+     }
+ 
++    /// myos: take only datagrams of IP version `version` while bound to no
++    /// address (`None`: either, the default): an IPv4 socket and an
++    /// IPv6-only one (`IPV6_V6ONLY`) on the same port each hear their own
++    /// family, as on Linux.
++    pub fn set_ip_version(&mut self, version: Option<IpVersion>) {
++        self.ip_version = version;
++    }
++
+     /// Return the bound endpoint.
+     #[inline]
+     pub fn endpoint(&self) -> IpListenEndpoint {
+@@ -488,6 +502,10 @@ impl<'a> Socket<'a> {
+         {
+             return false;
+         }
++        // myos: of the version it is bound for (`set_ip_version`).
++        if self.endpoint.addr.is_none() && self.ip_version.is_some_and(|v| v != ip_repr.version()) {
++            return false;
++        }
+ 
+         true
+     }
+@@ -826,6 +844,26 @@ mod test {
+         assert!(socket.can_send());
+     }
+ 
++    /// myos: a socket bound to no address hears the IP version
++    /// `set_ip_version` names, either without one.
++    #[test]
++    #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6", feature = "medium-ip"))]
++    fn test_ip_version() {
++        let (mut iface, _, _) = setup(Medium::Ip);
++        let cx = iface.context();
++        let mut socket = socket(buffer(1), buffer(0));
++        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
++        assert!(socket.accepts(cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
++        socket.set_ip_version(Some(REMOTE_IP_REPR.version()));
++        assert!(socket.accepts(cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
++        let other = match REMOTE_IP_REPR.version() {
++            IpVersion::Ipv4 => IpVersion::Ipv6,
++            IpVersion::Ipv6 => IpVersion::Ipv4,
++        };
++        socket.set_ip_version(Some(other));
++        assert!(!socket.accepts(cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
++    }
++
+     #[rstest]
+     #[case::ip(Medium::Ip)]
+     #[cfg(feature = "medium-ip")]
