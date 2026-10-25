@@ -20,7 +20,7 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use myos_abi::{
-    status_ok, ApiCell, KernelApi, Lock, SoundCardOps, SoundOps, SoundParams, SoundStreamInfo, ABI_VERSION,
+    status_ok, ApiCell, KernelApi, SleepLock, SoundCardOps, SoundOps, SoundParams, SoundStreamInfo, ABI_VERSION,
     SOUND_CAPTURE, SOUND_FORMAT_S16, SOUND_FORMAT_U8, SOUND_PLAYBACK, SOUND_RATES, SOUND_SERVICE, SOUND_VERSION,
 };
 use myos_virtio::virtio_drivers::device::common::Feature;
@@ -93,7 +93,10 @@ struct Card {
 // holds its slot in `CARDS`.
 unsafe impl Send for Card {}
 
-static CARDS: [Lock<Option<Card>>; MAX_CARDS] = [const { Lock::new(None) }; MAX_CARDS];
+/// The cards: the card's thread and the core's `start` and `stop` (a
+/// syscall of the server's) take a slot, the thread while the scheduler
+/// may switch it out, so a waiter sleeps.
+static CARDS: [SleepLock<Option<Card>>; MAX_CARDS] = [const { SleepLock::new(&API, None) }; MAX_CARDS];
 /// Per card, how its interrupt handler acknowledges the device.
 static ACK: [AtomicUsize; MAX_CARDS] = [const { AtomicUsize::new(0) }; MAX_CARDS];
 /// Per card, the key its thread waits on (the address).

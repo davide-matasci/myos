@@ -36,7 +36,7 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use myos_abi::{
-    status_fail, status_ok, ApiCell, KernelApi, Lock, ModuleVfsOps, SoundCardOps, SoundOps, SoundParams,
+    status_fail, status_ok, ApiCell, KernelApi, ModuleVfsOps, SleepLock, SoundCardOps, SoundOps, SoundParams,
     SoundStreamInfo, StrRef, VfsStatInfo, ABI_VERSION, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
     MYOS_READ_WAIT, SOUND_CAPTURE, SOUND_FORMAT_S16, SOUND_FORMAT_U8, SOUND_PLAYBACK, SOUND_RATES, SOUND_SERVICE,
     SOUND_VERSION,
@@ -155,7 +155,11 @@ struct Core {
     streams: [Option<Stream>; MAX_STREAMS],
 }
 
-static CORE: Lock<Core> = Lock::new(Core { cards: [const { None }; MAX_CARDS], streams: [const { None }; MAX_STREAMS] });
+/// The cards and streams: taken by the server's syscalls and by the card
+/// drivers' threads, which the scheduler may switch out while they hold
+/// it, so its waiters sleep (a syscall spinning for it with interrupts off
+/// would keep the holder from its CPU).
+static CORE: SleepLock<Core> = SleepLock::new(&API, Core { cards: [const { None }; MAX_CARDS], streams: [const { None }; MAX_STREAMS] });
 /// Per stream, `poll`'s change count of `data`.
 static CHANGES: [AtomicU64; MAX_STREAMS] = [const { AtomicU64::new(0) }; MAX_STREAMS];
 
