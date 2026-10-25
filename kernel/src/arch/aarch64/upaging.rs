@@ -207,7 +207,7 @@ pub fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
     create_aspace_aarch64(code, stack, base, stack_off)
 }
 
-fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64) -> u64 {
+fn create_aspace_aarch64(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     const TABLE: u64 = 0b11;
     const AP_RW: u64 = 0b01 << 6; // EL1 RW, EL0 RW
 
@@ -221,15 +221,17 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
         // (`aarch64_l3_table_mut`).
         l0_t[0] = l1 | TABLE;
         // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.
+        let base_i = aarch64_user_page_idx(base);
         for (i, &phys) in code.iter().enumerate() {
-            let Some(l3p) = aarch64_l3_table_mut(l0, i) else {
+            let page = base_i + i;
+            let Some(l3p) = aarch64_l3_table_mut(l0, page) else {
                 break;
             };
             let l3_t = &mut *l3p;
-            let slot = i % USER_L3_PAGES;
+            let slot = page % USER_L3_PAGES;
             l3_t[slot] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
         }
-        let stack_i = (stack_off as usize) / PAGE;
+        let stack_i = base_i + (stack_off as usize) / PAGE;
         for (i, &phys) in stack.iter().enumerate() {
             let page = stack_i + i;
             let Some(l3p) = aarch64_l3_table_mut(l0, page) else {
