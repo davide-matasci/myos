@@ -148,6 +148,17 @@ fn enable_spi(id: u32, v3: bool, edge: bool) {
     }
 }
 
+/// SPI `id` no more (`GICD_ICENABLER`, the same register on both GICs).
+fn disable_spi(id: u32) {
+    if !(32..SPECIAL).contains(&id) {
+        return;
+    }
+    write32(gicd() + GICD_ICENABLER + (id as usize / 32) * 4, 1 << (id % 32));
+    unsafe {
+        asm!("dsb sy", options(nostack));
+    }
+}
+
 struct GicV2;
 
 impl IrqChip for GicV2 {
@@ -181,6 +192,10 @@ impl IrqChip for GicV2 {
 
     fn unmask_edge(&self, irq: u32) {
         enable_spi(irq, false, true);
+    }
+
+    fn mask(&self, irq: u32) {
+        disable_spi(irq);
     }
 
     fn claim(&self) -> Option<u32> {
@@ -333,6 +348,10 @@ impl IrqChip for GicV3 {
 
     fn unmask_edge(&self, irq: u32) {
         enable_spi(irq, true, true);
+    }
+
+    fn mask(&self, irq: u32) {
+        disable_spi(irq);
     }
 
     fn claim(&self) -> Option<u32> {
