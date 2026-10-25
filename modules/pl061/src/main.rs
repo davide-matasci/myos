@@ -7,16 +7,20 @@
 //!
 //! Nothing drives a line yet, so the probe checks the domain's path once:
 //! it sets line [`CHECK_LINE`], an input nothing drives, to interrupt
-//! while it is low, enables that interrupt through the kernel, and the
-//! handler turns it off again. `/proc/interrupts` shows both counts
-//! (`pl061`, `pl061 check`: `user/tests/kernel.sh`).
+//! while it is low and enables that interrupt through the kernel; the
+//! handler makes the line quiet by turning its sense to high. A thread
+//! then gives the interrupt back (`KernelApi::irq_disable`), which masks
+//! the line through the domain's [`mask`], sets the sense to low again
+//! and checks no interrupt comes. `/proc/pl061` says how it went
+//! (`check given back`), `/proc/interrupts` shows the controller's count
+//! (`pl061`): `user/tests/kernel.sh`.
 
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::fmt::Write;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use myos_abi::{status_ok, status_warn, ApiCell, KernelApi, MmioDevice, ABI_VERSION};
 
@@ -25,6 +29,8 @@ static API: ApiCell = ApiCell::new();
 static REGS: AtomicUsize = AtomicUsize::new(0);
 /// The domain's first interrupt number: line `n` is `FIRST + n`.
 static FIRST: AtomicU32 = AtomicU32::new(0);
+/// The check line's interrupts ([`check`]).
+static CHECKS: AtomicU64 = AtomicU64::new(0);
 
 const LINES: u32 = 8;
 /// The line the probe interrupts on: QEMU `virt` wires line 3 (the power
@@ -54,6 +60,13 @@ fn update(off: usize, set: u32, clear: u32) {
     write(off, (read(off) & !clear) | set);
 }
 
+/// The domain's `mask`: line `line`'s interrupt off.
+unsafe extern "C" fn mask(_ctx: *mut core::ffi::c_void, line: u32) {
+    if line < LINES {
+        update(GPIOIE, 0, 1 << line);
+    }
+}
+
 /// The domain's `unmask`: line `line`'s interrupt on.
 unsafe extern "C" fn unmask(_ctx: *mut core::ffi::c_void, line: u32) {
     if line < LINES {
@@ -80,11 +93,46 @@ unsafe extern "C" fn demux(_ctx: *mut core::ffi::c_void) {
     write(GPIOIC, pending & level);
 }
 
-/// The check's handler: [`CHECK_LINE`] interrupts no more (high now, and
-/// masked).
+/// The check's handler: [`CHECK_LINE`] interrupts no more (its sense
+/// high now, the line still low), counted.
 unsafe extern "C" fn check(_ctx: *mut core::ffi::c_void) {
     update(GPIOIEV, 1 << CHECK_LINE, 0);
-    update(GPIOIE, 0, 1 << CHECK_LINE);
+    CHECKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The check's second half, in a thread (`irq_disable` waits out a
+/// running dispatch, so not from the handler): once the line's interrupt
+/// came, give it back; the domain's [`mask`] turns the line off, and a
+/// line asserted again (its sense low once more) interrupts nobody. The
+/// outcome in `/proc/pl061`.
+unsafe extern "C" fn give_back(_ctx: *mut core::ffi::c_void) {
+    let Some(api) = API.try_get() else {
+        return;
+    };
+    let bit = 1 << CHECK_LINE;
+    let deadline = api.monotonic_ns() + 2_000_000_000;
+    while CHECKS.load(Ordering::Relaxed) == 0 && api.monotonic_ns() < deadline {
+        api.task_sleep_until(api.monotonic_ns() + 10_000_000);
+    }
+    let came = CHECKS.load(Ordering::Relaxed);
+    let outcome: &[u8] = if came == 0 {
+        b"check never came\n"
+    } else if api.irq_disable(FIRST.load(Ordering::Relaxed) + CHECK_LINE, check, core::ptr::null_mut()) != 0 {
+        b"check not given back\n"
+    } else if read(GPIOIE) & bit != 0 {
+        b"check given back, the line not masked\n"
+    } else {
+        // Asserted again (low, and the sense low): masked, it reaches no
+        // handler.
+        update(GPIOIEV, 0, bit);
+        api.task_sleep_until(api.monotonic_ns() + 100_000_000);
+        if CHECKS.load(Ordering::Relaxed) != came {
+            b"check given back, the line still interrupts\n"
+        } else {
+            b"check given back\n"
+        }
+    };
+    api.proc_register("pl061", outcome);
 }
 
 #[inline(never)]
@@ -110,7 +158,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     // Every line masked, nothing pending.
     write(GPIOIE, 0);
     write(GPIOIC, 0xff);
-    let first = unsafe { api.irq_domain_register(dev.phandle, LINES, unmask, core::ptr::null_mut()) };
+    let first = unsafe { api.irq_domain_register(dev.phandle, LINES, unmask, mask, core::ptr::null_mut()) };
     if first == 0 {
         status_warn(api, "pl061: no interrupt domain");
         return 0;
@@ -129,6 +177,8 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     update(GPIOIS, bit, 0);
     if api.irq_enable(first + CHECK_LINE, "pl061 check", check, core::ptr::null_mut()) != 0 {
         status_warn(api, "pl061: its line's interrupt cannot be enabled");
+    } else if api.thread_spawn("pl061 check", give_back, core::ptr::null_mut()) != 0 {
+        status_warn(api, "pl061: no thread to give the line's interrupt back");
     }
     let mut line = Line::new();
     let _ = write!(line, "pl061: {LINES} lines, interrupts {first}..{}", first + LINES - 1);

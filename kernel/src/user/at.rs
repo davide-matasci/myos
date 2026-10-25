@@ -167,7 +167,11 @@ fn resolve(dirfd: usize, path: &str, follow: bool) -> Option<Found> {
             Base::Cwd => None,
             Base::Named(dir) => Some(dir),
             Base::Cap(real, rights) => {
-                let real = fs::resolve_beneath(&real, path, follow)?;
+                let trailing = fs::trailing_slash(path);
+                let real = fs::resolve_beneath(&real, path, follow || trailing)?;
+                if trailing && fs::trailing_slash_fails(&real) {
+                    return None;
+                }
                 return Some(Found { real, cap: Some(rights) });
             }
         },

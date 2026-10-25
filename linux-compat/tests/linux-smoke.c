@@ -1274,6 +1274,14 @@ static void check_toolchain_calls(char *self) {
               open("/tmp/linux-smoke.link", O_RDONLY | O_NOFOLLOW) < 0 && errno == ELOOP,
           "O_NOFOLLOW");
     check(open("/tmp/linux-smoke.trunc", O_RDONLY | O_DIRECTORY) < 0 && errno == ENOTDIR, "O_DIRECTORY");
+    /* A trailing slash names a directory: a file with one is ENOTDIR, a
+     * symlink to a directory is followed through it (issue #583). */
+    check(stat("/tmp/linux-smoke.trunc/", &st) < 0 && errno == ENOTDIR, "stat of FILE/: ENOTDIR");
+    check(open("/tmp/linux-smoke.trunc/", O_RDONLY) < 0 && errno == ENOTDIR, "open of FILE/: ENOTDIR");
+    check(symlink("/tmp", "/tmp/linux-smoke.dirlink") == 0 && stat("/tmp/linux-smoke.dirlink/", &st) == 0 &&
+              S_ISDIR(st.st_mode) && lstat("/tmp/linux-smoke.dirlink/", &st) == 0 && S_ISDIR(st.st_mode),
+          "LINK-TO-DIR/ follows the link");
+    unlink("/tmp/linux-smoke.dirlink");
     unlink("/tmp/linux-smoke.link");
     unlink("/tmp/linux-smoke.trunc");
     /* A dangling link's own owner and mode can be set (apk sets a .so.N
@@ -1296,7 +1304,7 @@ static void check_toolchain_calls(char *self) {
     }
 }
 
-/* One raw query for example.com's A record, sent as the resolver sends
+/* One raw query for github.com's A record, sent as the resolver sends
  * it (`__res_msend`), with what came back: run when `dns` failed, to say
  * which step loses the answer. Each probe has its own socket: a query to
  * `ns` alone; to `ns` then to `dead`; to `dead` then to `ns`, and `ns`
@@ -1360,8 +1368,8 @@ static void probe_send(int fd, const unsigned char *q, size_t len, const struct 
 }
 
 static void dns_probe(const char *ns, const char *dead) {
-    static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
-                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 'g', 'i', 't', 'h', 'u',
+                                       'b', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
     struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns;
     inet_pton(AF_INET, ns, &to_ns.sin_addr);
     inet_pton(AF_INET, dead, &to_dead.sin_addr);
@@ -1390,8 +1398,8 @@ static void dns_probe(const char *ns, const char *dead) {
  * connected the socket to the last address sent to reported that as the
  * sender, and dropped what the earlier one had answered). */
 static void dns_sender(const char *ns, const char *dead) {
-    static const unsigned char q[] = { 0x56, 0x78, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p',
-                                       'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
+    static const unsigned char q[] = { 0x56, 0x78, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 'g', 'i', 't', 'h', 'u',
+                                       'b', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
     struct sockaddr_in to_ns = { .sin_family = AF_INET, .sin_port = htons(53) }, to_dead = to_ns, from = { 0 };
     struct pollfd p;
     socklen_t fl = sizeof from;
@@ -1579,7 +1587,7 @@ int main(int argc, char **argv) {
      * last address sent to, which `dns_sender` checks directly. */
     if (argc > 1 && strcmp(argv[1], "dns") == 0) {
         struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
-        int r = getaddrinfo("example.com", "80", &hints, &res);
+        int r = getaddrinfo("github.com", "80", &hints, &res);
         check(r == 0 && res != NULL, r == 0 ? "getaddrinfo" : gai_strerror(r));
         if (res != NULL) {
             freeaddrinfo(res);
@@ -1669,6 +1677,50 @@ int main(int argc, char **argv) {
         closedir(d);
     }
     check(found, "opendir/readdir");
+
+    /* A directory of more names than one listing buffer held, emptied
+     * while it is read (what rm -rf does): every entry is seen once and
+     * the directory is left empty; rmdir of it with an entry left is
+     * ENOTEMPTY (issue #584). */
+    const char *bigdir = "/tmp/linux-smoke.big";
+    char name[128];
+    int made = 0, seen = 0;
+    mkdir(bigdir, 0755);
+    for (int i = 0; i < 300; i++) {
+        /* No printf family here: on aarch64 and riscv64 it needs the
+         * 128-bit float builtins this static program is not linked with. */
+        strcpy(name, bigdir);
+        strcat(name, "/an-entry-whose-name-is-long-000");
+        size_t at = strlen(name);
+        name[at - 3] = (char)('0' + i / 100);
+        name[at - 2] = (char)('0' + i / 10 % 10);
+        name[at - 1] = (char)('0' + i % 10);
+        int f = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (f >= 0) {
+            made++;
+            close(f);
+        }
+    }
+    check(made == 300, "300 files in a directory");
+    check(rmdir(bigdir) < 0 && errno == ENOTEMPTY, "rmdir of a directory with entries: ENOTEMPTY");
+    d = opendir(bigdir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') {
+                continue;
+            }
+            strcpy(name, bigdir);
+            strcat(name, "/");
+            strncat(name, e->d_name, sizeof name - strlen(name) - 1);
+            if (unlink(name) == 0) {
+                seen++;
+            }
+        }
+        closedir(d);
+    }
+    check(seen == 300, "readdir while unlinking sees every entry once");
+    check(rmdir(bigdir) == 0, "rmdir of the emptied directory");
 
     /* Large malloc: musl serves it with mmap (the native mmap window is
      * 1 MiB in total). */

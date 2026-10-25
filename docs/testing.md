@@ -35,7 +35,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 
 | tag | the tests that |
 |---|---|
-| `net` | need the host's network: HTTPS, the package mirror the launcher serves, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
+| `net` | need the host's network: the package mirror and the test web server the launcher serves, GitHub, the Alpine mirror (without it a run stays on QEMU's user network: DNS and the listen test go through it) |
 | `pkg` | need the packages of this build: installed as apps (`packages`, the first test of a run that has one, installs from the mirror those the selected `pkg` tests name in their tags; every package's own test has it and its package's name), or the mirror itself (get-myos's, which name none); in CI the `pkg` boot's |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs (jq, netpbm), the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares (rustc, Python, an X client: `linux-compat/alpine-disks.sh`, fetched once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
@@ -122,6 +122,20 @@ names `get-alpine`, the X clients `tinyx`); one that names none gets
 none (get-myos's own install into roots of their own). The tests run
 their programs with `run-myos`.
 
+The tests that fetch over HTTP(S) do it from the launcher's test web
+server (`src/test_www.rs`), not from a site on the internet, whose
+answers vary from run to run (a rate limit, a 503): plain HTTP on the
+host's port 8766 and HTTPS on 8767, the guest's `10.0.2.2:8766` and
+`10.0.2.2:8767`. HTTPS presents a certificate of the test CA
+(`user/tests/tls`, made by its `make.sh` and committed, like dropbear's
+test key); the tests trust that CA alone (`/lib/myos-tests/test-ca.pem`:
+curl's `--cacert`, Python's `cafile`), never the
+image's bundle. It serves `/hello.txt`. What needs the real internet
+uses GitHub, which CI cannot run without anyway: `dns` and the Linux
+layer's lookups resolve `github.com`, and the kernel's own HTTPS client
+(`https`) fetches `https://github.com/robots.txt` against the image's
+bundle.
+
 The tty test (`user/c/tty_smoke.c`, in `user/c/test.sh`) drives an
 interactive shell on a pty the way a person types at the console: history
 recall and in-line editing with the arrow keys, backspace, `^C` on a
@@ -175,7 +189,7 @@ AMD's under `MYOS_X86_IOMMU=amd`, aarch64: `virt` with an SMMUv3, riscv64: `virt
 where QEMU is 9.2 or later, `docs/pci-acpi-smp.md`), the disks, the network with the port
 forwards, the simulated Wi-Fi radio and its access points
 (`src/wifi_sim.rs`, `docs/wifi.md`), unless `net` is skipped the package
-mirror and, with the
+mirror and the test web server, and, with the
 Linux layer and unless `alpine-disk` is skipped, the Alpine disk:
 `linux-compat/alpine-disks.sh` builds it once into
 `target/alpine-<arch>.img`, the roots of rustc, Python and an X client

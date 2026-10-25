@@ -1,4 +1,4 @@
-# Git (Phase 1 — local porcelain) for myos
+# Git for myos: the porcelain and SSH remotes
 
 Upstream Git pinned in `versions.env` (not vendored). Cross-built with newlib +
 myos libgloss + static zlib for `x86_64` / `aarch64` / `riscv64`.
@@ -18,33 +18,49 @@ myos libgloss + static zlib for `x86_64` / `aarch64` / `riscv64`.
 | `prepare.sh` | rsync → `target/git-myos-build`, install `config.mak` / stubs |
 | `build.sh` | Cross-compile → `target/git-<arch>-unknown-none` (links `ports/zlib`) |
 | `myos-git-cc.sh` | Compile/link wrapper (crt0 + `libz.a` + newlib) |
-| `config.mak` | Phase-1 `NO_*` flags + undo host-Linux uname detections |
+| `config.mak` | `NO_*` flags + undo host-Linux uname detections |
 | `include/` | Headers newlib lacks (`sys/statvfs.h`, `netinet/tcp.h`) |
 | `myos_stubs.c` / `myos_compat.h` | What libgloss has no honest implementation for (`prctl`, `sync_file_range`, `statvfs`) + compile-only definitions |
 
 Thin wrappers: `scripts/fetch-git.sh`, `scripts/build-git.sh` (and
 `scripts/fetch-zlib.sh` / `scripts/build-zlib.sh`).
 
-## Phase 1 limits (local only)
+## Limits
 
 Built with (see `config.mak`):
 
 - `NO_GETTEXT` `NO_ICONV` `NO_PERL` `NO_PYTHON` `NO_TCLTK` `NO_PTHREADS`
-- `NO_OPENSSL` / `NO_CURL` (no HTTPS remotes yet — curl/LibreSSL later)
-- `NO_EXPAT` `NO_RUST` `NO_GITWEB` `NO_REGEX` (bundled compat regex)
+- `NO_OPENSSL` `NO_CURL` `NO_EXPAT` (no HTTP(S) remotes: below)
+- `NO_RUST` `NO_GITWEB` `NO_REGEX` (bundled compat regex)
 - `NO_UNIX_SOCKETS` `NO_IPV6` `NO_NSEC` `NO_PREAD` `NO_GETPAGESIZE`
 
-Intended local workflows: `init`, `add`, `commit`, `log`, `status`, `diff`,
-branch/checkout basics on a writable filesystem. Remotes /
-`clone`/`fetch`/`push` over HTTPS or SSH are **out of scope** for Phase 1.
+## Remotes
 
-Patches and compat live only under `packages/git/` — sources are fetched, never vendored.
+- **HTTP(S)**: not yet. Git is GPL-2.0-only, and libcurl's TLS here is
+  LibreSSL, whose libcrypto keeps the OpenSSL license: the two in one
+  binary are the classic GPLv2 incompatibility. HTTPS waits on a
+  compatible TLS library (issue #591).
+- **SSH**: git runs `ssh`, which is dropbear's client (`dbclient`, also
+  `/bin/custom/ssh`): `git clone ssh://user@host[:port]/path` or
+  `user@host:path`. A key is `ssh -i KEY` (`GIT_SSH_COMMAND` or
+  `core.sshCommand`; `dropbearkey -t ed25519 -f KEY` makes one, `-y` prints
+  its public half) and an unknown host key is asked about on the terminal
+  (`ssh -y` accepts it). dbclient warns about git's `-o SendEnv=GIT_PROTOCOL`
+  and goes on.
+- **Serving** over SSH from myos (its dropbear, `docs/ssh.md`): the client's
+  command runs in the login's shell, where git is an app, not on `PATH`:
+  `git clone -u 'run-myos git upload-pack' ...` (and `--receive-pack` for a
+  push), or `get-myos --global git`, which puts `git-upload-pack` and
+  `git-receive-pack` (aliases of the one binary) in `/bin/custom`.
+
+The test (`test.sh`): a clone over SSH from the system itself (its own
+dropbear, a key made by the test).
 
 ## Image path
 
-Packed into initramfs as `/bin/custom/git` and `/bin/git` (hardlink group; on
-`PATH` via `/bin/custom`, like vim/oksh). Missing ELF is a **hard error** at
-image pack time (CI always builds git).
+A package (`get-myos git`): the app holds `/bin/custom/git` and `/bin/git`,
+with `git-upload-pack`, `git-receive-pack` and `git-upload-archive` as
+symlinks to it.
 
 `gitexecdir` / `prefix` bake to `/bin/custom` so the multicall binary never
 looks for missing `/usr/libexec/git-core` helpers.
@@ -67,11 +83,10 @@ git log
 
 ## Known gaps
 
-- Guest exec of the full Phase-1 binary needs `MAX_EXPAND_PAGES` ≥ ~1080 (image
+- Guest exec of the full binary needs `MAX_EXPAND_PAGES` ≥ ~1080 (image
   span with BSS). Smaller caps made `execve` fail with ENOENT (`git: no such
   file or directory` from oksh) even though `/bin/custom/git` was packed.
-- No network remotes (no curl/openssl in this port).
-- `ftruncate` is a successful no-op in libgloss (no SYS_FTRUNCATE yet); enough for Phase-1 index write-after-fill.
+- `ftruncate` is a successful no-op in libgloss (no SYS_FTRUNCATE yet); enough for the index write-after-fill.
 - `getrandom` is a software LCG stand-in (not cryptographic).
 - `chmod` / `fchmodat` are successful no-ops (the VFS keeps no modes); `utime` / `utimensat` set real access and modification times (libgloss).
 - Built with `NO_MMAP` (file-backed mmap is not implemented; git uses read+malloc).

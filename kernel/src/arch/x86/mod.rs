@@ -159,6 +159,11 @@ pub fn phys_map(phys: u64, len: usize) -> Option<usize> {
     paging::map_mmio(phys, len as u64)
 }
 
+/// The device vectors taken, and how many there are.
+pub fn irq_vectors() -> (u32, u32) {
+    interrupts::vectors()
+}
+
 /// A device vector (its `irq::dispatch` number) and the MSI message address
 /// that raises it on the BSP, for a device's own message register.
 pub fn msi_vector() -> Option<(u32, u32)> {

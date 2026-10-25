@@ -148,12 +148,23 @@ fn view_path(path: &str) -> String {
 
 /// The VFS path behind `path` (cwd, chroot and symlinks applied).
 fn real_path(path: &str) -> R2<String> {
-    user::resolve_copied_path(path).ok_or(ENOENT)
+    user::resolve_copied_path(path).ok_or_else(|| unresolved(path))
 }
 
 /// Like [`real_path`], but a symlink in the last component is not followed.
 fn real_path_nofollow(path: &str) -> R2<String> {
-    user::resolve_copied_path_nofollow(path).ok_or(ENOENT)
+    user::resolve_copied_path_nofollow(path).ok_or_else(|| unresolved(path))
+}
+
+/// Why `path` did not resolve: `ENOTDIR` for `FILE/` (a trailing slash
+/// resolves to directories only: the path without it does), else `ENOENT`.
+fn unresolved(path: &str) -> usize {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.len() < path.len() && !trimmed.is_empty() && user::resolve_copied_path(trimmed).is_some() {
+        ENOTDIR
+    } else {
+        ENOENT
+    }
 }
 
 // ---- files ----------------------------------------------------------------
@@ -592,14 +603,17 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
         None => return Err(if task::fd_kind(fd).is_some() { ENOTDIR } else { EBADF }),
     };
     let real = real_path(&e.path)?;
-    let mut list = alloc::vec![0u8; 4096];
-    let n = fs::listdir(&real, &mut list);
-    let names = [&b"."[..], &b".."[..]]
-        .into_iter()
-        .chain(list[..n].split(|&b| b == b'\n').filter(|s| !s.is_empty()));
+    let names = match e.listing {
+        Some(names) if e.pos > 0 => names,
+        _ => {
+            let names = alloc::sync::Arc::new(dir_names(&real));
+            files::set_listing(fd, names.clone());
+            names
+        }
+    };
     let mut out = Vec::new();
     let mut pos = e.pos;
-    for (i, name) in names.enumerate().skip(e.pos) {
+    for (i, name) in names.iter().enumerate().skip(e.pos) {
         let ty = if i < 2 {
             DT_DIR
         } else {
@@ -619,6 +633,28 @@ pub fn getdents64(fd: usize, buf: usize, count: usize) -> R {
         put(buf, &out)?;
     }
     Ok(out.len())
+}
+
+/// A directory's names, `.` and `..` first, all of them: the listing buffer
+/// grows until the names leave room for one more (the VFS stops at a whole
+/// name short of a full buffer), up to [`LIST_MAX`].
+fn dir_names(real: &str) -> Vec<Vec<u8>> {
+    const NAME_MAX: usize = 255;
+    const LIST_MAX: usize = 4 << 20;
+    let mut cap = 4096;
+    let (list, n) = loop {
+        let mut list = alloc::vec![0u8; cap];
+        let n = fs::listdir(real, &mut list);
+        if n + NAME_MAX + 1 < cap || cap >= LIST_MAX {
+            break (list, n);
+        }
+        cap *= 2;
+    };
+    [&b"."[..], &b".."[..]]
+        .into_iter()
+        .chain(list[..n].split(|&b| b == b'\n').filter(|s| !s.is_empty()))
+        .map(Vec::from)
+        .collect()
 }
 
 /// `FIONBIO`, `FIOCLEX` / `FIONCLEX`; the terminal requests from the
@@ -1184,7 +1220,13 @@ pub fn unlinkat(dirfd: usize, path: usize, flags: usize) -> R {
         if !is_dir {
             return Err(ENOTDIR);
         }
-        return if fs::rmdir(&real) { Ok(0) } else { Err(EINVAL) };
+        if fs::rmdir(&real) {
+            return Ok(0);
+        }
+        // A directory with entries left, else one the policy keeps (or a
+        // mount point).
+        let mut one = [0u8; 512];
+        return Err(if fs::listdir(&real, &mut one) > 0 { ENOTEMPTY } else { EACCES });
     }
     if is_dir {
         return Err(EISDIR);

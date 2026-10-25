@@ -104,9 +104,10 @@ cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patch
   the curated lists
   (`packages/os-test/overlay/misc/*.tests`). A test's output is shown only
   when it fails: keep passing tests quiet.
-- The full mode needs the network (`https://example.com/`, the Alpine
-  mirror for `get-alpine`); the packages come from the build itself, served
-  by the launcher to the guest (`docs/packages.md`). In a sandbox with a
+- The full mode needs the network (GitHub, the Alpine mirror for
+  `get-alpine`); the packages come from the build itself, served by the
+  launcher to the guest (`docs/packages.md`), and the HTTP(S) tests fetch
+  from the launcher's test web server (`src/test_www.rs`, `docs/testing.md`). In a sandbox with a
   TLS-intercepting proxy, append its CA to `target/cacert.pem` for local
   runs only and restore it afterwards; never commit it.
 
