@@ -61,9 +61,9 @@ fi
 # 1. The root: busybox (the shell and the tools below), libgcc and
 # libatomic (rustc's libgcc_s, and riscv64's libatomic), lld (the linker:
 # the toolchain's rust-lld is not position-independent, which the Linux
-# layer requires, issue #585), curl and xz for the download, unpacked
-# natively (-n: no apk under emulation, nor its scripts: busybox's links
-# are made here).
+# layer once required; it would do now, issue #602), curl and xz for the
+# download, unpacked natively (-n: no apk under emulation, nor its
+# scripts: busybox's links are made here).
 mkdir -p "$R" || exit 1
 get-alpine -n -r "$R" busybox libgcc libatomic lld curl xz || exit 1
 if [ ! -e "$R/usr/bin/env" ]; then
@@ -109,7 +109,7 @@ cp /lib/rust/$TARGET/lib/*.rlib "$L/$TARGET/lib/" && cp /lib/rust/$TARGET.json "
 # rustc takes for lld, linking the crt objects of the host's std with it).
 # The host's programs, build scripts and proc macros, link dynamically
 # against the root's musl and libgcc_s (aarch64's musl target has no static
-# PIE, and the Linux layer loads position-independent programs only), so
+# PIE; a static non-PIE one would run now, issue #602), so
 # the wrapper names the loader and searches those two libraries alone
 # (Alpine's /usr/lib holds its libc.a too, whose debug sections lld cannot
 # read).
