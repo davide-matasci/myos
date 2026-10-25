@@ -99,7 +99,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// `unmask`.
 /// 57: a fault raises its signal: [`SignalDelivery`] carries the
 /// siginfo's `code` and `addr`.
-pub const ABI_VERSION: u32 = 57;
+/// 58: sound ([`SOUND_SERVICE`]: the `sound` core's [`SoundOps`], a card's
+/// [`SoundCardOps`]).
+pub const ABI_VERSION: u32 = 58;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -2510,6 +2512,128 @@ pub struct MmioDevice {
     /// The node's phandle (what other nodes name it by), 0 when it has
     /// none.
     pub phandle: u32,
+}
+
+// ---- Sound (docs/sound.md) -------------------------------------------------
+//
+// The `sound` module owns `/dev/sound` and publishes a [`SoundOps`] table
+// as the service [`SOUND_SERVICE`]. A sound card's driver (`virtio_sound`,
+// `usb_audio`) registers the card with its streams, each a playback or a
+// capture stream, and a [`SoundCardOps`] table the core starts and stops
+// them through; each stream becomes a `/dev/sound/N` for the sound server.
+// The PCM goes through the core's buffer: the driver takes what plays
+// ([`SoundOps::playback_take`]) and hands over what it recorded
+// ([`SoundOps::capture_put`]), from its own thread (not an interrupt
+// handler). Samples are interleaved frames, little endian.
+
+/// The name the sound core publishes its [`SoundOps`] under.
+pub const SOUND_SERVICE: &str = "sound";
+/// [`SoundOps::version`] and [`SoundCardOps::version`].
+pub const SOUND_VERSION: u32 = 1;
+/// [`SoundStreamInfo::direction`].
+pub const SOUND_PLAYBACK: u8 = 0;
+pub const SOUND_CAPTURE: u8 = 1;
+/// Sample formats ([`SoundParams::format`]; bit `1 << format` in
+/// [`SoundStreamInfo::formats`]): unsigned 8-bit, signed 16-bit.
+pub const SOUND_FORMAT_U8: u8 = 0;
+pub const SOUND_FORMAT_S16: u8 = 1;
+/// The frame rates a stream may offer, bit `i` of
+/// [`SoundStreamInfo::rates`] for `SOUND_RATES[i]` (virtio-sound's
+/// `VIRTIO_SND_PCM_RATE_*` order).
+pub const SOUND_RATES: [u32; 14] =
+    [5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000, 384000];
+
+/// What a stream can do (a card's registration).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SoundStreamInfo {
+    /// [`SOUND_PLAYBACK`] or [`SOUND_CAPTURE`].
+    pub direction: u8,
+    pub channels_min: u8,
+    pub channels_max: u8,
+    /// Bit `1 << SOUND_FORMAT_*` per format.
+    pub formats: u8,
+    /// Bit `i` per [`SOUND_RATES`]`[i]`.
+    pub rates: u32,
+}
+
+/// How a stream runs ([`SoundCardOps::start`]).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SoundParams {
+    pub rate: u32,
+    pub channels: u8,
+    /// `SOUND_FORMAT_*`.
+    pub format: u8,
+    pub _pad: u16,
+    /// Bytes the driver moves at a time (whole frames), and the most the
+    /// core buffers between the server and the driver (whole periods).
+    pub period_bytes: u32,
+    pub buffer_bytes: u32,
+}
+
+/// A card's driver, for the core: a stream started and stopped. `ctx` is
+/// what the driver registered with the card; `stream` counts the card's
+/// streams from 0. Called from task context, never with the core's lock
+/// held.
+#[repr(C)]
+pub struct SoundCardOps {
+    pub version: u32,
+    /// Run `stream` as `params` says: from then on the driver takes its
+    /// PCM ([`SoundOps::playback_take`]) or hands it over
+    /// ([`SoundOps::capture_put`]) a period at a time. 0, or negative when
+    /// the card cannot.
+    pub start: unsafe extern "C" fn(ctx: usize, stream: u32, params: *const SoundParams) -> i32,
+    /// Stop `stream`; nothing more is taken or handed over.
+    pub stop: unsafe extern "C" fn(ctx: usize, stream: u32),
+}
+
+unsafe impl Sync for SoundCardOps {}
+
+/// The sound core, for card drivers (the [`SOUND_SERVICE`] table).
+#[repr(C)]
+pub struct SoundOps {
+    pub version: u32,
+    /// A card named `name` (`virtio-sound 00:04.0`) with `n` streams
+    /// (`streams[i]` what stream `i` can do), driven through `ops` with
+    /// `ctx`: its number (>= 0), or negative when the core has no room.
+    pub card_register: unsafe extern "C" fn(
+        ops: *const SoundCardOps,
+        ctx: usize,
+        name: StrRef,
+        streams: *const SoundStreamInfo,
+        n: u32,
+    ) -> i32,
+    /// The card is gone (unplugged): its streams' files fail from now on,
+    /// and the core calls it no more.
+    pub card_remove: unsafe extern "C" fn(card: i32),
+    /// Up to `len` bytes of playback stream `stream`'s PCM into `buf`: the
+    /// bytes copied, fewer when the server has not written them yet (an
+    /// underrun; the driver plays silence for the rest).
+    pub playback_take: unsafe extern "C" fn(card: i32, stream: u32, buf: *mut u8, len: usize) -> usize,
+    /// `len` bytes capture stream `stream` recorded; what the server has
+    /// not read when the buffer is full is dropped, the oldest first.
+    pub capture_put: unsafe extern "C" fn(card: i32, stream: u32, buf: *const u8, len: usize),
+}
+
+unsafe impl Sync for SoundOps {}
+
+impl SoundOps {
+    pub fn card_register(&self, ops: &'static SoundCardOps, ctx: usize, name: &str, streams: &[SoundStreamInfo]) -> i32 {
+        unsafe { (self.card_register)(ops, ctx, StrRef::new(name), streams.as_ptr(), streams.len() as u32) }
+    }
+
+    pub fn card_remove(&self, card: i32) {
+        unsafe { (self.card_remove)(card) }
+    }
+
+    pub fn playback_take(&self, card: i32, stream: u32, buf: &mut [u8]) -> usize {
+        unsafe { (self.playback_take)(card, stream, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn capture_put(&self, card: i32, stream: u32, buf: &[u8]) {
+        unsafe { (self.capture_put)(card, stream, buf.as_ptr(), buf.len()) }
+    }
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
