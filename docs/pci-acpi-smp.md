@@ -753,7 +753,11 @@ so a syscall that blocked and resumes (on any CPU) finds its own frame.
 `note_schedule` → `/proc/cpuinfo`. QEMU `-smp 4` on x86/aarch64 (interactive
 + CI); riscv stays `-smp 2` (Limine panics `missing struct riscv_hart for
 BSP` at 4). The packed `boot/virt.dtb` is always dumped with `-smp 2` so
-OpenSBI BSP hartid=1 still has a hart node. The WFI park stub stays compiled
+OpenSBI BSP hartid=1 still has a hart node. The boot hart is whichever hart
+won OpenSBI's cold-boot lottery, so `kernel_main` records the BSP's hardware
+id first (`smp::init_bsp`), before the interrupt controller starts: the
+AIA's APLIC targets and IMSIC page, and the PLIC's context, are that hart's.
+The WFI park stub stays compiled
 for riscv64 (flip `RISCV_PARK_APS` to retreat).
 On every arch the BSP timer drains UART RX into a staging ring
 (`input::drain_uart_irq`) and wakes the console reader (`KEY_CONSOLE`), so a

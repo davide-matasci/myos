@@ -91,6 +91,7 @@ fn push_usize(buf: &mut [u8], mut i: usize, mut v: usize) -> usize {
 /// Entered from `arch::_start` once Limine has handed over.
 pub(crate) fn kernel_main() -> ! {
     arch::early_init();
+    smp::init_bsp();
     // The board description comes first: device bases, interrupt routing
     // and clocks are read from it (aarch64, riscv64), nothing is assumed.
     // The ACPI tables fill it, then the device tree (`platform`).
