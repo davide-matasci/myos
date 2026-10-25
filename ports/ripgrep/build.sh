@@ -30,7 +30,9 @@ if [[ ! -d "$ROOT/target/myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib" ]]; t
   "$ROOT/toolchain/std/build-sysroot.sh"
 fi
 
-"$ROOT/ports/ripgrep/build-pcre2.sh"
+# PCRE2 is the pcre2 package's library (`PORT_DEPS`), built here too when
+# it is not current.
+"$(myos_port_dir pcre2)/build.sh"
 "$ROOT/ports/ripgrep/prepare.sh"
 
 RG="$ROOT/target/ripgrep-src"
