@@ -9,9 +9,7 @@ fn main() {
     if arch == "x86_64" {
         println!("cargo:rustc-link-arg=-pie");
         println!("cargo:rustc-link-arg=-nostdlib");
-    } else if arch == "aarch64" || arch == "riscv64" {
-        println!("cargo:warning=http: --image-base=0x40000000 for {arch}");
-        println!("cargo:rustc-link-arg=--image-base");
-        println!("cargo:rustc-link-arg=0x40000000");
     }
+    // aarch64 / riscv64: the prebuilt libcore is not PIC, so `-pie` fails:
+    // ET_EXEC, which the kernel loads at its link address.
 }

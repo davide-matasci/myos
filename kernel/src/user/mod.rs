@@ -34,23 +34,16 @@ const MAP_ANON: usize = 0x20;
 
 pub use crate::arch::{DEFAULT_USER_BASE, HEAP_PAGES, MMAP_AREA_PAGES, USER_STACK_PAGES, USER_WINDOW};
 pub const PAGE: usize = 4096;
-/// Cap for fresh `load_user_elf` (init + typical programs) and on-stack frame arrays.
-/// Keep modest: bumping this also sizes `[u64; N]` on the task stack and used to
-/// force `elf_scratch_mut` to grab N contiguous frames before init could run.
-const MAX_INIT_PAGES: usize = 1024;
-/// Cap for in-place `expand_user_elf` of the larger ELFs (uutils, ripgrep,
-/// git at ~1080 pages; python's interpreter with its modules' libraries at
-/// ~3140, 12.9 MiB, the largest): 16 MiB, `EXEC_FILE_MAX`. An image's frames are the process's own
-/// (a fork shares them copy-on-write), and the scratch it is realized in
+/// The largest image a process may have, loaded into a fresh address space
+/// (`load_user_elf`: also an exec to another base, an `ET_EXEC` image's, which
+/// cannot grow the old one in place) or grown into the current one
+/// (`expand_user_elf`): uutils, ripgrep, git at ~1080 pages; python's
+/// interpreter with its modules' libraries at ~3140, 12.9 MiB, the largest:
+/// 16 MiB, `EXEC_FILE_MAX`. An image's frames are the process's own (a fork
+/// shares them copy-on-write), and the scratch it is realized in
 /// (`ELF_SCRATCH_BYTES`) grows once to the largest image run, a contiguous
 /// run of bump frames. `docs/linux-compat.md` states the limit.
-const MAX_EXPAND_PAGES: usize = 4096;
-/// Largest image we may map, fork-copy, or stage in ELF scratch.
-const MAX_ELF_PAGES: usize = if MAX_EXPAND_PAGES > MAX_INIT_PAGES {
-    MAX_EXPAND_PAGES
-} else {
-    MAX_INIT_PAGES
-};
+const MAX_ELF_PAGES: usize = 4096;
 
 /// In-place `reload_user_elf` scratch and mapping cap (a small C program;
 /// bigger images, the sbase multicall ELF among them, take a fresh mapping).
@@ -85,14 +78,6 @@ static USERS_ALIVE: AtomicUsize = AtomicUsize::new(0);
 
 static DID_SPAWN: AtomicBool = AtomicBool::new(false);
 
-static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
-
-/// The VA user images are loaded at (see `arch::upaging::pick_user_base`).
-#[allow(dead_code)]
-pub fn user_base() -> u64 {
-    USER_BASE.load(Ordering::SeqCst)
-}
-
 
 /// Enable user mode on the BSP.
 pub fn init() {
@@ -104,14 +89,13 @@ pub fn ap_init() {
     crate::arch::user_ap_init();
 }
 
-/// Load `/bin/custom/init` from rootfs at USER_BASE and spawn it.
+/// Load `/bin/custom/init` from rootfs and spawn it.
 pub fn spawn_init() {
-    let base = pick_user_base();
-    USER_BASE.store(base, Ordering::SeqCst);
     let Some(elf) = crate::fs::lookup(INIT_PATH) else {
         panic!("no {INIT_PATH}: the initramfs carries init");
     };
-    let (aspace, entry, span, off) = load_user_elf(elf, true).expect("init ELF");
+    let base = image_base(elf).expect("init ELF");
+    let (aspace, entry, span, off) = load_user_elf(elf, base, true).expect("init ELF");
     let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
@@ -125,8 +109,8 @@ pub fn spawn_init() {
 /// MiB and let the frame bump walk into the kernel physical range on AArch64.
 ///
 /// Allocate only as many contiguous frames as this call needs (grow on demand
-/// up to [`MAX_ELF_PAGES`]). Always grabbing the max made UEFI init fail when
-/// `MAX_INIT_PAGES` was raised to 3072 for feat_common_core uutils.
+/// up to [`MAX_ELF_PAGES`]). Always grabbing the max made UEFI init fail
+/// (a 3072-page cap for feat_common_core uutils).
 const ELF_SCRATCH_BYTES: usize = MAX_ELF_PAGES * PAGE;
 // Image, stack, heap and mmap window must fit the per-process span.
 const _: () = assert!(

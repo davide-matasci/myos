@@ -1,12 +1,11 @@
 //! User address spaces on aarch64 4 KiB granule paging (TTBR0): a private
 //! L0 and L1, and under the L1's user slots ([`USER_L1_TABLES`] of them,
-//! from L1[1]) private L2 and L3 tables made as pages are mapped.
+//! from L1[0]) private L2 and L3 tables made as pages are mapped.
 
 use crate::mm;
 use crate::task;
 use crate::user::PAGE;
 
-use super::user::DEFAULT_USER_BASE;
 
 const PAGE_DESC: u64 = 0b11;
 const SH_INNER: u64 = 0b11 << 8;
@@ -26,13 +25,13 @@ const PA: u64 = 0x0000_FFFF_FFFF_F000;
 pub const USER_L3_PAGES: usize = 512;
 /// L3 tables under an L2 table (1 GiB).
 pub const USER_L2_TABLES: usize = 512;
-/// L1 slots of the process span, from L1[1] (the gigabyte the image loads
-/// at, `DEFAULT_USER_BASE`): 65 GiB, the image, stack and heap in the
-/// first and the 64 GiB mmap window after them. The kernel's devices are
+/// L1 slots of the user window, from L1[0]: 66 GiB, room for an image
+/// at `DEFAULT_USER_BASE` (1 GiB) or at its link address below, its stack
+/// and heap and the 64 GiB mmap window after them. The kernel's devices are
 /// in the higher half (`paging`), not here.
-pub const USER_L1_TABLES: usize = 65;
-/// The first L1 slot of the process span.
-const USER_L1_FIRST: usize = 1;
+pub const USER_L1_TABLES: usize = 66;
+/// The first L1 slot of the user window.
+const USER_L1_FIRST: usize = 0;
 
 /// Physical address of `va` in `aspace`, if mapped.
 pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
@@ -40,8 +39,7 @@ pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
 }
 
 fn aarch64_user_page_idx(va: u64) -> usize {
-    let base = crate::user::user_base();
-    va.saturating_sub(base) as usize / PAGE
+    va as usize / PAGE
 }
 
 /// The L1, L2 and L3 indices of user page `page`; none past the span.
@@ -133,10 +131,6 @@ fn virt_to_phys_aarch64(l0_phys: u64, va: u64) -> Option<u64> {
     Some(pte & PA)
 }
 
-/// The VA where user images are loaded.
-pub fn pick_user_base() -> u64 {
-    DEFAULT_USER_BASE
-}
 
 /// The address space currently loaded (TTBR0).
 pub fn read_aspace() -> u64 {
@@ -213,7 +207,7 @@ pub fn create_aspace(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
     create_aspace_aarch64(code, stack, base, stack_off)
 }
 
-fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64) -> u64 {
+fn create_aspace_aarch64(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> u64 {
     const TABLE: u64 = 0b11;
     const AP_RW: u64 = 0b01 << 6; // EL1 RW, EL0 RW
 
@@ -227,15 +221,17 @@ fn create_aspace_aarch64(code: &[u64], stack: &[u64], _base: u64, stack_off: u64
         // (`aarch64_l3_table_mut`).
         l0_t[0] = l1 | TABLE;
         // AP_RW: EL1 sys_read copies into PT_LOAD. PXN: EL1 cannot execute it.
+        let base_i = aarch64_user_page_idx(base);
         for (i, &phys) in code.iter().enumerate() {
-            let Some(l3p) = aarch64_l3_table_mut(l0, i) else {
+            let page = base_i + i;
+            let Some(l3p) = aarch64_l3_table_mut(l0, page) else {
                 break;
             };
             let l3_t = &mut *l3p;
-            let slot = i % USER_L3_PAGES;
+            let slot = page % USER_L3_PAGES;
             l3_t[slot] = PAGE_DESC | (phys & PA) | SH_INNER | AF | AP_RW | PXN;
         }
-        let stack_i = (stack_off as usize) / PAGE;
+        let stack_i = base_i + (stack_off as usize) / PAGE;
         for (i, &phys) in stack.iter().enumerate() {
             let page = stack_i + i;
             let Some(l3p) = aarch64_l3_table_mut(l0, page) else {

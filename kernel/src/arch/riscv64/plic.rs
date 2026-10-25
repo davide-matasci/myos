@@ -22,11 +22,11 @@ fn xlate(_node: usize, cells: &[u32]) -> Option<u32> {
     }
 }
 
-/// The registers, where Limine's map has the low device range
-/// (`paging::map_devices`).
+/// The registers, from the low device range (`paging::map_devices`).
 fn start(intc: &Intc) -> Result<&'static dyn IrqChip, &'static str> {
     let reg = intc.reg(0).ok_or("platform: PLIC without registers")?;
-    BASE.store(reg.base as usize, Ordering::SeqCst);
+    let va = super::paging::map_mmio(reg.base, reg.size).ok_or("platform: PLIC unmapped")?;
+    BASE.store(va, Ordering::SeqCst);
     Ok(&Plic)
 }
 

@@ -143,7 +143,7 @@ pub(super) fn align_up_usize(v: usize, align: usize) -> usize {
     (v + align - 1) & !(align - 1)
 }
 
-pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_heap_page, map_user_code_page, map_user_stack_page, pick_user_base, unmap_user_page, unmapped_span_end, virt_to_phys};
+pub(super) use crate::arch::upaging::{create_aspace, free_user_page_tables, map_heap_page, map_user_code_page, map_user_stack_page, unmap_user_page, unmapped_span_end, virt_to_phys};
 pub use crate::arch::upaging::{read_aspace, switch_aspace};
 /// Frames unmapped from an address space that another CPU has loaded (a
 /// thread of the process runs there), with that address space: the next
