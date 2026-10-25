@@ -384,8 +384,11 @@ fn push_hex(out: &mut alloc::vec::Vec<u8>, mut v: u64) {
 static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = arch::ap_entry;
 
 
-/// Record BSP and bring secondary CPUs online via Limine MP.
-pub fn init() {
+/// Record the BSP as logical CPU 0 with its hardware id, before the
+/// interrupt controllers start (`arch::apply_platform`): they route to
+/// `cpu_hw_id(0)`, and riscv64's boot hart is whichever hart won
+/// OpenSBI's lottery, not always hart 0.
+pub fn init_bsp() {
     arch::set_cpu_id_reg(0);
 
     // Where the arch cannot read its own hardware id (riscv64 S-mode), take
@@ -404,7 +407,10 @@ pub fn init() {
             hw_id: hw,
         };
     }
+}
 
+/// Bring the secondary CPUs online via Limine MP (after `init_bsp`).
+pub fn init() {
     console::status_progress("smp");
     let Some(resp) = limine_boot::MP.response() else {
         console::status_info("smp: no Limine MP (UP)");
