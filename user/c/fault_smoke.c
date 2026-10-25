@@ -14,7 +14,8 @@
  * undefined instruction SIGILL, a breakpoint SIGTRAP, a load from a
  * PROT_NONE page or from an unmapped one SIGSEGV (SEGV_ACCERR, SEGV_MAPERR,
  * the address in si_addr), an integer divide by zero SIGFPE on x86 (the
- * other two do not trap). Those handlers leave with siglongjmp, which puts
+ * other two do not trap), and x86's single step SIGTRAP, its handler
+ * entered with TF clear. Those handlers leave with siglongjmp, which puts
  * the mask back. A SIGSEGV handler that makes the page writable returns
  * instead, and the store runs again with the registers it had: the ones a
  * syscall's return does not keep (x86's rcx, r11 and flags, aarch64's
@@ -125,6 +126,13 @@ static void load_target(void) {
 }
 
 #if defined(__x86_64__)
+/* TF set: the instruction after popfq traps (SIGTRAP, TRAP_TRACE). The
+ * handler starts with TF clear (else it would trap again with SIGTRAP
+ * blocked and the task end) and leaves with siglongjmp, TF still clear. */
+static void single_step(void) {
+    __asm__ volatile("pushfq\n\torq $0x100, (%%rsp)\n\tpopfq\n\tnop\n\tnop" ::: "memory", "cc");
+}
+
 static void divide_by_zero(void) {
     __asm__ volatile("xor %%ecx, %%ecx\n\tmov $1, %%eax\n\tcltd\n\tidivl %%ecx" ::: "eax", "ecx", "edx", "cc");
 }
@@ -207,6 +215,14 @@ static const char *fault_signals(void) {
 #if defined(__x86_64__)
     if ((e = raises(divide_by_zero, SIGFPE, FPE_INTDIV, NULL)) != NULL) {
         return e;
+    }
+    if ((e = raises(single_step, SIGTRAP, TRAP_TRACE, NULL)) != NULL) {
+        return e;
+    }
+    unsigned long flags;
+    __asm__ volatile("pushfq\n\tpopq %0" : "=r"(flags));
+    if (flags & 0x100) {
+        return "TF still set after the single-step handler";
     }
 #endif
     pagesz = (size_t)sysconf(_SC_PAGESIZE);

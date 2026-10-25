@@ -272,6 +272,13 @@ impl SyscallRegs {
             unsafe { *self.0.add(i) = crate::arch::kept_word(i, v) }
         }
     }
+    /// The kept words as a signal handler starts (x86: TF and DF clear),
+    /// once its frame holds them for the return.
+    pub fn enter_handler(&mut self) {
+        for &i in Self::KEPT {
+            unsafe { *self.0.add(i) = crate::arch::handler_word(i, *self.0.add(i)) }
+        }
+    }
     pub fn nr_reg(&self) -> usize {
         Self::NR_REG.map_or(0, |i| unsafe { *self.0.add(i) as usize })
     }
