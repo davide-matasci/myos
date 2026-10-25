@@ -48,7 +48,9 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    the default router (its link-local address), the prefix and how long
    its addresses are valid (the address goes when that runs out), and the
    DNS servers (RDNSS, RFC 8106). QEMU's user network advertises
-   fec0::/64, its host fec0::2, its DNS fec0::3. `/net/ndb` shows the
+   fec0::/64, its host fec0::2 and, when the host has an IPv6
+   nameserver to forward to (libslirp's condition), its DNS fec0::3.
+   `/net/ndb` shows the
    preferred NIC's (the wired one with a router, else the first other one)
    on an `ip6=` line under the IPv4 one, and its servers as `dns=` lines
    after the IPv4 ones:
@@ -64,7 +66,7 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    any other through the preferred NIC's router. Not there: duplicate
    address detection, temporary (privacy) addresses, DHCPv6, more than one
    prefix per NIC, the advertisement's MTU and hop limit, and fragments
-   (an IPv6 packet that comes in pieces is dropped).
+   (an IPv6 packet that comes in pieces is dropped; issue #611).
 
    netd also drives the virtual NICs of `/dev/tap` (`docs/wifi.md`: the
    Wi-Fi link), each one whose link is up, as `tap0` to `tap3` after

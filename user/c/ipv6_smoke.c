@@ -15,10 +15,10 @@
  * ICMPv6 echo over /net/icmp comes back from ::1 and, through net0, from
  * the router /net/ndb names. Prints [ OK ] ipv6.
  *
- * `ipv6_smoke dns` (the network): a DNS query over IPv6 to QEMU's
- * resolver, fec0::3 (the RDNSS of its advertisement, a dns= line of
- * /net/ndb), is answered, and getaddrinfo(AF_INET6) finds a name's AAAA
- * record. Prints [ OK ] ipv6 dns.
+ * `ipv6_smoke dns` (the network): getaddrinfo(AF_INET6) finds a name's
+ * AAAA record and AF_UNSPEC both families, IPv4 first (newlib's), when the
+ * resolver has the record.
+ * Prints [ OK ] ipv6 dns.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -414,15 +414,30 @@ static int icmp(void) {
     return echo("::1") || echo(gw);
 }
 
-/* A DNS query for DNS_NAME's AAAA record to [fec0::3]:53 is answered. */
-static int dns(void) {
+/* Whether /net/ndb's first DNS server has DNS_NAME's AAAA record, asked
+ * over IPv4 (1 yes, 0 no, -1 no answer). */
+static int resolver_has_aaaa(void) {
     static const unsigned char name[] = "\7example\3com";
     unsigned char q[64], a[512];
-    struct sockaddr_in6 server = in6("fec0::3", 53);
-    struct addrinfo hints, *res;
+    char ndb[512], ns[16] = "10.0.2.3";
+    struct sockaddr_in server;
     size_t len = 12;
     ssize_t got = -1;
-    int s = socket(AF_INET6, SOCK_DGRAM, 0);
+    char *p;
+    int s;
+    int fd = open("/net/ndb", O_RDONLY);
+    ssize_t n = fd < 0 ? -1 : read(fd, ndb, sizeof ndb - 1);
+    if (fd >= 0) {
+        close(fd);
+    }
+    ndb[n > 0 ? n : 0] = '\0';
+    if ((p = strstr(ndb, "dns=")) != NULL) {
+        sscanf(p + 4, "%15[0-9.]", ns);
+    }
+    memset(&server, 0, sizeof server);
+    server.sin_family = AF_INET;
+    server.sin_port = htons(53);
+    inet_pton(AF_INET, ns, &server.sin_addr);
     memset(q, 0, sizeof q);
     q[0] = 0x6d;
     q[1] = 0x79;
@@ -434,28 +449,62 @@ static int dns(void) {
     q[len++] = 28; /* AAAA */
     q[len++] = 0;
     q[len++] = 1; /* IN */
+    s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0 || connect(s, (struct sockaddr *)&server, sizeof server) < 0) {
-        return fail("UDP connect [fec0::3]:53");
+        return -1;
     }
     for (int i = 0; i < 4 && got < 12; i++) {
-        if (send(s, q, len, 0) != (ssize_t)len) {
-            return fail("DNS query over IPv6");
-        }
-        if (readable(s, 5000)) {
+        if (send(s, q, len, 0) == (ssize_t)len && readable(s, 5000)) {
             got = recv(s, a, sizeof a, 0);
         }
     }
-    if (got < 12 || a[0] != 0x6d || a[1] != 0x79 || (a[3] & 0x0f) != 0 || (a[6] | a[7]) == 0) {
-        return fail("no DNS answer over IPv6");
-    }
     close(s);
+    if (got < 12 || a[0] != 0x6d || a[1] != 0x79) {
+        return -1;
+    }
+    return (a[3] & 0x0f) == 0 && (a[6] | a[7]) != 0;
+}
+
+/* getaddrinfo(AF_INET6) finds DNS_NAME's AAAA record and AF_UNSPEC lists
+ * its IPv4 addresses first, then the IPv6 ones, when the resolver has the
+ * record (a host's may not: this sandbox's has no AAAA records at all;
+ * QEMU advertises its IPv6 resolver, fec0::3, only when the host has an
+ * IPv6 nameserver, so the lookups go to the IPv4 one). */
+static int dns(void) {
+    struct addrinfo hints, *res;
+    int has = resolver_has_aaaa();
+    if (has < 0) {
+        return fail("no answer from /net/ndb's DNS server");
+    }
+    if (!has) {
+        printf("ipv6 dns: the resolver has no AAAA record for " DNS_NAME "; skipped\n");
+        return 0;
+    }
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET6;
     if (getaddrinfo(DNS_NAME, "80", &hints, &res) != 0 || res->ai_family != AF_INET6) {
         return fail("getaddrinfo(" DNS_NAME ", AF_INET6)");
     }
     freeaddrinfo(res);
+#ifndef __MLIBC_POSIX_OPTION
+    /* Not on mlibc (its headers define the __MLIBC_* options): its
+     * AF_UNSPEC lookup asks for A records alone. */
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(DNS_NAME, "80", &hints, &res) != 0 || res->ai_family != AF_INET) {
+        return fail("getaddrinfo(" DNS_NAME ", AF_UNSPEC): IPv4 first");
+    }
+    for (struct addrinfo *r = res; r != NULL; r = r->ai_next) {
+        if (r->ai_family == AF_INET6) {
+            freeaddrinfo(res);
+            return 0;
+        }
+    }
+    freeaddrinfo(res);
+    return fail("getaddrinfo(" DNS_NAME ", AF_UNSPEC): no IPv6 address");
+#else
     return 0;
+#endif
 }
 
 int main(int argc, char **argv) {
