@@ -646,6 +646,7 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         if key == WAIT_ANY {
             ANY_WAITERS.fetch_add(1, Ordering::SeqCst);
         }
+        tasks[me].key_woken = false;
         let early = WAIT_SEQ.load(Ordering::SeqCst) != seq
             || tasks[me].state != State::Running
             || (deadline != 0 && crate::time::monotonic_ns() >= deadline);
@@ -700,6 +701,17 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         crate::arch::flush_tlb_local();
     }
     irq_restore(flags);
+}
+
+/// Whether the calling task's last [`block_until`] ended in a wake for its
+/// key, rather than a signal, its deadline, or a wake for something else
+/// since its `seq` (`WAIT_SEQ` counts every wake in the system).
+pub fn took_key_wake() -> bool {
+    let flags = irq_save();
+    irq_off();
+    let woken = TASKS.lock()[current_slot()].key_woken;
+    irq_restore(flags);
+    woken
 }
 
 /// Make task `slot` runnable if it is Blocked. Returns the CPU to kick, if
@@ -769,6 +781,7 @@ pub(super) fn wake_key_locked(tasks: &mut TaskTable, key: usize, kicks: &mut u64
     let mut woke = false;
     for i in tasks.slots() {
         if tasks[i].state == State::Blocked && (tasks[i].wait_key == key || (any && tasks[i].wait_key == WAIT_ANY)) {
+            tasks[i].key_woken = true;
             wake_locked(tasks, i, kicks);
             woke = true;
         }
@@ -802,6 +815,7 @@ pub fn wake_n(key: usize, max: usize) -> usize {
                 break;
             }
             if tasks[i].state == State::Blocked && tasks[i].wait_key == key {
+                tasks[i].key_woken = true;
                 wake_locked(&mut tasks, i, &mut kicks);
                 n += 1;
             }

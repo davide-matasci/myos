@@ -230,7 +230,8 @@ pub fn current_tid() -> usize {
 
 /// Outcome of [`wait_addr`].
 pub enum AddrWait {
-    /// Woken by [`wake_addr`] (or spuriously: callers re-check their condition).
+    /// Woken by [`wake_addr`], or the word changed while waiting (callers
+    /// still re-check their condition).
     Woken,
     /// The word at the address did not hold the expected value.
     Changed,
@@ -244,32 +245,45 @@ pub enum AddrWait {
 /// holds `expected`, until [`wake_addr`] on the same address, the monotonic
 /// `deadline` (0 = none) or a signal. The building block of user-space
 /// locks (Linux `futex`).
+///
+/// Any other return of `block_until` sleeps again: `WAIT_SEQ` moves on
+/// every wake in the system, so a pipe or a timer elsewhere between the
+/// read of the word and the sleep would end it at once (issue #520). A
+/// wake for this address that came in that window is not lost: its waker
+/// changed the word first, which the next pass reads.
 pub fn wait_addr(addr: usize, expected: u32, deadline: u64) -> AddrWait {
     if addr % 4 != 0 || !user::buffer_ok(addr, 4) {
         return AddrWait::Fault;
     }
     let key = key_addr(current_pid(), addr);
-    // Read the sequence before the word: a wake after this makes
-    // `block_until` return at once, so none is lost between the two.
-    let seq = wait_seq();
-    let mut word = [0u8; 4];
-    if !user::copy_from_user(current_aspace(), addr, &mut word) {
-        return AddrWait::Fault;
+    let mut slept = false;
+    loop {
+        // Read the sequence before the word: a wake after this makes
+        // `block_until` return at once, so none is lost between the two.
+        let seq = wait_seq();
+        let mut word = [0u8; 4];
+        if !user::copy_from_user(current_aspace(), addr, &mut word) {
+            return AddrWait::Fault;
+        }
+        if u32::from_le_bytes(word) != expected {
+            // Changed while this call slept: what a wake says.
+            return if slept { AddrWait::Woken } else { AddrWait::Changed };
+        }
+        if crate::signal::interrupt_wait() {
+            return AddrWait::Interrupted;
+        }
+        if deadline != 0 && crate::time::monotonic_ns() >= deadline {
+            return AddrWait::TimedOut;
+        }
+        block_until(key, seq, deadline);
+        if took_key_wake() {
+            if crate::signal::interrupt_wait() {
+                return AddrWait::Interrupted;
+            }
+            return AddrWait::Woken;
+        }
+        slept = true;
     }
-    if u32::from_le_bytes(word) != expected {
-        return AddrWait::Changed;
-    }
-    if crate::signal::interrupt_wait() {
-        return AddrWait::Interrupted;
-    }
-    block_until(key, seq, deadline);
-    if crate::signal::interrupt_wait() {
-        return AddrWait::Interrupted;
-    }
-    if deadline != 0 && crate::time::monotonic_ns() >= deadline {
-        return AddrWait::TimedOut;
-    }
-    AddrWait::Woken
 }
 
 /// Wake at most `max` threads of the current process waiting on `addr`
