@@ -479,14 +479,15 @@ pub struct UsbBus {
     pub port: &'static str,
 }
 
-/// The virt boards' `qemu-xhci`: the devices on root ports of their own.
+/// The virt boards' `qemu-xhci`: the devices on root ports of their own
+/// (five USB 2 ports, the speaker on the fifth, `sound::add`).
 pub const XHCI_USB: UsbBus = UsbBus { name: "xhci.0", port: "" };
 /// The Raspberry Pi 3's DWC2 has one root port: everything hangs from the
 /// hub on it.
 pub const RPI3_USB: UsbBus = UsbBus { name: "usb-bus.0", port: "1." };
 
 fn add_usb(cmd: &mut Command) {
-    cmd.arg("-device").arg("qemu-xhci,id=xhci");
+    cmd.arg("-device").arg("qemu-xhci,id=xhci,p2=5,p3=5");
     add_usb_devices(cmd, XHCI_USB);
 }
 
@@ -936,6 +937,9 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     // What the guest played is in the WAV file the boot's QEMU wrote.
     if ok && ran("sound_play") {
         ok = sound::check_played(ran("sound_mix"));
+    }
+    if ok && ran("sound_usb") {
+        ok = sound::check_usb_played();
     }
     // The installed disk is kept before the next boot makes a new scratch disk.
     let installed = target.join(format!("installed-{name}.img"));

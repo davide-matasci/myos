@@ -152,7 +152,10 @@ starts, is one, so it cannot be typed at the console.
 
 ## The default policy
 
-- `system` runs init (`init`), netd (`netd`), getty and login (`login`),
+- `system` runs init (`init`), netd (`netd`), the sound server (`sndd`:
+  `/dev/sound`'s streams, `dev.sound`, which only it and `admin` open;
+  every program plays through its socket, `docs/sound.md`), getty and
+  login (`login`),
   init's `mount -a` (`mount`: the ESP at `/boot`, the fstab's partitions,
   `docs/install.md`) and the boot smoke `/bin/custom/ok` (`smoke`), each
   with what it uses. The boot script `/etc/rc` (`rc`, its `exec` rule)

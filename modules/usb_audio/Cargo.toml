@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "usb_audio"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "USB Audio Class 1 playback: a speaker's isochronous stream, for the sound core."
+
+[[bin]]
+name = "usb_audio"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

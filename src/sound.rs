@@ -1,13 +1,15 @@
-//! Sound in the QEMU boots (`docs/sound.md`): the virtio-sound cards, and
-//! for the boot tests what they played, checked on the host.
+//! Sound in the QEMU boots (`docs/sound.md`): the virtio-sound cards and
+//! a USB speaker, and for the boot tests what they played, checked on the
+//! host.
 //!
-//! An interactive run has one card, whose output goes where
-//! `MYOS_AUDIODEV` says (a QEMU `-audiodev` driver: `pa`, `pipewire`,
-//! `alsa`, `sdl`, ...; `none` without it). A test boot has two: the first
-//! plays into a WAV file the host reads once QEMU is gone
-//! ([`check_played`]) and has no capture stream (the `wav` backend has no
-//! input), the second records QEMU's `none` input, silence at the
-//! stream's rate.
+//! An interactive run has a virtio-sound card and the speaker, whose
+//! output goes where `MYOS_AUDIODEV` says (a QEMU `-audiodev` driver: `pa`,
+//! `pipewire`, `alsa`, `sdl`, ...; `none` without it). A test boot has two
+//! cards and the speaker: the first card plays into a WAV file the host
+//! reads once QEMU is gone ([`check_played`]) and has no capture stream
+//! (the `wav` backend has no input), the second records QEMU's `none`
+//! input, silence at the stream's rate; the speaker plays into a WAV file
+//! of its own ([`check_usb_played`]).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -29,25 +31,37 @@ pub fn wav_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("boot-test-sound.wav"))
 }
 
-/// The machine's sound cards: virtio-sound on PCI (every board but the
-/// Raspberry Pi's has a PCI host).
+/// The file a test boot's USB speaker writes, beside [`wav_path`]'s.
+pub fn usb_wav_path() -> PathBuf {
+    wav_path().with_extension("usb.wav")
+}
+
+/// A `wav` audiodev `id` writing to `path` at the guest's 48 kHz stereo.
+fn wav_audiodev(cmd: &mut Command, id: &str, path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    cmd.arg("-audiodev")
+        .arg(format!("wav,id={id},path={},out.frequency=48000,out.channels=2,out.format=s16", path.display()));
+}
+
+/// The machine's sound cards: virtio-sound on PCI, and QEMU's `usb-audio`
+/// speaker on root port 5 of the `qemu-xhci` (every board but the
+/// Raspberry Pi's has both).
 pub fn add(cmd: &mut Command, test: bool) {
     if test {
-        let wav = wav_path();
-        let _ = std::fs::remove_file(&wav);
-        cmd.arg("-audiodev").arg(format!(
-            "wav,id=snd0,path={},out.frequency=48000,out.channels=2,out.format=s16",
-            wav.display()
-        ));
+        wav_audiodev(cmd, "snd0", &wav_path());
         // Playback only (QEMU's stream 0): the wav backend has no input.
         cmd.arg("-device").arg("virtio-sound-pci,audiodev=snd0,streams=1");
         cmd.arg("-audiodev").arg("none,id=snd1");
         cmd.arg("-device").arg("virtio-sound-pci,audiodev=snd1");
+        wav_audiodev(cmd, "snd2", &usb_wav_path());
+        cmd.arg("-device").arg(format!("usb-audio,audiodev=snd2,bus={},port=5", crate::XHCI_USB.name));
         return;
     }
     let driver = std::env::var("MYOS_AUDIODEV").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "none".into());
     cmd.arg("-audiodev").arg(format!("{driver},id=snd0"));
     cmd.arg("-device").arg("virtio-sound-pci,audiodev=snd0");
+    cmd.arg("-audiodev").arg(format!("{driver},id=snd2"));
+    cmd.arg("-device").arg(format!("usb-audio,audiodev=snd2,bus={},port=5", crate::XHCI_USB.name));
 }
 
 /// The 16-bit stereo samples of the WAV file at `path` (its `data` chunk,
@@ -124,4 +138,20 @@ pub fn check_played(mixed: bool) -> bool {
         eprintln!("boot test: sound: the played tones are in {}", path.display());
     }
     ok
+}
+
+/// After a test boot whose `sound_usb` test passed: the USB speaker's WAV
+/// file carries the 880 Hz tone the guest played through it.
+pub fn check_usb_played() -> bool {
+    let path = usb_wav_path();
+    let Some((rate, mono)) = samples(&path) else {
+        eprintln!("boot test: sound: no 16-bit WAV at {}", path.display());
+        return false;
+    };
+    if !heard(rate, &mono, &[880.0]) {
+        eprintln!("boot test: sound: no 880 Hz tone in {} ({} frames at {rate} Hz)", path.display(), mono.len());
+        return false;
+    }
+    eprintln!("boot test: sound: the USB speaker's tone is in {}", path.display());
+    true
 }

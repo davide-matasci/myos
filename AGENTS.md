@@ -8,7 +8,7 @@ imports it. Read `README.md` for the overview and the subsystem notes in
 
 A small Rust kernel (`#![no_std]`) that boots through Limine in QEMU on
 **x86_64** (BIOS and UEFI), **AArch64** and **RISC-V** (riscv64imac), with a
-VFS, kernel modules, preemptive scheduling, signals, networking (smoltcp in
+VFS, kernel modules, preemptive scheduling, signals, sound, networking (smoltcp in
 userspace) and a C/Rust userspace built on newlib + libgloss (or, per port,
 mlibc: `docs/mlibc.md`). Ported programs
 (oksh, sbase, ubase, ripgrep, tcc, uutils coreutils, vim, git, curl,
@@ -28,7 +28,7 @@ match the surrounding code's naming, idiom and comment density.
 | `build.rs` | builds the x86_64 kernel and the disk images; checks port artifacts per enabled feature |
 | `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
-| `user/` | native userspace: Rust (init, netd, smokes, `myos_user` lib), C (`user/c`: hello and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program |
+| `user/` | native userspace: Rust (init, netd, the sound server sndd, smokes, `myos_user` lib), C (`user/c`: hello, play/rec and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program |
 | `toolchain/` | newlib + libgloss/myos, mlibc (`toolchain/mlibc`, the second C library a port opts into with `PORT_LIBC=mlibc`), the C both libcs share (`toolchain/libmyos`), the Rust `std` port (`toolchain/std`); all ports too (`port.env`: newlib and the sysroot of kind `toolchain`, with CI jobs of their own; mlibc a plain one, built and cached as any port) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
 | `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (coreutils, vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, openssl, acme, python, rust, ncurses, pcre2, sqlite, libedit; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
