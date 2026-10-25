@@ -14,3 +14,14 @@ rg_threads() {
 	[ $n -eq 18 ] && rm -rf /tmp/rgt
 }
 t rg_threads rg_threads
+
+# ripgrep's PCRE2 (-P, the pcre2 package's library, its JIT stubbed out): a
+# lookahead and a backreference, which the default engine has neither of.
+rg_pcre2() {
+	printf 'foobar\nfoobaz\nabab\nabcd\n' > /tmp/rgp
+	out=$(/bin/coreutils/rg --no-config --no-mmap -P 'foo(?=bar)|(ab)\1' /tmp/rgp)
+	echo "$out"
+	rm -f /tmp/rgp
+	[ "$out" = "$(printf 'foobar\nabab')" ]
+}
+t rg_pcre2 rg_pcre2
