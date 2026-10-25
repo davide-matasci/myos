@@ -193,14 +193,19 @@ impl IrqChip for Aia {
     }
 
     /// The BSP's highest pending identity, claimed (`stopei`, CSR 0x15C,
-    /// read and cleared).
+    /// read and cleared); a confined function's notice also clears the
+    /// function's memory-resident interrupt file (`iommu::msi_notice`).
     fn claim(&self) -> Option<u32> {
         let top: u64;
         unsafe {
             core::arch::asm!("csrrw {t}, 0x15C, zero", t = out(reg) top, options(nostack));
         }
         let id = (top >> 16) as u32 & 0x7FF;
-        (id != 0).then_some(id)
+        if id == 0 {
+            return None;
+        }
+        crate::iommu::msi_notice(id);
+        Some(id)
     }
 
     /// A level-triggered source still asserted after its handlers ran

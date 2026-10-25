@@ -10,7 +10,7 @@
 //! device can. Its interrupts are messages it writes too: where the unit
 //! remaps them (x86_64, [`remap_msi`]) each message names an entry that
 //! verifies the function it came from, so the device raises its own vector
-//! and no other's.
+//! and no other's; elsewhere [`msi_message`] says what it may write.
 //!
 //! The units are the platform's: Intel VT-d or AMD-Vi on x86_64 (`vtd`,
 //! the ACPI DMAR table; `amdvi`, the IVRS; `x86` picks the one the
@@ -106,17 +106,35 @@ pub fn detach(bus: u8, slot: u8, func: u8) {
     backend::detach(bus, slot, func)
 }
 
-/// A function confined to a domain of its own ([`attach`]) reaches its
-/// MSI controller's doorbell, the page of `address` its messages write
-/// to, only where the domain maps it: mapped (at that address) when its
+/// The message PCI function `bus:slot.func` writes to raise its MSI
+/// controller's interrupt `irq`, whose message is `msg`, when its
 /// interrupt is routed (`msi::pci_setup`). A function in passthrough
-/// reaches it as it is. Nothing is remapped: a GICv2m frame or an IMSIC
-/// takes any interrupt it is sent (issue #590).
+/// writes `msg` as it is. One confined to a domain of its own
+/// ([`attach`]) reaches the controller only through the unit: the RISC-V
+/// IOMMU sends its messages to a memory-resident interrupt file of its
+/// own, whose one identity the unit forwards as `irq` (issue #590; a unit
+/// without them maps the IMSIC's page into the domain); the SMMUv3 maps
+/// the doorbell's page, and the controller decides what the function
+/// raises: a GICv3's ITS its own events only (it tells functions apart by
+/// their device id), a GICv2m frame any SPI of the frame's.
 #[cfg(not(target_arch = "x86_64"))]
-pub fn map_msi_doorbell(bus: u8, slot: u8, func: u8, address: u64) {
-    if let Some(domain) = backend::domain_of(bus, slot, func) {
-        backend::map(domain, address & !0xfff, 4096);
-    }
+pub fn msi_message(bus: u8, slot: u8, func: u8, irq: u32, msg: crate::msi::Message) -> crate::msi::Message {
+    backend::msi_message(bus, slot, func, irq, msg)
+}
+
+/// What [`msi_message`] made for the function, given back with its
+/// interrupt (`msi::pci_release`).
+#[cfg(not(target_arch = "x86_64"))]
+pub fn msi_release(bus: u8, slot: u8, func: u8) {
+    backend::msi_release(bus, slot, func)
+}
+
+/// IMSIC identity `id` claimed, before its handlers run: a confined
+/// function's memory-resident interrupt file noticed it (riscv64,
+/// [`msi_message`]) and is cleared. From interrupt context.
+#[cfg(target_arch = "riscv64")]
+pub fn msi_notice(id: u32) {
+    riscv::msi_notice(id)
 }
 
 /// The MSI message (address, data) with which PCI function `bus:slot.func`

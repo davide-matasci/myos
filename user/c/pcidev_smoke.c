@@ -11,7 +11,11 @@
  * register names it); where the IOMMU remaps interrupts (`intremap` in
  * /proc/iommu, x86_64), rewrites the device's MSI message to another
  * entry's handle and has it raise again: the message is refused and
- * counted as a fault, the device's own arrives once restored; allocates a
+ * counted as a fault, the device's own arrives once restored; where the
+ * RISC-V IOMMU gives the device a memory-resident interrupt file (`mrif`
+ * on its domain's /proc/iommu line), rewrites the message to the console
+ * UART's identity: it lands in the device's file, raising nothing, and
+ * the device's own arrives once restored; allocates a
  * DMA buffer and has the device copy a
  * pattern from it into its own memory and back to another part of it,
  * announcing the end with an interrupt. Where the board has an IOMMU
@@ -178,6 +182,25 @@ static unsigned long long intc_base(char *name, size_t cap) {
     return strtoull(l + n, NULL, 0);
 }
 
+/* The MSI capability (id 5) along the list from 0x34 of the function's
+ * `config`: its offset, and its message control in `control`; 0 without
+ * one. Its message address at +4, the data at +8, or +12 with a 64-bit
+ * address (message control bit 7). */
+static uint8_t msi_cap(int cfg, uint16_t *control) {
+    uint8_t cap = 0, hdr[2] = {0, 0};
+    if (pread(cfg, &cap, 1, 0x34) != 1)
+        return 0;
+    while (cap >= 0x40 && hdr[0] != 0x05) {
+        if (pread(cfg, hdr, 2, cap) != 2)
+            return 0;
+        if (hdr[0] != 0x05)
+            cap = hdr[1];
+    }
+    if (hdr[0] != 0x05 || pread(cfg, control, 2, cap + 2) != 2)
+        return 0;
+    return cap;
+}
+
 /* Where the IOMMU remaps interrupts (`intremap` in /proc/iommu) and the
  * interrupt is an MSI, the message names the table entry that holds its
  * vector and answers to this device only: VT-d in the message's address
@@ -200,23 +223,10 @@ static int spoof_msi(int irq, const char *ctl_text) {
     int cfg = open(p, O_RDWR);
     if (cfg < 0)
         return fail("open config for writing");
-    /* The MSI capability (id 5) along the list from 0x34: its message
-     * address at +4, the data at +8, or +12 with a 64-bit address (message
-     * control bit 7). */
-    uint8_t cap = 0, hdr[2] = {0, 0};
-    if (pread(cfg, &cap, 1, 0x34) != 1)
-        return fail("capability pointer");
-    while (cap >= 0x40 && hdr[0] != 0x05) {
-        if (pread(cfg, hdr, 2, cap) != 2)
-            return fail("capability header");
-        if (hdr[0] != 0x05)
-            cap = hdr[1];
-    }
-    if (hdr[0] != 0x05)
-        return fail("no msi capability");
     uint16_t control = 0;
-    if (pread(cfg, &control, 2, cap + 2) != 2)
-        return fail("msi control");
+    uint8_t cap = msi_cap(cfg, &control);
+    if (!cap)
+        return fail("no msi capability");
     unsigned field = amd ? cap + ((control & 0x80) ? 12 : 8) : cap + 4;
     uint32_t orig = 0;
     if (pread(cfg, &orig, 4, field) != 4)
@@ -270,6 +280,83 @@ static int spoof_msi(int irq, const char *ctl_text) {
         printf("intremap refused the message naming entry %u\n", other);
     else
         printf("intremap refused the message naming entry %u: faults %lld -> %lld\n", other, before, after);
+    return 0;
+}
+
+/* The pending bits (identities 0..63) of the memory-resident interrupt
+ * file the RISC-V IOMMU gave domain `domain`'s device (`domain N ... mrif
+ * IRQ pending 0xBITS` in /proc/iommu); 0 without one. */
+static int mrif_pending(unsigned long long domain, unsigned long long *pending) {
+    char text[4096], key[32];
+    int fd = open("/proc/iommu", O_RDONLY);
+    if (fd < 0)
+        return 0;
+    int ok = read_ctl(fd, text, sizeof text);
+    close(fd);
+    snprintf(key, sizeof key, "\ndomain %llu ", domain);
+    const char *l = ok ? strstr(text, key) : NULL;
+    const char *end = l ? strchr(l + 1, '\n') : NULL;
+    const char *m = l ? strstr(l, " pending ") : NULL;
+    if (!m || (end && m > end))
+        return 0;
+    *pending = strtoull(m + 9, NULL, 0);
+    return 1;
+}
+
+/* Where the RISC-V IOMMU sends the confined device's messages to a
+ * memory-resident interrupt file of its own, whose one identity it
+ * forwards as the device's IMSIC identity (issue #590), the device raises
+ * nothing else whatever it writes: its MSI data rewritten (through
+ * `config`) to the console UART's identity (10, QEMU virt's), which the
+ * IMSIC's page would take as the UART's interrupt, lands as a pending bit
+ * of the device's file, nothing arrives on `irq`; the device's own
+ * arrives once the data is restored. 0 when the device has no such file,
+ * or once this passed. */
+static int spoof_mrif(int irq, const char *ctl_text) {
+    unsigned long long domain = 0, pending = 0;
+    if (!strstr(ctl_text, "irq msi\n") || !ctl_value(ctl_text, "iommu ", &domain) || !mrif_pending(domain, &pending))
+        return 0;
+    char p[128];
+    path(p, sizeof p, "config");
+    int cfg = open(p, O_RDWR);
+    if (cfg < 0)
+        return fail("open config for writing");
+    uint16_t control = 0;
+    uint8_t cap = msi_cap(cfg, &control);
+    if (!cap)
+        return fail("no msi capability");
+    unsigned field = cap + ((control & 0x80) ? 12 : 8);
+    uint16_t orig = 0, spoof = 10;
+    if (pread(cfg, &orig, 2, field) != 2)
+        return fail("msi data");
+    if (pending & 1ull << spoof)
+        return fail("the uart's identity pending in the device's mrif before the rewrite");
+    if (pwrite(cfg, &spoof, 2, field) != 2)
+        return fail("rewrite the msi data");
+    wr(EDU_IRQ_RAISE, 0x5a);
+    for (int i = 0; i < 300 && !(pending & 1ull << spoof); i++) {
+        usleep(10000);
+        if (!mrif_pending(domain, &pending))
+            return fail("the mrif gone from /proc/iommu");
+    }
+    if (!(pending & 1ull << spoof)) {
+        printf("[ FAIL ] pcidev the message to identity %u did not land in the device's mrif (pending 0x%llx)\n", spoof, pending);
+        return 1;
+    }
+    struct pollfd pd = {.fd = irq, .events = POLLIN};
+    if (poll(&pd, 1, 0) != 0)
+        return fail("the message to the uart's identity arrived");
+    wr(EDU_IRQ_ACK, 0x5a);
+    if (pwrite(cfg, &orig, 2, field) != 2)
+        return fail("restore the msi data");
+    close(cfg);
+    wr(EDU_IRQ_RAISE, 0x5a);
+    if (wait_irq(irq) == 0)
+        return fail("no interrupt once the msi data is restored");
+    if (rd(EDU_IRQ_STATUS) != 0x5a)
+        return fail("interrupt status once the msi data is restored");
+    wr(EDU_IRQ_ACK, 0x5a);
+    printf("mrif of iommu domain %llu took the message to identity %u: pending 0x%llx\n", domain, spoof, pending);
     return 0;
 }
 
@@ -335,7 +422,7 @@ int main(void) {
         return fail("unmask after the interrupt");
     if (!read_ctl(ctl, text, sizeof text))
         return fail("ctl");
-    if (spoof_msi(irq, text))
+    if (spoof_msi(irq, text) || spoof_mrif(irq, text))
         return 1;
 
     if (write(ctl, "dma 1", 5) != 5 || !read_ctl(ctl, text, sizeof text))

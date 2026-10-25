@@ -13,10 +13,11 @@ pub fn map(_domain: u32, _phys: u64, _len: usize) -> bool {
     false
 }
 
-#[allow(dead_code)]
-pub fn domain_of(_bus: u8, _slot: u8, _func: u8) -> Option<u32> {
-    None
+pub fn msi_message(_bus: u8, _slot: u8, _func: u8, _irq: u32, msg: crate::msi::Message) -> crate::msi::Message {
+    msg
 }
+
+pub fn msi_release(_bus: u8, _slot: u8, _func: u8) {}
 
 pub fn detach(_bus: u8, _slot: u8, _func: u8) {}
 
