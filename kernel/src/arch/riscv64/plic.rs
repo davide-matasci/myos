@@ -51,7 +51,7 @@ fn ctx() -> usize {
     if c != usize::MAX {
         return c;
     }
-    let hart = crate::smp::cpu_hw_id(0) as usize;
+    let hart = crate::smp::bsp_hw_id() as usize;
     let c = 2 * hart + 1;
     CTX.store(c, Ordering::Relaxed);
     c

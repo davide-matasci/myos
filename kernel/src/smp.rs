@@ -384,15 +384,21 @@ fn push_hex(out: &mut alloc::vec::Vec<u8>, mut v: u64) {
 static AP_ENTRY_PTR: unsafe extern "C" fn(&limine::mp::MpInfo) -> ! = arch::ap_entry;
 
 
+/// The BSP's hardware id, from the CPU or, where the arch cannot read its
+/// own (riscv64 S-mode), from Limine's MP response. Before [`init`] records
+/// it as CPU 0's ([`cpu_hw_id`]) too: the interrupt controller starts first
+/// and may need it (the AIA's boot hart, which OpenSBI picks at random).
+pub fn bsp_hw_id() -> u64 {
+    arch::hw_cpu_id()
+        .or_else(|| limine_boot::MP.response().map(arch::mp_bsp_id))
+        .unwrap_or(0)
+}
+
 /// Record BSP and bring secondary CPUs online via Limine MP.
 pub fn init() {
     arch::set_cpu_id_reg(0);
 
-    // Where the arch cannot read its own hardware id (riscv64 S-mode), take
-    // the BSP id Limine reports.
-    let hw = arch::hw_cpu_id()
-        .or_else(|| limine_boot::MP.response().map(arch::mp_bsp_id))
-        .unwrap_or(0);
+    let hw = bsp_hw_id();
     HW_IDS[0].store(hw, Ordering::SeqCst);
     ONLINE[0].store(true, Ordering::SeqCst);
     TLB_SEEN[0].store(TLB_EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
