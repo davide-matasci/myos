@@ -69,6 +69,29 @@ static long k_len(const char *path) {
     return (long)n;
 }
 
+/* The errno for a path that did not resolve and does not stat either:
+ * ENOTDIR for one ending in '/' after something that is no directory
+ * (`file/`: a trailing slash resolves to directories only), else ENOENT. */
+int __myos_fstatat(int dirfd, const char *path, struct stat *st, int flags);
+
+static int missing(int dirfd, const char *path) {
+    char trimmed[MYOS_MAX_PATH + 1];
+    size_t n = path != NULL ? strlen(path) : 0;
+    struct stat st;
+    if (n == 0 || n > MYOS_MAX_PATH || path[n - 1] != '/') {
+        return ENOENT;
+    }
+    while (n > 0 && path[n - 1] == '/') {
+        n--;
+    }
+    if (n == 0) {
+        return ENOENT;
+    }
+    memcpy(trimmed, path, n);
+    trimmed[n] = '\0';
+    return __myos_fstatat(dirfd, trimmed, &st, 0) == 0 && !S_ISDIR(st.st_mode) ? ENOTDIR : ENOENT;
+}
+
 /* A path a call needs non-empty (no AT_EMPTY_PATH). */
 static long k_len_named(const char *path) {
     long n = k_len(path);
@@ -114,7 +137,7 @@ int __myos_fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     }
     if (failed(myos_syscall6(MYOS_SYS_STATAT, k_dirfd(dirfd), (long)(uintptr_t)path, len,
                              k_flags(flags), (long)(uintptr_t)&buf, 0))) {
-        errno = len == 0 ? EBADF : ENOENT;
+        errno = len == 0 ? EBADF : missing(dirfd, path);
         return -1;
     }
     fill_stat(st, &buf);
@@ -232,7 +255,7 @@ int __myos_openat(int dirfd, const char *path, int flags, ...) {
         if (strcmp(path, "/dev/tty") == 0) {
             errno = ENXIO;
         } else if (__myos_fstatat(dirfd, path, &st, 0) != 0) {
-            errno = ENOENT;
+            errno = missing(dirfd, path);
         } else if (S_ISDIR(st.st_mode) && ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)))) {
             errno = EISDIR;
         } else {
@@ -351,7 +374,7 @@ int __myos_unlinkat(int dirfd, const char *path, int flags) {
     }
     if (failed(myos_syscall6(MYOS_SYS_UNLINKAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags), 0, 0))) {
         if (__myos_fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) != 0) {
-            errno = ENOENT;
+            errno = missing(dirfd, path);
         } else if (flags & AT_REMOVEDIR) {
             errno = S_ISDIR(st.st_mode) ? ENOTEMPTY : ENOTDIR;
         } else {
@@ -379,7 +402,7 @@ int __myos_renameat(int olddirfd, const char *oldpath, int newdirfd, const char 
     }
     if (failed(myos_syscall6(MYOS_SYS_RENAMEAT, k_dirfd(olddirfd), (long)(uintptr_t)oldpath, olen,
                              k_dirfd(newdirfd), (long)(uintptr_t)newpath, nlen))) {
-        errno = __myos_fstatat(olddirfd, oldpath, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EACCES : ENOENT;
+        errno = __myos_fstatat(olddirfd, oldpath, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EACCES : missing(olddirfd, oldpath);
         return -1;
     }
     return 0;
@@ -403,7 +426,7 @@ ssize_t __myos_readlinkat(int dirfd, const char *path, char *buf, size_t size) {
                         (long)(uintptr_t)buf, (long)size, 0);
     if (failed(ret)) {
         struct stat st;
-        errno = __myos_fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EINVAL : ENOENT;
+        errno = __myos_fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EINVAL : missing(dirfd, path);
         return -1;
     }
     return (ssize_t)ret;
@@ -451,7 +474,7 @@ int __myos_utimensat(int dirfd, const char *path, const struct timespec times[2]
     if (failed(myos_syscall6(MYOS_SYS_UTIMENSAT, k_dirfd(dirfd), (long)(uintptr_t)path, len,
                              (long)(uintptr_t)(times != NULL ? t : NULL), k_flags(flags), 0))) {
         /* A missing file, or a filesystem that keeps no times. */
-        errno = __myos_fstatat(dirfd, path, &st, flags) == 0 ? EROFS : len == 0 ? EBADF : ENOENT;
+        errno = __myos_fstatat(dirfd, path, &st, flags) == 0 ? EROFS : len == 0 ? EBADF : missing(dirfd, path);
         return -1;
     }
     return 0;
@@ -471,7 +494,7 @@ static int chdirat(int dirfd, const char *path, int flags) {
     }
     if (failed(myos_syscall6(MYOS_SYS_CHDIRAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags), 0, 0))) {
         if (__myos_fstatat(dirfd, path, &st, flags) != 0) {
-            errno = len == 0 ? EBADF : ENOENT;
+            errno = len == 0 ? EBADF : missing(dirfd, path);
         } else {
             errno = S_ISDIR(st.st_mode) ? EACCES : ENOTDIR;
         }
@@ -540,7 +563,7 @@ long myos_listdirat(int dirfd, const char *path, char *buf, size_t cap, int flag
     if (failed(ret)) {
         struct stat st;
         if (__myos_fstatat(dirfd, path, &st, flags) != 0) {
-            errno = len == 0 ? EBADF : ENOENT;
+            errno = len == 0 ? EBADF : missing(dirfd, path);
         } else {
             errno = S_ISDIR(st.st_mode) ? EACCES : ENOTDIR;
         }
@@ -619,7 +642,7 @@ static int execat(int dirfd, const char *path, char *const argv[], char *const e
     /* Only reached on failure: a missing file, or one the caller may not
      * run (never ENOEXEC, on which a shell runs the file as a script). */
     free(pack);
-    errno = __myos_fstatat(dirfd, path, &st, flags) != 0 ? ENOENT : EACCES;
+    errno = __myos_fstatat(dirfd, path, &st, flags) != 0 ? missing(dirfd, path) : EACCES;
     return -1;
 }
 

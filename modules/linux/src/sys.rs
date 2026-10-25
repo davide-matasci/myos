@@ -148,12 +148,23 @@ fn view_path(path: &str) -> String {
 
 /// The VFS path behind `path` (cwd, chroot and symlinks applied).
 fn real_path(path: &str) -> R2<String> {
-    user::resolve_copied_path(path).ok_or(ENOENT)
+    user::resolve_copied_path(path).ok_or_else(|| unresolved(path))
 }
 
 /// Like [`real_path`], but a symlink in the last component is not followed.
 fn real_path_nofollow(path: &str) -> R2<String> {
-    user::resolve_copied_path_nofollow(path).ok_or(ENOENT)
+    user::resolve_copied_path_nofollow(path).ok_or_else(|| unresolved(path))
+}
+
+/// Why `path` did not resolve: `ENOTDIR` for `FILE/` (a trailing slash
+/// resolves to directories only: the path without it does), else `ENOENT`.
+fn unresolved(path: &str) -> usize {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.len() < path.len() && !trimmed.is_empty() && user::resolve_copied_path(trimmed).is_some() {
+        ENOTDIR
+    } else {
+        ENOENT
+    }
 }
 
 // ---- files ----------------------------------------------------------------
