@@ -321,8 +321,8 @@ and the hub's port from `MYOS_USB_BUS` and `MYOS_USB_PORT`, which the
 launcher sets per board). It has no disk but the SD card it boots from
 (`sdmmc` checks it, on the sdhost), no network or PCI, so the tests that
 need the scratch disk (`partitions`, `ext2_disk`, `fstab_mount`,
-`fileio`), the network (`boot_rc`: the rc.local's dropbear), a socket
-(`libc`, `heap_mini`: issue #538), another pointer (`ps2_mouse`,
+`fileio`), the network (`boot_rc`: the rc.local's dropbear; `heap_mini`:
+its ping and socket stages), another pointer (`ps2_mouse`,
 `virtio_mouse`, `xev_pointer`) or a root port of their own
 (`usb_hotplug`, `usb_hotplug_busy_reuse`, `usb_hub_replug`) are skipped,
 and its boot checks the markers it can print (`boot_test::Board::Rpi3`). The build job builds its boot files
