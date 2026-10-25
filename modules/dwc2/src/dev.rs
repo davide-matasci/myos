@@ -131,6 +131,31 @@ pub fn configure(hdev: u32, eps: &[UsbEndpoint]) -> Result<(), i32> {
     })
 }
 
+/// An interface's alternate setting changed (the core's
+/// `endpoints_change`): the endpoints `drop` names forgotten, the
+/// non-isochronous ones of `add` recorded (isochronous transfers are not
+/// driven: `isoch_queue` refuses them).
+pub fn endpoints_change(hdev: u32, add: &[UsbEndpoint], drop: &[u8]) -> Result<(), i32> {
+    update(hdev, |dev| {
+        for e in dev.eps.iter_mut() {
+            if e.is_some_and(|e| drop.contains(&e.address)) {
+                *e = None;
+            }
+        }
+        for e in add.iter().filter(|e| e.attributes & 3 != 1) {
+            if let Some(free) = dev.eps.iter_mut().find(|x| x.is_none()) {
+                *free = Some(Endpoint {
+                    address: e.address,
+                    kind: e.attributes & 3,
+                    max_packet: e.max_packet & 0x7FF,
+                    interval: e.interval,
+                    toggle: false,
+                });
+            }
+        }
+    })
+}
+
 /// The device is going (the core's `device_abort`).
 pub fn abort(hdev: u32) {
     if let Some(s) = slot_of(hdev) {

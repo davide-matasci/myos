@@ -100,7 +100,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 57: a fault raises its signal: [`SignalDelivery`] carries the
 /// siginfo's `code` and `addr`.
 /// 58: sound ([`SOUND_SERVICE`]: the `sound` core's [`SoundOps`], a card's
-/// [`SoundCardOps`]).
+/// [`SoundCardOps`]); USB alternate settings and isochronous OUT transfers
+/// ([`UsbHostOps::set_interface`], [`UsbHostOps::isoch_queue`], the
+/// controllers' [`UsbHcdOps::endpoints_change`]).
 pub const ABI_VERSION: u32 = 58;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
@@ -1861,8 +1863,14 @@ pub const MYOS_MAX_MODULE_THREADS: usize = 8;
 /// The name the host controller publishes its [`UsbHostOps`] under.
 pub const USB_SERVICE: &str = "usb";
 /// [`UsbHostOps::version`]. 2 added [`UsbHostOps::interface_label`]; 3
-/// made `interrupt_start` [`UsbHostOps::transfer_start`], bulk IN too.
-pub const USB_HOST_VERSION: u32 = 3;
+/// made `interrupt_start` [`UsbHostOps::transfer_start`], bulk IN too; 4
+/// added alternate settings ([`UsbHostOps::set_interface`]) and
+/// isochronous OUT transfers ([`UsbHostOps::isoch_queue`]).
+pub const USB_HOST_VERSION: u32 = 4;
+/// Isochronous packets queued on an endpoint at most
+/// ([`UsbHostOps::isoch_queue`]), and the bytes of one.
+pub const USB_ISOCH_MAX: usize = 64;
+pub const USB_ISOCH_PACKET_MAX: usize = 1024;
 /// Bytes of a bulk IN transfer `transfer_start` queues at most (a page:
 /// the endpoint's own bounce buffer).
 pub const USB_ASYNC_BULK_MAX: usize = 4096;
@@ -1880,6 +1888,9 @@ pub const USB_EGONE: i32 = -6;
 pub const USB_ESTALL: i32 = -32;
 pub const USB_EIO: i32 = -5;
 pub const USB_ETIMEDOUT: i32 = -110;
+/// [`UsbHostOps::isoch_queue`]: the endpoint has [`USB_ISOCH_MAX`] packets
+/// in flight.
+pub const USB_EBUSY: i32 = -16;
 
 /// Endpoints one interface may have ([`UsbInterfaceInfo::endpoints`]).
 pub const USB_MAX_ENDPOINTS: usize = 15;
@@ -1994,6 +2005,25 @@ pub struct UsbHostOps {
     /// disk's name), shown after the driver's name in `/proc/usb`: at most
     /// [`USB_LABEL_MAX`] bytes, longer is cut. 0, or [`USB_EGONE`].
     pub interface_label: unsafe extern "C" fn(dev: u32, intf: u8, label: *const u8, len: usize) -> i32,
+    /// Select alternate setting `alternate` of interface `interface` (an
+    /// audio streaming interface's, whose endpoints come with its setting
+    /// 1): the controller lets the endpoints of the setting before go and
+    /// takes the new one's, isochronous ones too, then SET_INTERFACE. The
+    /// interface starts at setting 0. 0, or negative.
+    pub set_interface: unsafe extern "C" fn(dev: u32, interface: u8, alternate: u8) -> i32,
+    /// `done(ctx, packets)` runs on the host's thread as packets queued on
+    /// the isochronous OUT `endpoint` complete (sent, or past their
+    /// interval: either way gone), `packets` of them, until `isoch_stop`;
+    /// [`USB_EGONE`] once the device is gone. 0, or negative.
+    pub isoch_start: unsafe extern "C" fn(dev: u32, endpoint: u8, done: UsbCompletion, ctx: *mut core::ffi::c_void) -> i32,
+    /// Queue `n` packets on the isochronous OUT `endpoint`, one per
+    /// service interval from the next free one: `lens[i]` bytes each (at
+    /// most [`USB_ISOCH_PACKET_MAX`]), back to back at `data` (the host
+    /// copies them). 0, or negative: [`USB_EBUSY`] past
+    /// [`USB_ISOCH_MAX`] packets in flight.
+    pub isoch_queue: unsafe extern "C" fn(dev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32,
+    /// No more `done` calls for `endpoint` (what is in flight still plays).
+    pub isoch_stop: unsafe extern "C" fn(dev: u32, endpoint: u8),
 }
 
 /// Safe calls into the host, as [`KernelApi`]'s methods: the host checks
@@ -2043,6 +2073,22 @@ impl UsbHostOps {
     pub fn interface_label(&self, dev: u32, intf: u8, label: &[u8]) -> i32 {
         unsafe { (self.interface_label)(dev, intf, label.as_ptr(), label.len()) }
     }
+
+    pub fn set_interface(&self, dev: u32, interface: u8, alternate: u8) -> i32 {
+        unsafe { (self.set_interface)(dev, interface, alternate) }
+    }
+
+    /// `isoch_queue` of the packets `lens` says, back to back in `data`.
+    pub fn isoch_queue(&self, dev: u32, endpoint: u8, data: &[u8], lens: &[u16]) -> i32 {
+        if lens.iter().map(|&l| usize::from(l)).sum::<usize>() > data.len() {
+            return USB_EIO;
+        }
+        unsafe { (self.isoch_queue)(dev, endpoint, data.as_ptr(), lens.as_ptr(), lens.len()) }
+    }
+
+    pub fn isoch_stop(&self, dev: u32, endpoint: u8) {
+        unsafe { (self.isoch_stop)(dev, endpoint) }
+    }
 }
 
 // Function tables with a name: shared between the modules' threads.
@@ -2078,8 +2124,10 @@ pub struct UsbDriverOps {
 pub const USB_CORE_SERVICE: &str = "usbcore";
 /// [`UsbCoreOps::version`].
 pub const USB_CORE_VERSION: u32 = 1;
-/// [`UsbHcdOps::version`].
-pub const USB_HCD_VERSION: u32 = 1;
+/// [`UsbHcdOps::version`]. 2 added alternate settings and isochronous OUT
+/// transfers ([`UsbHcdOps::endpoints_change`], `isoch_queue`,
+/// `isoch_reap`).
+pub const USB_HCD_VERSION: u32 = 2;
 /// [`UsbHcdOps::transfer_take`]: the transfer has not completed yet.
 pub const USB_EPENDING: i32 = -115;
 
@@ -2200,6 +2248,24 @@ pub struct UsbHcdOps {
     /// The controller's side of recovering a stalled endpoint (the core
     /// sends the CLEAR_FEATURE). 0 ok.
     pub clear_halt: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8) -> i32,
+    /// An interface's alternate setting changed (`set_interface`): the
+    /// endpoints `drop` names (addresses) go, the `n_add` at `add` come,
+    /// set up as `device_configure` does, isochronous ones too. 0 ok.
+    pub endpoints_change: unsafe extern "C" fn(
+        ctrl: usize,
+        dev: u32,
+        add: *const UsbEndpoint,
+        n_add: usize,
+        drop: *const u8,
+        n_drop: usize,
+    ) -> i32,
+    /// [`UsbHostOps::isoch_queue`] on the device: 0, negative, or
+    /// [`USB_EIO`] where the controller does not drive isochronous
+    /// transfers. A packet's completion calls [`UsbCoreOps::wake`].
+    pub isoch_queue: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32,
+    /// The packets of `endpoint` that completed since the last call, or
+    /// negative.
+    pub isoch_reap: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8) -> i32,
 }
 
 /// The core, for the host controller drivers (the [`USB_CORE_SERVICE`]

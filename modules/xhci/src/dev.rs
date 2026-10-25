@@ -12,7 +12,7 @@
 use core::sync::atomic::Ordering;
 
 use myos_abi::{
-    SleepLock, USB_ASYNC_BULK_MAX, USB_EGONE, USB_EIO, USB_EPENDING, USB_ETIMEDOUT, USB_SPEED_FULL, USB_SPEED_HIGH,
+    SleepLock, USB_ASYNC_BULK_MAX, USB_EBUSY, USB_EGONE, USB_EIO, USB_EPENDING, USB_ETIMEDOUT, USB_ISOCH_MAX, USB_SPEED_FULL, USB_SPEED_HIGH,
     USB_SPEED_LOW, USB_SPEED_SUPER, UsbDevicePath, UsbEndpoint,
 };
 use xhci::context::{
@@ -197,16 +197,13 @@ fn ep0_max_packet(speed: u8) -> u16 {
 /// The endpoint context interval (the 2^n microframe service interval)
 /// from a descriptor's `bInterval`.
 fn ep_interval(speed: u8, kind: u8, b_interval: u8) -> u8 {
+    let fast = speed == USB_SPEED_HIGH || speed == USB_SPEED_SUPER;
     match kind {
-        3 | 1 => {
-            if speed == USB_SPEED_HIGH || speed == USB_SPEED_SUPER {
-                b_interval.clamp(1, 16) - 1
-            } else {
-                // Full/low speed: bInterval frames; 2^(n-3) frames.
-                let frames = u32::from(b_interval.max(1));
-                (frames.ilog2() as u8 + 3).clamp(3, 10)
-            }
-        }
+        3 | 1 if fast => b_interval.clamp(1, 16) - 1,
+        // Full/low speed interrupt: bInterval frames; 2^(n-3) frames.
+        3 => (u32::from(b_interval.max(1)).ilog2() as u8 + 3).clamp(3, 10),
+        // Full speed isochronous: 2^(bInterval-1) frames.
+        1 => b_interval.clamp(1, 16) - 1 + 3,
         _ => 0,
     }
 }
@@ -226,15 +223,64 @@ fn new_endpoint(dma: i32, dev: &mut Device, address: u8, kind: u8, max_packet: u
         queued: false,
         user: core::ptr::null_mut(),
         user_len: 0,
+        iso: None,
     })
 }
 
 /// `ep` into the device, its ring known to its completion record (the
-/// handler finds the TD's TRBs by it).
+/// handler finds the TD's TRBs by it; an isochronous endpoint's counts its
+/// TDs from the ring's start).
 fn install_endpoint(s: &Slot, dev: &mut Device, ep: Endpoint) {
     let dci = dci_of(ep.address);
-    s.pending[dci].set_ring(&ep.ring);
+    let p = &s.pending[dci];
+    p.set_ring(&ep.ring);
+    p.iso_next.store(0, Ordering::Relaxed);
+    p.iso_done.store(0, Ordering::Relaxed);
+    p.iso_total.store(0, Ordering::Relaxed);
+    p.iso.store(ep.kind == 1, Ordering::Release);
     dev.eps[dci] = Some(ep);
+}
+
+/// An endpoint's ring and buffers back to the pool.
+fn free_endpoint(c: &Controller, ep: Endpoint) {
+    dma::free(c.dma, ep.ring.phys, ep.ring.trbs as *mut u8);
+    if ep.own_bounce {
+        dma::free(c.dma, ep.bounce_phys, ep.bounce);
+    }
+    if let Some(iso) = ep.iso {
+        for (phys, va) in iso.pages {
+            dma::free(c.dma, phys, va);
+        }
+    }
+}
+
+/// Endpoint `dci`'s context in `input` for `ep`, serviced every
+/// `interval` (the context's exponent).
+fn fill_endpoint(input: &mut dyn InputHandler, dci: usize, ep: &Endpoint, interval: u8) {
+    input.control_mut().set_add_context_flag(dci);
+    let e = input.device_mut().endpoint_mut(dci);
+    let to_host = ep.address & 0x80 != 0;
+    e.set_endpoint_type(match (ep.kind, to_host) {
+        (2, true) => EndpointType::BulkIn,
+        (2, false) => EndpointType::BulkOut,
+        (3, true) => EndpointType::InterruptIn,
+        (3, false) => EndpointType::InterruptOut,
+        (_, true) => EndpointType::IsochIn,
+        (_, false) => EndpointType::IsochOut,
+    });
+    e.set_max_packet_size(ep.max_packet);
+    e.set_max_burst_size(0);
+    // Isochronous transfers are not retried.
+    e.set_error_count(if ep.kind == 1 { 0 } else { 3 });
+    e.set_tr_dequeue_pointer(ep.ring.phys);
+    e.set_dequeue_cycle_state();
+    e.set_interval(interval);
+    if matches!(ep.kind, 1 | 3) {
+        e.set_max_endpoint_service_time_interval_payload_low(ep.max_packet);
+        e.set_average_trb_length(ep.max_packet);
+    } else {
+        e.set_average_trb_length(3072);
+    }
 }
 
 /// A control transfer on `dev`'s endpoint 0 (the core's `control`): bytes
@@ -521,9 +567,6 @@ pub fn device_configure(c: &Controller, s: &Slot, dev: &mut Device, eps: &[UsbEn
             continue;
         }
         let kind = e.attributes & 3;
-        if kind == 1 {
-            continue; // isochronous: not driven
-        }
         new_eps[dci] = Some(new_endpoint(c.dma, dev, e.address, kind, e.max_packet & 0x7FF).ok_or(USB_EIO)?);
         intervals[dci] = ep_interval(speed, kind, e.interval);
         max_dci = max_dci.max(dci as u8);
@@ -533,31 +576,8 @@ pub fn device_configure(c: &Controller, s: &Slot, dev: &mut Device, eps: &[UsbEn
     {
         let input = dev.input_ctx(csz64);
         for dci in 2..MAX_DCI {
-            let Some(ep) = new_eps[dci].as_ref() else {
-                continue;
-            };
-            input.control_mut().set_add_context_flag(dci);
-            let e = input.device_mut().endpoint_mut(dci);
-            let to_host = ep.address & 0x80 != 0;
-            e.set_endpoint_type(match (ep.kind, to_host) {
-                (2, true) => EndpointType::BulkIn,
-                (2, false) => EndpointType::BulkOut,
-                (3, true) => EndpointType::InterruptIn,
-                (3, false) => EndpointType::InterruptOut,
-                (_, true) => EndpointType::IsochIn,
-                (_, false) => EndpointType::IsochOut,
-            });
-            e.set_max_packet_size(ep.max_packet);
-            e.set_max_burst_size(0);
-            e.set_error_count(3);
-            e.set_tr_dequeue_pointer(ep.ring.phys);
-            e.set_dequeue_cycle_state();
-            e.set_interval(intervals[dci]);
-            if ep.kind == 3 {
-                e.set_max_endpoint_service_time_interval_payload_low(ep.max_packet);
-                e.set_average_trb_length(ep.max_packet);
-            } else {
-                e.set_average_trb_length(3072);
+            if let Some(ep) = new_eps[dci].as_ref() {
+                fill_endpoint(input, dci, ep, intervals[dci]);
             }
         }
     }
@@ -571,6 +591,128 @@ pub fn device_configure(c: &Controller, s: &Slot, dev: &mut Device, eps: &[UsbEn
         hc::command(c, hc::trb_configure_endpoint(dev.input_phys, slot))?;
     }
     Ok(())
+}
+
+/// An interface's alternate setting changed (the core's
+/// `endpoints_change`): the endpoints `drop` names leave the device, the
+/// ones of `add` come, in one Configure Endpoint.
+pub fn endpoints_change(c: &Controller, s: &Slot, dev: &mut Device, add: &[UsbEndpoint], drop: &[u8]) -> Result<(), i32> {
+    let csz64 = c.csz64;
+    let slot = dev.slot;
+    let speed = dev.path.speed;
+    let mut new_eps: [Option<Endpoint>; MAX_DCI] = [const { None }; MAX_DCI];
+    let mut intervals = [0u8; MAX_DCI];
+    let mut dropped = [false; MAX_DCI];
+    for &address in drop {
+        let dci = dci_of(address);
+        if (2..MAX_DCI).contains(&dci) && dev.eps[dci].is_some() {
+            dropped[dci] = true;
+        }
+    }
+    for e in add {
+        let dci = dci_of(e.address);
+        if dci < 2 || dci >= MAX_DCI || new_eps[dci].is_some() || (dev.eps[dci].is_some() && !dropped[dci]) {
+            continue;
+        }
+        let kind = e.attributes & 3;
+        new_eps[dci] = Some(new_endpoint(c.dma, dev, e.address, kind, e.max_packet & 0x7FF).ok_or(USB_EIO)?);
+        intervals[dci] = ep_interval(speed, kind, e.interval);
+    }
+    // The device's endpoints once the change is made, for the slot
+    // context's last one.
+    let max_dci = (2..MAX_DCI)
+        .filter(|&d| new_eps[d].is_some() || (dev.eps[d].is_some() && !dropped[d]))
+        .max()
+        .unwrap_or(1) as u8;
+    dev.clear_input();
+    dev.fill_slot_context(csz64, max_dci);
+    {
+        let input = dev.input_ctx(csz64);
+        for dci in 2..MAX_DCI {
+            if dropped[dci] {
+                input.control_mut().set_drop_context_flag(dci);
+            }
+            if let Some(ep) = new_eps[dci].as_ref() {
+                fill_endpoint(input, dci, ep, intervals[dci]);
+            }
+        }
+    }
+    dma::clean(c.dma, dev.input, INPUT_CTX_BYTES);
+    let r = hc::command(c, hc::trb_configure_endpoint(dev.input_phys, slot));
+    if let Err(e) = r {
+        for ep in new_eps.into_iter().flatten() {
+            free_endpoint(c, ep);
+        }
+        return Err(e);
+    }
+    for dci in 2..MAX_DCI {
+        if dropped[dci] {
+            s.pending[dci].reset();
+            if let Some(ep) = dev.eps[dci].take() {
+                free_endpoint(c, ep);
+            }
+        }
+        if let Some(ep) = new_eps[dci].take() {
+            install_endpoint(s, dev, ep);
+        }
+    }
+    Ok(())
+}
+
+/// Queue isochronous OUT packets (the core's `isoch_queue`): each copied
+/// into a slot of the endpoint's buffers and an Isoch TRB of its own.
+pub fn isoch_queue(c: &Controller, s: &Slot, dev: &mut Device, address: u8, data: &[u8], lens: &[u16]) -> i32 {
+    let slot = dev.slot;
+    let Some(ep) = dev.endpoint_by_address(address) else {
+        return USB_EIO;
+    };
+    if ep.kind != 1 || address & 0x80 != 0 {
+        return USB_EIO;
+    }
+    if ep.iso.is_none() {
+        let size = usize::from(ep.max_packet).max(64).next_power_of_two().min(4096);
+        let mut pages = [(0u64, core::ptr::null_mut()); hc::ISO_PAGES];
+        for p in pages.iter_mut() {
+            let Some((phys, va)) = dma::page(c.dma) else {
+                return USB_EIO;
+            };
+            *p = (phys, va);
+        }
+        let slots = (hc::ISO_PAGES * (4096 / size)).min(USB_ISOCH_MAX);
+        ep.iso = Some(hc::IsoBuffers { pages, slot: size, slots, next: 0, queued: 0 });
+    }
+    let p = &s.pending[dci_of(address)];
+    let max_packet = usize::from(ep.max_packet);
+    let iso = ep.iso.as_mut().unwrap();
+    let inflight = iso.queued.wrapping_sub(p.iso_total.load(Ordering::Acquire)) as usize;
+    if inflight + lens.len() > iso.slots {
+        return USB_EBUSY;
+    }
+    let mut at = 0usize;
+    for &len in lens {
+        let len = usize::from(len).min(max_packet);
+        let iso = ep.iso.as_mut().unwrap();
+        let (phys, va) = iso.at(iso.next);
+        iso.next = (iso.next + 1) % iso.slots;
+        iso.queued = iso.queued.wrapping_add(1);
+        unsafe {
+            core::ptr::copy_nonoverlapping(data[at..].as_ptr(), va, len);
+        }
+        dma::clean(c.dma, va, len.max(1));
+        hc::enqueue_isoch(ep, phys, len);
+        at += len;
+    }
+    hc::ring_doorbell(c, slot, dci_of(address) as u8);
+    0
+}
+
+/// The packets of the isochronous `address` done since the last call (the
+/// core's `isoch_reap`).
+pub fn isoch_reap(s: &Slot, dev: &mut Device, address: u8) -> i32 {
+    if dev.endpoint_by_address(address).is_none() {
+        return USB_EGONE;
+    }
+    s.pending[dci_of(address)].iso_done.swap(0, Ordering::AcqRel) as i32
 }
 
 /// The device is going (the core's `device_abort`): its transfers in
@@ -612,10 +754,7 @@ pub fn device_free(c: &Controller, hdev: u32) {
         p.reset();
     }
     for ep in dev.eps.into_iter().flatten() {
-        dma::free(c.dma, ep.ring.phys, ep.ring.trbs as *mut u8);
-        if ep.own_bounce {
-            dma::free(c.dma, ep.bounce_phys, ep.bounce);
-        }
+        free_endpoint(c, ep);
     }
     dma::free(c.dma, dev.input_phys, dev.input);
     dma::free(c.dma, dev.out_phys, dev.out);

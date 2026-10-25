@@ -21,8 +21,8 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, KernelApi, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE, USB_HCD_VERSION,
-    USB_HOST_VERSION, USB_LABEL_MAX, USB_SERVICE, UsbCompletion, UsbCoreOps, UsbDeviceInfo, UsbDriverOps,
+    ABI_VERSION, ApiCell, KernelApi, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE, USB_EIO, USB_HCD_VERSION,
+    USB_HOST_VERSION, USB_ISOCH_MAX, USB_ISOCH_PACKET_MAX, USB_LABEL_MAX, USB_SERVICE, UsbCompletion, UsbCoreOps, UsbDeviceInfo, UsbDriverOps,
     UsbHcdOps, UsbHostOps, UsbPortStatus, status_fail, status_ok,
 };
 
@@ -146,6 +146,10 @@ static HOST_OPS: UsbHostOps = UsbHostOps {
     hub_detach,
     device_info,
     interface_label,
+    set_interface,
+    isoch_start,
+    isoch_queue,
+    isoch_stop,
 };
 
 unsafe extern "C" fn driver_register(ops: *const UsbDriverOps) -> i32 {
@@ -265,6 +269,32 @@ unsafe extern "C" fn interface_label(dev: u32, intf: u8, label: *const u8, len: 
         proc_update();
     }
     rc
+}
+
+unsafe extern "C" fn set_interface(dev: u32, interface: u8, alternate: u8) -> i32 {
+    on_device(dev, |c, _, d| bus::set_interface(c, d, interface, alternate))
+}
+
+unsafe extern "C" fn isoch_start(dev: u32, endpoint: u8, done: UsbCompletion, ctx: *mut c_void) -> i32 {
+    on_device(dev, |_, _, d| bus::isoch_start(d, endpoint, done, ctx))
+}
+
+unsafe extern "C" fn isoch_queue(dev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32 {
+    if n == 0 || n > USB_ISOCH_MAX || data.is_null() || lens.is_null() {
+        return USB_EIO;
+    }
+    // SAFETY: the driver hands `n` packet lengths.
+    if unsafe { core::slice::from_raw_parts(lens, n) }.iter().any(|&l| usize::from(l) > USB_ISOCH_PACKET_MAX) {
+        return USB_EIO;
+    }
+    on_device(dev, |c, _, d| unsafe { (c.ops.isoch_queue)(c.ctx, d.hdev, endpoint, data, lens, n) })
+}
+
+unsafe extern "C" fn isoch_stop(dev: u32, endpoint: u8) {
+    let _ = on_device(dev, |_, _, d| {
+        bus::isoch_stop(d, endpoint);
+        0
+    });
 }
 
 // ---- The host controller drivers' table ---------------------------------------
