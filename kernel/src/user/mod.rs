@@ -85,14 +85,6 @@ static USERS_ALIVE: AtomicUsize = AtomicUsize::new(0);
 
 static DID_SPAWN: AtomicBool = AtomicBool::new(false);
 
-static USER_BASE: AtomicU64 = AtomicU64::new(DEFAULT_USER_BASE);
-
-/// The VA user images are loaded at (see `arch::upaging::pick_user_base`).
-#[allow(dead_code)]
-pub fn user_base() -> u64 {
-    USER_BASE.load(Ordering::SeqCst)
-}
-
 
 /// Enable user mode on the BSP.
 pub fn init() {
@@ -104,14 +96,13 @@ pub fn ap_init() {
     crate::arch::user_ap_init();
 }
 
-/// Load `/bin/custom/init` from rootfs at USER_BASE and spawn it.
+/// Load `/bin/custom/init` from rootfs and spawn it.
 pub fn spawn_init() {
-    let base = pick_user_base();
-    USER_BASE.store(base, Ordering::SeqCst);
     let Some(elf) = crate::fs::lookup(INIT_PATH) else {
         panic!("no {INIT_PATH}: the initramfs carries init");
     };
-    let (aspace, entry, span, off) = load_user_elf(elf, true).expect("init ELF");
+    let base = image_base(elf).expect("init ELF");
+    let (aspace, entry, span, off) = load_user_elf(elf, base, true).expect("init ELF");
     let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);

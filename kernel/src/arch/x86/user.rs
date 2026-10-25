@@ -3,10 +3,12 @@
 
 use crate::smp::MAX_CPUS;
 
-/// User images load at PML4[1] unless Limine took it (see `upaging::pick_user_base`).
-pub const DEFAULT_USER_BASE: u64 = 0x0000_0080_0000_0000;
-/// The span above the user base that user mappings may lie in (the
-/// kernel's own mappings start outside it): what a user pointer may name.
+/// Where a position-independent image loads (an `ET_EXEC` one loads at
+/// its link address): 1 GiB, as on the other arches.
+pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
+/// The end of the user window, `[0, USER_WINDOW)`: PML4[0], whose tables
+/// each process has to itself (the kernel's mappings are in the upper half,
+/// and Limine maps nothing low): what a user pointer may name.
 pub const USER_WINDOW: u64 = 1 << 39;
 /// The mmap window (after the brk heap): VA only, its pages get frames on
 /// first touch. 64 GiB: room for WebKit's JavaScript engine, which
@@ -19,8 +21,9 @@ pub const USER_STACK_PAGES: usize = 256;
 /// arena stays in ELF BSS; git Phase-1 object writes need ≥1 MiB and GNU
 /// make's os-test parsing xmallocs well past 512 pages, so 16 MiB.
 pub const HEAP_PAGES: usize = 4096;
-/// No per-process span limit beyond the PML4 slot (512 GiB).
-pub const USER_SPAN_PAGES: usize = usize::MAX;
+/// Image, stack, heap and the mmap window must fit the window above
+/// `DEFAULT_USER_BASE` (511 GiB).
+pub const USER_SPAN_PAGES: usize = ((USER_WINDOW - DEFAULT_USER_BASE) / 4096) as usize;
 
 /// The user registers a new task starts with (fork child, thread).
 #[derive(Clone, Copy)]

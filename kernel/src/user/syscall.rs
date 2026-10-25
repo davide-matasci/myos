@@ -1087,11 +1087,12 @@ fn exec_path_depth(
         drop(owned);
         return exec_script(virt, &line, arg_refs, env_refs, depth, new_ctx);
     }
-    // Not a loadable ELF: fail before anything of the current image goes,
-    // or the caller is left with no code to return to.
-    if elf::image_span(bytes).is_err() {
+    // Not a loadable ELF, or one that does not fit the user window: fail
+    // before anything of the current image goes, or the caller is left with
+    // no code to return to.
+    let Some(base) = image_base(bytes) else {
         return SYSERR;
-    }
+    };
     // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
     // replaced, so a missing one fails the exec cleanly.
@@ -1137,9 +1138,14 @@ fn exec_path_depth(
         // in `/heap`) and walked the bump allocator forward past the heavyweight
         // smoke ELFs. Keep the same in-place reload/expand/lazy-load sequence the
         // other arches use so the mapping/stack reservation logic is identical.
+        // An image at another base (an `ET_EXEC` one at its link address)
+        // gets a fresh aspace.
         {
             if cur_aspace != 0 {
-                if let Some(v) = reload_user_elf(cur_aspace, bytes, base_u, stack_off, _mapped_span, relocate)
+                let same_base = base == base_u;
+                if let Some(v) = same_base
+                    .then(|| reload_user_elf(cur_aspace, bytes, base, stack_off, _mapped_span, relocate))
+                    .flatten()
                     .map(|(entry, span, off)| (cur_aspace, entry, span, off))
                 {
                     // POSIX exec drops anonymous maps. In-place reload used to
@@ -1159,11 +1165,13 @@ fn exec_path_depth(
                     free_mmap_regions(cur_aspace, &old_mmap);
                     task::clear_mmap();
                     flush_user_tlb();
-                    if let Some(v) = expand_user_elf(cur_aspace, bytes, base_u, stack_off, relocate)
+                    if let Some(v) = same_base
+                        .then(|| expand_user_elf(cur_aspace, bytes, base, stack_off, relocate))
+                        .flatten()
                         .map(|(entry, span, off)| (cur_aspace, entry, span, off))
                     {
                         v
-                    } else if let Some(v) = load_user_elf(bytes, relocate) {
+                    } else if let Some(v) = load_user_elf(bytes, base, relocate) {
                         // Fresh aspace: reclaim code/stack/heap (mmap already
                         // freed), with the task on the new one already.
                         task::set_current_aspace(v.0);
@@ -1181,7 +1189,7 @@ fn exec_path_depth(
                     }
                 }
             } else {
-                let Some(v) = load_user_elf(bytes, relocate) else {
+                let Some(v) = load_user_elf(bytes, base, relocate) else {
                     return SYSERR;
                 };
                 v
@@ -1192,7 +1200,7 @@ fn exec_path_depth(
     // unrelocated; execution starts there (AT_ENTRY still names the program).
     let interp_map = match &interp {
         Some(ib) => {
-            let at = mmap_base_va(base_u, off);
+            let at = mmap_base_va(base, off);
             match map_elf_unrelocated(aspace, ib, at) {
                 Some((ientry, runs)) => Some((at as usize, ientry, runs)),
                 None => return SYSERR,
@@ -1202,18 +1210,18 @@ fn exec_path_depth(
     };
     // A mapped program goes at the start of the mmap window; the dynamic
     // linker, the image, starts and finds it through AT_PHDR / AT_ENTRY.
-    let program_at = mmap_base_va(base_u, off);
+    let program_at = mmap_base_va(base, off);
     // A foreign-personality image gets the SysV auxv its libc startup reads.
     let aux = match &mapped {
         Some(m) => match m.entry_at(program_at) {
-            Some(program_entry) => exec_auxv(&m.head, program_at, program_entry, Some(base_u as usize)),
+            Some(program_entry) => exec_auxv(&m.head, program_at, program_entry, Some(base as usize)),
             None => return SYSERR,
         },
-        None => exec_auxv(bytes, base_u, entry, interp_map.as_ref().map(|m| m.0)),
+        None => exec_auxv(bytes, base, entry, interp_map.as_ref().map(|m| m.0)),
     };
     let entry = interp_map.as_ref().map_or(entry, |m| m.1);
     let Some((rsp, argv)) =
-        build_argv_stack(aspace, base_u, off, arg_refs, env_refs, aux.entries())
+        build_argv_stack(aspace, base, off, arg_refs, env_refs, aux.entries())
     else {
         return SYSERR;
     };
@@ -1232,7 +1240,7 @@ fn exec_path_depth(
     // Nothing of the file or of the dynamic linker's is read from here on.
     drop(owned);
     drop(interp);
-    task::replace_user(aspace, entry, rsp, base_u, span, off, argc, argv);
+    task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     task::set_current_name(path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes());
     if let Some(m) = &mapped {
         if !m.map(aspace, program_at) {

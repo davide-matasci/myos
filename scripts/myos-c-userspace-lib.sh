@@ -604,7 +604,7 @@ myos_linux_compat_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/linux-smoke-${arch}-linux-musl" ]] || return 1
-    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn; do
+    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn linux-nopie linux-dyn-nopie; do
       [[ -f "$MYOS_ROOT/target/linux-compat/${arch}/$f" ]] || return 1
     done
   done

@@ -433,6 +433,7 @@ Every run boots the disk images with the tests the change needs, selected by tag
 
 - `poweroff` exits QEMU on every arch (`docs/power.md`); the boot test ends with it. A kernel panic exits too: `isa-debug-exit` on x86_64, PSCI `SYSTEM_OFF` / SBI shutdown elsewhere
 - Kernel linked in higher half; Limine sets stack, enables MMU, provides HHDM
+- User address space from VA 0: `[0, 512 GiB)` (PML4[0]) on x86_64, `[0, 66 GiB)` on aarch64 and riscv64; a position-independent image loads at 1 GiB, an `ET_EXEC` one at its link address (above 64 KiB), with its stack, heap and the 64 GiB mmap window above it. riscv64 maps device memory below 66 GiB at 128 GiB + phys (`RELOC_VA`)
 - AArch64 device MMIO in a higher-half window (`0xffff_8000_0000_0000 + phys`, 1 GiB device blocks, physical addresses below 127.5 TiB, in at most 16 regions of 512 GiB that hold devices; not in the HHDM at Limine base rev 3+)
 - Modules run from HHDM heap (rwx); loader flushes I-cache on AArch64 after copy
 - Limine binaries downloaded from GitHub release `v12.6.1` (sha256-pinned) into `target/limine-v12.6.1`

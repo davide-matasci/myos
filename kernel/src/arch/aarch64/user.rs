@@ -3,11 +3,13 @@
 
 use crate::smp::MAX_CPUS;
 
-/// User images load at L1[1] (TTBR0).
+/// Where a position-independent image loads (an `ET_EXEC` one loads at
+/// its link address): 1 GiB, which leaves the first gigabyte to programs
+/// linked low (0x10000, 0x200000, 0x400000).
 pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
-/// The span above the user base that user mappings may lie in (the
-/// kernel's own mappings start outside it): what a user pointer may name.
-/// 65 GiB: the L1 slots of `upaging`.
+/// The end of the user window, `[0, USER_WINDOW)`, where user mappings lie
+/// (the kernel's own are outside it): what a user pointer may name. 66 GiB:
+/// the L1 slots of `upaging`.
 pub const USER_WINDOW: u64 = (super::upaging::USER_L1_TABLES as u64) << 30;
 /// The mmap window (after the brk heap), see x86: 64 GiB.
 pub const MMAP_AREA_PAGES: usize = 1 << 24;
@@ -17,9 +19,9 @@ pub const USER_STACK_PAGES: usize = 128;
 /// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
 /// and zstd's 4 MiB window in get-alpine needs more than 3 MiB; 16 MiB.
 pub const HEAP_PAGES: usize = 4096;
-/// Image, stack, heap and the mmap window must fit the L1 slots (65 GiB).
-pub const USER_SPAN_PAGES: usize =
-    super::upaging::USER_L1_TABLES * super::upaging::USER_L2_TABLES * super::upaging::USER_L3_PAGES;
+/// Image, stack, heap and the mmap window must fit the window above
+/// `DEFAULT_USER_BASE` (65 GiB).
+pub const USER_SPAN_PAGES: usize = ((USER_WINDOW - DEFAULT_USER_BASE) / 4096) as usize;
 
 /// The user registers a new task starts with (fork child, thread).
 #[derive(Clone, Copy)]

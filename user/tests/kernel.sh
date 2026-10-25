@@ -1413,6 +1413,17 @@ lx_dyn() {
 	cat $OUT/linux-dyn.log
 	contains "LINUX-DYN OK" $OUT/linux-dyn.log
 }
+# The same two linked as non-PIE (ET_EXEC) programs, as gcc links them
+# by default (0x400000; riscv64 0x10000): loaded at their link address,
+# low in the user window (docs/linux-compat.md, Limits).
+lx_nopie() {
+	capture $OUT/linux-nopie.log linux /bin/linux/linux-nopie
+	cat $OUT/linux-nopie.log
+	contains "LINUX-SMOKE OK" $OUT/linux-nopie.log || return 1
+	capture $OUT/linux-dyn-nopie.log linux /bin/linux/linux-dyn-nopie
+	cat $OUT/linux-dyn-nopie.log
+	contains "LINUX-DYN OK" $OUT/linux-dyn-nopie.log
+}
 # AF_UNIX between the layers (docs/sockets-unix.md): a Linux client
 # connects to a native server by the name it listens under in /net/unix,
 # as an Alpine X client reaches the X server's /tmp/.X11-unix/X0, and gets
@@ -1693,6 +1704,7 @@ lx_insmod() {
 if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_smoke lx_smoke
 	t -t linux linux_dyn lx_dyn
+	t -t linux linux_nopie lx_nopie
 	t -t linux,netfs linux_unix lx_unix
 	t -t linux,events linux_evfd_root lx_evfd_root
 	t -t linux,netfs linux_dns_root lx_dns_root

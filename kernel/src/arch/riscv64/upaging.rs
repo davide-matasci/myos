@@ -1,22 +1,22 @@
 //! User address spaces on Sv39: a private root table cloned from the
 //! kernel's, with private mid/leaf tables under the root's user slots
-//! ([`USER_ROOT_SLOTS`] of them, from root[1]).
+//! ([`USER_ROOT_SLOTS`] of them, from root[0]).
 
 use crate::mm;
 use crate::task;
 use crate::user::PAGE;
 
 use super::paging;
-use super::user::DEFAULT_USER_BASE;
 
-/// Root slots of the process span, from root[1] (the gigabyte the image
-/// loads at, `DEFAULT_USER_BASE`): 65 GiB, the image, stack and heap in
-/// the first and the 64 GiB mmap window after them. The kernel's root
-/// maps devices in root[0] and, for a BAR inside the span, from
-/// `paging::RELOC_VA`: nothing of the kernel's is in between.
-pub const USER_ROOT_SLOTS: usize = 65;
-/// The first root slot of the process span.
-const USER_ROOT_FIRST: usize = 1;
+/// Root slots of the user window, from root[0]: 66 GiB, room for an image
+/// at `DEFAULT_USER_BASE` (1 GiB) or at its link address below, its stack
+/// and heap and the 64 GiB mmap window after them. The kernel maps the
+/// devices of the window's range from `paging::RELOC_VA`, above it (the
+/// low gigabyte's identity map in the kernel's own root is for early boot
+/// only): nothing of the kernel's is in the window.
+pub const USER_ROOT_SLOTS: usize = 66;
+/// The first root slot of the user window.
+const USER_ROOT_FIRST: usize = 0;
 
 /// Physical address of `va` in `aspace`, if mapped.
 pub fn virt_to_phys(aspace: u64, va: u64) -> Option<u64> {
@@ -107,11 +107,6 @@ pub fn unmapped_span_end(aspace: u64, va: u64) -> Option<u64> {
         }
     }
     None
-}
-
-/// The VA where user images are loaded.
-pub fn pick_user_base() -> u64 {
-    DEFAULT_USER_BASE
 }
 
 /// The address space currently loaded (`satp`).

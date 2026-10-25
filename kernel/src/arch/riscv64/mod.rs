@@ -95,12 +95,12 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
     crate::irqchip::start(p)?;
     match p.uart.map(|c| c.value) {
         Some(uart) if uart.kind == UartKind::Ns16550 && !uart.io => {
-            serial::set_base(uart.base as usize)
+            serial::set_base(paging::map_mmio(uart.base, 0x1000).ok_or("platform: UART unmapped")?)
         }
         _ => return Err("platform: no 16550 UART"),
     }
     if let Some(rtc) = p.rtc {
-        clock::set_rtc_base(rtc.value.base as usize);
+        clock::set_rtc_base(paging::map_mmio(rtc.value.base, 0x1000).ok_or("platform: RTC unmapped")?);
     }
     let hz = p.timer_hz.ok_or("platform: no timebase-frequency")?.value;
     clock::set_timebase(hz);

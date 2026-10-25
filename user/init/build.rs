@@ -17,6 +17,6 @@ fn main() {
         println!("cargo:rustc-link-arg=-nostdlib");
     }
     // AArch64: prebuilt libcore is not PIC, so `-pie` fails to link
-    // (`R_AARCH64_ABS64` in libcore). Produce ET_EXEC; the kernel slides
-    // PT_LOAD as a unit. Prefer PC-relative for `_start`.
+    // (`R_AARCH64_ABS64` in libcore). Produce ET_EXEC; the kernel loads
+    // it at its link address. Prefer PC-relative for `_start`.
 }

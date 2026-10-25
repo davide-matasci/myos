@@ -77,8 +77,6 @@ pub struct Port {
     pub host: Option<String>,
     /// Cargo bin name (`User` kind).
     pub bin: String,
-    /// Link at `USER_BASE` (ET_EXEC with absolute vtables).
-    pub image_base: bool,
     /// Extra files whose change rebuilds the program (`User` kind, port-relative).
     pub watch: Vec<String>,
     /// A script `kernel/build.rs` runs before it builds the program (`User`
@@ -237,7 +235,6 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         outputs: list("PORT_OUTPUTS"),
         ready: Some(get("PORT_READY")).filter(|s| !s.is_empty()),
         bin,
-        image_base: get("PORT_IMAGE_BASE") == "1",
         watch: list("PORT_WATCH"),
         prepare,
     })

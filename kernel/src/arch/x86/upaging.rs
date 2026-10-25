@@ -6,7 +6,6 @@ use crate::mm;
 use crate::task;
 use crate::user::PAGE;
 
-use super::user::DEFAULT_USER_BASE;
 
 const PRESENT: u64 = 1;
 const WRITE: u64 = 1 << 1;
@@ -72,26 +71,8 @@ pub fn unmapped_span_end(aspace: u64, va: u64) -> Option<u64> {
     None
 }
 
-/// The VA where user images are loaded.
-///
-/// Prefer DEFAULT (PML4[1]). If Limine already occupied that slot (common on
-/// UEFI), pick another free low-half slot. `create_aspace` clears *this*
-/// index after the kernel PML4 clone, and `free_user_page_tables` tears
-/// down the same index via the chosen base — never hardcode slot 1 for both
-/// map and reclaim while pick walks away from it.
-pub fn pick_user_base() -> u64 {
-    let src = task::kernel_aspace() & !0xfff;
-    let pml4 = unsafe { &*mm::table(src) };
-    if pml4[1] == 0 {
-        return DEFAULT_USER_BASE;
-    }
-    for i in 1..256 {
-        if pml4[i] == 0 {
-            return (i as u64) << 39;
-        }
-    }
-    panic!("no free PML4 slot for user");
-}
+/// The PML4 slot of the user window (`user::USER_WINDOW`): the lowest.
+const USER_PML4: usize = 0;
 
 /// The address space currently loaded (CR3).
 pub fn read_aspace() -> u64 {
@@ -125,14 +106,13 @@ pub fn free_user_page_tables(aspace: u64) {
 /// Tear down 4-level tables owned by a user aspace (x86_64).
 ///
 /// `create_aspace_x86` clones the kernel PML4 then allocates a private PDPT/PD/PT
-/// tree under PML4[1] (VA `0x80_0000_0000`). Free any remaining present leaf
+/// tree under [`USER_PML4`] (the user window). Free any remaining present leaf
 /// pages under that index (catches orphans outside the code/stack/heap/mmap
 /// windows), then free the private tables and the cloned PML4. Other PML4
 /// slots are value-copies of kernel entries and must not be freed.
 fn free_user_page_tables_x86(pml4_phys: u64) {
     const PHYS_MASK: u64 = 0x000f_ffff_ffff_f000;
-    // Tear down the slot that holds USER_BASE (pinned to PML4[1] / DEFAULT).
-    let user_pml4_idx = ((crate::user::user_base() >> 39) & 0x1ff) as usize;
+    let user_pml4_idx = USER_PML4;
     if pml4_phys == 0 {
         return;
     }
@@ -195,13 +175,10 @@ fn create_aspace_x86(code: &[u64], stack: &[u64], base: u64, stack_off: u64) -> 
         let src_t = &*mm::table(src);
         let dst_t = &mut *mm::table(pml4_phys);
         dst_t.copy_from_slice(src_t);
-        // Clear the USER_BASE PML4 slot so ensure_user owns a private PDPT
-        // tree (same discipline as create_aspace_riscv64). Must match
-        // pick_user_base() — hardcoding [1] while pick moved to another slot
-        // left reclaim freeing the wrong tree (UEFI OOM) or clearing a
-        // Limine-owned slot still needed on the user CR3 (early #PF).
-        let user_idx = ((crate::user::user_base() >> 39) & 0x1ff) as usize;
-        dst_t[user_idx] = 0;
+        // Clear the user window's slot so ensure_user owns a private PDPT
+        // tree (same discipline as create_aspace_riscv64); whatever a
+        // bootloader left there is not the process's.
+        dst_t[USER_PML4] = 0;
     }
 
     // RW so sys_read can fill PT_LOAD (user/ok MSG_BUF). Still executable.

@@ -175,86 +175,28 @@ pub fn exec(path: &[u8], args: &[&[u8]]) {
     exec_env(path, args, &[]);
 }
 
-const MAX_EXEC_ARG_LEN: usize = 128;
-const MAX_EXEC_ENV_LEN: usize = 128;
-
-/// Slide ET_EXEC link VAs to the runtime user base (AArch64/RISC-V nested ELFs).
-///
-/// `aarch64-unknown-none` / `riscv64imac-unknown-none-elf` user programs are
-/// ET_EXEC with no relocs; the kernel slides PT_LOAD as a unit to `0x4000_0000`.
-/// ADR'd path refs are already correct, but `&[b"arg"]` fat pointers stored in
-/// `.rodata` keep link VAs (`~0x0020_xxxx` / `~0x0001_xxxx`). Reading them
-/// before this fixup causes an alignment/translation abort (CI FAR=`0x20016f`).
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-#[inline]
-fn et_exec_fixup_ptr(ptr: usize) -> usize {
-    const USER_BASE: usize = 0x4000_0000;
-    if ptr == 0 || ptr >= USER_BASE {
-        return ptr;
-    }
-    #[cfg(target_arch = "aarch64")]
-    const LINK_BASE: usize = 0x0020_0000;
-    #[cfg(target_arch = "riscv64")]
-    const LINK_BASE: usize = 0x0001_0000;
-    ptr.wrapping_sub(LINK_BASE).wrapping_add(USER_BASE)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn et_exec_fixup_ptr(ptr: usize) -> usize {
-    ptr
-}
-
-#[inline]
-fn copy_exec_bytes(dst: &mut [u8], src: &[u8]) -> usize {
-    let n = src.len().min(dst.len());
-    let src_ptr = et_exec_fixup_ptr(src.as_ptr() as usize) as *const u8;
-    unsafe {
-        core::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr(), n);
-    }
-    n
-}
-
 /// Like [`exec`], but passes a `KEY=value` environment block to the new image.
 pub fn exec_env(path: &[u8], args: &[&[u8]], env: &[&[u8]]) {
     let argc = args.len().min(MAX_EXEC_ARGS);
     let envc = env.len().min(MAX_EXEC_ENV);
-    let path_ptr = et_exec_fixup_ptr(path.as_ptr() as usize);
+    let path_ptr = path.as_ptr() as usize;
     if argc == 0 && envc == 0 {
         unsafe {
             sys6(SYS_EXECAT, AT_FDCWD, path_ptr, path.len(), 0, 0, 0);
         }
         return;
     }
-    // Nested ELFs may be ET_EXEC (no PIE): static slice pointers keep link-time
-    // VAs. Fix them up, then copy onto the stack so the kernel sees user VAs.
-    let mut arg_buf = [[0u8; MAX_EXEC_ARG_LEN]; MAX_EXEC_ARGS];
-    let mut arg_ptrs = [0usize; MAX_EXEC_ARGS];
-    let mut arg_lens = [0usize; MAX_EXEC_ARGS];
-    for (i, a) in args.iter().take(MAX_EXEC_ARGS).enumerate() {
-        let n = copy_exec_bytes(&mut arg_buf[i], a);
-        arg_ptrs[i] = arg_buf[i].as_ptr() as usize;
-        arg_lens[i] = n;
-    }
-    let mut env_buf = [[0u8; MAX_EXEC_ENV_LEN]; MAX_EXEC_ENV];
-    let mut env_ptrs = [0usize; MAX_EXEC_ENV];
-    let mut env_lens = [0usize; MAX_EXEC_ENV];
-    for (i, e) in env.iter().take(MAX_EXEC_ENV).enumerate() {
-        let n = copy_exec_bytes(&mut env_buf[i], e);
-        env_ptrs[i] = env_buf[i].as_ptr() as usize;
-        env_lens[i] = n;
-    }
     let mut pack = [0usize; 1 + MAX_EXEC_ARGS * 2 + 1 + MAX_EXEC_ENV * 2];
     pack[0] = argc;
-    for i in 0..argc {
-        pack[1 + i * 2] = arg_ptrs[i];
-        pack[2 + i * 2] = arg_lens[i];
+    for (i, a) in args.iter().take(argc).enumerate() {
+        pack[1 + i * 2] = a.as_ptr() as usize;
+        pack[2 + i * 2] = a.len();
     }
     let env_base = 1 + argc * 2;
     pack[env_base] = envc;
-    for i in 0..envc {
-        pack[env_base + 1 + i * 2] = env_ptrs[i];
-        pack[env_base + 2 + i * 2] = env_lens[i];
+    for (i, e) in env.iter().take(envc).enumerate() {
+        pack[env_base + 1 + i * 2] = e.as_ptr() as usize;
+        pack[env_base + 2 + i * 2] = e.len();
     }
     unsafe {
         sys6(SYS_EXECAT, AT_FDCWD, path_ptr, path.len(), pack.as_ptr() as usize, 0, 0);
@@ -397,49 +339,31 @@ fn fd_conv(fd: usize, dir: &[u8]) -> Option<u16> {
 /// Load the kernel module ELF at `path` (`SYS_INSMOD` = 58), e.g.
 /// `/lib/modules/hello`. The kernel prints the reason on failure.
 pub fn insmod(path: &[u8]) -> bool {
-    const CAP: usize = 128;
-    let mut buf = [0u8; CAP];
-    let n = copy_exec_bytes(&mut buf, path);
-    if n == 0 {
-        return false;
-    }
-    unsafe { sys3(58, buf.as_ptr() as usize, n, 0) != usize::MAX }
+    !path.is_empty() && unsafe { sys3(58, path.as_ptr() as usize, path.len(), 0) != usize::MAX }
 }
 
 /// Unload the kernel module `name` (`SYS_RMMOD` = 59); it must not provide
 /// anything any more (a device, a filesystem, a mount). The kernel prints
 /// the reason on failure.
 pub fn rmmod(name: &[u8]) -> bool {
-    const CAP: usize = 64;
-    let mut buf = [0u8; CAP];
-    let n = copy_exec_bytes(&mut buf, name);
-    if n == 0 {
-        return false;
-    }
-    unsafe { sys3(59, buf.as_ptr() as usize, n, 0) != usize::MAX }
+    !name.is_empty() && unsafe { sys3(59, name.as_ptr() as usize, name.len(), 0) != usize::MAX }
 }
 
 /// Mount `src` (a block device, `/dev/vda/data`) at `tgt`, an existing directory
 /// that is not a mount point yet, using `fstype` (`fat`, `ext2`); `bind`
 /// makes `src` visible at `tgt` too.
 pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
-    const CAP: usize = 128;
-    let mut src_buf = [0u8; CAP];
-    let mut tgt_buf = [0u8; CAP];
-    let mut fs_buf = [0u8; 32];
-    let sn = copy_exec_bytes(&mut src_buf, src);
-    let tn = copy_exec_bytes(&mut tgt_buf, tgt);
-    let fn_ = copy_exec_bytes(&mut fs_buf, fstype);
-    if sn == 0 || tn == 0 || fn_ == 0 {
+    if src.is_empty() || tgt.is_empty() || fstype.is_empty() {
         return false;
     }
-    let mut pack = [0usize; 6];
-    pack[0] = src_buf.as_ptr() as usize;
-    pack[1] = sn;
-    pack[2] = tgt_buf.as_ptr() as usize;
-    pack[3] = tn;
-    pack[4] = fs_buf.as_ptr() as usize;
-    pack[5] = fn_;
+    let pack = [
+        src.as_ptr() as usize,
+        src.len(),
+        tgt.as_ptr() as usize,
+        tgt.len(),
+        fstype.as_ptr() as usize,
+        fstype.len(),
+    ];
     unsafe { sys3(27, pack.as_ptr() as usize, 0, 0) != usize::MAX }
 }
 
@@ -447,12 +371,7 @@ pub fn mount(src: &[u8], tgt: &[u8], fstype: &[u8]) -> bool {
 /// Detach the block-device mount at `path` (`SYS_UMOUNT` = 64): false when
 /// nothing that can be unmounted is mounted there, or it is busy.
 pub fn umount(path: &[u8]) -> bool {
-    let mut buf = [0u8; 128];
-    let n = copy_exec_bytes(&mut buf, path);
-    if n == 0 {
-        return false;
-    }
-    unsafe { sys3(64, buf.as_ptr() as usize, n, 0) != usize::MAX }
+    !path.is_empty() && unsafe { sys3(64, path.as_ptr() as usize, path.len(), 0) != usize::MAX }
 }
 
 /// The actions of [`power`].
@@ -470,12 +389,10 @@ pub fn power(action: usize) {
 /// The mode bits of `path` (a symlink not followed), or `None` when it
 /// does not exist.
 pub fn stat_mode(path: &[u8]) -> Option<u32> {
-    let mut buf = [0u8; 128];
-    let n = copy_exec_bytes(&mut buf, path);
     // The kernel's `MyosStat`: st_mode first, 48 bytes in all.
     let mut out = [0u32; 12];
-    let (p, o) = (buf.as_ptr() as usize, out.as_mut_ptr() as usize);
-    let ret = unsafe { sys6(SYS_STATAT, AT_FDCWD, p, n, AT_SYMLINK_NOFOLLOW, o, 0) };
+    let (p, o) = (path.as_ptr() as usize, out.as_mut_ptr() as usize);
+    let ret = unsafe { sys6(SYS_STATAT, AT_FDCWD, p, path.len(), AT_SYMLINK_NOFOLLOW, o, 0) };
     (ret != usize::MAX).then_some(out[0])
 }
 
