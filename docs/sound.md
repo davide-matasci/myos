@@ -95,10 +95,13 @@ the Raspberry Pi 3 has neither. In a window (`cargo run`) both play where
 MYOS_AUDIODEV=pa cargo run -- uefi
 ```
 
-A test boot has two virtio-sound cards and the speaker. The first card
-(playback only) and the speaker play into WAV files of QEMU's `wav`
-backend at 48 kHz stereo (`target/boot-test-<name>-sound.wav`, and
-`.sound.usb.wav`); the second card records QEMU's `none` input, silence.
+A test boot has two virtio-sound cards and three USB speakers (the
+xHCI's, and one behind a hub on a UHCI and on an OHCI companion,
+`docs/usb.md`). The first card (playback only) and the speakers play
+into WAV files of QEMU's `wav` backend at 48 kHz stereo
+(`target/boot-test-<name>-sound.wav`, and `.sound.usb.wav`,
+`.sound.uhci.wav`, `.sound.ohci.wav`); the second card records QEMU's
+`none` input, silence.
 `user/sndd/test.sh` (tag `sound`) checks the streams and the server's
 list (`sound_devices`), plays a tone (`sound_play`: the stream runs at
 48 kHz stereo while it plays and stops after), two programs at once at
@@ -106,9 +109,9 @@ different rates and formats (`sound_mix`), records two seconds at 16 kHz
 mono (`sound_rec`: about the right number of frames, up to twice as
 many on a loaded host, whose clock QEMU's input follows while `rec`'s is
 the guest's; all silent) and
-plays through the speaker (`sound_usb`). Once QEMU is gone the launcher
+plays through every speaker (`sound_usb`). Once QEMU is gone the launcher
 reads the WAV files and looks, with a Goertzel filter over 100 ms
-windows, for 440 Hz alone, 440 and 660 Hz together, and 880 Hz on the
+windows, for 440 Hz alone, 440 and 660 Hz together, and 880 Hz on each
 speaker, each well above the frequencies around it (`sound::check_played`,
 `check_usb_played`); a test whose sound is missing fails the boot.
 
