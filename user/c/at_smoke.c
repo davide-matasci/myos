@@ -2,7 +2,9 @@
  * The *at calls (kernel/src/user/at.rs, libgloss at.c): a directory fd
  * stands for its directory whatever is renamed meanwhile, and so does the
  * cwd; an fd's own file is there for fstat after an unlink; fdopendir lists
- * a directory fd; stat follows a symlink and lstat does not.
+ * a directory fd (on mlibc: readdir stays NULL past the end until a
+ * rewinddir, and seekdir goes back to a telldir); stat follows a symlink
+ * and lstat does not.
  *
  * `at_smoke cap` and `at_smoke capro` run in a namespace that cannot name
  * fd 3, a directory holding `f` ("in") and `sub` (user/tests/kernel.sh):
@@ -131,8 +133,9 @@ int main(int argc, char **argv) {
     check(renameat(dir, "link", dir, "link2") == 0 && exists("/tmp/ats/e/link2"), "renameat link");
     check(unlinkat(dir, "link2", 0) == 0, "unlinkat link2");
 
-    /* fdopendir lists the fd's directory. */
+    /* fdopendir lists the fd's directory (sub, and h: two entries). */
     {
+        int h = openat(dir, "h", O_WRONLY | O_CREAT, 0644);
         int dup_fd = openat(dir, ".", O_RDONLY);
         DIR *d = dup_fd >= 0 ? fdopendir(dup_fd) : NULL;
         struct dirent *e;
@@ -142,9 +145,28 @@ int main(int argc, char **argv) {
             saw_sub |= strcmp(e->d_name, "sub") == 0;
         }
         check(saw_sub, "readdir sees sub");
+#ifdef __MLIBC_POSIX_OPTION
+        if (d != NULL) {
+            char second[256] = "";
+            long at;
+            check(readdir(d) == NULL, "readdir past the end is NULL again");
+            rewinddir(d);
+            check(readdir(d) != NULL, "readdir after rewinddir");
+            at = telldir(d);
+            e = readdir(d);
+            if (e != NULL) {
+                snprintf(second, sizeof second, "%s", e->d_name);
+            }
+            seekdir(d, at);
+            e = readdir(d);
+            check(second[0] != 0 && e != NULL && strcmp(e->d_name, second) == 0, "seekdir to a telldir");
+        }
+#endif
         if (d != NULL) {
             closedir(d);
         }
+        close(h);
+        check(unlinkat(dir, "h", 0) == 0, "unlinkat h");
     }
     check(unlinkat(dir, "sub", AT_REMOVEDIR) == 0, "unlinkat sub");
 

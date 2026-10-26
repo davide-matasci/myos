@@ -196,8 +196,9 @@ t -t sched child $SMOKES/child_smoke
 # auxiliary vector (libc_smoke.c).
 t -t smoke libc $SMOKES/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
-# whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
-# symlink, lstat does not (at_smoke.c).
+# whatever is renamed; fstat of an unlinked file; fdopendir (on mlibc,
+# readdir past the end, rewinddir, seekdir); stat follows a symlink, lstat
+# does not (at_smoke.c).
 t -t fs at $SMOKES/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec
