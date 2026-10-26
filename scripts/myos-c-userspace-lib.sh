@@ -518,14 +518,13 @@ myos_ripgrep_version_hash() {
       sha256sum "$MYOS_ROOT/ports/ripgrep/build.sh"
       sha256sum "$MYOS_ROOT/ports/ripgrep/prepare.sh"
       sha256sum "$MYOS_ROOT/ports/ripgrep/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/ripgrep/fetch-pcre2.sh"
-      sha256sum "$MYOS_ROOT/ports/ripgrep/build-pcre2.sh"
       sha256sum "$MYOS_ROOT/ports/ripgrep/versions.env"
       sha256sum "$MYOS_ROOT/ports/ripgrep/cargo-config.toml"
       find "$MYOS_ROOT/ports/ripgrep" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_sysroot_version_hash
       myos_newlib_version_hash
+      myos_pcre2_version_hash
     } | myos_hash
   )"
   printf '%s' "$h"

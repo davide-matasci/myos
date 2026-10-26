@@ -13,7 +13,7 @@
 
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use linked_list_allocator::Heap;
 use spin::Mutex;
@@ -89,6 +89,9 @@ struct IrqSafeHeap(Mutex<Classed>);
 
 unsafe impl GlobalAlloc for IrqSafeHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if !READY.load(Ordering::Relaxed) {
+            before_init(layout);
+        }
         let flags = crate::arch::irq_save();
         crate::arch::irq_off();
         let p = self.0.lock().alloc(layout);
@@ -102,6 +105,19 @@ unsafe impl GlobalAlloc for IrqSafeHeap {
         unsafe { self.0.lock().dealloc(ptr, layout) };
         crate::arch::irq_restore(flags);
     }
+}
+
+/// Set once [`init`] gave the heap its memory.
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// An allocation before [`init`] (a `format!` in what `kernel_main` runs
+/// first): a line on the console, then the CPU stops. The empty heap would
+/// refuse it, and the panic for the refusal formats its message on the heap
+/// as well, so the boot went silent with the CPU at address 0.
+#[cold]
+fn before_init(layout: Layout) -> ! {
+    crate::console::write_fmt(format_args!("fatal: a {}-byte allocation before heap::init\n", layout.size()));
+    crate::arch::halt()
 }
 
 /// Physical end of the heap (the frame allocator starts after it).
@@ -130,6 +146,7 @@ pub fn init() {
     unsafe {
         ALLOCATOR.0.lock().heap.init(start as *mut u8, size as usize);
     }
+    READY.store(true, Ordering::SeqCst);
 }
 
 /// Physical address just past the heap.

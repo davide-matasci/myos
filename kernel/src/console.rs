@@ -351,6 +351,12 @@ fn write_status(tag: &str, kind: u32, label: &str) {
     }
 }
 
+/// Formatted text without the heap: [`write_str`] for what is written
+/// before the heap exists (`heap`'s line for an allocation that early).
+pub fn write_fmt(args: fmt::Arguments) {
+    let _ = Console.write_fmt(args);
+}
+
 pub fn flush() {
     let _guard = OUT.lock();
     SerialPort::new().flush();
