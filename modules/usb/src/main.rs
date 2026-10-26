@@ -26,9 +26,9 @@ use myos_abi::{
     UsbHcdOps, UsbHostOps, UsbPortStatus, status_fail, status_ok,
 };
 
-/// Controllers the core drives: an Intel PC's xHCI, EHCI and its UHCI
-/// companions (three to six) at once.
-pub const MAX_CTRL: usize = 8;
+/// Controllers the core drives: a PC's xHCI with its EHCIs and their UHCI
+/// or OHCI companions (an ICH9's two and six: nine) at once.
+pub const MAX_CTRL: usize = 12;
 
 /// A registered host controller: its driver's table and the handle the
 /// driver knows it by.
