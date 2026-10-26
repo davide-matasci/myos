@@ -41,6 +41,9 @@ ENV CI=true \
 #   - gcc g++ make autoconf automake libtool texinfo bison flex pkg-config:
 #     host builds + configure-based GNU ports (newlib, git, vim, lynx, tcc...).
 #   - meson ninja-build: mlibc's build system (toolchain/mlibc).
+#   - cmake: LLVM's runtimes build (libc++, libc++abi, libunwind against
+#     mlibc); with perl, ruby, gperf and unifdef also WebKitGTK's build,
+#     the native browser stack's tools (issue #616).
 #   - zstd rsync xorriso: sysroot packaging + fetch, iso.yml ISO image.
 #   - git curl wget file patch bc ca-certificates python3: source fetch, SSL,
 #     checkout sync, wire-myos.py / port patching.
@@ -66,6 +69,7 @@ RUN apt-get update \
         autoconf automake libtool \
         texinfo bison flex \
         meson ninja-build \
+        cmake perl ruby gperf unifdef \
         pkg-config \
         zstd rsync \
         xorriso \
