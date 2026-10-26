@@ -218,7 +218,14 @@ int Sysdeps<Writev>::operator()(int fd, const struct iovec *iovs, int iovc, ssiz
 	return 0;
 }
 
+// generic/dirent.cpp: a directory's listing moves with its seeks.
+extern "C" bool __myos_dir_seek(int fd, off_t offset, int whence);
+
 int Sysdeps<Seek>::operator()(int fd, off_t offset, int whence, off_t *new_offset) {
+	if (__myos_dir_seek(fd, offset, whence)) {
+		*new_offset = offset;
+		return 0;
+	}
 	off_t r = __myos_lseek(fd, offset, whence);
 	if (r < 0)
 		return errno;

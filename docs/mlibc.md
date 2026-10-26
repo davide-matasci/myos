@@ -69,7 +69,7 @@ lists them) are a few lines each over the shared C:
 | File | What |
 |------|------|
 | `generic/sysdeps.cpp` | files, directories, processes, memory, sockets, terminals, time, the event fds (eventfd, timerfd, epoll, signalfd), the hostname, `reboot` |
-| `generic/entry.cpp`, `<arch>/crt0.S` | the program's start: `_start` hands `main` and the entry stack to mlibc's startup, which parses it (argc, argv, envp; the auxiliary vector is empty: mlibc's static startup finds its own program headers through `__ehdr_start`), sets up the TLS and runs the constructors |
+| `generic/entry.cpp`, `<arch>/crt0.S` | the program's start: `_start` hands `main` and the entry stack to mlibc's startup, which parses it (argc, argv, envp; mlibc's static startup finds its own program headers through `__ehdr_start`, and `getauxval` reads the kernel's auxiliary vector: the program headers, the page size, the ids and `AT_SECURE`, 0), sets up the TLS and runs the constructors |
 | `generic/thread.cpp`, `<arch>/thread-entry.S` | threads on the kernel's (`docs/threads.md`): `thread_spawn`, the futex (`wait_addr`, `wake_addr`), the thread pointer (`set_tp` on x86_64, `tpidr_el0`, `tp`: mlibc's TCB lies at the pointer on x86_64, 16 bytes before its end on aarch64, at its end on riscv64) |
 | `generic/signal.cpp` | the kernel's 32-bit masks and `sigaction` records (`docs/signals.md`) behind mlibc's `sigset_t`; the handler dispatch the trampoline calls, with the siginfo the kernel's frame holds; `sigtimedwait` without a timeout (`ENOSYS` with one: the kernel has no timed wait) |
 | `generic/dirent.cpp` | the kernel lists a directory's names at once (`listdirat`); mlibc reads `dirent64` records a buffer at a time: the listing is read at the first read on a directory fd, handed out record by record (`d_type` and `d_ino` from a stat, `.` and `..` left out, as newlib's `readdir`), and dropped at its end, a rewind or the fd's close |
@@ -143,7 +143,9 @@ Rust `std` on mlibc (the Rust port is newlib's); the ports are newlib's
 but the smokes, python (`packages/python`, the first port on mlibc:
 its README says what of CPython's build the libc shaped) and the
 libraries it links: LibreSSL and ncurses (built for both libcs,
-`target/<name>-mlibc-<arch>` the mlibc build), SQLite and libedit; tcc's own
+`target/<name>-mlibc-<arch>` the mlibc build), SQLite and libedit; and
+GLib (`packages/glib`, with PCRE2's mlibc build and the libraries mlibc
+lacks: GNU libiconv for `iconv`, proxy-libintl for `gettext`); tcc's own
 sysroot is newlib's. A fork
 while another thread holds one of mlibc's own locks (the allocator's,
 stdio's) hangs the child in its first `malloc` or `fprintf`: mlibc's fork

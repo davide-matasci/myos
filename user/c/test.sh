@@ -163,8 +163,9 @@ t -t netfs netconv $SMOKES/netconv_smoke
 # 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
 # unconnect, ECONNREFUSED after a datagram to a closed port, the host's
 # own address); TCP to a listener on any address (MSG_PEEK) and to one
-# bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's);
-# a UDP socket passed by exec (bare datagrams to read(), then the socket
+# bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's),
+# and to one on port 0 (the port netd picks, getsockname's); a UDP socket
+# passed by exec (bare datagrams to read(), then the socket
 # calls) (loopback_smoke.c).
 t -t netfs loopback $SMOKES/loopback_smoke
 # 200 short connections back to back over 127.0.0.1, then one that talks:
@@ -192,11 +193,13 @@ t -t sched child $SMOKES/child_smoke
 # double conversions (issue #374); setitimer and alarm (SIGALRM on time, a
 # blocking read cut short, the default action); CLOCK_MONOTONIC and
 # CLOCK_BOOTTIME since boot, going on when the wall clock is set back
-# (issue #317), clock_getres (libc_smoke.c).
+# (issue #317), clock_getres; on mlibc, getauxval over the kernel's
+# auxiliary vector (libc_smoke.c).
 t -t smoke libc $SMOKES/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
-# whatever is renamed; fstat of an unlinked file; fdopendir; stat follows a
-# symlink, lstat does not (at_smoke.c).
+# whatever is renamed; fstat of an unlinked file; fdopendir (on mlibc,
+# readdir past the end, rewinddir, seekdir); stat follows a symlink, lstat
+# does not (at_smoke.c).
 t -t fs at $SMOKES/at_smoke
 # O_EXCL creates a name once, racers or not, and a symlink there is taken;
 # ftruncate; pread/pwrite leave the position, ESPIPE on a pipe; close-on-exec

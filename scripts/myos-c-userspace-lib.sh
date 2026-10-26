@@ -76,6 +76,7 @@ MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
 MYOS_PYTHON_VERSION="$MYOS_ROOT/target/.myos-python-version"
 MYOS_SQLITE_VERSION="$MYOS_ROOT/target/.myos-sqlite-version"
 MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
+MYOS_GLIB_VERSION="$MYOS_ROOT/target/.myos-glib-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -879,12 +880,12 @@ myos_mlibc_link() {
 }
 
 # myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
-# ports: clang against the port's libc's sysroot with the CFLAGs, and for
-# a link ld.lld with crt0 and the libc the way scripts/build-c-smokes.sh
-# links, so configure's link tests answer for myos (--build and --host
-# differing keeps configure from running what it links). Not clang's own
-# link: for a bare-metal target it hands it to the host's gcc on some
-# triples and versions. The libc is newlib (with libgloss), or mlibc when
+# and meson ports: clang against the port's libc's sysroot with the
+# CFLAGs, and for a link ld.lld with crt0 and the libc the way
+# scripts/build-c-smokes.sh links, so configure's link tests answer for
+# myos (--build and --host differing keeps configure from running what it
+# links). Not clang's own link: for a bare-metal target it hands it to the
+# host's gcc on some triples and versions. The libc is newlib (with libgloss), or mlibc when
 # PORT_LIBC is `mlibc`: the port's build script sources its port.env.
 myos_write_cross_cc() {
   local arch="$1" out="$2"
@@ -925,8 +926,9 @@ extra="$extra"
 libs="$libs"
 EOC
   cat >> "$out" <<'EOC'
+# Compiling, and the compiler's own queries (meson's --version).
 for a in "$@"; do
-  case "$a" in -c|-E|-S|-M|-MM) exec clang "${cflags[@]}" "$@" ;; esac
+  case "$a" in -c|-E|-S|-M|-MM|--version|-dumpversion|-dumpmachine) exec clang "${cflags[@]}" "$@" ;; esac
 done
 # Linking: compile what is C here, then ld.lld, keeping the order of the
 # objects, -L and -l.
@@ -1233,6 +1235,7 @@ myos_pcre2_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
+      myos_mlibc_version_hash
       find "$(myos_port_dir pcre2)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1247,6 +1250,7 @@ myos_pcre2_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/pcre2-${arch}/lib/libpcre2-8.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/pcre2-mlibc-${arch}/lib/libpcre2-8.a" ]] || return 1
   done
 }
 
@@ -1412,6 +1416,36 @@ myos_libedit_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/libedit-mlibc-${arch}/lib/libedit.a" ]] || return 1
+  done
+}
+
+# GLib (packages/glib), against mlibc: its pins and scripts, mlibc, zlib's
+# pin (built from that source), PCRE2's mlibc build and the compiler flags.
+myos_glib_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      sha256sum "$(myos_port_dir zlib)/versions.env"
+      myos_pcre2_version_hash
+      find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      # The flags and the cc the build takes.
+      declare -f myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_glib_is_current() {
+  local arch
+  [[ -f "$MYOS_GLIB_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GLIB_VERSION")" == "$(myos_glib_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/libgio-2.0.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 

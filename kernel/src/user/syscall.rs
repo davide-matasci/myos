@@ -1250,7 +1250,7 @@ fn exec_path_depth(
     // A mapped program goes at the start of the mmap window; the dynamic
     // linker, the image, starts and finds it through AT_PHDR / AT_ENTRY.
     let program_at = mmap_base_va(base, off);
-    // A foreign-personality image gets the SysV auxv its libc startup reads.
+    // The SysV auxv a libc startup reads.
     let aux = match &mapped {
         Some(m) => match m.entry_at(program_at) {
             Some(program_entry) => exec_auxv(&m.head, program_at, program_entry, Some(base as usize)),
@@ -2255,11 +2255,12 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
     if fs::vfs::remove_bind(&bound) { 0 } else { SYSERR }
 }
 
-/// The auxiliary vector for an image about to start with a foreign
-/// personality (empty for native images): a libc startup (musl's static-PIE
-/// one, or the dynamic linker of a dynamic program) finds the program
-/// headers (PT_DYNAMIC, PT_TLS) through `AT_PHDR`, and the dynamic linker its
-/// own load address through `AT_BASE`.
+/// The auxiliary vector for an image about to start: a libc startup (musl's
+/// static-PIE one, or the dynamic linker of a dynamic program) finds the
+/// program headers (PT_DYNAMIC, PT_TLS) through `AT_PHDR`, the dynamic
+/// linker its own load address through `AT_BASE`, and a native program's
+/// `getauxval` (mlibc's) its answers here (GLib's setuid check reads
+/// `AT_SECURE`).
 /// A dynamically linked, position-independent Linux program that `exec`
 /// maps from its file instead of reading it whole: only its headers and its
 /// interpreter (the dynamic linker, loaded as the image) are read. Its
@@ -2369,9 +2370,6 @@ impl MappedProgram {
 
 fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usize>) -> AuxV {
     let mut aux = AuxV::new();
-    if !crate::personality::pending() {
-        return aux;
-    }
     let u16_at = |o: usize| elf_bytes.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u64);
     let u32_at = |o: usize| elf_bytes.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as u64);
     let u64_at = |o: usize| elf_bytes.get(o..o + 8).map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap()));

@@ -185,6 +185,8 @@ struct MyosSysdepTags :
 	PrepareStack,
 	Clone,
 	ThreadExit,
+	ThreadSetname,
+	ThreadGetname,
 	Yield
 {};
 

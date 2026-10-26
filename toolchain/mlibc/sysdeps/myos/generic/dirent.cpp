@@ -2,8 +2,11 @@
 // records (ReadEntries, a buffer at a time, until none is left); the
 // kernel lists a directory's names at once, one per line (myos_listdirat,
 // libmyos/at.c). A listing is read at the first call on an fd and handed
-// out record by record; it goes with its end, a rewind (mlibc seeks the fd
-// to 0 and reads again) or the fd's close. "." and ".." are left out, as
+// out record by record, each with its index as its d_off; past its end
+// the fd reads nothing (a readdir after the last entry is NULL again)
+// until a seek, rewinddir's to 0 or seekdir's to a d_off, which reads the
+// listing afresh from that entry; it goes with the fd's close. "." and
+// ".." are left out, as
 // newlib's readdir leaves them out; the type and inode of each entry come
 // from its stat, as there.
 #include <dirent.h>
@@ -30,6 +33,10 @@ struct Listing {
 	size_t len;
 	size_t pos;
 	long index;
+	// The entries to pass over when the listing is read (a seek's d_off).
+	long skip;
+	// Read to its end: nothing more until a seek.
+	bool done;
 };
 
 Listing listings[MYOS_MAX_FDS];
@@ -53,7 +60,7 @@ int list(int fd) {
 			return errno;
 		}
 		if ((size_t)n < cap || cap >= DIRBUF_MAX) {
-			l = {buf, (size_t)n, 0, 0};
+			l = {buf, (size_t)n, 0, 0, l.skip, false};
 			return 0;
 		}
 		// Full: there may be more.
@@ -80,8 +87,21 @@ unsigned char type_of(mode_t mode) {
 
 // libmyos/fdio.c's close drops the listing of the fd that goes.
 extern "C" void __myos_dir_closed(int fd) {
-	if (fd >= 0 && fd < MYOS_MAX_FDS && listings[fd].buf != nullptr)
+	if (fd >= 0 && fd < MYOS_MAX_FDS && (listings[fd].buf != nullptr || listings[fd].done))
 		drop(fd);
+}
+
+// A seek on a directory fd that has been read (the Seek sysdep): the next
+// read lists it afresh from the entry after d_off `offset`. False for any
+// other fd.
+extern "C" bool __myos_dir_seek(int fd, off_t offset, int whence) {
+	if (fd < 0 || fd >= MYOS_MAX_FDS || (listings[fd].buf == nullptr && !listings[fd].done))
+		return false;
+	if (whence != SEEK_SET || offset < 0)
+		return false;
+	drop(fd);
+	listings[fd].skip = offset;
+	return true;
 }
 
 namespace mlibc {
@@ -98,6 +118,10 @@ int Sysdeps<ReadEntries>::operator()(int handle, void *buffer, size_t max_size, 
 	if (handle < 0 || handle >= MYOS_MAX_FDS)
 		return EBADF;
 	Listing &l = listings[handle];
+	if (l.done) {
+		*bytes_read = 0;
+		return 0;
+	}
 	if (l.buf == nullptr) {
 		if (int e = list(handle); e)
 			return e;
@@ -110,6 +134,11 @@ int Sysdeps<ReadEntries>::operator()(int handle, void *buffer, size_t max_size, 
 		size_t n = l.pos - start;
 		size_t next = l.pos < l.len ? l.pos + 1 : l.pos;
 		if (n == 0 || (n <= 2 && l.buf[start] == '.' && (n == 1 || l.buf[start + 1] == '.'))) {
+			l.pos = next;
+			continue;
+		}
+		if (l.index < l.skip) {
+			l.index++;
 			l.pos = next;
 			continue;
 		}
@@ -138,8 +167,10 @@ int Sysdeps<ReadEntries>::operator()(int handle, void *buffer, size_t max_size, 
 		out += reclen;
 		l.pos = next;
 	}
-	if (out == 0)
+	if (out == 0) {
 		drop(handle);
+		l.done = true;
+	}
 	*bytes_read = out;
 	return 0;
 }

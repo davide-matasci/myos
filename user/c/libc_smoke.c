@@ -7,7 +7,8 @@
  * the interval timer and alarm (SIGALRM on time, a blocking read cut short,
  * the default action); the clocks (CLOCK_MONOTONIC and CLOCK_BOOTTIME
  * since boot, not moved by setting the wall clock, clock_getres, an unknown
- * clock refused).
+ * clock refused); on mlibc, getauxval over the kernel's auxiliary vector
+ * (the page size, the entry, AT_SECURE 0).
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
 #define _GNU_SOURCE /* CLOCK_BOOTTIME */
@@ -417,9 +418,32 @@ static int check_clocks(void) {
     return 0;
 }
 
+#if __has_include(<sys/auxv.h>)
+#include <sys/auxv.h>
+extern void _start(void);
+
+/* The auxiliary vector every image starts with (newlib has no getauxval). */
+static int check_auxv(void) {
+    errno = 0;
+    if (getauxval(AT_SECURE) != 0 || errno != 0) {
+        return fail("getauxval(AT_SECURE)");
+    }
+    if (getauxval(AT_PAGESZ) != 4096 || getauxval(AT_PHDR) == 0 || getauxval(AT_PHNUM) == 0
+        || getauxval(AT_ENTRY) != (unsigned long)&_start) {
+        return fail("getauxval: the page size, program headers or entry");
+    }
+    return 0;
+}
+#else
+static int check_auxv(void) {
+    return 0;
+}
+#endif
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
-        || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()) {
+        || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()
+        || check_auxv()) {
         return 1;
     }
     printf("[ OK ] libc\n");
