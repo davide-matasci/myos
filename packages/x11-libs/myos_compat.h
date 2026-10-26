@@ -1,4 +1,5 @@
-/* What the X libraries expect from libc headers that libgloss's lack.
+/* What the X libraries expect from libc headers that libgloss's lack (on
+ * mlibc, the guards find them there).
  * Compile-only (-include); not copied into the newlib sysroot. */
 #ifndef _MYOS_X11_COMPAT_H_
 #define _MYOS_X11_COMPAT_H_

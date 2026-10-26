@@ -12,9 +12,14 @@ The libraries an X client links, built from the X.Org release tarballs
 | libxcb | the protocol library, core only (no extension libraries) |
 | libX11 | Xlib, over libxcb; thread-safe from the start, no XKB |
 | libXext | the common extensions' client side: MIT-SHM (`XShm*`, on libgloss's System V shared memory), SHAPE, SYNC, ... |
+| libXrender | RENDER: Xft's text, cairo |
+| libXfixes, libXi, libXrandr, libXdamage, libXcomposite, libXinerama | XFIXES, XInput 2, RandR, DAMAGE, Composite, Xinerama: what GTK 3 asks of the server |
+| libXcursor | cursor themes and ARGB cursors (over RENDER) |
 
 All static, for the three arches, under `target/x11-libs-<arch>` as if
-installed at `/lib/x11` (libX11's data at `/lib/X11`). An X package builds
+installed at `/lib/x11` (libX11's data at `/lib/X11`), and the same
+against mlibc under `target/x11-libs-mlibc-<arch>`, for the mlibc ports
+(GTK's stack, issue #616; `packages/image-libs`' smoke draws through it). An X package builds
 against them with
 
 ```sh
@@ -29,7 +34,7 @@ and `PORT_DEPS="x11-libs"` in its `port.env`.
 Each component's own autoconf `configure`, in cross mode (`--build` the
 host, `--host=<arch>-unknown-elf`), out of tree in `target/x11-libs-build`.
 The compiler is a wrapper `build.sh` writes: clang against the newlib
-sysroot, and for a link `ld.lld` with crt0, libc and libgloss, the way the C
+sysroot (or mlibc's, for the second build), and for a link `ld.lld` with crt0, libc and libgloss, the way the C
 smokes link, so configure's link tests answer for myos. `myos_compat.h`
 (forced in with `-include`) and `include/netinet/tcp.h` fill in what the X
 code expects from libc headers libgloss lacks. libxcb asks pkg-config for
