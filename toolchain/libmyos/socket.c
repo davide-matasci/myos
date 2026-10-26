@@ -1327,13 +1327,11 @@ int __myos_listen(int sockfd, int backlog) {
     if (s->state == SOCK_LISTENING) {
         return 0; /* already listening: Linux takes the new backlog */
     }
-    if (s->bound.port == 0) {
-        errno = EINVAL;
-        return -1;
-    }
     {
         /* "announce addr!port": netd listens on that address (0.0.0.0: any
-         * IPv4 one; ::, any IPv6 one and IPv4 too unless v6only) and port. */
+         * IPv4 one; ::, any IPv6 one and IPv4 too unless v6only) and port;
+         * port 0 (a bind to it, or none) is a free one, named in netd's
+         * answer ("listening <port>"), which getsockname then reports. */
         int n = ep_cmd(cmd, sizeof cmd - sizeof " v6only", "announce ", &s->bound);
         if (n < 0) {
             errno = EINVAL;
@@ -1356,6 +1354,14 @@ int __myos_listen(int sockfd, int backlog) {
         for (;;) {
             if (listener_status(s, st, sizeof st) == 0 && strcmp(st, "cloned") != 0) {
                 if (strncmp(st, "listening", 9) == 0 || strncmp(st, "accepted", 8) == 0) {
+                    if (s->bound.port == 0) {
+                        long port = strncmp(st, "listening ", 10) == 0 ? strtol(st + 10, NULL, 10) : 0;
+                        if (port <= 0 || port > 65535) {
+                            errno = EADDRINUSE;
+                            return -1;
+                        }
+                        s->bound.port = htons((unsigned short)port);
+                    }
                     break;
                 }
                 errno = netd_errno(st);

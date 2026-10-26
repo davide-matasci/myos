@@ -265,7 +265,9 @@ server, nginx): `bind` takes any address, one of 127.0.0.0/8, ::1 or the
 host's own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname`
 reports it; `listen` writes `announce a.b.c.d!port` (a bare `announce
 port` is any IPv4 address; `announce ::!port` any IPv6 one and IPv4's too,
-`announce ::!port v6only` IPv6's alone), and netd's listener takes only
+`announce ::!port v6only` IPv6's alone; port 0, a `bind` to it or none,
+is a free one, which netd's answer names, `listening <port>`, and
+`getsockname` reports), and netd's listener takes only
 connections to that address, of that version: a fifth smoltcp patch
 (`listen-family`) makes a TCP listener or a UDP socket on no address take
 one IP version, so an IPv4 server and an IPv6-only one share a port

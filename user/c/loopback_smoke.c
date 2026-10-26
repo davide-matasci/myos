@@ -11,7 +11,9 @@
  * which leaves the bytes for the read); one bound to
  * 127.0.0.1 has that address (getsockname), accepts there and refuses a
  * connection to the host's address, and an address not the host's is not
- * bindable (EADDRNOTAVAIL). A connection whose peer hung up keeps its
+ * bindable (EADDRNOTAVAIL); one bound to port 0 listens on a free one,
+ * which getsockname names and a connection reaches. A connection whose
+ * peer hung up keeps its
  * conversation: the next connection accepted, on another listener, is
  * not seen on the old socket. An unconnected UDP
  * socket passed by exec: the new program reads a bare datagram with
@@ -318,6 +320,37 @@ static int tcp_bound(in_addr_t own) {
     return 0;
 }
 
+/* A TCP listener bound to port 0: netd picks the port, getsockname names
+ * it, and a connection to it is accepted. */
+static int tcp_ephemeral(void) {
+    struct sockaddr_in lo = addr_of(htonl(INADDR_LOOPBACK), 0);
+    struct sockaddr_in got;
+    char buf[8];
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    int s;
+    if (l < 0 || c < 0) {
+        return fail("tcp port 0 socket");
+    }
+    if (bind(l, (struct sockaddr *)&lo, sizeof lo) < 0 || listen(l, 4) < 0) {
+        return fail("tcp listen on port 0");
+    }
+    if (local_of(l, &got) < 0 || got.sin_port == 0 || got.sin_addr.s_addr != lo.sin_addr.s_addr) {
+        return fail("tcp getsockname of a port 0 listener");
+    }
+    if (connect(c, (struct sockaddr *)&got, sizeof got) < 0) {
+        return fail("tcp connect to the picked port");
+    }
+    s = accept(l, NULL, NULL);
+    if (s < 0 || write(c, "hi", 2) != 2 || read(s, buf, sizeof buf) != 2) {
+        return fail("tcp port 0 exchange");
+    }
+    close(c);
+    close(s);
+    close(l);
+    return 0;
+}
+
 /* The exec'd side of exec_udp: `fd` is the socket, bound to `port`. */
 static int exec_child(int fd, unsigned short port) {
     char buf[8];
@@ -417,7 +450,7 @@ int main(int argc, char **argv) {
         printf("[ OK ] loopback burst\n");
         return 0;
     }
-    if (interfaces(&own) || udp(own) || tcp() || tcp_hungup() || tcp_bound(own) || exec_udp()) {
+    if (interfaces(&own) || udp(own) || tcp() || tcp_hungup() || tcp_bound(own) || tcp_ephemeral() || exec_udp()) {
         return 1;
     }
     printf("[ OK ] loopback\n");

@@ -163,8 +163,9 @@ t -t netfs netconv $SMOKES/netconv_smoke
 # 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
 # unconnect, ECONNREFUSED after a datagram to a closed port, the host's
 # own address); TCP to a listener on any address (MSG_PEEK) and to one
-# bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's);
-# a UDP socket passed by exec (bare datagrams to read(), then the socket
+# bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's),
+# and to one on port 0 (the port netd picks, getsockname's); a UDP socket
+# passed by exec (bare datagrams to read(), then the socket
 # calls) (loopback_smoke.c).
 t -t netfs loopback $SMOKES/loopback_smoke
 # 200 short connections back to back over 127.0.0.1, then one that talks:

@@ -996,16 +996,18 @@ fn handle_ctl(
     // Plan 9 announce: start a TCP listener on this conv ("announce
     // [addr!]<port>[ v6only]": on that address, one of the host's, else on
     // any IPv4 one; `::` is any IPv6 one, and IPv4 too unless v6only).
+    // Port 0 is a free one, which the answer names ("listening <port>"):
+    // Linux's listen after a bind to port 0.
     if let Some(rest) = cmd.strip_prefix(b"announce") {
         let rest = trim(rest);
         let (rest, v6only) = match rest.strip_suffix(b"v6only") {
             Some(r) => (trim(r), true),
             None => (rest, false),
         };
-        let (addr, port) = match parse_endpoint(rest) {
-            Some((a, p)) if p != 0 => (a, p),
+        let (addr, mut port) = match parse_endpoint(rest) {
+            Some((a, p)) => (a, p),
             _ => match parse_port(rest) {
-                Some(p) if p != 0 => (ANY4, p),
+                Some(p) => (ANY4, p),
                 _ => {
                     reply(chan, REP_ERR, conv, -1, b"need port");
                     return;
@@ -1027,13 +1029,27 @@ fn handle_ctl(
                 // nginx used to start beside the first and take over its pid
                 // file, so `nginx -s quit` left the first one running.
                 // IPv4 and IPv6 apart: `0.0.0.0` beside `::` with v6only.
-                let taken = convs.iter().enumerate().any(|(j, c)| {
-                    j != i
-                        && matches!(c.kind, Kind::Tcp)
-                        && c.listen_port == port
-                        && overlaps(c.local, c.v6only, addr, v6only)
-                });
-                if taken {
+                let taken = |convs: &[Conv; MAX_CONV], port: u16| {
+                    convs.iter().enumerate().any(|(j, c)| {
+                        j != i
+                            && matches!(c.kind, Kind::Tcp)
+                            && c.listen_port == port
+                            && overlaps(c.local, c.v6only, addr, v6only)
+                    })
+                };
+                if port == 0 {
+                    match (0..u16::MAX - LOCAL_PORT_BASE)
+                        .map(|_| next_local_port(local_ports))
+                        .find(|&p| !taken(convs, p))
+                    {
+                        Some(p) => port = p,
+                        None => {
+                            reply(chan, REP_ERR, conv, -1, b"addrinuse");
+                            return;
+                        }
+                    }
+                }
+                if taken(convs, port) {
                     reply(chan, REP_ERR, conv, -1, b"addrinuse");
                     return;
                 }
@@ -1043,7 +1059,9 @@ fn handle_ctl(
                 let s = sockets.get_mut::<tcp::Socket>(h);
                 match listen_on(s, &convs[i]) {
                     Ok(()) => {
-                        reply(chan, REP_STATUS, conv, 0, b"listening");
+                        let mut st = String::new();
+                        let _ = write!(st, "listening {port}");
+                        reply(chan, REP_STATUS, conv, 0, st.as_bytes());
                     }
                     Err(_) => {
                         convs[i].local = ANY4;
