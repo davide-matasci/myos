@@ -343,7 +343,7 @@ t -t blk boot_disk boot_disk
 # tests run from: /proc/boot/ has them as Limine loaded them.
 boot_zstd() {
 	for m in initramfs tests; do
-		[ "$(od -An -tx1 -N4 /proc/boot/$m | tr -d ' ')" = 28b52ffd ] || { echo "$m: not a zstd frame"; return 1; }
+		[ "$(dd if=/proc/boot/$m bs=4 count=1 2> /dev/null | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] || { echo "$m: not a zstd frame"; return 1; }
 	done
 }
 t -t blk boot_zstd boot_zstd
