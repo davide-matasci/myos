@@ -48,7 +48,7 @@ build_arch() {
     -isystem "$ROOT/target/newlib-${arch}/${triple}/include"
   )
   if [[ "$libc" == mlibc ]]; then
-    cc=clang ar="$(command -v llvm-ar 2>/dev/null || echo ar)"
+    cc=clang
     out="$ROOT/target/pcre2-mlibc-${arch}" gen="$out/gen"
     # shellcheck disable=SC2207
     libcflags=($(myos_mlibc_cflags "$arch"))

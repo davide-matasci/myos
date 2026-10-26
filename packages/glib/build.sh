@@ -25,9 +25,11 @@ fi
 "$ROOT/toolchain/mlibc/build.sh"
 "$ROOT/packages/pcre2/build.sh"
 myos_ensure_llvm_bin
-AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
-RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
-STRIP_BIN="$(command -v llvm-strip 2>/dev/null || echo strip)"
+# The binutils: newlib's tool wrappers, <triple>-ar, -ranlib and -strip
+# (zlib's and PCRE2's builds make them), over LLVM's: the host's strip
+# does not know aarch64 and riscv64, and the CI image has LLVM's under
+# versioned names only.
+export PATH="$ROOT/target/newlib-bin:$PATH"
 for tool in meson ninja pkg-config; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "error: $tool not found (README.md)" >&2
@@ -73,6 +75,7 @@ build_arch() {
   local arch="$1"
   local build="$T/glib-build-$arch"
   local out="$T/glib-mlibc-${arch}"
+  local AR_BIN="${arch}-unknown-myos-ar" RANLIB_BIN="${arch}-unknown-myos-ranlib"
   local f
   echo "==> glib ($arch, mlibc)"
   rm -rf "$build" "$out"
@@ -121,7 +124,7 @@ build_arch() {
 [binaries]
 c = '${cc[0]}'
 ar = '$AR_BIN'
-strip = '$STRIP_BIN'
+strip = '${arch}-unknown-myos-strip'
 pkg-config = 'pkg-config'
 
 [built-in options]
@@ -156,7 +159,7 @@ EOC
   "${cc[@]}" -Wall -Werror "$HERE/smoke.c" -o "$T/glib-smoke-mlibc-${arch}-unknown-none" \
     $(PKG_CONFIG_LIBDIR="$out/lib/pkgconfig" pkg-config --cflags --libs --static gio-2.0)
   cp "$out/bin/gio" "$T/gio-mlibc-${arch}-unknown-none"
-  "$STRIP_BIN" "$T/glib-smoke-mlibc-${arch}-unknown-none" "$T/gio-mlibc-${arch}-unknown-none"
+  "${arch}-unknown-myos-strip" "$T/glib-smoke-mlibc-${arch}-unknown-none" "$T/gio-mlibc-${arch}-unknown-none"
   rm -rf "$build"
   echo "glib ($arch) -> $out"
 }
