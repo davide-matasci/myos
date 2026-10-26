@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Cross-build static libpcre2-8.a (Unicode, no JIT) for the three arches.
+# Cross-build static libpcre2-8.a (Unicode, no JIT) for the three arches,
+# against newlib (target/pcre2-<arch>, for nginx) and against mlibc
+# (target/pcre2-mlibc-<arch>, for packages/glib).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -15,7 +17,9 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
+"$ROOT/toolchain/mlibc/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
+myos_ensure_llvm_bin
 
 SRC="$ROOT/target/pcre2-src"
 
@@ -31,16 +35,26 @@ PCRE2_SRCS=(
   pcre2_valid_utf.c pcre2_xclass.c pcre2_chartables.c
 )
 
+# build_arch ARCH LIBC: target/pcre2-<arch> for newlib, pcre2-mlibc-<arch>
+# for mlibc.
 build_arch() {
-  local arch="$1"
+  local arch="$1" libc="$2"
   local triple="${arch}-unknown-myos"
-  local cc="${triple}-cc"
+  local cc="${triple}-cc" ar="${triple}-ar"
   local out="$ROOT/target/pcre2-${arch}"
   local gen="$out/gen"
-  local cflags=(
-    -ffreestanding -fPIC -O2 -g0 -std=gnu99
-    -nostdinc -isystem "$(clang -print-resource-dir)/include"
+  local libcflags=(
+    -ffreestanding -fPIC -nostdinc -isystem "$(clang -print-resource-dir)/include"
     -isystem "$ROOT/target/newlib-${arch}/${triple}/include"
+  )
+  if [[ "$libc" == mlibc ]]; then
+    cc=clang ar="$(command -v llvm-ar 2>/dev/null || echo ar)"
+    out="$ROOT/target/pcre2-mlibc-${arch}" gen="$out/gen"
+    # shellcheck disable=SC2207
+    libcflags=($(myos_mlibc_cflags "$arch"))
+  fi
+  local cflags=(
+    "${libcflags[@]}" -O2 -g0 -std=gnu99
     -I"$gen" -I"$SRC/src"
     -DHAVE_CONFIG_H -DPCRE2_CODE_UNIT_WIDTH=8 -DPCRE2_STATIC
     -DSUPPORT_PCRE2_8 -DSUPPORT_UNICODE
@@ -49,7 +63,7 @@ build_arch() {
   )
   local name o objs=()
 
-  echo "pcre2: building $arch with $cc"
+  echo "pcre2: building $arch ($libc)"
   rm -rf "$out"
   mkdir -p "$gen" "$out/obj" "$out/lib" "$out/include"
   # What configure would generate: the generic config and header, the
@@ -64,13 +78,14 @@ build_arch() {
     "$cc" "${cflags[@]}" -c "$src" -o "$o"
     objs+=("$o")
   done
-  "${triple}-ar" rcs "$out/lib/libpcre2-8.a" "${objs[@]}"
+  "$ar" rcs "$out/lib/libpcre2-8.a" "${objs[@]}"
   cp "$gen/pcre2.h" "$out/include/"
-  echo "pcre2 $arch: ${#objs[@]} objs -> $out/lib/libpcre2-8.a"
+  echo "pcre2 $arch ($libc): ${#objs[@]} objs -> $out/lib/libpcre2-8.a"
 }
 
-build_arch x86_64
-build_arch aarch64
-build_arch riscv64
+for arch in x86_64 aarch64 riscv64; do
+  build_arch "$arch" newlib
+  build_arch "$arch" mlibc
+done
 echo "$(myos_pcre2_version_hash)" >"$MYOS_PCRE2_VERSION"
 echo "pcre2 build ok"
