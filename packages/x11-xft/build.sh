@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Cross-build the client-side font stack for the three arches: expat,
-# FreeType, fontconfig, libXrender and libXft, static, each with its own
-# autoconf configure in cross mode, on top of a copy of packages/x11-libs'
-# stage: target/x11-xft-<arch> holds both, as if at /lib/x11, for the X
-# packages drawing text with Xft (dwm). fontconfig reads
+# FreeType, fontconfig and libXft (libXrender is x11-libs'), static, each
+# with its own autoconf configure in cross mode, on top of a copy of
+# packages/x11-libs' stage, against newlib and against mlibc:
+# target/x11-xft-<arch> (newlib) and x11-xft-mlibc-<arch> hold both, as if
+# at /lib/x11, for the X packages drawing text with Xft (dwm). fontconfig reads
 # /lib/x11/etc/fonts/fonts.conf (fonts.conf here: the fonts in /lib/fonts,
 # the x11-fonts package; the cache in /tmp). Then fc-match, fc-list and the
 # boot test xft_smoke.
@@ -22,6 +23,7 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
+"$ROOT/toolchain/mlibc/build.sh"
 "$ROOT/packages/x11-libs/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -37,10 +39,10 @@ build_triple="$(sh "$SRC/libXft-$LIBXFT_VERSION/config.guess")"
 build_one() {
   local arch="$1" pkg="$2"
   shift 2
-  local dir="$WORK/$arch/$pkg"
-  echo "==> $pkg ($arch)"
+  local dir="$WORK/$libc-$arch/$pkg"
+  echo "==> $pkg ($arch, $libc)"
   rm -rf "$dir"
-  mkdir -p "$WORK/$arch"
+  mkdir -p "$WORK/$libc-$arch"
   cp -a "$SRC/$pkg" "$dir"
   # This package's patches for it: <name>-*.myos.patch.
   local p
@@ -59,14 +61,19 @@ build_one() {
   find "$STAGE" -name '*.la' -delete
 }
 
+# build_arch ARCH LIBC: the stage of LIBC, newlib or mlibc.
 build_arch() {
-  local arch="$1"
+  local arch="$1" libc="$2" x11="$ROOT/target/x11-libs-${arch}"
   STAGE="$ROOT/target/x11-xft-${arch}"
-  local cc="$WORK/$arch-cc"
-  rm -rf "$STAGE" "$WORK/$arch"
-  mkdir -p "$WORK/$arch"
-  cp -a "$ROOT/target/x11-libs-${arch}" "$STAGE"
-  myos_write_cross_cc "$arch" "$cc" -I"$X11/include" -include "$X11/myos_compat.h" \
+  if [[ "$libc" == mlibc ]]; then
+    STAGE="$ROOT/target/x11-xft-mlibc-${arch}" x11="$ROOT/target/x11-libs-mlibc-${arch}"
+  fi
+  local work="$WORK/$libc-$arch"
+  local cc="$work-cc"
+  rm -rf "$STAGE" "$work"
+  mkdir -p "$work"
+  cp -a "$x11" "$STAGE"
+  PORT_LIBC="$libc" myos_write_cross_cc "$arch" "$cc" -I"$X11/include" -include "$X11/myos_compat.h" \
     -include "$HERE/myos_compat.h"
 
   export CC="$cc" CC_FOR_BUILD=gcc CC_BUILD=gcc CFLAGS="-O2"
@@ -93,10 +100,13 @@ build_arch() {
     --disable-docs --disable-nls --disable-cache-build \
     --sysconfdir="$PREFIX/etc" --localstatedir=/tmp \
     --with-default-fonts=/lib/fonts --with-cache-dir=/tmp/fontconfig
-  build_one "$arch" "libXrender-$LIBXRENDER_VERSION"
   build_one "$arch" "libXft-$LIBXFT_VERSION"
+  if [[ "$libc" == mlibc ]]; then
+    echo "font stack (mlibc) -> $STAGE"
+    return
+  fi
 
-  local fcdir="$WORK/$arch/fontconfig-$FONTCONFIG_VERSION"
+  local fcdir="$work/fontconfig-$FONTCONFIG_VERSION"
   cp "$fcdir/fc-match/fc-match" "$ROOT/target/fc-match-${arch}-unknown-none"
   cp "$fcdir/fc-list/fc-list" "$ROOT/target/fc-list-${arch}-unknown-none"
   "$cc" -O2 -Wall -Wextra -I"$STAGE$PREFIX/include" -I"$STAGE$PREFIX/include/freetype2" \
@@ -106,7 +116,8 @@ build_arch() {
 }
 
 for arch in x86_64 aarch64 riscv64; do
-  build_arch "$arch"
+  build_arch "$arch" newlib
+  build_arch "$arch" mlibc
 done
 
 myos_x11_xft_version_hash >"$MYOS_X11_XFT_VERSION"

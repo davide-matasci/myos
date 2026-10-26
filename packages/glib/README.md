@@ -6,8 +6,7 @@ stack (issue #616). One prefix per arch, `target/glib-mlibc-<arch>`
 (`lib/` with the archives and their pkg-config files, `include/`), holds
 GLib and what it links that mlibc lacks:
 
-- zlib, compiled from `ports/zlib`'s pinned source (that port's build is
-  newlib's);
+- zlib, `ports/zlib`'s mlibc build;
 - PCRE2, `packages/pcre2`'s mlibc build, for `GRegex`;
 - libffi, for GObject's generic marshaller (a signal without a
   marshaller of its own); its closures map their trampolines writable and

@@ -6,7 +6,9 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
-/* lstat (fontconfig's directory scan). */
+/* lstat (fontconfig's directory scan): newlib keeps it there. */
+#if __has_include(<sys/myos_extra.h>)
 #include <sys/myos_extra.h>
+#endif
 
 #endif

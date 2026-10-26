@@ -17,14 +17,11 @@ run-myos x11-apps -root -event keyboard # or, on a server without a window manag
 | Component | Pin | |
 |-----------|-----|-|
 | xev | `versions.env` (release tarball) | MIT/X Consortium |
-| libXext, libXrandr | `versions.env` (release tarballs) | MIT-Open-Group / HPND-style |
-| the X libraries (`packages/x11-xft`, `packages/x11-libs`) | their pins | |
+| the X libraries (`packages/x11-xft`, `packages/x11-libs`: libXext and libXrandr among them) | their pins | |
 
-Upstream sources, unpatched, each with its own autoconf `configure` in
-cross mode (`build.sh`), static, on top of a copy of the font stack's
-stage (libX11, xcb and libXrender, which libXrandr builds on):
-`target/x11-apps-<arch>`. `malloc(0)` is not `NULL` on newlib, as for
-libX11.
+Upstream sources, unpatched, with xev's own autoconf `configure` in cross
+mode (`build.sh`), static, on top of a copy of the font stack's stage:
+`target/x11-apps-<arch>`.
 
 ## The test
 

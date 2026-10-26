@@ -70,10 +70,6 @@ build_arch() {
   export CPPFLAGS="-I$STAGE$PREFIX/include" LDFLAGS="-L$STAGE$PREFIX/lib"
   unset PKG_CONFIG_PATH
 
-  # newlib's malloc(0) is not NULL (as for libX11, packages/x11-libs).
-  build_one "$arch" "libXext-$LIBXEXT_VERSION" --disable-specs --disable-malloc0returnsnull \
-    --without-xmlto --without-fop --without-xsltproc
-  build_one "$arch" "libXrandr-$LIBXRANDR_VERSION" --disable-malloc0returnsnull
   build_one "$arch" "xev-$XEV_VERSION"
   cp "$WORK/$arch/xev-$XEV_VERSION/xev" "$ROOT/target/xev-${arch}-unknown-none"
 }

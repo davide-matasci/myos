@@ -54,7 +54,5 @@ fetch() {
   fi
 }
 
-fetch libXext "$LIBXEXT_VERSION" "$LIBXEXT_SHA256" lib
-fetch libXrandr "$LIBXRANDR_VERSION" "$LIBXRANDR_SHA256" lib
 fetch xev "$XEV_VERSION" "$XEV_SHA256" app
 echo "x11-apps sources -> $SRC"

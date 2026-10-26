@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Cross-build the X client libraries for the three arches: xorgproto, xtrans,
 # libXau, xcb-proto, libxcb (core only, no extension libraries), libX11
-# (thread-safe from the start, no XKB) and libXext (MIT-SHM's XShm*
-# among its extensions), static, each with its own autoconf configure in
-# cross mode. Installed under target/x11-libs-<arch> as if at /lib/x11 (libX11's
-# data at /lib/X11), the way the X packages find them:
+# (thread-safe from the start, no XKB), libXext (MIT-SHM's XShm* among its
+# extensions) and the other extensions' libraries (Xrender, Xfixes, Xi,
+# Xrandr, Xdamage, Xcomposite, Xcursor, Xinerama), static, each with its
+# own autoconf configure in cross mode, against newlib and against mlibc.
+# Installed under target/x11-libs-<arch> (newlib) and x11-libs-mlibc-<arch>
+# as if at /lib/x11 (libX11's data at /lib/X11), the way the X packages
+# find them:
 #
 #   PKG_CONFIG_SYSROOT_DIR=target/x11-libs-<arch>
 #   PKG_CONFIG_LIBDIR=<that>/lib/x11/lib/pkgconfig:<that>/lib/x11/share/pkgconfig
@@ -25,6 +28,7 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
+"$ROOT/toolchain/mlibc/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 SRC="$ROOT/target/x11-libs-src"
@@ -41,7 +45,7 @@ NM_BIN="$(command -v llvm-nm 2>/dev/null || echo nm)"
 build_one() {
   local arch="$1" pkg="$2"
   shift 2
-  local dir="$WORK/$arch/$pkg"
+  local dir="$WORK/$libc-$arch/$pkg"
   echo "==> $pkg ($arch)"
   rm -rf "$dir"
   mkdir -p "$dir"
@@ -58,15 +62,18 @@ build_one() {
   find "$STAGE" -name '*.la' -delete
 }
 
+# build_arch ARCH LIBC: the stage of LIBC, newlib or mlibc.
 build_arch() {
-  local arch="$1"
+  local arch="$1" libc="$2"
   STAGE="$ROOT/target/x11-libs-${arch}"
-  local cc="$WORK/$arch-cc"
-  rm -rf "$STAGE" "$WORK/$arch"
-  mkdir -p "$STAGE" "$WORK/$arch"
+  [[ "$libc" == mlibc ]] && STAGE="$ROOT/target/x11-libs-mlibc-${arch}"
+  local work="$WORK/$libc-$arch"
+  local cc="$work-cc"
+  rm -rf "$STAGE" "$work"
+  mkdir -p "$STAGE" "$work"
   # The compiler (scripts/myos-c-userspace-lib.sh), with the headers the
   # X code expects from libc and libgloss lacks.
-  myos_write_cross_cc "$arch" "$cc" -I"$HERE/include" -include "$HERE/myos_compat.h"
+  PORT_LIBC="$libc" myos_write_cross_cc "$arch" "$cc" -I"$HERE/include" -include "$HERE/myos_compat.h"
 
   export CC="$cc" CC_FOR_BUILD=gcc CFLAGS="-O2" AR="$AR_BIN" RANLIB="$RANLIB_BIN" NM="$NM_BIN"
   export PYTHON=python3
@@ -100,15 +107,30 @@ build_arch() {
     --disable-malloc0returnsnull --without-xmlto --without-fop --without-xsltproc
   build_one "$arch" "libXext-$LIBXEXT_VERSION" --disable-specs --disable-malloc0returnsnull \
     --without-xmlto --without-fop
+  # mlibc's malloc(0) is not NULL either.
+  local m0=--disable-malloc0returnsnull
+  build_one "$arch" "libXrender-$LIBXRENDER_VERSION" "$m0"
+  build_one "$arch" "libXfixes-$LIBXFIXES_VERSION"
+  build_one "$arch" "libXi-$LIBXI_VERSION" --disable-specs "$m0" --without-xmlto --without-fop \
+    --without-asciidoc
+  build_one "$arch" "libXrandr-$LIBXRANDR_VERSION" "$m0"
+  build_one "$arch" "libXdamage-$LIBXDAMAGE_VERSION"
+  build_one "$arch" "libXcomposite-$LIBXCOMPOSITE_VERSION" --without-xmlto
+  # The cursor themes' paths are the X packages' own (none ship one yet).
+  build_one "$arch" "libXcursor-$LIBXCURSOR_VERSION" --with-icondir="$PREFIX/share/icons"
+  build_one "$arch" "libXinerama-$LIBXINERAMA_VERSION" "$m0"
 
-  "$cc" -O2 -Wall -Wextra -I"$STAGE$PREFIX/include" "$HERE/x11_smoke.c" \
-    -o "$ROOT/target/x11-smoke-${arch}-unknown-none" \
-    -L"$STAGE$PREFIX/lib" -lX11 -lxcb -lXau
-  echo "x11 libraries -> $STAGE"
+  if [[ "$libc" == newlib ]]; then
+    "$cc" -O2 -Wall -Wextra -I"$STAGE$PREFIX/include" "$HERE/x11_smoke.c" \
+      -o "$ROOT/target/x11-smoke-${arch}-unknown-none" \
+      -L"$STAGE$PREFIX/lib" -lX11 -lxcb -lXau
+  fi
+  echo "x11 libraries ($libc) -> $STAGE"
 }
 
 for arch in x86_64 aarch64 riscv64; do
-  build_arch "$arch"
+  build_arch "$arch" newlib
+  build_arch "$arch" mlibc
 done
 
 myos_x11_libs_version_hash >"$MYOS_X11_LIBS_VERSION"

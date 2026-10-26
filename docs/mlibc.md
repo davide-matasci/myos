@@ -145,7 +145,10 @@ its README says what of CPython's build the libc shaped) and the
 libraries it links: LibreSSL and ncurses (built for both libcs,
 `target/<name>-mlibc-<arch>` the mlibc build), SQLite and libedit; and
 GLib (`packages/glib`, with PCRE2's mlibc build and the libraries mlibc
-lacks: GNU libiconv for `iconv`, proxy-libintl for `gettext`); tcc's own
+lacks: GNU libiconv for `iconv`, proxy-libintl for `gettext`), the X
+client libraries and the font stack (`packages/x11-libs` and `x11-xft`,
+built for both libcs), zlib (`ports/zlib`, both) and the image libraries
+(`packages/image-libs`); tcc's own
 sysroot is newlib's. A fork
 while another thread holds one of mlibc's own locks (the allocator's,
 stdio's) hangs the child in its first `malloc` or `fprintf`: mlibc's fork
