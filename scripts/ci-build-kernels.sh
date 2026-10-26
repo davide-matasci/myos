@@ -292,6 +292,15 @@ HELLO_OK_ELFS=(
   target/usb_hid-x86_64-unknown-none
   target/usb_hid-aarch64-unknown-none-softfloat
   target/usb_hid-riscv64imac-unknown-none-elf
+  target/sound-x86_64-unknown-none
+  target/sound-aarch64-unknown-none-softfloat
+  target/sound-riscv64imac-unknown-none-elf
+  target/virtio_sound-x86_64-unknown-none
+  target/virtio_sound-aarch64-unknown-none-softfloat
+  target/virtio_sound-riscv64imac-unknown-none-elf
+  target/usb_audio-x86_64-unknown-none
+  target/usb_audio-aarch64-unknown-none-softfloat
+  target/usb_audio-riscv64imac-unknown-none-elf
   target/usbdev-x86_64-unknown-none
   target/usbdev-aarch64-unknown-none-softfloat
   target/usbdev-riscv64imac-unknown-none-elf

@@ -160,6 +160,9 @@ static HCD_OPS: UsbHcdOps = UsbHcdOps {
     transfer_start,
     transfer_take,
     clear_halt,
+    endpoints_change,
+    isoch_queue,
+    isoch_reap,
 };
 
 unsafe extern "C" fn ports(_ctrl: usize) -> u8 {
@@ -293,6 +296,28 @@ unsafe extern "C" fn device_configure(_ctrl: usize, hdev: u32, eps: *const UsbEn
         Ok(()) => 0,
         Err(e) => e,
     }
+}
+
+unsafe extern "C" fn endpoints_change(_ctrl: usize, hdev: u32, add: *const UsbEndpoint, n_add: usize, drop: *const u8, n_drop: usize) -> i32 {
+    if (n_add != 0 && add.is_null()) || (n_drop != 0 && drop.is_null()) {
+        return USB_EIO;
+    }
+    let add: &[UsbEndpoint] = if n_add == 0 { &[] } else { unsafe { core::slice::from_raw_parts(add, n_add) } };
+    let drop: &[u8] = if n_drop == 0 { &[] } else { unsafe { core::slice::from_raw_parts(drop, n_drop) } };
+    match dev::endpoints_change(hdev, add, drop) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// Isochronous transfers are not driven yet: they need a channel re-armed
+/// every frame from the interrupt (issue #608).
+unsafe extern "C" fn isoch_queue(_ctrl: usize, _hdev: u32, _endpoint: u8, _data: *const u8, _lens: *const u16, _n: usize) -> i32 {
+    USB_EIO
+}
+
+unsafe extern "C" fn isoch_reap(_ctrl: usize, _hdev: u32, _endpoint: u8) -> i32 {
+    USB_EIO
 }
 
 /// A hub needs nothing of the controller: its children's transfers name

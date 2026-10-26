@@ -131,6 +131,20 @@ fn spawn_netd() {
     }
 }
 
+/// The sound server (`docs/sound.md`): the sound cards' streams, for the
+/// programs that play and record through its socket.
+fn spawn_sndd() {
+    match fork() {
+        Some(0) => {
+            exec(b"/bin/custom/sndd", &[b"sndd"]);
+            status_fail("sndd exec failed");
+            exit();
+        }
+        Some(_) => {}
+        None => status_fail("sndd fork failed"),
+    }
+}
+
 /// The boot script (`/etc/rc`, docs/install.md), not waited for: the login
 /// prompt comes at once, and the script's last line says when it is over.
 /// Its `exec` rule makes it root (etc/policy).
@@ -237,6 +251,7 @@ fn start() -> ! {
     smoke_fork_exec_ok();
     mount_all();
     spawn_netd();
+    spawn_sndd();
     spawn_rc();
     spawn_getty_loop();
 }

@@ -21,6 +21,7 @@ mod ports;
 mod wifi_net;
 mod wifi_sim;
 mod release;
+mod sound;
 mod test_www;
 
 use boot_test::{Board, Mode, Selection};
@@ -478,14 +479,15 @@ pub struct UsbBus {
     pub port: &'static str,
 }
 
-/// The virt boards' `qemu-xhci`: the devices on root ports of their own.
+/// The virt boards' `qemu-xhci`: the devices on root ports of their own
+/// (five USB 2 ports, the speaker on the fifth, `sound::add`).
 pub const XHCI_USB: UsbBus = UsbBus { name: "xhci.0", port: "" };
 /// The Raspberry Pi 3's DWC2 has one root port: everything hangs from the
 /// hub on it.
 pub const RPI3_USB: UsbBus = UsbBus { name: "usb-bus.0", port: "1." };
 
 fn add_usb(cmd: &mut Command) {
-    cmd.arg("-device").arg("qemu-xhci,id=xhci");
+    cmd.arg("-device").arg("qemu-xhci,id=xhci,p2=5,p3=5");
     add_usb_devices(cmd, XHCI_USB);
 }
 
@@ -681,6 +683,7 @@ fn run_bios(bios_path: &str) {
     add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, false);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -718,6 +721,7 @@ fn run_uefi(uefi_path: &str) {
     add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, false);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -823,6 +827,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -885,6 +890,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -922,11 +928,19 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
     let disk = target.join(format!("boot-test-{name}.img"));
     limine_image::copy_sparse(image, &disk);
+    sound::set_test_name(name);
     let linux = linux_compat_enabled();
     let slow = name.starts_with("riscv64");
     let outcome = boot_test::run(spawn(&disk), Board::Virt, &mode, linux, slow);
     let mut ok = outcome.ok;
     let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
+    // What the guest played is in the WAV file the boot's QEMU wrote.
+    if ok && ran("sound_play") {
+        ok = sound::check_played(ran("sound_mix"));
+    }
+    if ok && ran("sound_usb") {
+        ok = sound::check_usb_played();
+    }
     // The installed disk is kept before the next boot makes a new scratch disk.
     let installed = target.join(format!("installed-{name}.img"));
     if ok && ran("boot_install_local") {
@@ -1019,6 +1033,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     add_virtio_blk_aarch64(&mut cmd);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, ci);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
@@ -1444,6 +1459,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     add_virtio_blk_riscv64(&mut cmd);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, ci);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(

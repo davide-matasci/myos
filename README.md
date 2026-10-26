@@ -14,12 +14,13 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Security** — no superuser: every process runs for a user in a domain, every file has a label its path gives it, and `/etc/policy` says what each domain may do to each label (deny by default, SELinux-like); per-process namespaces narrow what a program can name, Plan 9 style (`sec ns`); passwords are checked by the kernel (`docs/security.md`)
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI USB with hubs, sticks, mice and keyboards, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
+- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI USB with hubs, sticks, mice, keyboards and speakers, virtio-sound, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
 - **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16/FAT32, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
 - **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`, then `run-myos coreutils:ls`)
 - **Networking** — virtio-net kernel module (RX interrupts: MSI-X on every arch, through the GICv3 ITS or a GICv2m frame on aarch64 and the AIA's IMSIC on riscv64; INTx on a board without one) + smoltcp in userspace; `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open or WPA2-PSK network carrying netd's traffic, over the test boots' simulated radio, Intel's AX201 or AX200 through `/dev/pci` (a port of OpenBSD's iwx), a MediaTek MT7601U or MT7612U USB adapter through `/dev/usb` (ports of OpenBSD's mtw and Linux's mt76x2u) or the Raspberry Pi's Broadcom CYW43455 or CYW43438 through `/dev/sdio` (a port of OpenBSD's bwfm, the firmware doing the 802.11 work), untried on the hardware, `docs/wifi.md`, issues #495 and #547); an IOMMU (Intel VT-d or AMD-Vi, Arm SMMUv3, the RISC-V IOMMU) confines a userspace driver's device to its buffers, and on x86_64 its interrupts to its own vector (interrupt remapping; `docs/pci-acpi-smp.md`)
+- **Sound** — `/dev/sound`, one `ctl` and `data` per PCM stream of every card (the `sound` core; cards from virtio-sound and USB Audio speakers), mixed by the sound server `sndd` for every program at once; `play` plays a tone or a WAV file, `rec` records one (`docs/sound.md`)
 - **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
 - **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
 - **Power** — `poweroff`, `reboot` and `halt` stop the processes, unmount the disks and power off or reset the board: ACPI S5 and the reset register on a PC, PSCI on AArch64, the SBI on RISC-V (`docs/power.md`)
@@ -126,7 +127,7 @@ Boot (Limine)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, rpi_firmware, virtio_blk, virtio_scsi, nvme, sdmmc, usb, xhci, dwc2, usb_hub, usb_storage, usb_hid, usbdev, virtio_net, tap, netfs, fat, ext2
+            │     acpi, rpi_firmware, virtio_blk, virtio_scsi, nvme, sdmmc, sound, virtio_sound, usb, xhci, dwc2, usb_hub, usb_storage, usb_hid, usb_audio, usbdev, virtio_net, tap, netfs, fat, ext2
             │     (pcidev and pl061 ship for `insmod`, not loaded at boot)
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
@@ -188,6 +189,9 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |
 | `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
+| `modules/usb_audio` | USB Audio Class 1 speakers: a playback stream of the sound core over an isochronous OUT endpoint (`docs/usb.md`, `docs/sound.md`) |
+| `modules/sound` | The sound core: the cards' PCM streams as `/dev/sound/N/{ctl,data}`, their buffers, the `sound` service the card drivers register with (`docs/sound.md`) |
+| `modules/virtio_sound` | virtio-sound cards (PCI or MMIO): their playback and capture streams, for the sound core |
 | `modules/usbdev` | Userspace USB drivers: `/dev/usb`, the interfaces no kernel driver takes, their control, bulk and interrupt transfers as files (`docs/usb.md`) |
 | `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt, confined by the IOMMU where the board has one (`docs/pci-acpi-smp.md`); shipped for `insmod /lib/modules/pcidev`, not loaded at boot |
 | `modules/pl061` | The ARM PL061 GPIO controller's lines as an interrupt domain (`docs/pci-acpi-smp.md`, "Interrupt domains"); shipped for `insmod /lib/modules/pl061`, not loaded at boot |
@@ -199,10 +203,11 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/virtio_net` | virtio-net on `virtio-drivers` (virtio-pci or virtio-mmio): `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
 | `modules/netfs` | Plan 9 `/net` + `/dev/netd/data` channel to userspace netd; `/net/unix` local connections |
 | `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
-| `user/init` | PID1: smoke fork/`/ok`, `mount -a`, fork `/netd` and the boot script `/etc/rc` (`etc/rc`, in the background), a getty on `ttyS0` and each tty `/etc/ttys` names, respawned |
+| `user/init` | PID1: smoke fork/`/ok`, `mount -a`, fork `/netd`, the sound server `sndd` and the boot script `/etc/rc` (`etc/rc`, in the background), a getty on `ttyS0` and each tty `/etc/ttys` names, respawned |
 | `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
 | `user/ok` | Slim always-on boot smoke (alloc/user/fat/proc) |
 | `user/heap` | CI-only heavy smoke (std/C/sbase/ripgrep/tcc/bigalloc; uutils and git in the full mode) |
+| `user/sndd` | The sound server: mixes what the programs play (the `sndd` local socket) into each playback stream, converts the capture streams for whoever records (`docs/sound.md`) |
 | `user/netd` | Userspace smoltcp over `/dev/net0/data` and the virtual NICs of `/dev/tap` |
 | `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
 | `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |

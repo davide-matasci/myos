@@ -122,6 +122,9 @@ static HCD_OPS: UsbHcdOps = UsbHcdOps {
     transfer_start,
     transfer_take,
     clear_halt,
+    endpoints_change,
+    isoch_queue,
+    isoch_reap,
 };
 
 /// `dev::with_device` for a hook: the device's lock held for `f`, and
@@ -229,6 +232,30 @@ unsafe extern "C" fn device_configure(ctrl: usize, hdev: u32, eps: *const UsbEnd
     }
     let eps: &[UsbEndpoint] = if n == 0 { &[] } else { unsafe { core::slice::from_raw_parts(eps, n) } };
     on_device(ctrl, hdev, |c, s, d| result(dev::device_configure(c, s, d, eps)))
+}
+
+unsafe extern "C" fn endpoints_change(ctrl: usize, hdev: u32, add: *const UsbEndpoint, n_add: usize, drop: *const u8, n_drop: usize) -> i32 {
+    if (n_add != 0 && add.is_null()) || (n_drop != 0 && drop.is_null()) {
+        return USB_EIO;
+    }
+    let add: &[UsbEndpoint] = if n_add == 0 { &[] } else { unsafe { core::slice::from_raw_parts(add, n_add) } };
+    let drop: &[u8] = if n_drop == 0 { &[] } else { unsafe { core::slice::from_raw_parts(drop, n_drop) } };
+    on_device(ctrl, hdev, |c, s, d| result(dev::endpoints_change(c, s, d, add, drop)))
+}
+
+unsafe extern "C" fn isoch_queue(ctrl: usize, hdev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32 {
+    if data.is_null() || lens.is_null() || n == 0 {
+        return USB_EIO;
+    }
+    // SAFETY: the core checked the lengths; the packets are back to back.
+    let lens = unsafe { core::slice::from_raw_parts(lens, n) };
+    let total = lens.iter().map(|&l| usize::from(l)).sum();
+    let data = unsafe { core::slice::from_raw_parts(data, total) };
+    on_device(ctrl, hdev, |c, s, d| dev::isoch_queue(c, s, d, endpoint, data, lens))
+}
+
+unsafe extern "C" fn isoch_reap(ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
+    on_device(ctrl, hdev, |_, s, d| dev::isoch_reap(s, d, endpoint))
 }
 
 unsafe extern "C" fn device_hub(ctrl: usize, hdev: u32, ports: u8, tt_think: u8, multi_tt: u8) -> i32 {
