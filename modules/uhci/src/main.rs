@@ -20,7 +20,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, DmaDevice, KernelApi, Lock, StrRef, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE, USB_EIO,
+    ABI_VERSION, ApiCell, DmaDevice, KernelApi, SleepLock, StrRef, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE, USB_EIO,
     USB_EPENDING, USB_HCD_VERSION, USB_ISOCH_MAX, UsbCoreOps, UsbDevicePath, UsbEndpoint, UsbHcdOps,
     UsbPortStatus, status_fail, status_ok,
 };
@@ -39,7 +39,9 @@ const MAX_ISO: usize = 8;
 
 pub static API: ApiCell = ApiCell::new();
 static CORE: AtomicPtr<UsbCoreOps> = AtomicPtr::new(core::ptr::null_mut());
-static CONTROLLERS: [Lock<Option<&'static Controller>>; hc::MAX_CTRL] = [const { Lock::new(None) }; hc::MAX_CTRL];
+/// The controllers, each set once (and read from the interrupt handler:
+/// no lock, which the code it interrupted might hold).
+static CONTROLLERS: [AtomicPtr<Controller>; hc::MAX_CTRL] = [const { AtomicPtr::new(core::ptr::null_mut()) }; hc::MAX_CTRL];
 /// The controllers' memory: set once each, never freed.
 static mut CELLS: [Option<Controller>; hc::MAX_CTRL] = [const { None }; hc::MAX_CTRL];
 
@@ -53,7 +55,8 @@ fn core() -> &'static UsbCoreOps {
 }
 
 fn controller(ctrl: usize) -> Option<&'static Controller> {
-    *CONTROLLERS.get(ctrl)?.lock()
+    // SAFETY: a controller's cell, written once before it is published.
+    unsafe { CONTROLLERS.get(ctrl)?.load(Ordering::Acquire).as_ref() }
 }
 
 pub fn sleep_ms(ms: u64) {
@@ -134,14 +137,16 @@ struct Device {
 
 struct Slot {
     gone: AtomicBool,
-    dev: Lock<Option<Device>>,
+    /// Held across schedule changes that wait (a QH unlinked): its waiters
+    /// sleep.
+    dev: SleepLock<Option<Device>>,
 }
 
 static DEVICES: [[Slot; MAX_DEVICES]; hc::MAX_CTRL] =
-    [const { [const { Slot { gone: AtomicBool::new(false), dev: Lock::new(None) } }; MAX_DEVICES] }; hc::MAX_CTRL];
+    [const { [const { Slot { gone: AtomicBool::new(false), dev: SleepLock::new(&API, None) } }; MAX_DEVICES] }; hc::MAX_CTRL];
 
 /// The isochronous endpoints' packet rings, `(controller, device, endpoint)`.
-static ISOS: [Lock<Option<(usize, u32, u8, Iso)>>; MAX_ISO] = [const { Lock::new(None) }; MAX_ISO];
+static ISOS: [SleepLock<Option<(usize, u32, u8, Iso)>>; MAX_ISO] = [const { SleepLock::new(&API, None) }; MAX_ISO];
 
 fn slot(ctrl: usize, hdev: u32) -> Option<&'static Slot> {
     if hdev == 0 {
@@ -759,7 +764,7 @@ fn probe(api: &KernelApi) -> usize {
         if (0..hc::MAX_CTRL).any(|i| controller(i).is_some_and(|c| c.pci == (bus, slot, func))) {
             continue;
         }
-        let Some(index) = CONTROLLERS.iter().position(|c| c.lock().is_none()) else {
+        let Some(index) = CONTROLLERS.iter().position(|c| c.load(Ordering::Acquire).is_null()) else {
             break;
         };
         let Some(io) = api.pci_io_map(bus, slot, func, USBBASE_BAR).filter(|io| io.size() >= 0x14) else {
@@ -777,7 +782,7 @@ fn probe(api: &KernelApi) -> usize {
                     cells[index] = Some(c);
                     cells[index].as_ref().unwrap()
                 };
-                *CONTROLLERS[index].lock() = Some(c);
+                CONTROLLERS[index].store((c as *const Controller).cast_mut(), Ordering::Release);
                 let mut msix = 0u16;
                 let rc = api.pci_irq_enable(bus, slot, func, "uhci", irq_handler, index as *mut c_void, &mut msix);
                 c.irq_on.store(rc == 0, Ordering::Release);
