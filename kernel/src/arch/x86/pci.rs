@@ -92,6 +92,18 @@ pub fn mmio_assign() -> u64 {
     MMIO_ASSIGN
 }
 
+/// Where an I/O BAR at port `addr` is reached: the port itself (`in`,
+/// `out`).
+pub fn io_base(addr: u32, size: u32) -> Option<usize> {
+    (u64::from(addr) + u64::from(size) <= 0x1_0000).then_some(addr as usize)
+}
+
+/// An I/O BAR the firmware left unassigned: a PC's firmware assigns them
+/// all, and the kernel has no free ports to hand out.
+pub fn io_assign(_size: u32) -> Option<u32> {
+    None
+}
+
 /// The CPU address of bus address `addr` (a BAR's): the same on a PC.
 pub fn bus_to_cpu(addr: u64) -> u64 {
     addr

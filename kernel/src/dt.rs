@@ -328,6 +328,7 @@ pub fn pci_host() -> Option<PciHost> {
 pub const PCI_SPACE_MASK: u32 = 0x0300_0000;
 pub const PCI_SPACE_MEM32: u32 = 0x0200_0000;
 pub const PCI_SPACE_MEM64: u32 = 0x0300_0000;
+pub const PCI_SPACE_IO: u32 = 0x0100_0000;
 
 /// A window of a PCI bus: CPU addresses `[cpu, cpu + size)` are bus
 /// addresses `[pci, pci + size)` (equal on QEMU `virt`; a Raspberry Pi 4's
@@ -339,8 +340,9 @@ pub struct PciWindow {
     pub size: u64,
 }
 
-/// The first MMIO window of the host bridge whose space flags equal
-/// `space` (`PCI_SPACE_MEM32` / `PCI_SPACE_MEM64`).
+/// The first window of the host bridge whose space flags equal `space`
+/// (`PCI_SPACE_MEM32` / `PCI_SPACE_MEM64`, or `PCI_SPACE_IO`: I/O space,
+/// which these bridges show as memory).
 pub fn pci_mmio_window(space: u32) -> Option<PciWindow> {
     let host = pci_host_node(get()?)?;
     let ranges = prop(host, "ranges")?;
@@ -829,6 +831,7 @@ pub fn fill(p: &mut Platform) {
         let windows = PciWindows {
             mmio32: pci_mmio_window(PCI_SPACE_MEM32),
             mmio64: pci_mmio_window(PCI_SPACE_MEM64),
+            io: pci_mmio_window(PCI_SPACE_IO),
         };
         if windows.mmio32.is_some() || windows.mmio64.is_some() {
             offer_pci_windows(p, windows, from);

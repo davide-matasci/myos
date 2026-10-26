@@ -103,7 +103,8 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// [`SoundCardOps`]); USB alternate settings and isochronous OUT transfers
 /// ([`UsbHostOps::set_interface`], [`UsbHostOps::isoch_queue`], the
 /// controllers' [`UsbHcdOps::endpoints_change`]).
-pub const ABI_VERSION: u32 = 58;
+/// 59: a PCI function's I/O BAR ([`KernelApi::pci_io_map`], [`PciIo`]).
+pub const ABI_VERSION: u32 = 59;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1154,6 +1155,108 @@ pub struct KernelApi {
     /// registration count goes down when the enable counted. 0, or -1 when
     /// `irq` has no such handler.
     pub irq_disable: unsafe extern "C" fn(irq: u32, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32,
+    // --- ABI 59 ---
+    /// I/O BAR `bar` of the PCI function, its I/O decoding on (assigned
+    /// from the host bridge's I/O window when the firmware left it
+    /// unassigned): where its registers are into `*base` (x86_64: the
+    /// first port; elsewhere: the kernel address the bridge's I/O window
+    /// shows them at) and its size in bytes into `*size`. Reach them
+    /// through a [`PciIo`]. 0, or -1 for no such I/O BAR.
+    pub pci_io_map: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, bar: u8, base: *mut usize, size: *mut u32) -> i32,
+}
+
+/// A PCI function's I/O registers ([`KernelApi::pci_io_map`]): ports on
+/// x86_64 (`in` / `out`), memory elsewhere, where the host bridge maps PCI
+/// I/O space into its window. `off` is the register's offset in the BAR.
+#[derive(Clone, Copy, Debug)]
+pub struct PciIo {
+    base: usize,
+    size: u32,
+}
+
+impl PciIo {
+    pub fn read8(&self, off: u32) -> u8 {
+        debug_assert!(off < self.size);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let v: u8;
+            core::arch::asm!("in al, dx", in("dx") (self.base as u32 + off) as u16, out("al") v, options(nomem, nostack, preserves_flags));
+            v
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe {
+            core::ptr::read_volatile((self.base + off as usize) as *const u8)
+        }
+    }
+
+    pub fn read16(&self, off: u32) -> u16 {
+        debug_assert!(off + 1 < self.size);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let v: u16;
+            core::arch::asm!("in ax, dx", in("dx") (self.base as u32 + off) as u16, out("ax") v, options(nomem, nostack, preserves_flags));
+            v
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe {
+            u16::from_le(core::ptr::read_volatile((self.base + off as usize) as *const u16))
+        }
+    }
+
+    pub fn read32(&self, off: u32) -> u32 {
+        debug_assert!(off + 3 < self.size);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let v: u32;
+            core::arch::asm!("in eax, dx", in("dx") (self.base as u32 + off) as u16, out("eax") v, options(nomem, nostack, preserves_flags));
+            v
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe {
+            u32::from_le(core::ptr::read_volatile((self.base + off as usize) as *const u32))
+        }
+    }
+
+    pub fn write8(&self, off: u32, v: u8) {
+        debug_assert!(off < self.size);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("out dx, al", in("dx") (self.base as u32 + off) as u16, in("al") v, options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe {
+            core::ptr::write_volatile((self.base + off as usize) as *mut u8, v)
+        }
+    }
+
+    pub fn write16(&self, off: u32, v: u16) {
+        debug_assert!(off + 1 < self.size);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("out dx, ax", in("dx") (self.base as u32 + off) as u16, in("ax") v, options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe {
+            core::ptr::write_volatile((self.base + off as usize) as *mut u16, v.to_le())
+        }
+    }
+
+    pub fn write32(&self, off: u32, v: u32) {
+        debug_assert!(off + 3 < self.size);
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!("out dx, eax", in("dx") (self.base as u32 + off) as u16, in("eax") v, options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe {
+            core::ptr::write_volatile((self.base + off as usize) as *mut u32, v.to_le())
+        }
+    }
+
+    /// The BAR's size in bytes.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
 }
 
 /// An interrupt domain's `unmask` or `mask` of line `line`
@@ -1750,6 +1853,13 @@ impl KernelApi {
     /// See [`KernelApi::irq_disable`] (field).
     pub fn irq_disable(&self, irq: u32, handler: IrqHandler, ctx: *mut core::ffi::c_void) -> i32 {
         unsafe { (self.irq_disable)(irq, handler, ctx) }
+    }
+
+    /// I/O BAR `bar` of the PCI function, its I/O decoding on
+    /// ([`KernelApi::pci_io_map`]).
+    pub fn pci_io_map(&self, bus: u8, slot: u8, func: u8, bar: u8) -> Option<PciIo> {
+        let (mut base, mut size) = (0usize, 0u32);
+        (unsafe { (self.pci_io_map)(bus, slot, func, bar, &mut base, &mut size) } == 0).then_some(PciIo { base, size })
     }
 
     pub fn irq_dispatch(&self, irq: u32) {
@@ -2542,6 +2652,9 @@ pub struct DmaDevice {
     pub func: u8,
     /// [`DMA_DEVICE_MMIO`]: [`MmioDevice::phys`].
     pub phys: u64,
+    /// The device's bus addresses end below this (a 32-bit controller's
+    /// 4 GiB: [`DmaDevice::below`]); 0 for none.
+    pub limit: u64,
 }
 
 pub const DMA_DEVICE_PCI: u32 = 0;
@@ -2549,11 +2662,17 @@ pub const DMA_DEVICE_MMIO: u32 = 1;
 
 impl DmaDevice {
     pub const fn pci(bus: u8, slot: u8, func: u8) -> Self {
-        Self { kind: DMA_DEVICE_PCI, bus, slot, func, phys: 0 }
+        Self { kind: DMA_DEVICE_PCI, bus, slot, func, phys: 0, limit: 0 }
     }
 
     pub const fn mmio(phys: u64) -> Self {
-        Self { kind: DMA_DEVICE_MMIO, bus: 0, slot: 0, func: 0, phys }
+        Self { kind: DMA_DEVICE_MMIO, bus: 0, slot: 0, func: 0, phys, limit: 0 }
+    }
+
+    /// The same device, whose DMA reaches bus addresses below `limit` only
+    /// (`1 << 32` for a controller of 32-bit pointers).
+    pub const fn below(self, limit: u64) -> Self {
+        Self { limit, ..self }
     }
 }
 

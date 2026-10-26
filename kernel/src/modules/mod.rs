@@ -155,12 +155,13 @@ static API: KernelApi = KernelApi {
     phys_map: api_phys_map,
     pci_irq_disable: api_pci_irq_disable,
     irq_disable: api_irq_disable,
+    pci_io_map: api_pci_io_map,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
 /// device, or with their own wording); the loader announces the others.
 const SELF_REPORTING: &[&str] =
-    &["console", "virtio_blk", "virtio_scsi", "nvme", "sdmmc", "virtio_net", "netfs", "pci_enum", "acpi", "rpi_firmware", "usb", "xhci", "dwc2", "usb_hub", "usb_storage", "usb_hid", "usb_audio", "usbdev", "pcidev", "pl061", "tap", "sound", "virtio_sound"];
+    &["console", "virtio_blk", "virtio_scsi", "nvme", "sdmmc", "virtio_net", "netfs", "pci_enum", "acpi", "rpi_firmware", "usb", "xhci", "ehci", "uhci", "dwc2", "usb_hub", "usb_storage", "usb_hid", "usb_audio", "usbdev", "pcidev", "pl061", "tap", "sound", "virtio_sound"];
 
 /// Load the boot modules: the names in the initramfs's `/lib/modules/boot.list`
 /// (one per line), each from `/lib/modules/<name>`, in that order. Called
@@ -573,6 +574,23 @@ unsafe extern "C" fn api_pci_bar_map(
             unsafe {
                 *va = mapped;
                 *size = sz;
+            }
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_pci_io_map(bus: u8, slot: u8, func: u8, bar: u8, base: *mut usize, size: *mut u32) -> i32 {
+    if base.is_null() || size.is_null() {
+        return -1;
+    }
+    bind_claim(bus, slot, func);
+    match crate::pci::io_map(bus, slot, func, bar) {
+        Some((b, s)) => {
+            unsafe {
+                *base = b;
+                *size = s;
             }
             0
         }

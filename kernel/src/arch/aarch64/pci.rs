@@ -78,6 +78,54 @@ pub fn set_host(host: PciHost, mmio: PciWindow) {
     }
 }
 
+/// The host bridge's I/O window (`set_io`): mapped at [`IO_VA`], bus
+/// addresses `[IO_PCI, IO_PCI + IO_SIZE)`; [`IO_NEXT`] the next bus
+/// address [`io_assign`] hands out.
+static IO_VA: AtomicUsize = AtomicUsize::new(0);
+static IO_PCI: AtomicU64 = AtomicU64::new(0);
+static IO_SIZE: AtomicU64 = AtomicU64::new(0);
+static IO_NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// The host bridge's I/O window from the device tree, mapped: PCI I/O
+/// space is memory here (`pci::io_map`).
+pub fn set_io(io: PciWindow) {
+    let Some(va) = map_mmio(io.cpu, io.size.max(1)) else {
+        return;
+    };
+    IO_PCI.store(io.pci, Ordering::SeqCst);
+    IO_SIZE.store(io.size, Ordering::SeqCst);
+    // Port 0 means unassigned to a BAR: hand out from 0x1000 on, as PCs do.
+    IO_NEXT.store(io.pci.max(0x1000), Ordering::SeqCst);
+    IO_VA.store(va, Ordering::SeqCst);
+}
+
+/// Where an I/O BAR at bus address `addr` is reached: its place in the
+/// mapped I/O window.
+pub fn io_base(addr: u32, size: u32) -> Option<usize> {
+    let (va, pci, len) = (IO_VA.load(Ordering::Relaxed), IO_PCI.load(Ordering::Relaxed), IO_SIZE.load(Ordering::Relaxed));
+    let (addr, size) = (u64::from(addr), u64::from(size));
+    (va != 0 && addr >= pci && addr + size <= pci + len).then(|| va + (addr - pci) as usize)
+}
+
+/// A bus address in the I/O window for a BAR of `size` bytes the firmware
+/// left unassigned (aligned to its size), or `None` when the window is
+/// full or missing.
+pub fn io_assign(size: u32) -> Option<u32> {
+    let (pci, len) = (IO_PCI.load(Ordering::Relaxed), IO_SIZE.load(Ordering::Relaxed));
+    let size = u64::from(size);
+    let mut next = IO_NEXT.load(Ordering::Relaxed);
+    loop {
+        let at = (next + size - 1) & !(size - 1);
+        if IO_VA.load(Ordering::Relaxed) == 0 || at + size > pci + len || at + size > u64::from(u32::MAX) {
+            return None;
+        }
+        match IO_NEXT.compare_exchange(next, at + size, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return Some(at as u32),
+            Err(now) => next = now,
+        }
+    }
+}
+
 /// Last bus there is to scan.
 pub fn max_bus() -> u8 {
     BUS_END.load(Ordering::Relaxed)

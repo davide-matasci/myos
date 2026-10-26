@@ -124,6 +124,9 @@ fn apply(p: &crate::platform::Platform) -> Result<(), &'static str> {
             .and_then(|w| w.value.mmio32)
             .ok_or("platform: PCIe host bridge has no 32-bit MMIO range")?;
         pci::set_host(host, mmio);
+        if let Some(io) = p.pci_windows.and_then(|w| w.value.io) {
+            pci::set_io(io);
+        }
     }
     Ok(())
 }
