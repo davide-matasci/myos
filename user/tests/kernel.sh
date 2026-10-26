@@ -737,7 +737,7 @@ usb_ehci() {
 		|| { echo "no OK: $(wc -c < /tmp/ehci.resp) bytes"; return 1; }
 	rm -f /tmp/ehci.desc /tmp/ehci.id /tmp/ehci.resp /tmp/ehci.ok
 }
-t -t usb,usbdev,ehci usb_ehci usb_ehci
+t -t usb,ehci usb_ehci usb_ehci
 
 # The ICH9 EHCI's UHCI companions (docs/usb.md, uhci): the full-speed hub
 # the launcher puts on the EHCI's port 3 is handed to the second companion
