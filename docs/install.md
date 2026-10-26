@@ -39,8 +39,10 @@ their config loads it after the slot's initramfs
 every entry it makes exactly when the ESP has the file, so an upgrade of a
 test disk keeps it; a disk installed from a mirror never has one.
 
-Each slot holds a kernel and the initramfs built with it (with the Linux
-layer some 50 MiB together), so the ESP has room for both and to grow.
+Each slot holds a kernel and the initramfs built with it, a zstd frame
+the kernel decodes at boot (`kernel/src/fs/zstd.rs`, issue #621): some
+6 MiB together, about 17 MiB once the initramfs is decoded, so the ESP has
+room for both and to grow.
 `limine.conf` has an entry per filled slot, the active one first (Limine's
 `default_entry: 1`):
 

@@ -122,9 +122,9 @@ fn main() {
     // The disks carry the tests module too (docs/testing.md); the ISO and
     // the release's boot files do not.
     let (initramfs_bytes, tests_bytes) = initramfs::build_boot_archives(&manifest, "x86_64", &esp);
-    let initramfs_path = manifest.join("target/initramfs-x86_64.cpio");
+    let initramfs_path = manifest.join("target/initramfs-x86_64.cpio.zst");
     std::fs::write(&initramfs_path, &initramfs_bytes)
-        .expect("write target/initramfs-x86_64.cpio");
+        .expect("write target/initramfs-x86_64.cpio.zst");
     println!("cargo:rerun-if-changed={}", initramfs_path.display());
 
     for m in all_modules() {

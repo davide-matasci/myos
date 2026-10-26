@@ -56,7 +56,8 @@ in CI) and a stall limit of 3; any other 50 and 10
 
 The tests are not in the image: the ISO and the release's boot files
 (what `get-myos --install` and `--upgrade` write) carry none of them. They
-are the **tests module**, a second cpio archive beside the initramfs that
+are the **tests module**, a second cpio archive beside the initramfs (a
+zstd frame too, decoded at boot like it) that
 only the build's disks carry (`target/*.img`, what the boot tests boot):
 `boot/tests` on the ESP, outside the slots, which every entry of the
 disk's `limine.conf` loads after the slot's initramfs. The kernel unpacks

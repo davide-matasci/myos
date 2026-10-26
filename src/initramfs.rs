@@ -498,12 +498,35 @@ pub fn build_boot_archives(
 }
 
 /// `entries` as a newc archive, sorted and deduplicated by path (later
-/// duplicates win for the same path).
+/// duplicates win for the same path), compressed ([`zstd`]).
 fn archive(mut entries: Vec<Entry>) -> Vec<u8> {
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries.dedup_by(|a, b| a.name == b.name);
     first_link_carries_data(&mut entries);
-    write_newc(&entries)
+    zstd(&write_newc(&entries))
+}
+
+/// `raw` as one zstd frame, as the kernel decodes the boot archives
+/// (`kernel/src/fs/zstd.rs`, issue #621): its size in the header
+/// (`--stream-size`) and a checksum after it (`--check`). Level 9: within
+/// a tenth of -19's size at a twentieth of its time.
+fn zstd(raw: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut child = Command::new("zstd")
+        .args(["-9", "-q", "-c", "--check", &format!("--stream-size={}", raw.len())])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run zstd (a build prerequisite, README)");
+    let mut stdin = child.stdin.take().expect("zstd stdin");
+    // Fed from a thread: zstd writes while it reads, and a full stdout pipe
+    // would stop it before it took all of stdin.
+    let out = std::thread::scope(|s| {
+        s.spawn(move || stdin.write_all(raw).expect("write to zstd"));
+        child.wait_with_output().expect("wait for zstd")
+    });
+    assert!(out.status.success(), "zstd failed");
+    out.stdout
 }
 
 /// A hard-link group's bytes go with its first entry in archive order: the

@@ -17,6 +17,9 @@ myos-abi = { path = "../modules/abi" }
 limine = "0.6.5"
 # Flattened device tree parser (aarch64 / riscv64 board description), MPL-2.0.
 fdt = "0.1.5"
+# zstd decoder for the compressed initramfs and tests module (fs/zstd.rs),
+# MIT; its `hash` feature (twox-hash, MIT) checks the frames' checksums.
+ruzstd = { version = "0.9.1", default-features = false, features = ["hash"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 # Not the crate's `nightly` feature set: its `step_trait` implements the

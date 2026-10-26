@@ -51,5 +51,13 @@ panic = "abort"
 [profile.dev.package.kernel]
 opt-level = 2
 
+# The boot archives' zstd decoder (kernel/src/fs/zstd.rs) and its checksum:
+# unoptimized, decoding them took seconds of every TCG boot.
+[profile.dev.package.ruzstd]
+opt-level = 2
+
+[profile.dev.package.twox-hash]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
