@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
-# shellcheck source=ports/tcc/versions.env
+# shellcheck source=packages/tcc/versions.env
 source "$HERE/versions.env"
 
 is_elf() {
@@ -90,12 +90,16 @@ if myos_tcc_is_current && ! all_elfs_ok; then
   echo "error: tcc stamp current but an arch ELF is missing; rebuilding" >&2
 fi
 
-"$ROOT/ports/tcc/prepare.sh"
+"$ROOT/packages/tcc/prepare.sh"
+# The compiler headers tcc needs beside newlib's (stddef.h, stdarg.h, ...;
+# tcc has no GCC builtins), for the package's /lib/newlib/include.
+rm -rf "$ROOT/target/tcc-include"
+cp -r "$ROOT/target/tcc-src/include" "$ROOT/target/tcc-include"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/tcc-myos-build"
-MYOS="$ROOT/ports/tcc"
+MYOS="$ROOT/packages/tcc"
 
 tcc_target_def() {
   case "$1" in

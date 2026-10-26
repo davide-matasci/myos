@@ -464,49 +464,6 @@ pub fn build_boot_archives(
         0o100644,
     );
 
-    // Compiler headers (stddef.h, stdarg.h, float.h, …) come from the tcc
-    // source tree: newlib's sys/cdefs.h includes them (the newlib sysroot is
-    // under lib/newlib, from the `newlib` port), but tcc has no GCC builtins,
-    // so they must exist in the archive. Only when tcc is in the image;
-    // without tcc nothing compiles on the guest so they are unneeded.
-    if image_ports.iter().any(|p| p.name == "tcc") {
-    let tcc_inc = target.join("tcc-src/include");
-    let stddef = tcc_inc.join("stddef.h");
-    if !stddef.is_file() {
-        let prep = manifest_dir.join("ports/tcc/prepare.sh");
-        let status = Command::new("bash")
-            .arg(&prep)
-            .status()
-            .unwrap_or_else(|e| panic!("run {}: {e}", prep.display()));
-        if !status.success() {
-            panic!("{} failed", prep.display());
-        }
-    }
-    if !stddef.is_file() {
-        panic!(
-            "tcc include/stddef.h missing at {} (run ./ports/tcc/prepare.sh)",
-            stddef.display()
-        );
-    }
-    collect_tree(&tcc_inc, "lib/newlib/include", &mut entries);
-    // Hosted tcc wants crt1.o; newlib only ships crt0.o. Mirror build.rs.
-    let crt0 = entries
-        .iter()
-        .find(|e| e.name == "lib/newlib/lib/crt0.o")
-        .map(|e| e.data.clone());
-    if let Some(crt0) = crt0 {
-        if !entries.iter().any(|e| e.name == "lib/newlib/lib/crt1.o") {
-            entries.push(Entry {
-                name: "lib/newlib/lib/crt1.o".to_string(),
-                data: crt0,
-                ino: entries.len() as u64 + 1,
-                nlink: 1,
-                mode: 0o100644,
-            });
-        }
-    }
-    }
-
     // The build's release (src/release.rs): what get-myos compares a
     // mirror's index with before installing from it.
     add_mode(

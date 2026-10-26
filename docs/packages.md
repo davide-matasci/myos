@@ -163,6 +163,7 @@ needs x11-xft@698a36aea37a x11-fonts@1399fe7cc6d8
 ```
 
 `run` is the program `run-myos APP` starts (the one named after the port,
+in `bin/custom/` or another directory of `bin/`, tcc's `/bin/tcc/tcc`,
 else its first in `bin/custom/`; a port without programs, a library such
 as `x11-libs`, has none), `needs` the apps it uses (its `PORT_RDEPS`), at
 the versions it was built with; `run-myos` binds those versions. A bare
@@ -309,7 +310,7 @@ binaries there: the tag names the commit they were built from, whose
 
 `packages/`: git, lua, lynx, make, os-test, vim, x11-libs (the X client
 libraries for the X packages, with libX11's error database and their
-test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), openssl (LibreSSL's command, `packages/openssl/README.md`), acme (acme.sh, the ACME client: Let's Encrypt certificates for nginx, `packages/acme/README.md`), python (CPython 3.13 against mlibc, `packages/python/README.md`), rust (`rust setup` and cargo for myos programs, in myos: the pinned nightly under the Linux layer, `packages/rust/README.md`), and ncurses, pcre2, sqlite and libedit (build dependencies: of vim, lynx, clear and python, of nginx and ripgrep, of python; nothing in the
+test), tinyx (the X server, `Xfbdev`), x11-xft (FreeType, fontconfig and Xft for the X clients) and x11-fonts (DejaVu Sans Mono, and DejaVu Sans for what it lacks), dwm (the window manager), st (the terminal), dmenu (the menu), x11-apps (xev), bottom (`btm`, the system monitor), clear (ncurses' terminal-clearing program), get-alpine (the Linux layer's Alpine package installer, `docs/linux-compat.md`), nginx (the web server, `packages/nginx/README.md`), openssl (LibreSSL's command, `packages/openssl/README.md`), acme (acme.sh, the ACME client: Let's Encrypt certificates for nginx, `packages/acme/README.md`), python (CPython 3.13 against mlibc, `packages/python/README.md`), rust (`rust setup` and cargo for myos programs, in myos: the pinned nightly under the Linux layer, `packages/rust/README.md`), tcc (TinyCC with newlib's headers and libraries: compiling C on the running system, `run-myos tcc`), and ncurses, pcre2, sqlite and libedit (build dependencies: of vim, lynx, clear and python, of nginx and ripgrep, of python; nothing in the
 image). Everything a boot needs
 stays in `ports/` (and zlib and LibreSSL, which get-myos and curl link). The full test list
 installs those its tests run (the build dependencies, which carry no files, none); the ISO

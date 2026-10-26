@@ -3,11 +3,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-"$ROOT/ports/tcc/fetch.sh"
+"$ROOT/packages/tcc/fetch.sh"
 
 TCC="$ROOT/target/tcc-src"
 WORK="$ROOT/target/tcc-myos-build"
-MYOS="$ROOT/ports/tcc"
+MYOS="$ROOT/packages/tcc"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"

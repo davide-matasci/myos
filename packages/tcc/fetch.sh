@@ -3,7 +3,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-# shellcheck source=ports/tcc/versions.env
+# shellcheck source=packages/tcc/versions.env
 source "$HERE/versions.env"
 TCC_SRC="$ROOT/target/tcc-src"
 TCC_REV="${TCC_REV:-2ba12e83b3599ca8f5d50c179fe5138fe956f0c9}"

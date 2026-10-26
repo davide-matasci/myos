@@ -39,8 +39,9 @@ libdl, ... are empty archives: everything is in libc.a) and
 `libbuiltins.a`, the compiler-rt builtins a link needs beside libc.a: the
 IEEE binary128 `long double` arithmetic of aarch64 and riscv64 (mlibc's
 printf and strtod use it), riscv64's soft-float double and float
-arithmetic (userspace is rv64imac), the complex multiplications. The
-image carries the sysroot at `/lib/mlibc` (newlib's is `/lib/newlib`).
+arithmetic (userspace is rv64imac), the complex multiplications. Its
+programs are static, so the image carries none of the sysroot (newlib's
+is in the tcc package, at `/lib/newlib`).
 
 A program is compiled with mlibc's headers before clang's (freestanding,
 clang's `limits.h` does not include the libc's after itself) and without a
@@ -94,8 +95,8 @@ widened to mlibc's Linux-sized struct by the shared read (`evfd.c`).
 `user/c-mlibc/test.sh` runs every test of `user/c/test.sh` on the mlibc
 builds of the same smokes, as `mlibc_<name>` with the `mlibc` tag and
 the newlib test's name as a tag, so that a selection or a skip by that
-name takes both (`docs/testing.md`; the tests that run no smoke program, and `ctor_tcc`,
-whose program tcc links against newlib, are not repeated):
+name takes both (`docs/testing.md`; the tests that run no smoke program are not
+repeated):
 
 ```sh
 cargo run -- test --tags mlibc

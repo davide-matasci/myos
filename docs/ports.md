@@ -13,7 +13,7 @@ ports, and no Cargo feature per port.
 |-----------|------|---------|
 | `ports/<name>/` | image | in every image (initramfs) |
 | `user/<name>/`, `user/c/`, `user/std/` | image | the native userspace (Rust programs, C smokes, the `std` demos) |
-| `toolchain/newlib/`, `toolchain/std/` | image | the toolchains: newlib (its sysroot tree is in the image, for tcc) and the Rust `std` sysroot (nothing in the image) |
+| `toolchain/newlib/`, `toolchain/std/` | image | the toolchains: newlib (its sysroot tree is in the tcc package) and the Rust `std` sysroot (nothing in the image) |
 | `packages/<name>/` | package | built and cached by CI, not in the image; installed on a running system with `get-myos` (`docs/packages.md`) |
 
 The role is the directory: **moving `ports/foo` to `packages/foo` takes foo
