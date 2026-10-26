@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cross-build GLib (GLib, GObject, GIO, GModule, GThread) as static
 # libraries against mlibc for the three arches, with what it links that
-# mlibc lacks: zlib (ports/zlib's source), libffi, GNU libiconv and
-# proxy-libintl (gettext returning its message), and PCRE2's mlibc build
+# mlibc lacks: libffi, GNU libiconv and proxy-libintl (gettext returning
+# its message), and the mlibc builds of zlib (ports/zlib) and PCRE2
 # (packages/pcre2). One prefix per arch, target/glib-mlibc-<arch> (lib/
 # with the archives and their pkg-config files, include/), what a program
 # over GLib (WebKitGTK's stack, issue #616) compiles and links against.
@@ -23,6 +23,7 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/toolchain/mlibc/build.sh"
+"$ROOT/ports/zlib/build.sh"
 "$ROOT/packages/pcre2/build.sh"
 myos_ensure_llvm_bin
 # The binutils: newlib's tool wrappers, <triple>-ar, -ranlib and -strip
@@ -79,18 +80,13 @@ build_arch() {
   local f
   echo "==> glib ($arch, mlibc)"
   rm -rf "$build" "$out"
-  mkdir -p "$build"/{zlib,libffi,libiconv,intl} "$out/lib/pkgconfig" "$out/include"
+  mkdir -p "$build"/{libffi,libiconv,intl} "$out/lib/pkgconfig" "$out/include"
   myos_write_cross_cc "$arch" "$build/cc" -O2
   local cc=("$build/cc")
 
-  # zlib (ports/zlib's build is newlib's: a libc's errno and stdio are its own).
-  for f in adler32 compress crc32 deflate gzclose gzlib gzread gzwrite infback \
-    inffast inflate inftrees trees uncompr zutil; do
-    "${cc[@]}" -DHAVE_UNISTD_H -DHAVE_STDARG_H -D_LARGEFILE64_SOURCE=1 \
-      -Wno-deprecated-non-prototype -c "$T/zlib-src/$f.c" -o "$build/zlib/$f.o"
-  done
-  "$AR_BIN" rcs "$out/lib/libz.a" "$build/zlib"/*.o
-  cp "$T/zlib-src/zlib.h" "$T/zlib-src/zconf.h" "$out/include/"
+  # zlib (ports/zlib's mlibc build).
+  cp "$T/zlib-mlibc-$arch/lib/libz.a" "$out/lib/"
+  cp "$T/zlib-mlibc-$arch/include/zlib.h" "$T/zlib-mlibc-$arch/include/zconf.h" "$out/include/"
   pc zlib "$(. "$ROOT/ports/zlib/versions.env"; echo "$ZLIB_VERSION")" -lz
 
   # PCRE2 (packages/pcre2's mlibc build).

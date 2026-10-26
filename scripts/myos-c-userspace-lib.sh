@@ -77,6 +77,7 @@ MYOS_PYTHON_VERSION="$MYOS_ROOT/target/.myos-python-version"
 MYOS_SQLITE_VERSION="$MYOS_ROOT/target/.myos-sqlite-version"
 MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
 MYOS_GLIB_VERSION="$MYOS_ROOT/target/.myos-glib-version"
+MYOS_IMAGE_LIBS_VERSION="$MYOS_ROOT/target/.myos-image-libs-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -965,6 +966,7 @@ myos_x11_libs_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
+      myos_mlibc_version_hash
       find "$(myos_port_dir x11-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -979,6 +981,7 @@ myos_x11_libs_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/x11-libs-${arch}/lib/x11/lib/libX11.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/x11-libs-mlibc-${arch}/lib/x11/lib/libXinerama.a" ]] || return 1
     [[ -f "$MYOS_ROOT/target/x11-smoke-${arch}-unknown-none" ]] || return 1
   done
 }
@@ -1029,6 +1032,7 @@ myos_x11_xft_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/x11-xft-${arch}/lib/x11/lib/libXft.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/x11-xft-mlibc-${arch}/lib/x11/lib/libXft.a" ]] || return 1
     [[ -f "$MYOS_ROOT/target/xft-smoke-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/fc-match-${arch}-unknown-none" ]] || return 1
   done
@@ -1180,6 +1184,7 @@ myos_zlib_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
+      myos_mlibc_version_hash
       sha256sum "$MYOS_ROOT/ports/zlib/build.sh"
       sha256sum "$MYOS_ROOT/ports/zlib/fetch.sh"
       sha256sum "$MYOS_ROOT/ports/zlib/versions.env"
@@ -1197,6 +1202,7 @@ myos_zlib_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/zlib-${arch}/lib/libz.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/zlib-mlibc-${arch}/lib/libz.a" ]] || return 1
   done
 }
 
@@ -1419,14 +1425,14 @@ myos_libedit_is_current() {
   done
 }
 
-# GLib (packages/glib), against mlibc: its pins and scripts, mlibc, zlib's
-# pin (built from that source), PCRE2's mlibc build and the compiler flags.
+# GLib (packages/glib), against mlibc: its pins and scripts, mlibc, the
+# mlibc builds of zlib and PCRE2 and the compiler flags.
 myos_glib_version_hash() {
   local h
   h="$(
     {
       myos_mlibc_version_hash
-      sha256sum "$(myos_port_dir zlib)/versions.env"
+      myos_zlib_version_hash
       myos_pcre2_version_hash
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
@@ -1446,6 +1452,35 @@ myos_glib_is_current() {
     [[ -f "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/libgio-2.0.a" ]] || return 1
     [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# The image libraries (packages/image-libs), against mlibc: their pins and
+# scripts, mlibc, the mlibc builds of zlib and the X libraries (the smoke)
+# and the compiler flags.
+myos_image_libs_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      myos_zlib_version_hash
+      myos_x11_libs_version_hash
+      find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_write_cross_cc
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_image_libs_is_current() {
+  local arch
+  [[ -f "$MYOS_IMAGE_LIBS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_IMAGE_LIBS_VERSION")" == "$(myos_image_libs_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/image-libs-mlibc-${arch}/lib/libpixman-1.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/image-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
