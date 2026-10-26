@@ -245,14 +245,24 @@ pub fn stat(name: &str) -> Option<StatInfo> {
 }
 
 /// Unpack the initramfs, the Limine module named `initramfs`, into the
-/// tree ([`crate::fs::cpio`]). It carries the kernel modules too
+/// tree ([`crate::fs::cpio`]), decoded first when it is compressed
+/// ([`crate::fs::zstd`]). It carries the kernel modules too
 /// (`modules::load_boot_modules`). The tests module (`tests`, the build's
 /// disks carry it: docs/testing.md) joins the same tree.
 pub fn init_limine() {
     for name in ["initramfs", "tests"] {
-        if let Some(bytes) = crate::limine_boot::boot_file(name) {
-            let n = crate::fs::cpio::parse(bytes);
-            crate::console::status_ok(&alloc::format!("{name}: {n} files"));
+        let Some(module) = crate::limine_boot::boot_file(name) else {
+            continue;
+        };
+        match crate::fs::zstd::unpack(module) {
+            Ok(bytes) => {
+                let n = crate::fs::cpio::parse(bytes);
+                crate::console::status_ok(&alloc::format!("{name}: {n} files"));
+            }
+            Err(why) => {
+                crate::console::write_str(&alloc::format!("fatal: the {name} module: {why}\n"));
+                crate::arch::halt();
+            }
         }
     }
 }

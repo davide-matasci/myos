@@ -12,6 +12,7 @@ mod procfs;
 pub mod rootfs;
 mod tmpfs;
 pub mod vfs;
+mod zstd;
 
 pub use vfs::{SetTime, StatInfo, Vnode};
 
