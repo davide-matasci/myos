@@ -143,8 +143,10 @@ to attach as a disk.
 
 Without the module loaded the kernel has no personality registered:
 `SYS_LINUX_NEXT_EXEC` (51) fails, so `linux PROGRAM` prints an error, and a
-task can never get the Linux personality. Without the feature the image has
-no `/bin/linux/`.
+task can never get the Linux personality. The test programs under
+`/bin/linux/` (and the `libsmoke` objects and musl's loader they use) are
+the tests module's (`docs/testing.md`): built with the feature, on the
+build's disks only, never in the ISO.
 
 ## How a process becomes a Linux process
 

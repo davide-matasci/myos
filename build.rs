@@ -119,7 +119,9 @@ fn main() {
     // and everything packed from target/ later are stamped with.
     std::fs::write(manifest.join("target/myos-release"), release::Release::current(&manifest).text())
         .expect("write target/myos-release");
-    let initramfs_bytes = initramfs::build_initramfs(&manifest, "x86_64", &esp);
+    // The disks carry the tests module too (docs/testing.md); the ISO and
+    // the release's boot files do not.
+    let (initramfs_bytes, tests_bytes) = initramfs::build_boot_archives(&manifest, "x86_64", &esp);
     let initramfs_path = manifest.join("target/initramfs-x86_64.cpio");
     std::fs::write(&initramfs_path, &initramfs_bytes)
         .expect("write target/initramfs-x86_64.cpio");
@@ -133,7 +135,7 @@ fn main() {
     }
 
     let bios_path = out_dir.join("bios.img");
-    write_slot_image(&bios_path, &kernel, &initramfs_bytes, esp);
+    write_slot_image(&bios_path, &kernel, &initramfs_bytes, Some(&tests_bytes), esp);
     bios_install(&limine.tool(), &bios_path);
 
     let uefi_path = out_dir.join("uefi.img");

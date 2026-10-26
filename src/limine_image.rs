@@ -130,6 +130,21 @@ fn limine_conf_entries(head_extra: &str, kernel_extra: &str, entries: &[(String,
     conf
 }
 
+/// `conf` with the tests module (`boot/tests`) loaded by each entry, after
+/// its initramfs; `get-myos` keeps the line on the entries it writes while
+/// the ESP has the file (`user/get-myos/boot.c`).
+fn with_tests_module(conf: &str) -> String {
+    let mut out = String::new();
+    for line in conf.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if line.trim_start().starts_with("module_path:") && line.ends_with("/initramfs") {
+            out.push_str("    module_path: boot():/boot/tests\n");
+        }
+    }
+    out
+}
+
 /// The kernel as a boot drive carries it: the ELF cut after its last
 /// segment, without section headers. Limine loads what the program headers
 /// name; the rest is the debug info and the symbols, a dozen MiB that the
@@ -279,8 +294,16 @@ pub struct DiskFile {
 }
 
 /// The boot disk with `esp` (Limine's files, [`limine_esp_files`]) and the
-/// kernel, the initramfs and their version in slot `a`, slot `b` empty.
-pub fn write_slot_image(dest: &Path, kernel: &[u8], initramfs: &[u8], mut esp: Vec<DiskFile>) {
+/// kernel, the initramfs and their version in slot `a`, slot `b` empty; with
+/// `tests`, the tests module (docs/testing.md) at `boot/tests`, which every
+/// entry of its config loads after the slot's initramfs.
+pub fn write_slot_image(dest: &Path, kernel: &[u8], initramfs: &[u8], tests: Option<&[u8]>, mut esp: Vec<DiskFile>) {
+    if let Some(tests) = tests {
+        for f in esp.iter_mut().filter(|f| f.path == "boot/limine/limine.conf") {
+            f.data = with_tests_module(&String::from_utf8_lossy(&f.data)).into_bytes();
+        }
+        esp.push(DiskFile { path: "boot/tests".into(), data: tests.to_vec() });
+    }
     esp.extend([
         DiskFile {
             path: "boot/a/kernel".into(),

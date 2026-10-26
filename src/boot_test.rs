@@ -1,8 +1,9 @@
 //! The boot test (docs/testing.md): boot an image headless, log in, start
 //! the guest-side test runner and watch the serial console for its result.
 //!
-//! The tests themselves live in the image (`/lib/myos-tests`, from
-//! `user/tests` and the ports' `PORT_TEST` scripts). The runner prints one
+//! The tests themselves are in the guest, in the tests module the build's
+//! disks carry beside the initramfs (`/lib/myos-tests`, from `user/tests`
+//! and the ports' `PORT_TEST` scripts, and their `PORT_TEST_FILES`). The runner prints one
 //! line per test, `TEST <name> PASS` or `TEST <name> FAIL`, asks for the
 //! host's help with `HOST <port> <args>` (the port's own host-side script,
 //! `PORT_HOST`: a peer connecting to a forwarded port, an SSH client), and

@@ -71,6 +71,10 @@ pub struct Port {
     /// (default: the first output).
     pub ready: Option<String>,
     pub files: Vec<FileSpec>,
+    /// What the port ships in the tests module instead of the image
+    /// (`PORT_TEST_FILES`, the same syntax; docs/testing.md): its test
+    /// programs, on the build's disks and never in the release.
+    pub test_files: Vec<FileSpec>,
     /// The host-side half of the port's boot test, repo-relative
     /// (`PORT_HOST`, docs/testing.md): what the launcher runs on a
     /// `HOST <name> <args>` line from the guest.
@@ -222,6 +226,7 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
         .map(|h| format!("{}/{h}", dir.to_string_lossy()));
     Some(Port {
         files,
+        test_files: parse_files(&name, &get("PORT_TEST_FILES")),
         host,
         name,
         dir: dir.to_path_buf(),

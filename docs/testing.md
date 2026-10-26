@@ -54,6 +54,22 @@ in CI) and a stall limit of 3; any other 50 and 10
 
 ## In the guest
 
+The tests are not in the image: the ISO and the release's boot files
+(what `get-myos --install` and `--upgrade` write) carry none of them. They
+are the **tests module**, a second cpio archive beside the initramfs that
+only the build's disks carry (`target/*.img`, what the boot tests boot):
+`boot/tests` on the ESP, outside the slots, which every entry of the
+disk's `limine.conf` loads after the slot's initramfs. The kernel unpacks
+it into the same tree (`[ OK ] tests: <n> files` at boot) and shows it as
+`/proc/boot/tests`. It holds the runner and every test script
+(`/lib/myos-tests`), the programs the ports name in `PORT_TEST_FILES`
+(`docs/ports.md`: the C smokes under `/bin/etc` and `/bin/etc/mlibc`) and
+the Linux layer's test programs (`/bin/linux`, `docs/linux-compat.md`);
+`src/initramfs.rs` (`build_boot_archives`) splits the two. A test boot's
+upgrade keeps it (`get-myos` writes the line into the entries it makes
+while the ESP has the file) and `get-myos --install --local` copies it
+(`docs/install.md`), so the boots after those find the runner too.
+
 The runner is `/lib/myos-tests/run.sh` (from `user/tests`); after login
 the launcher types
 
@@ -145,7 +161,7 @@ foreground pipeline with the shell surviving.
 
 A port ships its test with `PORT_TEST=test.sh` in its `port.env`
 (`docs/ports.md`): the file lands at `/lib/myos-tests/ports/<group>-<name>.sh`
-in the image, or in the package's app (`0` for a core image port, `1` for
+in the tests module, or in the package's app (`0` for a core image port, `1` for
 another image port, `2` for a package), so moving a port between `ports/` and
 `packages/` moves its test too. The runner sources every file of that
 directory in name order, after `kernel.sh`. A test script calls `t`:

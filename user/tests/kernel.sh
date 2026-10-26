@@ -157,7 +157,9 @@ partitions() {
 # the version in slot a, an empty slot b, the one limine.conf, which boots
 # slot a and tells the kernel so (/proc/cmdline), and fstab, which
 # names the data partition: an ext2 at /data, which holds only what the
-# boot script put there (boot_rc).
+# boot script put there (boot_rc). The build's disk has the tests module
+# too (boot/tests, what this boot loaded), which the entry loads after the
+# initramfs: the one line the release's config (/lib/myos-boot) lacks.
 boot_disk() {
 	data=$(grep '"myos data"$' /proc/partitions | cut -d' ' -f1)
 	[ -n "$data" ] || { cat /proc/partitions; return 1; }
@@ -179,8 +181,16 @@ boot_disk() {
 	# What this boot came from (/proc/boot/) is slot a's, and Limine's files
 	# the initramfs carries for `get-myos --install --local` are the ESP's.
 	cmp /proc/boot/kernel /boot/boot/a/kernel && cmp /proc/boot/initramfs /boot/boot/a/initramfs || r=1
+	cmp /proc/boot/tests /boot/boot/tests || r=1
+	tests_line='^    module_path: boot():/boot/tests$'
+	[ "$(grep -c "$tests_line" /boot/boot/limine/limine.conf)" -eq 1 ] || r=1
 	while read -r what path size sum file; do
-		cmp "$file" "/boot/$path" || r=1
+		if [ "$path" = boot/limine/limine.conf ]; then
+			grep -v "$tests_line" "/boot/$path" > /tmp/boot-conf.txt
+			cmp "$file" /tmp/boot-conf.txt || r=1
+		else
+			cmp "$file" "/boot/$path" || r=1
+		fi
 	done < /lib/myos-boot/boot.txt
 	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }
 	[ "$(ls /data | tr '\n' ' ')" = "dropbear etc lost+found " ]
