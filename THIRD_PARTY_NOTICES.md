@@ -62,7 +62,11 @@ under its own license.
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
 | CPython (package `python`, built against mlibc; its bundled expat, libmpdec, `_hacl` and `_blake2` sources under their own permissive licenses, `Doc/license.rst` in the upstream source; the myos patches `packages/python/*.myos.patch` under the same license; `pip`, unpacked from the wheel CPython bundles, MIT, with its vendored packages under their own licenses, all in its `dist-info/licenses`: MIT, BSD, Apache-2.0 and, for `certifi` and its CA bundle, **MPL-2.0** (`licenses/MPL-2.0.txt`)) | `PYTHON_VERSION` in `packages/python/versions.env` | PSF-2.0 (the Python Software Foundation License, GPL-compatible, permissive) | https://www.python.org/ |
 | nginx (package `nginx`) | `NGINX_VERSION` in `packages/nginx/versions.env` | BSD-2-Clause (the myos patches, `packages/nginx/*.myos.patch`, under the same license) | https://nginx.org/ |
-| PCRE2 (`packages/pcre2`, the 8-bit library linked into ripgrep and nginx) | `PCRE2_VERSION` in `packages/pcre2/versions.env` | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2 |
+| PCRE2 (`packages/pcre2`, the 8-bit library linked into ripgrep and nginx; its mlibc build into the glib package) | `PCRE2_VERSION` in `packages/pcre2/versions.env` | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2 |
+| GLib: GLib, GObject, GIO, GModule (package `glib`, built against mlibc and linked statically into its `gio` and `glib-smoke`; the myos patch `packages/glib/*.myos.patch` under the same license) | `GLIB_VERSION` in `packages/glib/versions.env` | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`; a few files under other permissive licenses, `LICENSES/` in the upstream source) | https://gitlab.gnome.org/GNOME/glib |
+| libffi (in the glib package, GObject's generic marshaller) | `LIBFFI_VERSION` in `packages/glib/versions.env` | MIT | https://github.com/libffi/libffi |
+| GNU libiconv (in the glib package: the library, GLib's iconv, mlibc having none) | `LIBICONV_VERSION` in `packages/glib/versions.env` | **LGPL-2.1-or-later** (the library; `licenses/LGPL-2.1.txt`) | https://www.gnu.org/software/libiconv/ |
+| proxy-libintl (in the glib package: GLib's gettext, returning the message, built without its `dlopen` of a real libintl) | `PROXY_LIBINTL_REV` in `packages/glib/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://github.com/frida/proxy-libintl |
 | bottom (package `bottom`, `btm`) + its Rust dependencies | `packages/bottom/versions.env` (dependencies: bottom's `Cargo.lock`) | bottom, crossterm, sysinfo, ratatui: MIT (the myos patches to them: the same); dependencies: MIT / Apache-2.0 and similar permissive licenses (Zlib, Unlicense OR MIT); `option-ext` 0.2.0 (used unmodified, through `dirs-sys`): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/ClementTsang/bottom |
 | X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11, libXext | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
 | TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
@@ -114,7 +118,11 @@ Files in this repository that carry notices from upstream (kept as required):
 The following programs in the image are under copyleft licenses
 (GPL-2.0-only, GPL-3.0-or-later, GPL-3.0, LGPL-2.1, MPL-2.0): **Git, Lynx,
 GNU Make, TinyCC, TinyX (`Xfbdev`), acme.sh, the Mozilla CA bundle, and
-`option-ext` in the bottom package, `certifi` (pip's, its CA bundle) in the python package.** (Vim's license also allows redistribution. LibreSSL's
+`option-ext` in the bottom package, `certifi` (pip's, its CA bundle) in the python package,
+GLib, GNU libiconv and proxy-libintl in the glib package.** (The glib
+package's programs link those LGPL libraries statically: the programs'
+sources and every build script are in this repository too, so they can
+be relinked against a modified library.) (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry
 their notices: `licenses/LibreSSL.txt`, and this product includes software
 developed by the OpenSSL Project for use in the OpenSSL Toolkit
