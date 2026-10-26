@@ -254,9 +254,9 @@ fn build_iso() -> PathBuf {
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = manifest.join("target");
-    let initramfs_path = target.join("initramfs-x86_64.cpio");
+    let initramfs_path = target.join("initramfs-x86_64.cpio.zst");
     std::fs::write(&initramfs_path, initramfs::build_initramfs(&manifest, "x86_64", &esp_limine_files("x86_64")))
-        .expect("write target/initramfs-x86_64.cpio");
+        .expect("write target/initramfs-x86_64.cpio.zst");
     let limine = fetch_limine(Path::new(env!("LIMINE_DIR")));
     let dest = target.join("myos-x86_64.iso");
     let iso_root = target.join("iso_root");

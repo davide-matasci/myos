@@ -338,6 +338,15 @@ enospc() {
 t -t blk,fs,ext2,linux enospc enospc
 t -t blk,smoke partitions partitions
 t -t blk boot_disk boot_disk
+# The boot archives are zstd frames (src/initramfs.rs, issue #621), which
+# the kernel decoded at boot (kernel/src/fs/zstd.rs) into the tree these
+# tests run from: /proc/boot/ has them as Limine loaded them.
+boot_zstd() {
+	for m in initramfs tests; do
+		[ "$(od -An -tx1 -N4 /proc/boot/$m | tr -d ' ')" = 28b52ffd ] || { echo "$m: not a zstd frame"; return 1; }
+	done
+}
+t -t blk boot_zstd boot_zstd
 t -t smoke boot_rc boot_rc
 t -t fs,smoke fstab_mount fstab_mount
 
