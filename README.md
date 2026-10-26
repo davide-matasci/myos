@@ -43,16 +43,18 @@ This is a starting point to grow into a real OS, not a feature dump.
 - `patch` — applying `.myos.patch` files
 - `curl` — fetching the pinned Limine binary on first build
 - `xorriso` — hybrid ISO output (`cargo run -- iso` only)
-- `zstd` — unpacking CI's cached ports (`scripts/ci-registry.sh pull`)
+- `zstd` — compressing the boot archives (`src/initramfs.rs`) and unpacking CI's cached ports (`scripts/ci-registry.sh pull`)
 - `e2fsprogs` — the boot test checks the scratch disk's ext2 with `e2fsck`
 - `dosfstools`, `mtools` — `cargo test -p fatvol`, and the boot test's `fsck.fat` of the FAT test disk
+- `openssh-client`, `python3` — the boot test's host side (`host.sh`): SSH sessions into the guest's dropbear, and the TCP and QEMU-monitor peers
 
 On Ubuntu 26.04 (on 24.04, `qemu-system-misc` instead of `qemu-system-riscv`):
 
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make meson ninja-build git gh \
-  libc6-dev rsync patch curl xorriso zstd e2fsprogs dosfstools mtools
+  libc6-dev rsync patch curl xorriso zstd e2fsprogs dosfstools mtools \
+  openssh-client python3
 ```
 
 Building every port from source takes hours on the first run. Pulling the
