@@ -342,8 +342,9 @@ t -t blk boot_disk boot_disk
 # the kernel decoded at boot (kernel/src/fs/zstd.rs) into the tree these
 # tests run from: /proc/boot/ has them as Limine loaded them.
 boot_zstd() {
+	magic="$(printf '\050\265\057\375')"
 	for m in initramfs tests; do
-		[ "$(dd if=/proc/boot/$m bs=4 count=1 2> /dev/null | od -An -tx1 | tr -d ' \n')" = 28b52ffd ] || { echo "$m: not a zstd frame"; return 1; }
+		[ "$(dd if=/proc/boot/$m bs=4 count=1 2> /dev/null)" = "$magic" ] || { echo "$m: not a zstd frame"; return 1; }
 	done
 }
 t -t blk boot_zstd boot_zstd
