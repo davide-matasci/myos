@@ -165,7 +165,9 @@ EOC
 
 # GLib for the build host, with the host's compiler, over host builds of
 # libffi, PCRE2 and zlib from the same pins: its glib-compile-resources
-# into target/glib-host/bin (the cross build's runs on myos only).
+# into target/glib-host/bin (the cross build's runs on myos only), with
+# its Python generators, glib-mkenums and glib-genmarshal, configured for
+# the host.
 build_host() {
   local build="$T/glib-host-build" out="$T/glib-host"
   echo "==> glib (build host)"
@@ -188,7 +190,8 @@ build_host() {
     --wrap-mode=nofallback >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
   ninja -C "$build/glib" gio/glib-compile-resources >"$build/ninja.log" 2>&1 \
     || { grep -n "error" "$build/ninja.log" | head -20 >&2; exit 1; }
-  cp "$build/glib/gio/glib-compile-resources" "$out/bin/"
+  cp "$build/glib/gio/glib-compile-resources" "$build/glib/gobject/glib-mkenums" \
+    "$build/glib/gobject/glib-genmarshal" "$out/bin/"
   rm -rf "$build"
   echo "glib (build host) -> $out/bin"
 }

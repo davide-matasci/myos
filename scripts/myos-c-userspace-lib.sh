@@ -1474,7 +1474,8 @@ myos_glib_is_current() {
     [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
   done
-  [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ]]
+  [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ]] \
+    && [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ]]
 }
 
 # The image libraries (packages/image-libs), against mlibc: their pins and

@@ -80,8 +80,9 @@ build_arch() {
   done
   pc="$out/lib/pkgconfig:$T/glib-mlibc-$arch/lib/pkgconfig:$T/image-libs-mlibc-$arch/lib/pkgconfig:$build/x11-pc"
 
-  # glib-compile-resources runs on the build host (packages/glib's host
-  # build); GLib's Python generators run from its prefix.
+  # GLib's tools run on the build host (packages/glib's host build): the
+  # machine file's binaries come first where meson's gnome module looks
+  # for them, before any GLib the build host has.
   cat >"$build/cross.txt" <<EOC
 [binaries]
 c = '$build/cc'
@@ -90,6 +91,8 @@ ar = '${arch}-unknown-myos-ar'
 strip = '${arch}-unknown-myos-strip'
 pkg-config = 'pkg-config'
 glib-compile-resources = '$T/glib-host/bin/glib-compile-resources'
+glib-mkenums = '$T/glib-host/bin/glib-mkenums'
+glib-genmarshal = '$T/glib-host/bin/glib-genmarshal'
 
 [built-in options]
 c_args = ['-D_GNU_SOURCE']
