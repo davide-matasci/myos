@@ -608,8 +608,15 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         "sys" => b"kernel\nsecurity\n",
         "sys/kernel" => b"hostname\noverflowgid\noverflowuid\n",
         "sys/security" => b"users\n",
-        "boot" if crate::limine_boot::boot_partuuid().is_some() => b"kernel\ninitramfs\npartuuid\n",
-        "boot" => b"kernel\ninitramfs\n",
+        "boot" => match (
+            crate::limine_boot::boot_file("tests").is_some(),
+            crate::limine_boot::boot_partuuid().is_some(),
+        ) {
+            (true, true) => &b"kernel\ninitramfs\ntests\npartuuid\n"[..],
+            (true, false) => &b"kernel\ninitramfs\ntests\n"[..],
+            (false, true) => &b"kernel\ninitramfs\npartuuid\n"[..],
+            (false, false) => &b"kernel\ninitramfs\n"[..],
+        },
         _ => return 0,
     };
     let n = entry.len().min(buf.len());
@@ -702,7 +709,11 @@ pub fn stat(name: &str) -> Option<StatInfo> {
         return Some(StatInfo {
             mode: S_IFREG | 0o444,
             size: data.len() as u64,
-            ino: if name == "boot/kernel" { 88 } else { 89 },
+            ino: match name {
+                "boot/kernel" => 88,
+                "boot/initramfs" => 89,
+                _ => 81,
+            },
             nlink: 1,
             dev: 0,
             mtime: 0,

@@ -189,7 +189,7 @@ fn main() {
             println!("{}", out.display());
         }
         ("iso", Some(_)) => {
-            eprintln!("error: the ISO is not boot-tested; the bios and uefi images carry the same files");
+            eprintln!("error: the ISO is not boot-tested; the bios and uefi images carry the same files (and the tests module)");
             exit(2);
         }
         ("iso", None) => run_iso(),
@@ -1073,8 +1073,8 @@ fn build_aarch64_image() -> PathBuf {
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/aarch64.img");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let esp = esp_limine_files("aarch64");
-    let initramfs = initramfs::build_initramfs(&manifest, "aarch64", &esp);
-    write_slot_image(&image, &kernel_bytes, &initramfs, esp);
+    let (initramfs, tests) = initramfs::build_boot_archives(&manifest, "aarch64", &esp);
+    write_slot_image(&image, &kernel_bytes, &initramfs, Some(&tests), esp);
     write_fat_data_image(&fat_img_path());
     image
 }
@@ -1086,7 +1086,7 @@ fn build_aarch64_image() -> PathBuf {
 /// reads the board from it even where the firmware has ACPI tables too.
 fn build_rpi4_image() -> PathBuf {
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/rpi4.img");
-    build_rpi_image(&image);
+    build_rpi_image(&image, false);
     image
 }
 
@@ -1094,8 +1094,8 @@ fn build_rpi4_image() -> PathBuf {
 /// initramfs of `target/aarch64.img`, without QEMU's device tree, so that
 /// Limine hands on the firmware's, and with `platform=dt`, so that the
 /// kernel reads the board from it even where the firmware has ACPI tables
-/// too.
-fn build_rpi_image(image: &Path) {
+/// too; with `tests`, the tests module (the QEMU board's boot test).
+fn build_rpi_image(image: &Path, tests: bool) {
     let kernel = build_aarch64_kernel();
     let kernel_bytes = std::fs::read(&kernel).expect("read aarch64 kernel ELF");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1103,8 +1103,8 @@ fn build_rpi_image(image: &Path) {
     let read = |p: PathBuf| std::fs::read(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     let conf = limine_image::limine_conf_cmdline("", "", &["a"], " platform=dt");
     let esp = limine_esp_files("BOOTAA64.EFI", &read(limine.bootaa64()), None, &conf, &[]);
-    let initramfs = initramfs::build_initramfs(&manifest, "aarch64", &esp);
-    write_slot_image(image, &kernel_bytes, &initramfs, esp);
+    let (initramfs, test_module) = initramfs::build_boot_archives(&manifest, "aarch64", &esp);
+    write_slot_image(image, &kernel_bytes, &initramfs, tests.then_some(&test_module[..]), esp);
 }
 
 /// A Raspberry Pi 3 in QEMU (`raspi3b`, docs/raspberry-pi.md): every core
@@ -1148,7 +1148,7 @@ fn qemu_rpi3(test: bool) -> Command {
     }
     // The SD card: QEMU wants a power of two.
     let disk = out.join("myos.img");
-    build_rpi_image(&disk);
+    build_rpi_image(&disk, true);
     let len = std::fs::metadata(&disk).expect("rpi3 disk").len();
     let f = std::fs::OpenOptions::new().write(true).open(&disk).expect("open rpi3 disk");
     f.set_len(len.next_power_of_two()).expect("pad rpi3 disk");
@@ -1506,8 +1506,8 @@ fn build_riscv64_image() -> PathBuf {
     let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/riscv64.img");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let esp = esp_limine_files("riscv64");
-    let initramfs = initramfs::build_initramfs(&manifest, "riscv64", &esp);
-    write_slot_image(&image, &kernel_bytes, &initramfs, esp);
+    let (initramfs, tests) = initramfs::build_boot_archives(&manifest, "riscv64", &esp);
+    write_slot_image(&image, &kernel_bytes, &initramfs, Some(&tests), esp);
     write_fat_data_image(&fat_img_path());
     image
 }

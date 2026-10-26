@@ -42,6 +42,13 @@
  * this boot came from (/proc/boot/), Limine's files from the initramfs
  * (/lib/myos-boot/). A file of a list whose name starts with `/` is read
  * from there, any other is downloaded from the mirror.
+ *
+ * The build's disks carry the tests module too (docs/testing.md):
+ * boot/tests on the ESP, outside the slots, which each entry of their
+ * limine.conf loads after the slot's initramfs. An entry write_conf makes
+ * loads it exactly when the ESP has the file, and --install --local of a
+ * system booted with it (/proc/boot/tests) copies it and a config that
+ * loads it.
  */
 #include <fcntl.h>
 #include <stdint.h>
@@ -341,14 +348,104 @@ static int fetch_boot_list(const char *list_path, boot_files *b) {
 
 static const char *NAMES[2] = {"kernel", "initramfs"};
 
+#define LIMINE_CONF "boot/limine/limine.conf"
+#define TESTS_LINE "    module_path: boot():/boot/tests\n"
+
+/* `in`, a limine.conf, with the tests module's line after each entry's
+ * initramfs if `tests`, without it otherwise, into out[cap]. */
+static int conf_tests(const char *in, char *out, size_t cap, int tests) {
+    size_t n = 0, tl = strlen(TESTS_LINE);
+    for (const char *p = in; *p != '\0';) {
+        size_t text = strcspn(p, "\n"), len = text + (p[text] == '\n');
+        int initramfs = strncmp(p, "    module_path:", 16) == 0 && text >= 10 && strncmp(p + text - 10, "/initramfs", 10) == 0;
+        if (!(len == tl && strncmp(p, TESTS_LINE, tl) == 0)) {
+            if (n + len >= cap) {
+                return -1;
+            }
+            memcpy(out + n, p, len);
+            n += len;
+        }
+        if (tests && initramfs) {
+            if (n + tl >= cap) {
+                return -1;
+            }
+            memcpy(out + n, TESTS_LINE, tl);
+            n += tl;
+        }
+        p += len;
+    }
+    out[n] = '\0';
+    return 0;
+}
+
+/* "WHAT SIZE SHA256 FILE" for the file `file` into the list `out`. */
+static int list_line(FILE *out, const char *what, const char *file) {
+    char hex[65];
+    long long n = 0;
+    if (sha256_file(file, hex, &n) != 0 || n <= 0) {
+        return die("cannot read ", file);
+    }
+    char size[24], *s = size + sizeof size - 1;
+    *s = '\0';
+    do {
+        *--s = (char)('0' + n % 10);
+        n /= 10;
+    } while (n > 0);
+    fputs(what, out);
+    fputs(" ", out);
+    fputs(s, out);
+    fputs(" ", out);
+    fputs(hex, out);
+    fputs(" ", out);
+    fputs(file, out);
+    fputs("\n", out);
+    return 0;
+}
+
+/* The `esp` line of limine.conf, `line`, for a system booted with the tests
+ * module: the config it names, with the module's line, written beside the
+ * list (`path`.limine.conf) and listed instead. */
+static int local_conf_with_tests(const char *line, const char *path, FILE *out) {
+    static char conf[16384], with[16384];
+    char file[PATH_MAX_GV], copy[PATH_MAX_GV];
+    const char *f = line;
+    for (int i = 0; i < 4 && f != NULL; i++) {
+        f = strchr(f, ' ');
+        f = f != NULL ? f + 1 : NULL;
+    }
+    if (f == NULL) {
+        return die("a bad esp line in /lib/myos-boot/boot.txt", NULL);
+    }
+    copy_field(file, sizeof file, f, strcspn(f, "\n"));
+    int fd = open(file, O_RDONLY);
+    ssize_t n = fd < 0 ? -1 : read(fd, conf, sizeof conf - 1);
+    if (fd >= 0) {
+        close(fd);
+    }
+    if (n <= 0) {
+        return die("cannot read ", file);
+    }
+    conf[n] = '\0';
+    if (strlen(path) + 14 >= sizeof copy || conf_tests(conf, with, sizeof with, 1) != 0) {
+        return die("limine.conf too long", NULL);
+    }
+    strcpy(copy, path);
+    strcat(copy, ".limine.conf");
+    if (write_file(copy, with, strlen(with)) != 0) {
+        return die("cannot write ", copy);
+    }
+    return list_line(out, "esp " LIMINE_CONF, copy);
+}
+
 /* --install --local: the running system's boot files as a list at `path`,
  * in the mirror's format, with absolute paths: the release of
  * /lib/myos-release, the kernel and the initramfs this boot came from
  * (/proc/boot/, their checksums taken here), and Limine's files the
- * initramfs carries (/lib/myos-boot/boot.txt, the `esp` lines). */
+ * initramfs carries (/lib/myos-boot/boot.txt, the `esp` lines); booted with
+ * the tests module, that too and a limine.conf that loads it. */
 int boot_local_list(const char *path) {
     static const char *FILES[2] = {"/proc/boot/kernel", "/proc/boot/initramfs"};
-    char release[256], line[512], hex[65], size[24];
+    char release[256], line[512];
     if (read_line("/lib/myos-release", release, sizeof release) != 0) {
         return die("no /lib/myos-release", NULL);
     }
@@ -367,29 +464,19 @@ int boot_local_list(const char *path) {
     fputs(release, out);
     fputs("\n", out);
     int rc = 0;
-    for (int i = 0; i < 2; i++) {
-        long long n = 0;
-        if (sha256_file(FILES[i], hex, &n) != 0 || n <= 0) {
-            rc = die("cannot read ", FILES[i]);
-            break;
-        }
-        char *p = size + sizeof size - 1;
-        *p = '\0';
-        do {
-            *--p = (char)('0' + n % 10);
-            n /= 10;
-        } while (n > 0);
-        fputs(NAMES[i], out);
-        fputs(" ", out);
-        fputs(p, out);
-        fputs(" ", out);
-        fputs(hex, out);
-        fputs(" ", out);
-        fputs(FILES[i], out);
-        fputs("\n", out);
+    for (int i = 0; rc == 0 && i < 2; i++) {
+        rc = list_line(out, NAMES[i], FILES[i]);
     }
+    int tests = access("/proc/boot/tests", R_OK) == 0;
     while (rc == 0 && fgets(line, sizeof line, esp) != NULL) {
-        fputs(line, out);
+        if (tests && strncmp(line, "esp " LIMINE_CONF " ", strlen("esp " LIMINE_CONF " ")) == 0) {
+            rc = local_conf_with_tests(line, path, out);
+        } else {
+            fputs(line, out);
+        }
+    }
+    if (rc == 0 && tests) {
+        rc = list_line(out, "esp boot/tests", "/proc/boot/tests");
     }
     fclose(esp);
     if (fclose(out) != 0 && rc == 0) {
@@ -585,8 +672,13 @@ static int read_conf(const char *esp, char *conf, size_t cap) {
  * entries made from its one of `template` (the slot it was written for).
  * Written beside the old, then renamed over it. */
 static int write_conf(const char *esp, const char *conf, char template, char first, char second) {
-    static char entry[4096], out[16384], one[4096];
+    static char entry[4096], out[16384], one[4096], with[4096];
     char path[PATH_MAX_GV], tmp[PATH_MAX_GV];
+    /* Each entry loads the tests module while the ESP has it. */
+    if (esp_path(path, esp, "boot/tests", "") != 0) {
+        return 1;
+    }
+    int tests = access(path, F_OK) == 0;
     strcpy(path, esp);
     strcat(path, "/boot/limine/limine.conf");
     /* The global lines: those before the first entry, timeout aside. */
@@ -640,12 +732,12 @@ static int write_conf(const char *esp, const char *conf, char template, char fir
             continue;
         }
         entry_for(one, sizeof one, entry, template, slot);
-        if (strlen(body) + strlen(one) + 2 >= sizeof body) {
+        if (conf_tests(one, with, sizeof with, tests) != 0 || strlen(body) + strlen(with) + 2 >= sizeof body) {
             return die("limine.conf too long", NULL);
         }
         /* A blank line before each entry, as the images write them. */
         strcat(body, "\n");
-        strcat(body, one);
+        strcat(body, with);
     }
     strcpy(tmp, path);
     strcat(tmp, ".new");
@@ -657,8 +749,6 @@ static int write_conf(const char *esp, const char *conf, char template, char fir
 }
 
 /* ---- --upgrade ---------------------------------------------------------- */
-
-#define LIMINE_CONF "boot/limine/limine.conf"
 
 #if defined(__x86_64__)
 /* The BIOS stage: Limine's MBR code and its stage 2 in the BIOS boot

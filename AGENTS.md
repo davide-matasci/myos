@@ -202,7 +202,8 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   hybrid ISO with the Linux layer in it and the **publish** job uploads it
   and the packages to the rolling GitHub release `rolling`, get-myos's
   default mirror (`docs/packages.md`). The ISO is not boot-tested: the bios
-  and uefi boots carry the same files.
+  and uefi boots carry the same files, and the tests module beside them
+  (`docs/testing.md`), which the ISO and the release do not.
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
 - Changing a port's pin or build script changes its cache key; CI rebuilds
   it. The ports matrix of `ci-ports.yml` and the pack/assert lists of the

@@ -56,7 +56,7 @@ myos_port_names() {
 # Load NAME's descriptor into PORT_* (PORT_NAME, PORT_DIR, PORT_ROLE added).
 myos_port_load() {
   local want="$1" role name dir
-  PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES=""
+  PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES="" PORT_TEST_FILES=""
   PORT_READY="" PORT_BIN="" PORT_WATCH="" PORT_PREPARE="" PORT_TEST="" PORT_HOST=""
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
@@ -124,11 +124,12 @@ myos_port_outputs() {
 }
 
 # The target/ files the image (or the package) of NAME is packed from, for
-# ARCH ("" = all arches): what a boot job must have.
+# ARCH ("" = all arches): what a boot job must have, the tests module's
+# (PORT_TEST_FILES) too.
 myos_port_image_files() {
   myos_port_load "$1" || return 1
   local only="${2:-}" spec kind a b c arch
-  for spec in $PORT_FILES; do
+  for spec in $PORT_FILES $PORT_TEST_FILES; do
     IFS=: read -r kind a b c <<<"$spec"
     for arch in "${MYOS_ARCHES[@]}"; do
       [[ -z "$only" || "$only" == "$arch" ]] || continue

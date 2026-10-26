@@ -28,8 +28,16 @@ boot/a/initramfs              slot a: the initramfs
 boot/a/version                slot a: its release, the initramfs's /lib/myos-release
 boot/b/                       slot b: empty until an upgrade writes it
 boot/virt-aarch64.dtb         aarch64, riscv64 (virt.dtb): the device tree
+boot/tests                    the build's disks only: the tests module
 fstab                         what `mount -a` mounts at boot (below)
 ```
+
+The build's disks (`target/*.img`) carry the tests module too
+(`docs/testing.md`), at `boot/tests` beside the slots, and each entry of
+their config loads it after the slot's initramfs
+(`module_path: boot():/boot/tests`). `get-myos` writes that line into
+every entry it makes exactly when the ESP has the file, so an upgrade of a
+test disk keeps it; a disk installed from a mirror never has one.
 
 Each slot holds a kernel and the initramfs built with it (with the Linux
 layer some 50 MiB together), so the ESP has room for both and to grow.
@@ -156,6 +164,10 @@ a mirror's: the same layout, checks and BIOS stage; slot `a` gets this
 system's release (`/lib/myos-release`). From the ISO, that is the ISO's
 system, the Linux layer included (the ISO is built with it); a later
 `--upgrade` from a mirror brings the release's initramfs, which has none.
+A system booted with the tests module (`/proc/boot/tests`, a test disk)
+installs it too: the list names it as an `esp` file (`boot/tests`) and, in
+place of the initramfs's `limine.conf`, a copy that loads it
+(`.get-myos/local-boot.limine.conf`).
 
 ## Mounted at boot: `/boot`, `/data` and the fstab
 

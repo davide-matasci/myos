@@ -123,16 +123,17 @@ pub fn cmdline() -> &'static str {
 
 /// The files this boot came from, as Limine loaded them (`/proc/boot/`,
 /// what `get-myos --install --local` copies onto a disk): `kernel`, the
-/// kernel's file, and `initramfs`, the module of that name. Limine keeps
-/// both mapped for the life of the kernel.
+/// kernel's file, and `initramfs` and `tests`, the modules of those names
+/// (the second only on the build's disks). Limine keeps them mapped for
+/// the life of the kernel.
 pub fn boot_file(name: &str) -> Option<&'static [u8]> {
     let file = match name {
         "kernel" => EXECUTABLE_FILE.response()?.executable_file(),
-        "initramfs" => MODULES
+        "initramfs" | "tests" => MODULES
             .response()?
             .modules()
             .iter()
-            .find(|f| f.path().rsplit('/').next() == Some("initramfs"))?,
+            .find(|f| f.path().rsplit('/').next() == Some(name))?,
         _ => return None,
     };
     let data = file.data();

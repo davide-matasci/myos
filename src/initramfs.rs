@@ -211,10 +211,21 @@ fn add_hardlink_group(entries: &mut Vec<Entry>, names: &[String], data: Option<V
 
 /// Pack what one port of the image ships (`PORT_FILES`, see docs/ports.md).
 pub(crate) fn install_port(entries: &mut Vec<Entry>, port: &crate::ports::Port, manifest_dir: &Path, arch: &str) {
+    install_files(entries, port, &port.files, manifest_dir, arch);
+}
+
+/// Pack `files`, of `port`'s descriptor (`PORT_FILES` or `PORT_TEST_FILES`).
+fn install_files(
+    entries: &mut Vec<Entry>,
+    port: &crate::ports::Port,
+    files: &[crate::ports::FileSpec],
+    manifest_dir: &Path,
+    arch: &str,
+) {
     use crate::ports::{FileSpec, expand};
     let target = manifest_dir.join("target");
     let take = |path: &Path| -> Option<Vec<u8>> { read(path) };
-    for f in &port.files {
+    for f in files {
         match f {
             FileSpec::Bin { src, paths } => {
                 let data = take(&target.join(expand(src, arch)));
@@ -321,13 +332,28 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
 }
 
 /// Build the newc initramfs archive for `arch` from the ELFs under `target/`,
-/// with `esp`, Limine's files of the boot disk's ESP, under `lib/myos-boot/`.
+/// with `esp`, Limine's files of the boot disk's ESP, under `lib/myos-boot/`
+/// ([`build_boot_archives`]'s first).
+pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_image::DiskFile]) -> Vec<u8> {
+    build_boot_archives(manifest_dir, arch, esp).0
+}
+
+/// The initramfs and the tests module for `arch` (docs/testing.md): the
+/// tests' runner and scripts (`/lib/myos-tests`), the programs the ports
+/// name in `PORT_TEST_FILES` and the Linux layer's test programs go into
+/// the second, which only the build's disks carry (`boot/tests`, beside
+/// the slots): the ISO and the release's boot files are the first alone.
 /// Every file a port of the image ships must exist (`read` panics
 /// otherwise): `build.rs` runs the missing ports' build scripts before this.
-pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_image::DiskFile]) -> Vec<u8> {
+pub fn build_boot_archives(
+    manifest_dir: &Path,
+    arch: &str,
+    esp: &[crate::limine_image::DiskFile],
+) -> (Vec<u8>, Vec<u8>) {
     let target = manifest_dir.join("target");
     let (kernel_triple, _none_triple, _myos_triple) = triples(arch);
     let mut entries: Vec<Entry> = Vec::new();
+    let mut tests: Vec<Entry> = Vec::new();
 
     // Everything the ports ship: one descriptor per port (`port.env`, see
     // docs/ports.md), the same files `get-myos` would install from a package.
@@ -336,6 +362,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
         all_ports.iter().filter(|p| p.role == crate::ports::Role::Image).collect();
     for port in &image_ports {
         install_port(&mut entries, port, manifest_dir, arch);
+        install_files(&mut tests, port, &port.test_files, manifest_dir, arch);
     }
     // The packages' boot tests too (`lib/myos-tests/ports/2-<name>.sh`,
     // docs/testing.md): the runner reads every test's tags before it runs
@@ -344,7 +371,7 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
         for f in &port.files {
             if let crate::ports::FileSpec::File { src, path } = f {
                 if path.starts_with("lib/myos-tests/") {
-                    add(&mut entries, path, read(&manifest_dir.join(&port.dir).join(src)));
+                    add(&mut tests, path, read(&manifest_dir.join(&port.dir).join(src)));
                 }
             }
         }
@@ -390,11 +417,12 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
         "bin/etc/linux",
         read(&target.join(format!("linux-launcher-{arch}-unknown-none"))),
     );
-    // Optional Linux compatibility layer: the Linux test binaries, kept out
-    // of $PATH under bin/linux, and the Alpine package fetcher.
+    // Optional Linux compatibility layer: its test programs (the tests
+    // module's), kept out of $PATH under bin/linux, and the self-hosting
+    // script.
     if feature_enabled("linux_compat") {
         add(
-            &mut entries,
+            &mut tests,
             "bin/linux/linux-smoke",
             read(&target.join(format!("linux-smoke-{arch}-linux-musl"))),
         );
@@ -402,17 +430,17 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
         // (its PT_INTERP path) and two shared objects in the default path.
         let dyn_dir = target.join("linux-compat").join(arch);
         add(
-            &mut entries,
+            &mut tests,
             &format!("lib/ld-musl-{arch}.so.1"),
             read(&dyn_dir.join(format!("ld-musl-{arch}.so.1"))),
         );
         for lib in ["libsmoke.so", "libsmoke2.so"] {
-            add(&mut entries, &format!("lib/{lib}"), read(&dyn_dir.join(lib)));
+            add(&mut tests, &format!("lib/{lib}"), read(&dyn_dir.join(lib)));
         }
-        add(&mut entries, "bin/linux/linux-dyn", read(&dyn_dir.join("linux-dyn")));
+        add(&mut tests, "bin/linux/linux-dyn", read(&dyn_dir.join("linux-dyn")));
         // The two as non-PIE programs, loaded at their link address.
         for exe in ["linux-nopie", "linux-dyn-nopie"] {
-            add(&mut entries, &format!("bin/linux/{exe}"), read(&dyn_dir.join(exe)));
+            add(&mut tests, &format!("bin/linux/{exe}"), read(&dyn_dir.join(exe)));
         }
         // Building myos inside myos with Alpine's Rust (`sh /lib/self-host.sh DIR`).
         add(&mut entries, "lib/self-host.sh", read(&manifest_dir.join("linux-compat/self-host.sh")));
@@ -504,7 +532,17 @@ pub fn build_initramfs(manifest_dir: &Path, arch: &str, esp: &[crate::limine_ima
         read(&manifest_dir.join("modules/console/keymaps/us.map")),
     );
 
-    // Sort + dedupe by path (later duplicates win for the same path).
+    // The tests' runner and scripts (`PORT_TEST`, the `tests` port) are the
+    // tests module's too.
+    let (test_scripts, image): (Vec<Entry>, Vec<Entry>) =
+        entries.into_iter().partition(|e| e.name.starts_with("lib/myos-tests/"));
+    tests.extend(test_scripts);
+    (archive(image), archive(tests))
+}
+
+/// `entries` as a newc archive, sorted and deduplicated by path (later
+/// duplicates win for the same path).
+fn archive(mut entries: Vec<Entry>) -> Vec<u8> {
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries.dedup_by(|a, b| a.name == b.name);
     first_link_carries_data(&mut entries);

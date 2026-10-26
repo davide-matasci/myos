@@ -41,6 +41,7 @@ has a default, so a minimal port needs only `PORT_FILES`.
 | `PORT_OUTPUTS` | | what the script leaves under `target/`, for the three arches (what the CI registry caches, with the stamp). Globs are allowed (`ubase-*-{none}`) |
 | `PORT_READY` | the first file output | a `target/` file whose presence means the port was built (`build.rs` runs the script when it is missing). Needed when the first output is a directory |
 | `PORT_FILES` | | what the image (or the package) gets, see below |
+| `PORT_TEST_FILES` | | what the tests module gets instead (`docs/testing.md`): the port's test programs, in the same syntax as `PORT_FILES`; on the build's disks, never in the ISO or the release. The `PORT_TEST` script and anything else under `lib/myos-tests/` go there too |
 | `PORT_BIN` | | `user` only: the crate's binary name (`myos_cat`) |
 | `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
 | `PORT_PREPARE` | | `user` only: a script `kernel/build.rs` runs before it builds the crate, named like `PORT_BUILD`: what the build needs in `target/` first. netd's fetches smoltcp and applies myos's patches to it (`user/net/smoltcp/prepare.sh`, its `[patch.crates-io]`) |
