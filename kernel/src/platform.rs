@@ -138,12 +138,13 @@ pub struct PciHost {
 
 pub use crate::dt::PciHostKind;
 
-/// Where the host bridge maps BARs: the 32-bit and the 64-bit MMIO window,
-/// from the tree's `ranges`; ACPI keeps them in AML.
+/// Where the host bridge maps BARs: the 32-bit and the 64-bit MMIO window
+/// and the I/O window, from the tree's `ranges`; ACPI keeps them in AML.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PciWindows {
     pub mmio32: Option<PciWindow>,
     pub mmio64: Option<PciWindow>,
+    pub io: Option<PciWindow>,
 }
 
 pub use crate::dt::PciWindow;
@@ -585,7 +586,7 @@ pub fn text() -> alloc::vec::Vec<u8> {
         );
     }
     if let Some(c) = p.pci_windows {
-        for (name, w) in [("mmio32", c.value.mmio32), ("mmio64", c.value.mmio64)] {
+        for (name, w) in [("mmio32", c.value.mmio32), ("mmio64", c.value.mmio64), ("io", c.value.io)] {
             if let Some(w) = w {
                 s += &format!("pci {name} 0x{:x} 0x{:x}", w.cpu, w.size);
                 if w.pci != w.cpu {

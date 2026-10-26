@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "ehci"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "EHCI (USB 2.0) host controller driver kernel module: its high-speed ports, registered with the usb module (the USB core); full- and low-speed devices go to its companion controllers."
+
+[[bin]]
+name = "ehci"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

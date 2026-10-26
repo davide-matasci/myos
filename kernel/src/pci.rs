@@ -109,6 +109,45 @@ pub fn enable(bus: u8, slot: u8, func: u8) {
     enable_mem_master(Bdf { bus, slot, func })
 }
 
+/// Decode BAR `index` as an I/O BAR, its I/O decoding on: (bus address,
+/// size). One the firmware left at 0 is assigned from the host bridge's
+/// I/O window (`arch_pci::io_assign`).
+pub fn bar_io(bdf: Bdf, index: u8) -> Option<(u32, u32)> {
+    if index > 5 {
+        return None;
+    }
+    let off = 0x10 + index * 4;
+    let lo = read32(bdf, off);
+    if lo & 1 == 0 || lo == 0xFFFF_FFFF {
+        return None;
+    }
+    write32(bdf, off, 0xFFFF_FFFF);
+    let mask = read32(bdf, off) & 0xFFFF_FFFC;
+    write32(bdf, off, lo);
+    // Bits 31:16 of an I/O BAR may read as 0 on a 16-bit decoder.
+    let mask = if mask & 0xFFFF_0000 == 0 { mask | 0xFFFF_0000 } else { mask };
+    let size = (!mask).wrapping_add(1);
+    if size == 0 || !size.is_power_of_two() {
+        return None;
+    }
+    let mut addr = lo & 0xFFFF_FFFC;
+    if addr == 0 {
+        addr = arch_pci::io_assign(size)?;
+        write32(bdf, off, addr | 1);
+    }
+    let cmd = read32(bdf, 4);
+    write32(bdf, 4, cmd | 0x0001); // I/O space
+    Some((addr, size))
+}
+
+/// Map I/O BAR `bar`: where its registers are (x86_64: the first port;
+/// elsewhere the kernel address of the bridge's I/O window that shows
+/// them), and its size.
+pub fn io_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u32)> {
+    let (addr, size) = bar_io(Bdf { bus, slot, func }, bar)?;
+    Some((arch_pci::io_base(addr, size)?, size))
+}
+
 /// Map BAR `bar` as MMIO. Returns (VA, size).
 pub fn bar_map(bus: u8, slot: u8, func: u8, bar: u8) -> Option<(usize, u64)> {
     let bdf = Bdf { bus, slot, func };

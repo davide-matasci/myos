@@ -115,6 +115,9 @@ pub fn apply_platform(p: &crate::platform::Platform) -> Result<(), &'static str>
         return Err("platform: PCIe host bridge is not ECAM");
     }
     pci::set_host(host, mmio);
+    if let Some(io) = p.pci_windows.and_then(|w| w.value.io) {
+        pci::set_io(io);
+    }
     Ok(())
 }
 

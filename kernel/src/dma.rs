@@ -10,7 +10,9 @@
 //! On riscv64 and x86_64 DMA is coherent. A device no `dma-ranges` limit
 //! reaches all of memory one-to-one. `dma=noncoherent` on the kernel
 //! command line takes every device on aarch64 for non-coherent, to try the
-//! cache maintenance on a board whose DMA is coherent.
+//! cache maintenance on a board whose DMA is coherent. A device whose
+//! pointers are short (EHCI, UHCI: 32 bits) says so (`DmaDevice::limit`)
+//! and gets memory below it.
 
 use alloc::vec::Vec;
 
@@ -59,6 +61,13 @@ fn resolve(dev: DmaDevice) -> Option<Dma> {
     if let Some(d) = described {
         windows = d.windows;
         said = d.coherent;
+    }
+    // A device of short pointers reaches the part of each window below
+    // its limit.
+    if dev.limit != 0 {
+        for w in windows.iter_mut() {
+            *w = w.filter(|w| w.bus < dev.limit).map(|w| DmaWindow { size: w.size.min(dev.limit - w.bus), ..w });
+        }
     }
     // riscv64imac has no cache maintenance instructions: its DMA is
     // coherent whatever a tree says.

@@ -37,7 +37,7 @@ pub fn usb_wav_path() -> PathBuf {
 }
 
 /// A `wav` audiodev `id` writing to `path` at the guest's 48 kHz stereo.
-fn wav_audiodev(cmd: &mut Command, id: &str, path: &std::path::Path) {
+pub fn wav_audiodev(cmd: &mut Command, id: &str, path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
     cmd.arg("-audiodev")
         .arg(format!("wav,id={id},path={},out.frequency=48000,out.channels=2,out.format=s16", path.display()));
@@ -143,15 +143,19 @@ pub fn check_played(mixed: bool) -> bool {
 /// After a test boot whose `sound_usb` test passed: the USB speaker's WAV
 /// file carries the 880 Hz tone the guest played through it.
 pub fn check_usb_played() -> bool {
-    let path = usb_wav_path();
-    let Some((rate, mono)) = samples(&path) else {
+    check_tone(&usb_wav_path(), 880.0, "the USB speaker")
+}
+
+/// Whether the WAV file at `path` (what `what` played) carries `freq` Hz.
+pub fn check_tone(path: &std::path::Path, freq: f64, what: &str) -> bool {
+    let Some((rate, mono)) = samples(path) else {
         eprintln!("boot test: sound: no 16-bit WAV at {}", path.display());
         return false;
     };
-    if !heard(rate, &mono, &[880.0]) {
-        eprintln!("boot test: sound: no 880 Hz tone in {} ({} frames at {rate} Hz)", path.display(), mono.len());
+    if !heard(rate, &mono, &[freq]) {
+        eprintln!("boot test: sound: no {freq} Hz tone in {} ({} frames at {rate} Hz)", path.display(), mono.len());
         return false;
     }
-    eprintln!("boot test: sound: the USB speaker's tone is in {}", path.display());
+    eprintln!("boot test: sound: {what}'s tone is in {}", path.display());
     true
 }
