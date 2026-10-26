@@ -264,18 +264,35 @@ unsafe extern "C" fn port_reset(ctrl: usize, port: u8) -> i32 {
     if hc::port_reset(c, port) { 0 } else { USB_EIO }
 }
 
-/// Every pass of the core's thread: the ports looked at (UHCI does not
-/// interrupt for them), and without an interrupt the status too. Always
-/// nonzero: the core comes back every few milliseconds.
+/// Every pass of the core's thread: without an interrupt the status is
+/// taken here, and the core comes back every few milliseconds. (The ports
+/// raise no interrupt: [`port_thread`] looks at them.)
 unsafe extern "C" fn poll(ctrl: usize) -> i32 {
     let Some(c) = controller(ctrl) else {
         return 0;
     };
-    if !c.irq_on.load(Ordering::Relaxed) {
+    let polled = !c.irq_on.load(Ordering::Relaxed);
+    if polled {
         hc::process(c);
     }
-    hc::poll_ports(c);
-    1
+    i32::from(polled)
+}
+
+/// How often the ports are looked at: a device plugged in is noticed
+/// within it, and an idle CPU sleeps through it.
+const PORT_POLL_MS: u64 = 250;
+
+/// The module's thread: every [`PORT_POLL_MS`], each controller's port
+/// changes to the core.
+unsafe extern "C" fn port_thread(_ctx: *mut c_void) {
+    loop {
+        for i in 0..hc::MAX_CTRL {
+            if let Some(c) = controller(i) {
+                hc::poll_ports(c);
+            }
+        }
+        sleep_ms(PORT_POLL_MS);
+    }
 }
 
 unsafe extern "C" fn describe(ctrl: usize, buf: *mut u8, len: usize) -> usize {
@@ -835,6 +852,10 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         api.write_str("uhci none\n");
         return 0;
     }
+    PORT_THREAD.store(true, Ordering::Release);
+    if api.thread_spawn("uhci", port_thread, core::ptr::null_mut()) < 0 {
+        status_fail(api, "uhci: no thread for the ports");
+    }
     let mut buf = [0u8; 64];
     let mut w = Writer { buf: &mut buf, len: 0 };
     w.str("uhci: ");
@@ -852,10 +873,13 @@ pub unsafe extern "C" fn module_exit() {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn module_rescan() {
-    if !CORE.load(Ordering::Acquire).is_null() {
-        probe(api());
+    if !CORE.load(Ordering::Acquire).is_null() && probe(api()) != 0 && !PORT_THREAD.swap(true, Ordering::AcqRel) {
+        api().thread_spawn("uhci", port_thread, core::ptr::null_mut());
     }
 }
+
+/// [`port_thread`] runs (it starts with the first controller).
+static PORT_THREAD: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {

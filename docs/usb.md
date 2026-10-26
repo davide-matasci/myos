@@ -237,7 +237,8 @@ interrupt endpoint's data toggle in its QH, UHCI in the module. An
 EHCI's QH goes with the async advance doorbell; UHCI's two frames after
 it is unlinked. EHCI interrupt endpoints, and UHCI's (its interrupt
 skeleton), are visited every frame, whatever their interval. UHCI's port
-changes raise no interrupt: the core asks it every pass of its thread.
+changes raise no interrupt: the module's thread looks at them four
+times a second (so an idle CPU still sleeps).
 Their structures are below 4 GiB (32-bit pointers,
 `DmaDevice::below`). UHCI's registers are in PCI I/O space
 (`KernelApi::pci_io_map`, `docs/pci-acpi-smp.md`).
