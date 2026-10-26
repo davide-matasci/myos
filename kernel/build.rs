@@ -161,18 +161,24 @@ fn nested_elf(
         return;
     }
 
+    let is_module = MODULES.iter().any(|(_, m)| *m == bin);
+    // A user program is built for its arch's hard-float bare target (it
+    // links the userspace's C: http's LibreSSL), the kernel's modules for
+    // the kernel's soft-float one; either lands at `target/<bin>-<target>`
+    // (the kernel's triple, `{kernel}` in the port descriptors).
+    let build_target = if is_module { target } else { user_target(target) };
     let td = PathBuf::from(out).join(td_name);
     // Nested target dirs reuse myos-user rlibs aggressively; drop deps when
     // the shared user library changed so fork/exec stubs stay in sync.
     let profile_dir = if profile == "release" { "release" } else { "debug" };
-    let deps = td.join(target).join(profile_dir).join("deps");
+    let deps = td.join(build_target).join(profile_dir).join("deps");
     let _ = std::fs::remove_dir_all(deps);
     let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
         .arg(crate_dir.join("Cargo.toml"))
         .arg("--target")
-        .arg(target)
+        .arg(build_target)
         .arg("--bin")
         .arg(bin)
         .arg("--target-dir")
@@ -181,7 +187,6 @@ fn nested_elf(
         cmd.arg("--release");
     }
     let mut rustflags = String::from("-C panic=abort");
-    let is_module = MODULES.iter().any(|(_, m)| *m == bin);
     // ext2's and fat's runtime-sized copies pull libcore panic fmt; x86 PIE needs PIC.
     if target.contains("x86_64")
         && matches!(
@@ -226,7 +231,7 @@ fn nested_elf(
     }
 
     let elf = td
-        .join(target)
+        .join(build_target)
         .join(if profile == "release" {
             "release"
         } else {
@@ -239,6 +244,16 @@ fn nested_elf(
     let stable = stable_elf(manifest_dir, bin, target);
     std::fs::copy(&elf, &stable)
         .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
+}
+
+/// The bare target a user program is built for on the kernel's `target`:
+/// the same arch with the userspace's hard float (`docs/ports.md`).
+fn user_target(target: &str) -> &str {
+    match target {
+        "aarch64-unknown-none-softfloat" => "aarch64-unknown-none",
+        "riscv64imac-unknown-none-elf" => "riscv64gc-unknown-none-elf",
+        t => t,
+    }
 }
 
 /// `bin`'s ELF for `target` where the image builders take it:

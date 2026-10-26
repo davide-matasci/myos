@@ -42,7 +42,7 @@
  *
  * The download, tar and gzip code is shared with get-myos
  * (user/get-myos/pkgtools.c). Uses fputs, not printf: newlib's printf
- * needs extra soft-float helpers on aarch64 and riscv64.
+ * needs extra long-double helpers on aarch64 and riscv64.
  */
 #include <dirent.h>
 #include <errno.h>

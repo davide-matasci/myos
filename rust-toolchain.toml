@@ -6,4 +6,7 @@ targets = [
     "x86_64-unknown-uefi",
     "aarch64-unknown-none-softfloat",
     "riscv64imac-unknown-none-elf",
+    # The no_std user programs (hard float, kernel/build.rs `user_target`).
+    "aarch64-unknown-none",
+    "riscv64gc-unknown-none-elf",
 ]

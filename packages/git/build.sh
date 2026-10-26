@@ -45,15 +45,11 @@ build_arch() {
   mkdir -p "$objdir"
   rm -f "$out"
 
-  # Soft-float helpers for aarch64/riscv64 (same as vim/oksh).
-  if [[ "$arch" == "aarch64" ]]; then
+  # Long-double helpers for aarch64/riscv64 (same as vim/oksh).
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
     extra_obj+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    extra_obj+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   MYOS_GIT_ARCH="$arch" MYOS_GIT_ROOT="$ROOT" \

@@ -48,14 +48,10 @@ link_prog() {
   local ld="${triple}-ld"
   local extra=()
 
-  if [[ "$arch" == "aarch64" && -f "$ROOT/ports/sbase/trunctfdf2.c" ]]; then
+  if [[ ( "$arch" == "aarch64" || "$arch" == "riscv64" ) && -f "$ROOT/ports/sbase/trunctfdf2.c" ]]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/lua-obj-${arch}/trunctfdf2.o"
     extra+=("$ROOT/target/lua-obj-${arch}/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" && -f "$ROOT/ports/sbase/riscv64-softfloat.c" ]]; then
-    "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$ROOT/target/lua-obj-${arch}/riscv64-softfloat.o"
-    extra+=("$ROOT/target/lua-obj-${arch}/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   echo "  LD lua ($triple)"
@@ -84,6 +80,8 @@ build_arch() {
     -include "$HERE/myos_compat.h"
   )
 
+  # Afresh: the script runs when an input changed, the flags included.
+  rm -rf "$objdir"
   mkdir -p "$objdir"
   for f in "${CORE_SRCS[@]}" "${LUA_SRCS[@]}"; do
     o="$objdir/${f%.c}.o"

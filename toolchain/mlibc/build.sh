@@ -53,7 +53,7 @@ build_one() {
   case "$arch" in
     x86_64) cpu="x86_64" ;;
     aarch64) cpu="armv8-a" ;;
-    riscv64) cpu="rv64imac"; arch_flags="'-march=rv64imac', '-mabi=lp64', '-mno-relax'," ;;
+    riscv64) cpu="rv64gc"; arch_flags="$(printf "'%s', " $MYOS_RISCV64_ISA)'-mno-relax'," ;;
   esac
 
   # The cross file's C compiler, as a command.
@@ -104,10 +104,9 @@ EOC
 
 # lib/libbuiltins.a: the compiler-rt builtins (fetch.sh) a link against
 # this libc.a needs, every one the compiler may call beside them: the IEEE
-# binary128 `long double` of aarch64 and riscv64 (printf, strtod, libm) and
-# riscv64's soft-float double and float arithmetic (rv64imac), the complex
-# multiplications of libm and the 128-bit integer divisions (`__int128`
-# arithmetic: CPython's libmpdec) on every arch. Linked after libc.a
+# binary128 `long double` of aarch64 and riscv64 (printf, strtod, libm),
+# the complex multiplications of libm and the 128-bit integer divisions
+# (`__int128` arithmetic: CPython's libmpdec) on every arch. Linked after libc.a
 # (-lbuiltins).
 build_builtins() {
   local arch="$1" prefix="$2"
@@ -120,19 +119,10 @@ build_builtins() {
         fixtfdi.c fixtfsi.c fixunstfdi.c fixunstfsi.c
         floatditf.c floatsitf.c floatunditf.c floatunsitf.c multc3.c fe_stubs.c) ;;
   esac
-  case "$arch" in
-    riscv64)
-      files+=(adddf3.c subdf3.c muldf3.c divdf3.c comparedf2.c
-        addsf3.c subsf3.c mulsf3.c divsf3.c comparesf2.c
-        fixdfsi.c fixdfdi.c fixunsdfsi.c fixunsdfdi.c
-        fixsfsi.c fixsfdi.c fixunssfsi.c fixunssfdi.c
-        floatsidf.c floatdidf.c floatunsidf.c floatundidf.c
-        floatsisf.c floatdisf.c floatunsisf.c floatundisf.c
-        truncdfsf2.c extendsfdf2.c) ;;
-  esac
   rm -rf "$obj"
   mkdir -p "$obj"
-  # Round to nearest, no exception flags: no FPU reads them.
+  # The binary128 helpers round to nearest and raise no exception flags
+  # (the FPU's own mode and flags are for float and double).
   cat >"$obj/fe_stubs.c" <<'C'
 int __fe_getround(void) { return 0; }
 int __fe_raise_inexact(void) { return 0; }

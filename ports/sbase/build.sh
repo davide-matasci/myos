@@ -156,12 +156,9 @@ build_arch() {
     objs+=("$obj")
   done
 
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     compile "$cc" "$inc" "$myos/trunctfdf2.c" "$objdir/trunctfdf2.o"
     objs+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    compile "$cc" "$inc" "$myos/riscv64-softfloat.c" "$objdir/riscv64-softfloat.o"
-    objs+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   # Each tool's main renamed for the dispatcher. A tool that does not

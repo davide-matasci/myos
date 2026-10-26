@@ -213,9 +213,9 @@ the kernel):
   restores; on x86_64 `arch` carries the user code segment), which writes
   the foreign frame or fails (the kernel then kills the task with
   `SIGSEGV`);
-- riscv64 user entry (`arch/riscv64/user.rs`, `user_sstatus`): with
-  `PERSONALITY_FPU_ON` in `ops.flags`, active tasks run with the FPU on
-  (`sstatus.FS`); native programs are soft-float;
+- riscv64 user entry (`arch/riscv64/user.rs`, `user_sstatus`): every task
+  runs with the FPU on (`sstatus.FS`), Linux's (rv64gc) and native ones
+  alike;
 - exec (`user/syscall.rs`): with the personality pending or active, the
   new image gets the SysV auxv entries (`AT_PHDR`, `AT_PHNUM`, `AT_ENTRY`,
   `AT_BASE`, ..., and the ids, all 0: without `AT_UID`/`AT_EUID`/`AT_GID`/

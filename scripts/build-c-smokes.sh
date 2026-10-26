@@ -41,17 +41,13 @@ for arch in x86_64 aarch64 riscv64; do
   inc="$prefix/${triple}/include"
   lib="$prefix/${triple}/lib"
   cc="${triple}-cc"
-  # newlib's printf wants the long-double and soft-float helpers these
-  # arches lack in the shim (the sbase port carries them).
+  # newlib's printf wants the long-double helpers these arches lack in the
+  # shim (the sbase port carries them).
   extra=()
-  if [[ "$libc" == newlib && "$arch" == "aarch64" ]]; then
+  if [[ "$libc" == newlib && ( "$arch" == "aarch64" || "$arch" == "riscv64" ) ]]; then
     tf="$ROOT/target/c-smokes-${arch}-trunctfdf2.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"
     extra+=("$tf")
-  elif [[ "$libc" == newlib && "$arch" == "riscv64" ]]; then
-    sf="$ROOT/target/c-smokes-${arch}-softfloat.o"
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$sf"
-    extra+=("$sf" "$(myos_riscv64_softfloat)")
   fi
   for entry in "${smokes[@]}"; do
     name="${entry%% *}"

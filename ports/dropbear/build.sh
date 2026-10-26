@@ -123,25 +123,19 @@ for arch in x86_64 aarch64 riscv64; do
     -Wno-incompatible-function-pointer-types
     -isystem "$clang_res" -isystem "$inc" -I"$HERE/include" -I"$LTM")
 
+  # The libraries' objects afresh: the script runs when an input changed,
+  # the compiler's flags included.
+  rm -f "$ROOT/target/ltc_${arch}_"*.o "$ROOT/target/ltm_${arch}_"*.o
   LTC_A="$(build_ltc "$arch" "$triple")"
   LTM_A="$(build_ltm "$arch" "$triple")"
 
-  # float helpers (same as tcp-listen smoke): aarch64 needs trunctfdf2,
-  # riscv64 needs the soft-float shim (LLVM refolds integer tricks into
-  # float compares; the shim is the only surviving implementation).
+  # The long-double conversions newlib's printf wants (trunctfdf2.c), on
+  # aarch64 and riscv64 (same as the tcp-listen smoke).
   extra_objs=()
-  if [[ "$arch" == "aarch64" ]]; then
-    extra_objs+=("$ROOT/target/tcp-listen-smoke-aarch64-trunctfdf2.o")
-    if [[ ! -f "$ROOT/target/tcp-listen-smoke-aarch64-trunctfdf2.o" ]]; then
-      "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-        -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/tcp-listen-smoke-aarch64-trunctfdf2.o"
-    fi
-  elif [[ "$arch" == "riscv64" ]]; then
-    extra_objs+=("$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
-    if [[ ! -f "$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o" ]]; then
-      "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-        -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$ROOT/target/tcp-listen-smoke-riscv64-softfloat.o"
-    fi
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+    extra_objs+=("$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o")
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
+      -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o"
   fi
 
   # dropbear objects, compiled afresh: a rebuild means the sources (or the

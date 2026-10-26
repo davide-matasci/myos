@@ -31,7 +31,7 @@ for arch in x86_64 aarch64 riscv64; do
       -c "$HERE/$src.c" -o "$obj"
     objs+=("$obj")
   done
-  # No printf (fputs only), so no soft-float helpers, like get-alpine.
+  # No printf (fputs only), so no long-double helpers, like get-alpine.
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$nl/lib/crt0.o" "${objs[@]}" "$zl/lib/libz.a" -L"$nl/lib" \

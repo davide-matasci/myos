@@ -131,9 +131,6 @@ unsafe extern "C" fn op_deliver(regs: *mut u64, d: *const SignalDelivery, out: *
 }
 
 static OPS: PersonalityOps = PersonalityOps {
-    // musl (rv64gc) uses the D extension; native riscv64 programs are
-    // soft-float, so only Linux tasks run with `sstatus.FS` on.
-    flags: if cfg!(target_arch = "riscv64") { myos_abi::PERSONALITY_FPU_ON } else { 0 },
     syscall: op_syscall,
     on_exec: op_on_exec,
     on_fork: op_on_fork,

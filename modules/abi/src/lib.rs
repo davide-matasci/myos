@@ -104,7 +104,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// ([`UsbHostOps::set_interface`], [`UsbHostOps::isoch_queue`], the
 /// controllers' [`UsbHcdOps::endpoints_change`]).
 /// 59: a PCI function's I/O BAR ([`KernelApi::pci_io_map`], [`PciIo`]).
-pub const ABI_VERSION: u32 = 59;
+/// 60: no `PersonalityOps::flags` (every riscv64 user task has the FPU
+/// on, so a personality need not ask).
+pub const ABI_VERSION: u32 = 60;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -617,10 +619,6 @@ pub struct SignalDelivery {
     pub arch: u64,
 }
 
-/// `PersonalityOps::flags`: the personality's tasks run with the FPU on
-/// (riscv64 `sstatus.FS`; native programs are soft-float there).
-pub const PERSONALITY_FPU_ON: u32 = 1;
-
 /// A foreign syscall personality (`KernelApi::personality_register`; one per
 /// boot). A task acquires it through `SYS_LINUX_NEXT_EXEC` + exec or
 /// [`KernelApi::personality_exec`]; the kernel tracks which tasks have it and
@@ -629,7 +627,6 @@ pub const PERSONALITY_FPU_ON: u32 = 1;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PersonalityOps {
-    pub flags: u32,
     /// A syscall from a task with the personality: `regs` is the saved
     /// user-register block (layout per arch, see `user::SyscallRegs`).
     pub syscall: unsafe extern "C" fn(nr: usize, a0: usize, a1: usize, a2: usize, regs: *mut u64) -> usize,

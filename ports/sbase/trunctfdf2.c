@@ -2,8 +2,7 @@
  * The IEEE binary128 (TF, `long double` on aarch64 and riscv64) <->
  * binary64/binary32 conversions newlib's printf, strtod and libm call:
  * __trunctfdf2, __trunctfsf2, __extenddftf2 and __extendsftf2. Linked by
- * every aarch64 C program; riscv64-softfloat.c includes this file for
- * riscv64.
+ * every aarch64 and riscv64 C program against newlib.
  *
  * Written with integer bit inspection only, never a cast between the
  * types: neither target has quad-precision hardware, so `return

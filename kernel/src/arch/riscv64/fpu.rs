@@ -112,8 +112,8 @@ pub unsafe fn restore(buf: *const u8) {
 }
 
 
-    /// Native riscv64 programs are soft-float and run with `sstatus.FS`
-    /// off; only tasks that have the FPU on (Linux tasks) need saving.
+    /// Whether the FPU is on (`sstatus.FS`), as every user task has it
+    /// (`user::user_sstatus`): its registers are then saved.
     pub fn live() -> bool {
         let s: u64;
         unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) s, options(nomem, nostack)) };

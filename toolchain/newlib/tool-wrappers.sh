@@ -5,6 +5,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 BIN="$ROOT/target/newlib-bin"
 mkdir -p "$BIN"
+# shellcheck source=scripts/myos-c-userspace-lib.sh
+source "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 write_wrapper() {
   local name="$1"
@@ -16,15 +18,17 @@ write_wrapper() {
 for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"
   elf="${arch}-unknown-none"
+  # The arch's userspace ISA (riscv64: rv64gc, hard float).
+  isa="$(myos_arch_cflags "$arch")"
   ld='ld.lld'
   write_wrapper "${triple}-cc" "#!/usr/bin/env bash
-exec clang --target=${elf} -ffreestanding -fPIC \"\$@\"
+exec clang --target=${elf} ${isa}-ffreestanding -fPIC \"\$@\"
 "
   write_wrapper "${triple}-c++" "#!/usr/bin/env bash
-exec clang++ --target=${elf} -ffreestanding -fPIC \"\$@\"
+exec clang++ --target=${elf} ${isa}-ffreestanding -fPIC \"\$@\"
 "
   write_wrapper "${triple}-as" "#!/usr/bin/env bash
-exec clang --target=${elf} -c \"\$@\"
+exec clang --target=${elf} ${isa}-c \"\$@\"
 "
   write_wrapper "${triple}-ld" "#!/usr/bin/env bash
 exec ${ld} \"\$@\"

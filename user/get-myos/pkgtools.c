@@ -4,7 +4,7 @@
  * downloading with curl, SHA-256, a streaming tar reader (ustar with pax
  * and GNU long names) and gzip inflation with the zlib port.
  *
- * Uses fputs, not printf: newlib's printf needs extra soft-float helpers
+ * Uses fputs, not printf: newlib's printf needs extra long-double helpers
  * on aarch64 and riscv64.
  */
 #include "pkgtools.h"

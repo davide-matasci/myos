@@ -26,6 +26,19 @@ myos_port_dir() {
   fi
 }
 
+# riscv64 userspace is rv64gc with the lp64d ABI (hard float), as Linux's:
+# clang's default for a bare riscv64 triple is rv64imac with soft float
+# (lp64), which every C compile of the userspace overrides with these. The
+# kernel and its modules stay rv64imac (docs/ports.md).
+MYOS_RISCV64_ISA="-march=rv64gc -mabi=lp64d"
+
+# myos_arch_cflags ARCH: the ISA flags of a C compile for ARCH's userspace
+# (riscv64's MYOS_RISCV64_ISA; the other arches take clang's defaults).
+myos_arch_cflags() {
+  [[ "$1" == riscv64 ]] && printf '%s ' $MYOS_RISCV64_ISA
+  return 0
+}
+
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_MLIBC_VERSION="$MYOS_ROOT/target/.myos-mlibc-version"
 MYOS_LIBCXX_VERSION="$MYOS_ROOT/target/.myos-libcxx-version"
@@ -112,6 +125,7 @@ myos_newlib_version_hash() {
   h="$(
     {
       echo "newlib_tag=$MYOS_NEWLIB_TAG"
+      echo "riscv64_isa=$MYOS_RISCV64_ISA"
       find "$MYOS_ROOT/toolchain/newlib/libgloss/myos" "$MYOS_ROOT/toolchain/libmyos" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/toolchain/newlib/patch.sh"
@@ -144,6 +158,7 @@ myos_mlibc_version_hash() {
   local h
   h="$(
     {
+      echo "riscv64_isa=$MYOS_RISCV64_ISA"
       find "$MYOS_ROOT/toolchain/mlibc" "$MYOS_ROOT/toolchain/libmyos" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/toolchain/newlib/libgloss/myos/crti-x86_64.S" \
@@ -701,7 +716,6 @@ myos_tcc_version_hash() {
       find "$(myos_port_dir tcc)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
-      sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -803,23 +817,12 @@ myos_clear_is_current() {
 }
 
 
-# The soft-float runtime of riscv64 (no F or D extension): compiler-rt's
-# builtins for the double and float arithmetic, compares and integer
-# conversions (ports/curl/build-softfloat-riscv64.sh), printed as the
-# archive to link after the long-double helpers of
-# ports/sbase/riscv64-softfloat.c. Every riscv64 link needs both: newlib's
-# printf and strtod call them.
-myos_riscv64_softfloat() {
-  "$MYOS_ROOT/ports/curl/build-softfloat-riscv64.sh" >/dev/null
-  echo "$MYOS_ROOT/target/libsoftfloat-riscv64.a"
-}
-
 # The second C library, mlibc (toolchain/mlibc, docs/mlibc.md): a port opts
 # in with PORT_LIBC=mlibc in its descriptor and is built against the
 # sysroot target/mlibc-<arch> (include/, lib/) with these.
 # myos_mlibc_cflags ARCH: the compiler's flags for a program against mlibc
-# (clang for the bare target, as the newlib wrappers run it; riscv64
-# soft-float, as every riscv64 program).
+# (clang for the bare target, as the newlib wrappers run it, with the
+# arch's ISA, myos_arch_cflags).
 myos_mlibc_cflags() {
   local arch="$1"
   # mlibc's headers before clang's: freestanding, clang's limits.h does not
@@ -828,7 +831,8 @@ myos_mlibc_cflags() {
   printf '%s ' "--target=${arch}-unknown-none" -ffreestanding -fPIC -nostdinc \
     -isystem "$MYOS_ROOT/target/mlibc-${arch}/include" -isystem "$(clang -print-resource-dir)/include" \
     -include stdc-predef.h
-  [[ "$arch" == riscv64 ]] && printf '%s ' -march=rv64imac -mabi=lp64 -mno-relax
+  myos_arch_cflags "$arch"
+  [[ "$arch" == riscv64 ]] && printf '%s ' -mno-relax
   return 0
 }
 # myos_mlibc_link ARCH OUT INPUT...: a static PIE of the INPUTs (objects,
@@ -897,30 +901,25 @@ myos_write_cross_cc() {
   done
   case "$libc" in
     newlib)
-      # newlib's printf wants the long-double helpers these arches lack
-      # (the sbase port carries them); riscv64 has no FPU, so its float
-      # and double arithmetic, conversions and compares are compiler-rt's
-      # as well.
+      # newlib's printf wants the long-double (binary128) conversions
+      # these arches lack (the sbase port carries them).
       case "$arch" in
-        aarch64) extra="$out.helpers.o"
-          clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
-            -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
-        riscv64)
-          clang --target="$elf" -ffreestanding -fPIC -O2 -isystem "$sysroot/include" \
-            -c "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" -o "$out.helpers.o"
-          extra="$out.helpers.o $(myos_riscv64_softfloat)" ;;
+        aarch64|riscv64) extra="$out.helpers.o"
+          # shellcheck disable=SC2046
+          clang --target="$elf" $(myos_arch_cflags "$arch") -ffreestanding -fPIC -O2 \
+            -isystem "$sysroot/include" -c "$MYOS_ROOT/ports/sbase/trunctfdf2.c" -o "$extra" ;;
       esac ;;
     mlibc)
       # The builtins archive of its sysroot has them (myos_mlibc_link).
       sysroot="$MYOS_ROOT/target/mlibc-${arch}"
       incs="-isystem $sysroot/include -isystem $clanginc -include stdc-predef.h" # myos_mlibc_cflags
       libs="-lc -lbuiltins"
-      [[ "$arch" == riscv64 ]] && flags=" -march=rv64imac -mabi=lp64 -mno-relax$flags" ;;
+      [[ "$arch" == riscv64 ]] && flags="$flags -mno-relax" ;;
     *) echo "error: PORT_LIBC=$libc: newlib or mlibc" >&2; return 1 ;;
   esac
   cat > "$out" <<EOC
 #!/usr/bin/env bash
-cflags=(--target=$elf -ffreestanding -fPIC -nostdinc $incs$flags)
+cflags=(--target=$elf $(myos_arch_cflags "$arch")-ffreestanding -fPIC -nostdinc $incs$flags)
 sysroot=$sysroot
 extra="$extra"
 libs="$libs"
@@ -1522,7 +1521,6 @@ myos_make_version_hash() {
       find "$(myos_port_dir make)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
-      sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -1550,7 +1548,6 @@ myos_os_test_version_hash() {
       find "$(myos_port_dir os-test)/overlay" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
-      sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
     } | myos_hash
   )"
   printf '%s' "$h"

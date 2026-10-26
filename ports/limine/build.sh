@@ -30,17 +30,13 @@ for arch in x86_64 aarch64 riscv64; do
   "${triple}-cc" -ffreestanding -fPIC -O2 -std=c99 -D_FILE_OFFSET_BITS=64 \
     -ffunction-sections -fdata-sections -isystem "$inc" -I"$SRC" \
     -c "$SRC/limine.c" -o "$objdir/limine.o"
-  # printf of the tool's messages: the soft-float helpers newlib's printf
+  # printf of the tool's messages: the long-double helpers newlib's printf
   # wants on aarch64 and riscv64, as for oksh.
   extra=()
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
     extra+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    extra+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
   "${triple}-ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \

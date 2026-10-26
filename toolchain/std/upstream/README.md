@@ -36,7 +36,8 @@ Follow the [Target Tier Policy](https://doc.rust-lang.org/rustc/target-tier-poli
 Add at least:
 
 - `x86_64-unknown-myos`
-- `aarch64-unknown-myos` (softfloat, matching the kernel)
+- `aarch64-unknown-myos`
+- `riscv64-unknown-myos` (rv64gc, lp64d)
 
 Start from `targets/*.json` in this repo. Hermit’s specs (`x86_64-unknown-hermit`,
 `aarch64-unknown-hermit`) are good templates for `compiler/rustc_target/src/spec/`.

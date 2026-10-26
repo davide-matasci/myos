@@ -67,7 +67,7 @@
  * mirror (a system booted from the ISO, offline).
  *
  * The download, tar and gzip code is shared with get-alpine (pkgtools.c).
- * Uses fputs, not printf: newlib's printf needs extra soft-float helpers on
+ * Uses fputs, not printf: newlib's printf needs extra long-double helpers on
  * aarch64 and riscv64.
  */
 #include <dirent.h>

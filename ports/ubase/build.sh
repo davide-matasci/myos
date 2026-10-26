@@ -122,15 +122,10 @@ build_arch() {
   compile "$cc" "$inc" "$MYOS/pw_check.c" "$objdir/pw_check.o"
   util_objs+=("$objdir/pw_check.o")
 
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     if [[ -f "$ROOT/ports/sbase/trunctfdf2.c" ]]; then
       compile "$cc" "$inc" "$ROOT/ports/sbase/trunctfdf2.c" "$objdir/trunctfdf2.o"
       extra=("$objdir/trunctfdf2.o")
-    fi
-  elif [[ "$arch" == "riscv64" ]]; then
-    if [[ -f "$ROOT/ports/sbase/riscv64-softfloat.c" ]]; then
-      compile "$cc" "$inc" "$ROOT/ports/sbase/riscv64-softfloat.c" "$objdir/riscv64-softfloat.o"
-      extra=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
     fi
   fi
 
