@@ -172,15 +172,10 @@ build_arch() {
   done
 
   local extra=()
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$obj/trunctfdf2.o"
     extra+=("$obj/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    # The long-double conversions and compiler-rt's soft float.
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$obj/riscv64-softfloat.o"
-    extra+=("$obj/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   "${triple}-ld" -pie --no-dynamic-linker --gc-sections -o "$out" \

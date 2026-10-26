@@ -391,7 +391,6 @@ fn thread_smoke() {
 /// siblings do the same with other values: if the kernel did not switch the
 /// FP/SIMD registers with the task, preemption would mix them up.
 fn fpu_smoke() {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     {
         const CHILDREN: u64 = 4;
         const ITERS: u64 = 5_000_000;
@@ -419,9 +418,6 @@ fn fpu_smoke() {
             write(b"fpu FAIL: FP registers changed across preemption\n");
         }
     }
-    // Native riscv64 programs are soft-float: no FP registers to switch.
-    #[cfg(target_arch = "riscv64")]
-    write(b"[ OK ] fpu (soft-float)\n");
 }
 
 /// Add 1.0 to `bits` (an f64) `n` times, keeping it in an FP register.
@@ -462,6 +458,35 @@ fn fp_spin(bits: u64, n: u64) -> u64 {
             "fmov {v}, d0",
             v = inout(reg) bits => out,
             n = inout(reg) n => _,
+            // The program is hard-float: the compiler keeps values there too.
+            out("v0") _,
+            out("v1") _,
+            options(nostack, nomem),
+        );
+    }
+    out
+}
+
+/// The D extension's registers, which every user task has on.
+#[cfg(target_arch = "riscv64")]
+fn fp_spin(bits: u64, n: u64) -> u64 {
+    let out: u64;
+    unsafe {
+        core::arch::asm!(
+            "fmv.d.x ft0, {v}",
+            "li {t}, 0x3ff0000000000000",
+            "fmv.d.x ft1, {t}",
+            "2:",
+            "fadd.d ft0, ft0, ft1",
+            "addi {n}, {n}, -1",
+            "bnez {n}, 2b",
+            "fmv.x.d {v}, ft0",
+            v = inout(reg) bits => out,
+            n = inout(reg) n => _,
+            t = out(reg) _,
+            // The program is hard-float: the compiler keeps values there too.
+            out("ft0") _,
+            out("ft1") _,
             options(nostack, nomem),
         );
     }

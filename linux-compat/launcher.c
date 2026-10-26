@@ -12,7 +12,7 @@
  * bind-mounted into DIR first; binds last until reboot, and binding again
  * replaces them.
  *
- * Uses fputs, not fprintf: newlib's printf needs extra soft-float helpers
+ * Uses fputs, not fprintf: newlib's printf needs extra long-double helpers
  * on aarch64/riscv64.
  */
 #include <errno.h>

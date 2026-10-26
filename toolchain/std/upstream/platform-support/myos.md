@@ -16,7 +16,7 @@ Available triples (proposed):
 | Triple | Arch | Notes |
 |--------|------|-------|
 | `x86_64-unknown-myos` | x86_64 | SysV `syscall`, argc/argv on stack at `_start` |
-| `aarch64-unknown-myos` | AArch64 softfloat | `svc #0`, argc in x0 / argv in x1 at `_start` |
+| `aarch64-unknown-myos` | AArch64 | `svc #0`, argc in x0 / argv in x1 at `_start` |
 
 These targets support `std` at bring-up scope (`println!`, heap via `brk`, basic
 stdio, `thread::sleep`, threads and their locks and thread-locals). Process,

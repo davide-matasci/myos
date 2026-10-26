@@ -107,8 +107,8 @@ until they pass honestly (no xfails):
 - `process/waitpid-pgid-empty-on-setpgid*`, `stdio/printf-Lf-width-precision-pos-args`
 - Not buildable against newlib/libgloss on every arch yet (not in any
   list; 720 of the 1352 candidates; 825 build for x86_64, 750 for aarch64,
-  632 for riscv64): most of `basic/math` (174: riscv64imac is soft-float and
-  its `<fenv.h>` has no `FE_*` exception flags), `basic/threads`, `spawn`,
+  632 for riscv64, counted while riscv64 was soft-float, issue #626): most
+  of `basic/math` (174), `basic/threads`, `spawn`,
   `semaphore`, `mqueue`, `aio`, `sched`, `libintl`, `utmpx`, `dlfcn`,
   `iconv`, `wordexp`, the pty API
   (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`,

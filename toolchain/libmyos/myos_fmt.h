@@ -1,4 +1,4 @@
-/* Tiny decimal/string helpers — avoid snprintf (soft-float vfprintf on riscv). */
+/* Tiny decimal/string helpers — avoid snprintf (vfprintf's floating point). */
 #ifndef MYOS_FMT_H
 #define MYOS_FMT_H
 

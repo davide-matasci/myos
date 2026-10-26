@@ -123,7 +123,6 @@ build_arch() {
   local extra=()
   local target_def
   local libarm="$WORK/lib/lib-arm64.c"
-  local rvsoft="$ROOT/ports/sbase/riscv64-softfloat.c"
 
   target_def="$(tcc_target_def "$arch")"
   rm -rf "$objdir"
@@ -165,22 +164,6 @@ build_arch() {
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$libarm" -o "$objdir/lib-arm64.o"
     extra+=("$objdir/lib-arm64.o")
-  fi
-
-  # riscv64-unknown-none is soft-float; libc strtod may need df helpers.
-  # Rename overlapping __trunctfdf2 so lib-arm64.c owns the IEEE-128 trunc.
-  if [[ "$arch" == "riscv64" ]]; then
-    if [[ ! -f "$rvsoft" ]]; then
-      echo "error: riscv64 softfloat helpers missing at ${rvsoft}" >&2
-      exit 1
-    fi
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -D__trunctfdf2=__myos_tcc_unused_trunctfdf2 \
-      -D__extenddftf2=__myos_tcc_unused_extenddftf2 \
-      -D__extendsftf2=__myos_tcc_unused_extendsftf2 \
-      -D__trunctfsf2=__myos_tcc_unused_trunctfsf2 \
-      -c "$rvsoft" -o "$objdir/riscv64-softfloat.o"
-    extra+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
@@ -227,18 +210,6 @@ build_libtcc1() {
     aarch64|riscv64)
       srcs+=(lib-arm64.c)
       extra_src+=("$MYOS/clear_cache.c")
-      if [[ "$arch" == "riscv64" ]]; then
-        # Guest links need the soft-float double and float helpers (the
-        # rv64imac target has no FPU): compiler-rt's, the members of
-        # target/libsoftfloat-riscv64.a unpacked into this archive. The
-        # long-double ones are lib-arm64.o's (IEEE-128); the sbase file
-        # carries only those now, so it is not needed here.
-        mkdir -p "$odir/softfloat"
-        (cd "$odir/softfloat" && "$(command -v llvm-ar 2>/dev/null || echo ar)" x "$(myos_riscv64_softfloat)")
-        for obj in "$odir"/softfloat/*.o; do
-          objs+=("$obj")
-        done
-      fi
       ;;
     *)
       echo "error: unknown arch $arch" >&2

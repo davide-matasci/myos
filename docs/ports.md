@@ -98,6 +98,28 @@ from the initramfs.
   only their CI jobs are their own (`sysroot`, `newlib` in `ci-ports.yml`:
   every port pulls them, and the sysroot build is long and cached apart).
 
+## The userspace ISA
+
+A port compiles for the arch's bare target (`<arch>-unknown-none`) through
+newlib's tool wrappers (`target/newlib-bin/<arch>-unknown-myos-cc`),
+`myos_write_cross_cc` or `myos_mlibc_cflags`, which add the userspace's ISA
+(`myos_arch_cflags`, `scripts/myos-c-userspace-lib.sh`): x86_64 and
+aarch64 take clang's defaults, hard float with SSE2 and NEON; riscv64 is
+`-march=rv64gc -mabi=lp64d` (`MYOS_RISCV64_ISA`), hard float as on Linux,
+where clang's default for a bare riscv64 triple would be soft float
+(rv64imac, lp64). The Rust targets of the std programs
+(`targets/*-unknown-myos.json`) match. A compile that bypasses them gets
+clang's riscv64 default, which ld.lld refuses to link with the rest (a
+different float ABI). `long double` is IEEE binary128 in software on
+aarch64 and riscv64: newlib's printf wants the conversions of
+`ports/sbase/trunctfdf2.c`, mlibc's links compiler-rt's
+(`libbuiltins.a`). The `no_std` Rust programs (init, netd, the smokes:
+`target/<bin>-{kernel}`) are built for the arch's hard-float bare target
+(`aarch64-unknown-none`, `riscv64gc-unknown-none-elf`, `kernel/build.rs`):
+http links LibreSSL. The kernel and its modules stay soft-float
+(`aarch64-unknown-none-softfloat`, `riscv64imac-unknown-none-elf`): they
+never touch the FP registers, and the kernel switches every user task's.
+
 ## Adding a port
 
 1. `ports/<name>/` (or `packages/<name>/`): `versions.env` (pin + sha256),

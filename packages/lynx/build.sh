@@ -17,10 +17,6 @@ fi
 "$(myos_port_dir ncurses)/build.sh"
 "$ROOT/ports/libressl/build.sh"
 "$ROOT/toolchain/newlib/build.sh"
-# Softfloat helpers for riscv (same as curl).
-if [[ -f "$ROOT/ports/curl/build-softfloat-riscv64.sh" ]]; then
-  "$ROOT/ports/curl/build-softfloat-riscv64.sh" || true
-fi
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 WORK="$ROOT/target/lynx-myos-build"
@@ -68,17 +64,12 @@ link_prog() {
   local ld="${triple}-ld"
   local extra=()
 
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     if [[ -f "$ROOT/ports/sbase/trunctfdf2.c" ]]; then
       "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
         -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/lynx-obj-${arch}/trunctfdf2.o"
       extra+=("$ROOT/target/lynx-obj-${arch}/trunctfdf2.o")
     fi
-  elif [[ "$arch" == "riscv64" ]]; then
-    # The long-double conversions and compiler-rt's soft float.
-    "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$ROOT/target/lynx-obj-${arch}/riscv64-softfloat.o"
-    extra+=("$ROOT/target/lynx-obj-${arch}/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   echo "  LD lynx ($triple)"

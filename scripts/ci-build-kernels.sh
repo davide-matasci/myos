@@ -75,7 +75,6 @@ CURL_TLS_INPUTS=(
   ports/curl/config-myos.h
   ports/curl/build.sh
   ports/curl/fetch.sh
-  ports/curl/build-softfloat-riscv64.sh
   ports/curl/tool_cfgable.h.myos.patch
 )
 

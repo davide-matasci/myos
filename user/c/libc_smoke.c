@@ -195,12 +195,12 @@ static int check_termios(void) {
     return (t.c_cflag & CSIZE) == CS7 && VSTART < NCCS && VEOL < NCCS ? 0 : fail("termios");
 }
 
-/* The soft float of the arches without an FPU in the image (riscv64:
- * compiler-rt's helpers, the long-double conversions of
- * ports/sbase/riscv64-softfloat.c): arithmetic, compares, the integer
- * conversions, and printf and strtod through them. Hand-written helpers
- * once made 80 + 100 give 116 and a == a false. volatile keeps the
- * compiler from folding the arithmetic at build time. */
+/* Floating point: arithmetic, compares, the integer conversions, and
+ * printf and strtod through them (with the long-double conversions of
+ * ports/sbase/trunctfdf2.c on aarch64 and riscv64). riscv64 was
+ * soft-float once, and hand-written helpers made 80 + 100 give 116 and
+ * a == a false. volatile keeps the compiler from folding the arithmetic
+ * at build time. */
 static int check_double(void) {
     volatile double a = 80.0, b = 100.0, c = 1000.0, nan = 0.0;
     volatile float f = 1.5f;

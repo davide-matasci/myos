@@ -46,7 +46,7 @@ link_prog() {
   echo "==> c-${name} ($triple / newlib)"
   "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$src" -o "$obj"
 
-  # soft-float long-double helpers needed when libgloss pulls snprintf (aarch64/riscv).
+  # long-double helpers needed when libgloss pulls snprintf (aarch64/riscv64).
   if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     local tf="$ROOT/target/c-${name}-${arch}-trunctfdf2.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"

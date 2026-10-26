@@ -108,14 +108,10 @@ build_arch() {
     objs+=("$obj")
   done
 
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
     extra+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    extra+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   link_prog "$arch" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}"

@@ -114,8 +114,8 @@ pub fn caller_regs(frame: *mut u64) -> UserRegs {
     }
 }
 
-/// Nothing to enable: native programs are soft-float (the Linux layer turns
-/// the FPU on per task through `sstatus`).
+/// Nothing to enable: every task enters user mode with the FPU on
+/// (`user_sstatus`).
 pub fn user_init() {}
 
 pub fn user_ap_init() {}
@@ -168,13 +168,12 @@ pub fn exec_resume(_entry: usize, _rsp: usize, _argc: usize, _argv: usize) {
 
 const USER_SSTATUS: u64 = (2 << 32) | (1 << 5); // UXL=64-bit user, SPIE, SPP=0
 
-/// `sstatus` for entering U-mode. The optional Linux layer turns the FPU on
-/// for Linux tasks (rv64gc); native programs are soft-float.
+/// `sstatus` for entering U-mode: the FPU on (`FS = Initial`), user
+/// programs being rv64gc (native ones as Linux's). The trap path keeps
+/// each task's own `FS` from then on, and `task::fpu` saves the registers
+/// of a task that has them on.
 fn user_sstatus() -> u64 {
-    if crate::personality::fpu_on() {
-        return USER_SSTATUS | super::fpu::SSTATUS_FS_INITIAL;
-    }
-    USER_SSTATUS
+    USER_SSTATUS | super::fpu::SSTATUS_FS_INITIAL
 }
 
 /// First entry to user mode (the aspace is already loaded).

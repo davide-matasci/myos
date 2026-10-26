@@ -1,6 +1,5 @@
-//! riscv64: the `asm-generic` syscall table, the signal frame, f0-f31/fcsr
-//! and the FPU enable. musl (rv64gc) uses the D extension; native myos
-//! programs are soft-float, so only Linux tasks run with `sstatus.FS` on.
+//! riscv64: the `asm-generic` syscall table and the signal frame with
+//! f0-f31/fcsr (musl, rv64gc, uses the D extension, as native programs do).
 //! `tp` is a general register, kept in the trap frame like the others.
 
 use alloc::vec;

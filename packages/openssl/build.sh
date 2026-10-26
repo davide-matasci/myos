@@ -85,16 +85,12 @@ build_arch() {
   done < <({ python3 "$ROOT/ports/libressl/sources.py" "$SRC/Makefile.am" openssl_SOURCES "${HAVE_CONDS[@]}" \
     | sed "s|^|$SRC/|"; echo "$HERE/myos_stubs.c"; })
 
-  # The soft-float helpers the sbase and lua ports link (speed and s_time
+  # The long-double helpers the sbase and lua ports link (speed and s_time
   # print timings as doubles).
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
     extra+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    extra+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   echo "  LD openssl ($triple)"

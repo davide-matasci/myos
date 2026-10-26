@@ -7,7 +7,7 @@ imports it. Read `README.md` for the overview and the subsystem notes in
 ## What myos is
 
 A small Rust kernel (`#![no_std]`) that boots through Limine in QEMU on
-**x86_64** (BIOS and UEFI), **AArch64** and **RISC-V** (riscv64imac), with a
+**x86_64** (BIOS and UEFI), **AArch64** and **RISC-V** (riscv64), with a
 VFS, kernel modules, preemptive scheduling, signals, sound, networking (smoltcp in
 userspace) and a C/Rust userspace built on newlib + libgloss (or, per port,
 mlibc: `docs/mlibc.md`). Ported programs

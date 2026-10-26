@@ -121,19 +121,12 @@ link_one() {
     -D_GNU_SOURCE -D_BSD_SOURCE -D_ALL_SOURCE -D_DEFAULT_SOURCE \
     -c "$src" -o "$obj"
 
-  if [[ "$arch" == "aarch64" ]]; then
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     local tf="$ROOT/target/os-test-prebuilt-obj/${arch}/${rel}-trunctfdf2.o"
     mkdir -p "$(dirname "$tf")"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"
     extra+=("$tf")
-  fi
-  if [[ "$arch" == "riscv64" ]]; then
-    local sf="$ROOT/target/os-test-prebuilt-obj/${arch}/${rel}-riscv64-softfloat.o"
-    mkdir -p "$(dirname "$sf")"
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$sf"
-    extra+=("$sf" "$(myos_riscv64_softfloat)")
   fi
 
   # -lm for float printf and the math/complex/fenv tests; a static archive,

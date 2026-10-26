@@ -9,7 +9,7 @@
 //! never affected, and without a registered personality the request fails.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use myos_abi::{PERSONALITY_FPU_ON, PersonalityOps, SignalDelivery};
+use myos_abi::{PersonalityOps, SignalDelivery};
 use spin::Once;
 
 use crate::task::{self, MAX_TASKS, SigAction};
@@ -33,13 +33,6 @@ pub fn register(ops: PersonalityOps) -> bool {
 /// The running task has the foreign personality.
 pub fn active() -> bool {
     ACTIVE[task::current_id()].load(Ordering::Relaxed)
-}
-
-/// The running task's image runs with the FPU on because of its personality
-/// (riscv64: `sstatus.FS`).
-#[allow(dead_code)]
-pub fn fpu_on() -> bool {
-    active() && OPS.get().is_some_and(|o| o.flags & PERSONALITY_FPU_ON != 0)
 }
 
 /// The running task's next exec starts an image with the personality.

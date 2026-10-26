@@ -47,7 +47,6 @@ fi
 "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
 "$ROOT/ports/libressl/build.sh"
-"$HERE/build-softfloat-riscv64.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 myos_ensure_llvm_bin
 
@@ -212,14 +211,6 @@ PY
     local tf="$objdir/trunctfdf2.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"
     extra+=("$tf")
-  fi
-  # Soft-float helpers for riscv (printf/strtod path in curl).
-  if [[ "$arch" == "riscv64" ]]; then
-    if [[ ! -f "$ROOT/target/libsoftfloat-riscv64.a" ]]; then
-      echo "missing target/libsoftfloat-riscv64.a (build compiler-rt softfloat)" >&2
-      return 1
-    fi
-    extra+=("$ROOT/target/libsoftfloat-riscv64.a")
   fi
 
   echo "  LD curl"

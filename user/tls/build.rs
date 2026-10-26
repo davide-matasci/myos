@@ -60,6 +60,10 @@ fn main() {
     {
         cmd = Command::new("clang");
         cmd.arg(format!("--target={arch}-unknown-none"));
+        // The userspace ISA, as the wrapper's (docs/ports.md).
+        if arch == "riscv64" {
+            cmd.args(["-march=rv64gc", "-mabi=lp64d"]);
+        }
     }
     let clang_res = Command::new("clang")
         .arg("-print-resource-dir")

@@ -295,7 +295,6 @@ Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go
 - Guest: `/bin/etc/curl`; its test fetches the launcher's test server over
   HTTPS, trusting the test CA alone (`--cacert /lib/myos-tests/test-ca.pem
   https://10.0.2.2:8767/hello.txt`, `docs/testing.md`)
-- riscv64 links a small soft-float helper archive (`ports/curl/build-softfloat-riscv64.sh`)
 
 ### Build
 

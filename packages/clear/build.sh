@@ -74,16 +74,12 @@ build_arch() {
     objs+=("$o")
   done
 
-  # newlib's printf/scanf pull long-double / soft-float builtins on the
-  # no-FPU arches; link the same helpers lua and vim do.
-  if [[ "$arch" == "aarch64" ]]; then
+  # newlib's printf/scanf pull the long-double builtins on aarch64 and
+  # riscv64; link the same helpers lua and vim do.
+  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
     extra+=("$objdir/trunctfdf2.o")
-  elif [[ "$arch" == "riscv64" ]]; then
-    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-      -c "$ROOT/ports/sbase/riscv64-softfloat.c" -o "$objdir/riscv64-softfloat.o"
-    extra+=("$objdir/riscv64-softfloat.o" "$(myos_riscv64_softfloat)")
   fi
 
   echo "  LD clear ($triple)"

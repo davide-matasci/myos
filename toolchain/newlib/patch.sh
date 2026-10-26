@@ -603,8 +603,20 @@ PYSTRTOLD
   fi
 }
 
+# riscv64's feraiseexcept returned 1 after raising the flags it was asked
+# for (`return (excepts != 0)`); POSIX says 0 when they were raised, which
+# the D extension always does (os-test's basic/fenv/feraiseexcept).
+patch_riscv_feraiseexcept() {
+  local f="$NEWLIB_SRC/newlib/libm/machine/riscv/feraiseexcept.c"
+  if [[ -f "$f" ]] && ! grep -q 'feraiseexcept-myos' "$f"; then
+    patch_edit "$f" '  return (excepts != 0);' '  return 0; /* feraiseexcept-myos: raised, as POSIX wants */' 1
+    echo "patched riscv feraiseexcept.c: 0 when raised (feraiseexcept-myos)"
+  fi
+}
+
 patch_valist
 patch_fcntl_arg
 patch_tmpfile
 patch_x86_longjmp_val0
 patch_strtold_binary128
+patch_riscv_feraiseexcept

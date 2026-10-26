@@ -19,7 +19,7 @@
 
 /* Numbers are written by hand: snprintf would pull newlib's floating point
  * formatting into every program that calls isatty (newlib's stdio does at
- * its first output), and on riscv64 that needs the soft-float helpers. */
+ * its first output), and that needs the long-double helpers. */
 static char *put_num(char *p, unsigned long v, unsigned base, int min_digits) {
     char digits[24];
     int n = 0;

@@ -97,7 +97,7 @@ Files in this repository that carry notices from upstream (kept as required):
 |-----------|---------|---------|-------|
 | musl libc (Linux test binaries and their `libc.so`) | 1.2.5 | MIT | fetched by `linux-compat/build.sh` |
 | zlib (linked into `get-alpine`) | see above | zlib | the `ports/zlib` build |
-| LLVM compiler-rt builtins (soft-float helpers, riscv64 / `libtf.a` / mlibc's `libbuiltins.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `ports/curl/build-softfloat-riscv64.sh` (linked into curl and, on riscv64, every port built with `myos_write_cross_cc`: the X packages), `linux-compat/build.sh` and `toolchain/mlibc/fetch.sh` (every program linked against mlibc) |
+| LLVM compiler-rt builtins (binary128 `long double` helpers, `libtf.a` / mlibc's `libbuiltins.a`) | llvmorg-19.1.7 | Apache-2.0 WITH LLVM-exception | fetched by `linux-compat/build.sh` and `toolchain/mlibc/fetch.sh` (every program linked against mlibc) |
 | rustls and ring (the launcher's test web server, `src/test_www.rs`: HTTPS on the host for the boot tests) | rustls 0.23, ring 0.17 (`Cargo.lock`) | rustls: Apache-2.0 OR ISC OR MIT; ring: Apache-2.0 AND ISC | host-only crates of the launcher (already in its build through `ovmf-prebuilt`); not part of any image |
 | EDK2 / OVMF firmware (used on the host only to boot QEMU) | via `ovmf-prebuilt` 0.2.9 (MIT OR Apache-2.0) | BSD-2-Clause-Patent | not part of any image |
 | U-Boot (`cargo run -- rpi3`: the Raspberry Pi 3's boot loader, `boot/rpi3`) | `UBOOT_VERSION` in `boot/rpi3/versions.env` | **GPL-2.0-or-later** (`licenses/GPL-2.0.txt`) | built on the host from the pinned release tarball into `target/rpi3`, used unmodified; not part of any image |

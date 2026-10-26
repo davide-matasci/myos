@@ -29,7 +29,7 @@ for arch in x86_64 aarch64 riscv64; do
     -c "$HERE/get-alpine.c" -o "$ROOT/target/get-alpine-${arch}.o"
   "$cc" -ffreestanding -fPIC -O2 -isystem "$nl/include" -I"$zl/include" \
     -c "$ROOT/user/get-myos/pkgtools.c" -o "$ROOT/target/get-alpine-pkgtools-${arch}.o"
-  # No printf (fputs only), so no soft-float helpers, like get-myos.
+  # No printf (fputs only), so no long-double helpers, like get-myos.
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
     "$nl/lib/crt0.o" "$ROOT/target/get-alpine-${arch}.o" "$ROOT/target/get-alpine-pkgtools-${arch}.o" \

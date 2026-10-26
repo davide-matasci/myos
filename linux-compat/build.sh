@@ -11,7 +11,7 @@
 #                                              the two tests, non-PIE (ET_EXEC)
 # musl is built from its release tarball with clang for each target; on
 # aarch64/riscv64 its libc.so links compiler-rt's quad-float builtins (fetched
-# per file, like ports/curl/build-softfloat-riscv64.sh). Only needed for
+# per file, like toolchain/mlibc/fetch.sh's). Only needed for
 # `cargo build --features linux_compat`; see docs/linux-compat.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

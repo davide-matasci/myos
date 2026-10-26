@@ -33,20 +33,6 @@ for h in "$SRC"/abis/linux/*.h; do
   [[ -e "$PORT/include/abi-bits/$name" ]] || ln -s "../../../../abis/linux/$name" "$PORT/include/abi-bits/$name"
 done
 
-# riscv64 userspace on myos is soft-float (rv64imac, docs/ports.md): setjmp
-# saves the FP registers only where there are some, as fenv.S already does.
-python3 - "$SRC/options/internal/riscv64/setjmp.S" <<'PY'
-import re, sys
-path = sys.argv[1]
-s = open(path).read()
-if "__riscv_flen" not in s:
-    s = re.sub(r"(\tfsd fs0, 112\(a0\)\n(?:\tfsd fs\d+, \d+\(a0\)\n)+)", r"#ifdef __riscv_flen\n\1#endif\n", s, count=1)
-    s = re.sub(r"(\tfld fs0,112\(a0\)\n(?:\tfld fs\d+,\d+\(a0\)\n)+)", r"#ifdef __riscv_flen\n\1#endif\n", s, count=1)
-    assert s.count("__riscv_flen") == 2, "setjmp.S: the FP register blocks not found"
-    open(path, "w").write(s)
-    print("patched riscv64/setjmp.S: FP registers only with an FPU")
-PY
-
 # Without a feature macro mlibc's headers show POSIX 1990 and what
 # _DEFAULT_SOURCE adds; newlib's (and glibc's) show POSIX 2008 with the XSI
 # extensions (renameat, ...), which a program written for them expects.
