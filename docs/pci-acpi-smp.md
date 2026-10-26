@@ -427,7 +427,13 @@ it invalidates through its queue) whose entry verifies the sender's bus,
 device and function, and refuses a plain-format message once the table is
 in place (`GCMD.CFI` clear). AMD-Vi names it in the message's data (bits
 10:0), in a table of the device's own (`intremap N table(s)` on its line):
-a device without one has its interrupts aborted. A refused message is
+a device without one has its interrupts aborted. A remapped
+level-triggered pin (a PCI INTx line) is ended at the I/O APIC's EOI
+register as well as the LAPIC (`ioapic::eoi`): the LAPIC's EOI clears the
+pin's Remote IRR only for an interrupt delivered as level-triggered with
+the vector the entry holds, and an AMD-Vi entry holds its index there
+(QEMU's AMD unit delivers every remapped interrupt as edge-triggered), so
+the line would go silent after its first interrupt. A refused message is
 recorded like a DMA on VT-d (reason 0x20 and up, 0x26 another function's
 entry, the address its handle); QEMU's AMD unit logs none. QEMU's units
 let plain-format messages through (hardware refuses them), so

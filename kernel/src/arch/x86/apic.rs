@@ -59,8 +59,9 @@ impl IrqChip for Apic {
         None
     }
 
-    fn complete(&self, _id: u32) {
+    fn complete(&self, id: u32) {
         super::interrupts::lapic_eoi();
+        super::ioapic::eoi(id);
     }
 
     fn send_ipi(&self, to: Target, ipi: Ipi) {

@@ -6,7 +6,7 @@
 //! them. Without an MADT I/O APIC entry nothing is routed and the callers
 //! poll their device.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// The registers' virtual address (0: no I/O APIC).
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -30,10 +30,19 @@ static PCI_VECTOR: [AtomicU8; PCI_PINS] = [const { AtomicU8::new(0) }; PCI_PINS]
 static PCI_LOW: [AtomicU32; PCI_PINS] = [const { AtomicU32::new(0) }; PCI_PINS];
 static PCI_REMAP: [AtomicU64; PCI_PINS] = [const { AtomicU64::new(0) }; PCI_PINS];
 static PCI_UNMASKED: [AtomicBool; PCI_PINS] = [const { AtomicBool::new(false) }; PCI_PINS];
+/// By vector, the vector field of the remapped level-triggered pin that
+/// raises it, with bit 8 set (0: none): [`eoi`] ends its interrupt at the
+/// I/O APIC itself.
+static LEVEL_EOI: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
+/// Whether the I/O APIC has the EOI register (version 0x20 and later).
+static HAS_EOI: AtomicBool = AtomicBool::new(false);
 
 const IOREGSEL: usize = 0x00;
 const IOWIN: usize = 0x10;
 const IOAPICVER: u32 = 0x01;
+/// The EOI register (a write of a vector clears the Remote IRR of the
+/// level-triggered pins whose entry holds it).
+const IOEOI: usize = 0x40;
 const IOREDTBL: u32 = 0x10;
 
 const RED_ACTIVE_LOW: u32 = 1 << 13;
@@ -71,8 +80,10 @@ pub fn init() {
     };
     BASE.store(va, Ordering::SeqCst);
     GSI_BASE.store(gsi_base, Ordering::SeqCst);
-    let entries = ((read(IOAPICVER) >> 16) & 0xFF) + 1;
+    let ver = read(IOAPICVER);
+    let entries = ((ver >> 16) & 0xFF) + 1;
     ENTRIES.store(entries, Ordering::SeqCst);
+    HAS_EOI.store(ver & 0xFF >= 0x20, Ordering::SeqCst);
     for i in 0..entries {
         write(IOREDTBL + 2 * i, RED_MASKED);
         write(IOREDTBL + 2 * i + 1, 0);
@@ -163,7 +174,8 @@ pub fn mask(irq: u8) {
 /// Write redirection entry `reg` for `vector` with trigger and polarity
 /// `low`, unmasked: fixed delivery to the BSP's LAPIC, physical
 /// destination mode, or through the IOMMU's interrupt remapping where
-/// there is one (its entry made once, kept in `remap`).
+/// there is one (its entry made once, kept in `remap`). A remapped level
+/// pin is ended at the I/O APIC too ([`eoi`]).
 fn program(reg: u32, low: u32, vector: u8, remap: &AtomicU64) {
     let remapped = match remap.load(Ordering::SeqCst) {
         0 => crate::iommu::remap_ioapic(vector, low & RED_LEVEL != 0).inspect(|&(high, bits)| {
@@ -173,6 +185,9 @@ fn program(reg: u32, low: u32, vector: u8, remap: &AtomicU64) {
     };
     match remapped {
         Some((high, bits)) => {
+            if low & RED_LEVEL != 0 {
+                LEVEL_EOI[usize::from(vector)].store(0x100 | (bits & 0xFF) as u16, Ordering::SeqCst);
+            }
             write(reg + 1, high);
             write(reg, low | bits);
         }
@@ -247,10 +262,30 @@ pub fn release_vector(vector: u8) -> bool {
     if PCI_REMAP[pin].swap(0, Ordering::SeqCst) != 0 {
         crate::iommu::unremap_ioapic(vector);
     }
+    LEVEL_EOI[usize::from(vector)].store(0, Ordering::SeqCst);
     PCI_VECTOR[pin].store(0, Ordering::SeqCst);
     PCI_LOW[pin].store(0, Ordering::SeqCst);
     super::interrupts::free_vector(vector);
     true
+}
+
+/// The end of `vector`'s interrupt at the I/O APIC, after the LAPIC's,
+/// when a remapped level-triggered pin raises it. The LAPIC's EOI reaches
+/// the I/O APIC only for an interrupt delivered as level-triggered, with
+/// the vector the entry holds: a remapped entry holds its remapping index
+/// on AMD-Vi, and QEMU's AMD unit delivers every remapped interrupt as
+/// edge-triggered, so the pin's Remote IRR would stay set and the line
+/// silent after its first interrupt (Linux ends these at the I/O APIC
+/// too).
+pub fn eoi(vector: u32) {
+    let Some(e) = LEVEL_EOI.get(vector as usize) else {
+        return;
+    };
+    let field = e.load(Ordering::Relaxed);
+    if field != 0 && HAS_EOI.load(Ordering::Relaxed) {
+        let b = BASE.load(Ordering::Relaxed);
+        unsafe { core::ptr::write_volatile((b + IOEOI) as *mut u32, u32::from(field & 0xFF)) };
+    }
 }
 
 /// Write every unmasked pin's entry again: interrupt remapping came on
