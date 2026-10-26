@@ -33,8 +33,17 @@ fi
 myos_ensure_llvm_bin
 
 SRC="$ROOT/target/libcxx-src"
-AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
-RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
+# Absolute paths: CMake takes a bare tool name as relative to the build.
+# llvm-ar from clang's own directory when it is not on PATH (Ubuntu's
+# versioned LLVM, CI's image), for objects of every arch.
+llvm_tool() {
+  command -v "$1" 2>/dev/null && return
+  local d
+  d="$(dirname "$(readlink -f "$(command -v clang)")")"
+  if [[ -x "$d/$1" ]]; then echo "$d/$1"; else command -v "$2"; fi
+}
+AR_BIN="$(llvm_tool llvm-ar ar)"
+RANLIB_BIN="$(llvm_tool llvm-ranlib ranlib)"
 CLANGXX="$(command -v clang++)"
 
 build_arch() {
