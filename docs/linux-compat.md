@@ -216,11 +216,11 @@ the kernel):
 - riscv64 user entry (`arch/riscv64/user.rs`, `user_sstatus`): every task
   runs with the FPU on (`sstatus.FS`), Linux's (rv64gc) and native ones
   alike;
-- exec (`user/syscall.rs`): with the personality pending or active, the
-  new image gets the SysV auxv entries (`AT_PHDR`, `AT_PHNUM`, `AT_ENTRY`,
-  `AT_BASE`, ..., and the ids, all 0: without `AT_UID`/`AT_EUID`/`AT_GID`/
-  `AT_EGID` musl runs as setuid and ignores `LD_LIBRARY_PATH`) and its
-  `PT_INTERP` dynamic linker is mapped (see below).
+- exec (`user/syscall.rs`): the new image gets the SysV auxv entries
+  (`AT_PHDR`, `AT_PHNUM`, `AT_ENTRY`, `AT_BASE`, ..., and the ids, all 0:
+  without `AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` musl runs as setuid and
+  ignores `LD_LIBRARY_PATH`), a native one too; with the personality
+  pending or active, its `PT_INTERP` dynamic linker is mapped (see below).
   `KernelApi::personality_exec` is the exec that keeps the personality
   (Linux `execve`); `SYS_LINUX_NEXT_EXEC` sets the pending bit for the
   launcher.
