@@ -43,6 +43,8 @@ pub const BOOT_MODULES: &[&str] = &[
     "virtio_sound",
     "usb",
     "xhci",
+    "ehci",
+    "uhci",
     "dwc2",
     "usb_hub",
     "usb_storage",

@@ -637,6 +637,30 @@ t -t fat fat_space fat_space
 # drivers, the stick's line naming its disk; the volume mounts and reads.
 export USB_DISK=sda
 grep -q ' virtio_scsi ' /dev/sda/info 2>/dev/null && USB_DISK=sdb
+# /proc/usb's device lines of the controllers whose line names `$1`
+# (`ehci`, `uhci`: their modules' describe), or of every other one with
+# `-v` first.
+usb_devs() {
+	inv=
+	[ "$1" = -v ] && { inv=1; shift; }
+	on=
+	while read -r l; do
+		case "$l" in
+		controller*)
+			case "$l" in *" $1 "*) on=1 ;; *) on= ;; esac
+			[ -z "$inv" ] || { [ -n "$on" ] && on= || on=1; }
+			continue
+			;;
+		esac
+		[ -z "$on" ] || echo "$l"
+	done < /proc/usb
+}
+# Whether the devices `usb_devs` lists for `$1` (or `-v $2`) match the
+# last argument.
+usb_has() {
+	eval "pat=\${$#}"
+	case "$1" in -v) usb_devs -v "$2" ;; *) usb_devs "$1" ;; esac | grep -q -- "$pat"
+}
 wait_for() {
 	n=$1
 	shift
@@ -685,6 +709,51 @@ usbdev() {
 	! [ -e $d/ep0 ] && ! grep -q '^held$' $d/info || { echo "still held"; return 1; }
 }
 t -t usb,usbdev usbdev usbdev
+
+# The ICH9 EHCI (docs/usb.md, ehci): the launcher's MTP responder (QEMU's
+# usb-mtp) on it at high speed, which usbdev lists, its bulk endpoints of
+# 512-byte packets (high speed's). Its device descriptor through ep0 (a
+# control transfer on the async schedule), then an MTP OpenSession command
+# on the bulk OUT endpoint, answered OK (0x2001) on the bulk IN one.
+usb_ehci() {
+	wait_for 30 sh -c 'grep -lq "^id 46f4:0004$" /dev/usb/*/info' || { ls /dev/usb; cat /proc/usb; return 1; }
+	usb_has ehci ' high 46f4:0004 ' || { cat /proc/usb; return 1; }
+	d=$(grep -l '^id 46f4:0004$' /dev/usb/*/info) && d=${d%/info}
+	grep -q '^ep81 bulk in 512$' $d/info && grep -q '^ep02 bulk out 512$' $d/info || { cat $d/info; return 1; }
+	exec 4<$d/ctl || return 1
+	printf '\200\006\000\001\000\000\022\000' > $d/ep0 || { echo "control failed"; exec 4<&-; return 1; }
+	/bin/sbase/dd if=$d/ep0 of=/tmp/ehci.desc bs=64 count=1 2>/dev/null
+	printf '\364\106\004\000' > /tmp/ehci.id
+	{ [ "$(wc -c < /tmp/ehci.desc)" -eq 18 ] \
+		&& /bin/sbase/dd if=/tmp/ehci.desc bs=1 skip=8 count=4 2>/dev/null | cmp -s - /tmp/ehci.id; } \
+		|| { echo "not its descriptor"; exec 4<&-; return 1; }
+	# OpenSession(1): length 16, a command (1), code 0x1002, transaction 1.
+	printf '\020\000\000\000\001\000\002\020\001\000\000\000\001\000\000\000' > $d/ep02 || { echo "bulk out failed"; exec 4<&-; return 1; }
+	/bin/sbase/dd if=$d/ep81 of=/tmp/ehci.resp bs=512 count=1 2>/dev/null
+	exec 4<&-
+	# The response (3), OK.
+	printf '\003\000\001\040' > /tmp/ehci.ok
+	/bin/sbase/dd if=/tmp/ehci.resp bs=1 skip=4 count=4 2>/dev/null | cmp -s - /tmp/ehci.ok \
+		|| { echo "no OK: $(wc -c < /tmp/ehci.resp) bytes"; return 1; }
+	rm -f /tmp/ehci.desc /tmp/ehci.id /tmp/ehci.resp /tmp/ehci.ok
+}
+t -t usb,usbdev,ehci usb_ehci usb_ehci
+
+# The ICH9 EHCI's UHCI companions (docs/usb.md, uhci): the full-speed hub
+# the launcher puts on the EHCI's port 3 is handed to the second companion
+# (the EHCI's port owner bit), where usb_hub takes it (its status change
+# endpoint: an interrupt transfer) and usb_audio the speaker behind it;
+# sound_usb plays through that speaker (isochronous packets).
+usb_uhci() {
+	wait_for 30 usb_has uhci ':usb_audio' || { cat /proc/usb; return 1; }
+	usb_devs uhci > /tmp/uhci.devs
+	grep -q ' full .*:usb_hub.* hub ' /tmp/uhci.devs && grep -q ' full 46f4:0002 .*:usb_audio' /tmp/uhci.devs \
+		|| { cat /proc/usb; return 1; }
+	# Nothing of them left on the EHCI.
+	! usb_has ehci ' full ' || { cat /proc/usb; return 1; }
+	rm -f /tmp/uhci.devs
+}
+t -t usb,uhci usb_uhci usb_uhci
 
 # Every disk says what it is in /dev/<disk>/info: its name, its size and
 # its driver's description (where it is, model, serial). The launcher's
@@ -794,9 +863,10 @@ usb_hub_replug() {
 	echo "HOST tests hub-unplug" >&3
 	# The stick goes first (a detach takes the children first), the hub after.
 	wait_for 30 sh -c '! test -e /dev/$USB_DISK/data' || { cat /proc/usb; return 1; }
-	wait_for 30 sh -c '! grep -q " hub " /proc/usb' || { cat /proc/usb; return 1; }
+	# (The UHCI's hub, usb_uhci's, stays.)
+	wait_for 30 eval '! usb_has -v uhci " hub "' || { cat /proc/usb; return 1; }
 	echo "HOST tests hub-plug" >&3
-	wait_for 30 grep -q ' hub ' /proc/usb || { cat /proc/usb; return 1; }
+	wait_for 30 usb_has -v uhci ' hub ' || { cat /proc/usb; return 1; }
 	sleep 2
 	echo "HOST tests hub-disk" >&3
 	wait_for 30 test -e /dev/$USB_DISK/data || { cat /proc/usb; return 1; }

@@ -142,6 +142,8 @@ MODULE_TAGS = {
     "virtio_scsi": {"blk"},
     "usb": {"usb"},
     "xhci": {"usb"},
+    "ehci": {"usb"},
+    "uhci": {"usb", "sound"},
     "dwc2": {"usb"},
     "usb_hub": {"usb"},
     "usb_storage": {"usb"},

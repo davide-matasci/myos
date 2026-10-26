@@ -22,6 +22,7 @@ mod wifi_net;
 mod wifi_sim;
 mod release;
 mod sound;
+mod usb2;
 mod test_www;
 
 use boot_test::{Board, Mode, Selection};
@@ -684,6 +685,7 @@ fn run_bios(bios_path: &str) {
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
     sound::add(&mut cmd, false);
+    usb2::add(&mut cmd, false);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -722,6 +724,7 @@ fn run_uefi(uefi_path: &str) {
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
     sound::add(&mut cmd, false);
+    usb2::add(&mut cmd, false);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -828,6 +831,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
     sound::add(&mut cmd, true);
+    usb2::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -891,6 +895,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
     sound::add(&mut cmd, true);
+    usb2::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -939,7 +944,7 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
         ok = sound::check_played(ran("sound_mix"));
     }
     if ok && ran("sound_usb") {
-        ok = sound::check_usb_played();
+        ok = sound::check_usb_played() && usb2::check_played();
     }
     // The installed disk is kept before the next boot makes a new scratch disk.
     let installed = target.join(format!("installed-{name}.img"));
@@ -1034,6 +1039,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
     sound::add(&mut cmd, ci);
+    usb2::add(&mut cmd, ci);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
@@ -1460,6 +1466,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
     sound::add(&mut cmd, ci);
+    usb2::add(&mut cmd, ci);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(

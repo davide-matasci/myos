@@ -173,7 +173,7 @@ pub struct Outcome {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 43] = [
+const BOOT_MARKERS: [&str; 45] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -201,6 +201,8 @@ const BOOT_MARKERS: [&str; 43] = [
     "[ OK ] virtio-sound",
     "[ OK ] usb",
     "[ OK ] xhci",
+    "[ OK ] ehci",
+    "[ OK ] uhci",
     "[ OK ] usb_hub",
     "[ OK ] usb_storage",
     "[ OK ] usb_hid",

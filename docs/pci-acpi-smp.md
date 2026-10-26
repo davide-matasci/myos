@@ -6,7 +6,7 @@
 |-----------|----------|-----|
 | PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
 | virtio-blk, virtio-scsi, NVMe, SD cards | `modules/virtio_blk`, `modules/virtio_scsi`, `modules/nvme`, `modules/sdmmc` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules. The virtio modules are the `virtio-drivers` crate over the module ABI (`modules/virtio`: its `Hal`, PCI and virtio-mmio probing) |
-| USB: the core, the xHCI and DWC2 hosts, hub and mass storage | `modules/usb`, `modules/xhci`, `modules/dwc2`, `modules/usb_hub`, `modules/usb_storage` | The core publishes the USB bus as a service the class drivers look up and the controller drivers register with; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
+| USB: the core, the xHCI, EHCI, UHCI and DWC2 hosts, hub and mass storage | `modules/usb`, `modules/xhci`, `modules/ehci`, `modules/uhci`, `modules/dwc2`, `modules/usb_hub`, `modules/usb_storage` | The core publishes the USB bus as a service the class drivers look up and the controller drivers register with; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
 | Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
 | Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
@@ -287,6 +287,20 @@ The NIC's `ctl` says `irq on` when that works; on `irq off` (a poll-mode
 device) `netd` keeps its 2–10 ms timed polling. Reads of `/dev/netN/data`
 stay non-blocking.
 
+## I/O BARs
+
+A module reaches a function's I/O BAR (UHCI's registers) through
+`KernelApi::pci_io_map` (ABI 59), which turns the function's I/O decoding
+on and says where the registers are, and the abi crate's `PciIo`, which
+reads and writes them: on x86_64 they are ports (`in`, `out`) the
+firmware assigned; on aarch64 and riscv64 PCI I/O space is the host
+bridge's I/O window, which the device tree's `ranges` name (space
+`0x01`; QEMU `virt`: 64 KiB at 0x3eff0000 on aarch64, 0x03000000 on
+riscv64), mapped at boot like the MMIO windows, and an I/O BAR the
+firmware left at 0 is assigned in it from 0x1000 up
+(`arch/*/pci.rs`, `io_assign`). `/proc/platform` lists the window
+(`pci io`).
+
 ## DMA
 
 A driver attaches each device it drives (`KernelApi::dma_attach`, a PCI
@@ -306,7 +320,9 @@ wrote). `kernel/src/dma.rs` keeps what it knows of each device:
   PCIe reaches the low 3 GiB at bus address 0. The pages come from the
   first window that has them (`mm::alloc_contiguous_pages` takes the
   range; the bump cursor only moves up, so a device that reaches low
-  memory alone gets it while the cursor is there, at boot).
+  memory alone gets it while the cursor is there, at boot). A device of
+  short pointers says so (`DmaDevice::below`, ABI 59: EHCI's and UHCI's
+  32 bits) and its windows are cut below its limit.
 - **Whether it sees the caches**: on aarch64 a device not known to be
   coherent is taken for not, as every aarch64 driver did before: one the
   tree does not mark `dma-coherent` (QEMU `virt` marks its devices, the

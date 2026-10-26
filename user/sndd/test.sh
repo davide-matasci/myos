@@ -85,17 +85,25 @@ sound_rec() {
 }
 t -t sound sound_rec sound_rec
 
-# The USB speaker (usb_audio, docs/usb.md): 880 Hz for a second and a half
-# through the server on its stream, isochronous packets on the xHCI, which
-# the launcher looks for in the speaker's WAV file.
+# The USB speakers (usb_audio, docs/usb.md): the xHCI's and the one behind
+# the hub on the ICH9 EHCI's UHCI companion (isochronous packets on each
+# controller), 880 Hz for a second and a half through the server on each
+# speaker's stream, which the launcher looks for in their WAV files.
 sound_usb() {
 	sound_wait || return 1
-	n=$(grep ' playback usb-audio ' /tmp/sound.list | cut -d' ' -f1)
-	[ -n "$n" ] || { cat /tmp/sound.list; return 1; }
-	/bin/etc/play -D $n -t 880 -d 1.5 &
-	pid=$!
+	streams=$(grep ' playback usb-audio ' /tmp/sound.list | cut -d' ' -f1)
+	[ "$(echo $streams | wc -w)" -ge 2 ] || { cat /tmp/sound.list; return 1; }
+	pids=
+	for n in $streams; do
+		/bin/etc/play -D $n -t 880 -d 1.5 &
+		pids="$pids $!"
+	done
 	sleep 1
-	grep -q '^state running 48000 2 s16 ' /dev/sound/$n/ctl || { cat /dev/sound/$n/ctl; kill $pid; return 1; }
-	wait $pid
+	for n in $streams; do
+		grep -q '^state running 48000 2 s16 ' /dev/sound/$n/ctl || { cat /dev/sound/$n/ctl; kill $pids; return 1; }
+	done
+	for p in $pids; do
+		wait $p || return 1
+	done
 }
 t -t sound,usb sound_usb sound_usb
