@@ -35,6 +35,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23)
 - `make` — newlib build
 - `meson`, `ninja-build` — mlibc build (`toolchain/mlibc`, `docs/mlibc.md`)
+- `cmake` — the C++ runtimes' build (libc++, libc++abi, libunwind against mlibc: `toolchain/libcxx`, `docs/mlibc.md` "C++")
 - `git` — fetching upstream port sources
 - `gh` — GitHub CLI (CI registry pulls)
 - `libc6-dev` — host CRT (`Scrt1.o`) for the Limine host tool

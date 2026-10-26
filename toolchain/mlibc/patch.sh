@@ -364,3 +364,19 @@ if s.count(old) == 4:
 else:
     assert "src[0] == '0' && value3" in s, "arpa-inet.cpp: inet_pton's octet checks not found"
 PY
+
+# A static program's object is never parsed for symbols (no hash table):
+# a dlsym there finds nothing, as the static build exports nothing (its
+# _dl_find_object is not there either), instead of panicking on the hash
+# style. libunwind looks _dl_find_object up so (toolchain/libcxx).
+python3 - "$SRC/options/rtld/generic/linker.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "\t};\n\n\tif (object->hashStyle == HashStyle::systemV) {\n"
+new = "\t};\n\n\tif (object->hashStyle == HashStyle::none)\n\t\treturn frg::optional<ObjectSymbol>{};\n\tif (object->hashStyle == HashStyle::systemV) {\n"
+if new not in s:
+    assert s.count(old) == 1, "linker.cpp: resolveInObject's hash lookup not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched linker.cpp: no symbols in an object without a hash table")
+PY
