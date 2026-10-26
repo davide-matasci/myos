@@ -155,6 +155,17 @@ void Sysdeps<ThreadExit>::operator()() {
 	__builtin_unreachable();
 }
 
+// The kernel's threads have no names: pthread_setname_np and
+// pthread_getname_np fail with ENOSYS without mlibc's warning about a
+// missing sysdep (GLib names every thread it starts).
+int Sysdeps<ThreadSetname>::operator()(void *, const char *) {
+	return ENOSYS;
+}
+
+int Sysdeps<ThreadGetname>::operator()(void *, char *, size_t) {
+	return ENOSYS;
+}
+
 void Sysdeps<Yield>::operator()() {
 	myos_syscall0(MYOS_SYS_YIELD);
 }
