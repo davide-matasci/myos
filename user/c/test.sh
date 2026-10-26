@@ -238,20 +238,6 @@ t -t exec ctor $SMOKES/ctor_smoke
 # up with different homes (sched_smoke.c; nothing to check with one CPU
 # for user tasks).
 t -t sched sched $SMOKES/sched_smoke
-# The same for a program tcc builds in the guest: its own linker bounds
-# .init_array and .fini_array, and it links crti.o and crtn.o. main returns
-# 3, and the destructor turns it into 0 if the constructor ran.
-ctor_tcc() {
-	cat > /tmp/ctor.c <<'EOF'
-#include <unistd.h>
-static int ran;
-__attribute__((constructor)) static void ctor(void) { ran = 1; }
-__attribute__((destructor)) static void dtor(void) { if (ran == 2) _exit(0); }
-int main(void) { if (ran == 1) ran = 2; return 3; }
-EOF
-	/bin/tcc/tcc -o /tmp/ctor /tmp/ctor.c && /tmp/ctor
-}
-t -t exec ctor_tcc ctor_tcc
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

@@ -221,7 +221,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount); says why a mount failed |
 | `user/umount` | `umount DIR` detaches the disk mounted there (`SYS_UMOUNT`) |
 | `user/power` | `poweroff`, `reboot`, `halt` (one program, the action its name says; `SYS_POWER`, `docs/power.md`) |
-| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, tcc, curl, dropbear, limine, ...), one `port.env` descriptor each (`docs/ports.md`) |
+| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, curl, dropbear, limine, ...), one `port.env` descriptor each (`docs/ports.md`) |
 | `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, python, rust; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
 | `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
 | `toolchain/libmyos/` | The C both libcs share: the kernel's interface as libc functions |
@@ -416,7 +416,7 @@ Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs; the ad
 ./ports/zlib/build.sh               # static libz.a for git and get-myos
 ./ports/libressl/build.sh           # static LibreSSL for curl, lynx, nginx and http
 ./packages/git/build.sh             # git, SSH remotes (a package: get-myos git)
-./ports/tcc/build.sh                # TinyCC as /t/tcc (-run support)
+./packages/tcc/build.sh             # TinyCC, the tcc package (get-myos tcc; -run support)
 ./ports/ripgrep/build.sh            # ripgrep + PCRE2 as /c/rg
 ```
 

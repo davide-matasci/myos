@@ -3,8 +3,7 @@
 # functions run here too, on $SMOKES) as mlibc_<name>, tagged mlibc and
 # <name> (a selection or a skip by the newlib test's name takes both:
 # the Raspberry Pi 3 boot skips `fileio` and `libc`, docs/testing.md), but
-# ctor_tcc (its program tcc links against newlib) and the ones that run no
-# smoke program (kbd_burst, caps_lock, usb_keyboard). What each one checks
+# the ones that run no smoke program (kbd_burst, caps_lock, usb_keyboard). What each one checks
 # is said there; a difference between the two libcs' results is mlibc's
 # sysdeps' (toolchain/mlibc/sysdeps/myos) or the shared C's
 # (toolchain/libmyos), docs/mlibc.md.

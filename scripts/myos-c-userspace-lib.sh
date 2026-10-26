@@ -694,11 +694,11 @@ myos_tcc_version_hash() {
   h="$(
     {
       myos_newlib_version_hash
-      sha256sum "$MYOS_ROOT/ports/tcc/build.sh"
-      sha256sum "$MYOS_ROOT/ports/tcc/prepare.sh"
-      sha256sum "$MYOS_ROOT/ports/tcc/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/tcc/versions.env"
-      find "$MYOS_ROOT/ports/tcc" -type f -print0 2>/dev/null \
+      sha256sum "$(myos_port_dir tcc)/build.sh"
+      sha256sum "$(myos_port_dir tcc)/prepare.sh"
+      sha256sum "$(myos_port_dir tcc)/fetch.sh"
+      sha256sum "$(myos_port_dir tcc)/versions.env"
+      find "$(myos_port_dir tcc)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
       sha256sum "$MYOS_ROOT/ports/sbase/riscv64-softfloat.c" 2>/dev/null
@@ -711,6 +711,7 @@ myos_tcc_is_current() {
   local arch triple
   [[ -f "$MYOS_TCC_VERSION" ]] \
     && [[ "$(cat "$MYOS_TCC_VERSION")" == "$(myos_tcc_version_hash)" ]] \
+    && [[ -f "$MYOS_ROOT/target/tcc-include/stddef.h" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"

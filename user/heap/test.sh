@@ -2,15 +2,15 @@
 # and ping clients, FPU state across preemption, threads (`heap mini`, the
 # `heap_mini` test); with uutils and git's porcelain (apps, installed
 # before the tests, which heap runs in their view: run-myos) as the `heap`
-# test. It prints a `[ OK ] <stage>` line per stage and `[ OK ] smoke` at
-# the end.
+# test, which runs tcc's stages too (the tcc package). It prints a
+# `[ OK ] <stage>` line per stage and `[ OK ] smoke` at the end.
 heap_smoke() {
 	# The two runs share a boot: heap's find and git stages skip themselves
 	# when their scratch directories are a previous run's.
 	rm -rf /tmp/findnest /tmp/gittest
 	if [ "$1" = full ]; then
-		# Its uutils and git stages: the apps' programs at their paths.
-		capture $OUT/heap.log run-myos git,coreutils:/bin/custom/heap
+		# Its uutils, git and tcc stages: the apps' programs at their paths.
+		capture $OUT/heap.log run-myos git,coreutils,tcc:/bin/custom/heap
 	else
 		capture $OUT/heap.log heap mini
 	fi
@@ -27,7 +27,7 @@ heap_smoke() {
 		done
 	fi
 	contains /tmp/findnest/a/b/c $OUT/heap.log || { echo "missing: find output"; return 1; }
-	if [ -x /bin/tcc/tcc ]; then
+	if [ "$1" = full ]; then
 		for n in tcc "tcc std"; do
 			contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 		done
@@ -42,4 +42,4 @@ heap_smoke() {
 	! grep -q -E "(^| )FAIL" $OUT/heap.log
 }
 t -t smoke heap_mini heap_smoke mini
-t -t heavy,pkg,git,coreutils heap heap_smoke full
+t -t heavy,pkg,git,coreutils,tcc heap heap_smoke full
