@@ -17,8 +17,7 @@ pub(super) fn write_user_bytes(aspace: u64, va: usize, src: &[u8]) -> bool {
 /// address would translate too (a syscall that forgot its range check
 /// must not read or write the kernel through a user pointer).
 fn each_user_page(aspace: u64, va: usize, len: usize, access: Access, mut f: impl FnMut(*mut u8, usize, usize)) -> bool {
-    let base = user_base() as usize;
-    if va < base || va.checked_add(len).is_none_or(|end| end > base + USER_WINDOW as usize) {
+    if va < PAGE || va.checked_add(len).is_none_or(|end| end > USER_WINDOW as usize) {
         return false;
     }
     let mut done = 0;

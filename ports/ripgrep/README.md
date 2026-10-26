@@ -5,24 +5,20 @@ Upstream is **not** vendored. Build scripts fetch:
 | Component | Pin | Location |
 |-----------|-----|----------|
 | ripgrep | `15.2.0` (`e89fff89…`) | `target/ripgrep-src` via `ports/ripgrep/fetch.sh` |
-| PCRE2 | `pcre2-10.45` | `target/pcre2-src` via `ports/ripgrep/fetch-pcre2.sh` |
+| PCRE2 | the pcre2 package's (`packages/pcre2/versions.env`) | `target/pcre2-<arch>`, built by `packages/pcre2/build.sh` |
 | pcre2-sys | `0.2.10` (crates.io) | cargo registry; `build.rs` replaced at prepare time |
 
 ## Files in this directory
 
 - `versions.env` — pins above
-- `pcre2-headers/{config.h,pcre2.h}` — configure-generated headers used when
-  cross-compiling PCRE2 for myos (JIT left undefined). Origin: the same
-  generated headers shipped inside `pcre2-sys` 0.2.10’s `upstream/include`
-  (PCRE2 project license). Kept here so the C build does not depend on a
-  prior cargo fetch of pcre2-sys.
 - `pcre2-sys-build.rs` — drop-in `build.rs` for pcre2-sys 0.2.10 that:
   1. Links a prebuilt `libpcre2-8` when `PCRE2_LIB_DIR` + `PCRE2_INCLUDE_DIR` are set
   2. Disables JIT on `*myos*` targets
 
-`ports/ripgrep/build-pcre2.sh` compiles `pcre2_jit_compile.c` **without**
-`SUPPORT_JIT` so the public `pcre2_jit_*_8` symbols exist as stubs
-(required by the Rust `pcre2` crate) but no executable JIT is emitted.
+ripgrep links the pcre2 package's `libpcre2-8.a` (`PORT_DEPS`, one PCRE2
+tree and build for it and nginx): `pcre2_jit_compile.c` is compiled there
+**without** `SUPPORT_JIT`, so the public `pcre2_jit_*_8` symbols exist as
+stubs (required by the Rust `pcre2` crate) but no executable JIT is emitted.
 
 ## Ripgrep source mutations (prepare-time, not committed)
 
@@ -40,7 +36,7 @@ feature set on nightly-2026-07-26.
 ## Runtime / kernel
 
 - The ELF is `/bin/coreutils/rg` (its own file, not a name of the uutils multicall)
-- `MAX_INIT_PAGES` raised to 1024 so the ~721-page PT_LOAD span loads
+- Its ~721-page PT_LOAD span is within the loader's cap (`MAX_ELF_PAGES`, `kernel/src/user/mod.rs`)
 
 ## Runtime fixes (myos std + ignore)
 

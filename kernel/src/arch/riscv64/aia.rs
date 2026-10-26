@@ -99,13 +99,13 @@ fn ifile_write(reg: u64, value: u64) {
     }
 }
 
-/// The APLIC's registers, where Limine's map has the low device range
-/// (`paging::map_devices`), as the PLIC's; the BSP's place among the
-/// IMSICs from the tree.
+/// The APLIC's registers, from the low device range (`paging::map_devices`),
+/// as the PLIC's; the BSP's place among the IMSICs from the tree (their
+/// pages are the messages' physical addresses, not mapped).
 fn start(intc: &Intc) -> Result<&'static dyn IrqChip, &'static str> {
     let aplic = intc.reg(0).ok_or("platform: AIA without its APLIC")?;
     let imsic = intc.reg(1).ok_or("platform: AIA without its IMSICs")?;
-    APLIC.store(aplic.base as usize, Ordering::SeqCst);
+    APLIC.store(super::paging::map_mmio(aplic.base, aplic.size).ok_or("platform: APLIC unmapped")?, Ordering::SeqCst);
     let sources = crate::dt::aia_count("riscv,aplic", "riscv,num-sources").unwrap_or(0).min(MAX_SOURCES as u32 - 1);
     let ids = crate::dt::aia_count("riscv,imsics", "riscv,num-ids").unwrap_or(0).min(2047);
     if sources == 0 || ids <= sources {

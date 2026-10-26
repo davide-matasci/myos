@@ -280,6 +280,7 @@ MYOS_C_SMOKES=(
   "tap-smoke user/c/tap_smoke.c"
   "multihome-smoke user/c/multihome_smoke.c"
   "ipv6-smoke user/c/ipv6_smoke.c"
+  "play user/c/play.c"
 )
 
 # All the C smokes (scripts/build-c-smokes.sh): c-hello's inputs plus the
@@ -518,14 +519,13 @@ myos_ripgrep_version_hash() {
       sha256sum "$MYOS_ROOT/ports/ripgrep/build.sh"
       sha256sum "$MYOS_ROOT/ports/ripgrep/prepare.sh"
       sha256sum "$MYOS_ROOT/ports/ripgrep/fetch.sh"
-      sha256sum "$MYOS_ROOT/ports/ripgrep/fetch-pcre2.sh"
-      sha256sum "$MYOS_ROOT/ports/ripgrep/build-pcre2.sh"
       sha256sum "$MYOS_ROOT/ports/ripgrep/versions.env"
       sha256sum "$MYOS_ROOT/ports/ripgrep/cargo-config.toml"
       find "$MYOS_ROOT/ports/ripgrep" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_sysroot_version_hash
       myos_newlib_version_hash
+      myos_pcre2_version_hash
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -605,7 +605,7 @@ myos_linux_compat_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/linux-smoke-${arch}-linux-musl" ]] || return 1
-    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn; do
+    for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn linux-nopie linux-dyn-nopie; do
       [[ -f "$MYOS_ROOT/target/linux-compat/${arch}/$f" ]] || return 1
     done
   done

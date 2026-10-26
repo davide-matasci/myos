@@ -636,21 +636,25 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
 }
 
 /// The `si_code` of a trapped FP exception (EC 0x2c): its ISS flags IOF,
-/// DZF, OFF, UFF, IXF (bits 0-4) and IDF (7), the first in Linux's order.
+/// DZF, OFF, UFF and IXF (bits 0-4), the first in Linux's order, when TFV
+/// (bit 23) says they are valid; else, or for IDF (an input denormal, bit
+/// 7) alone, `FPE_FLTUNK`, as on Linux.
 fn fpe_code(esr: u64) -> u32 {
     use crate::signal::code::*;
-    if esr & 0x01 != 0 {
+    if esr & (1 << 23) == 0 {
+        FPE_FLTUNK
+    } else if esr & 0x01 != 0 {
         FPE_FLTINV
     } else if esr & 0x02 != 0 {
         FPE_FLTDIV
     } else if esr & 0x04 != 0 {
         FPE_FLTOVF
-    } else if esr & 0x88 != 0 {
+    } else if esr & 0x08 != 0 {
         FPE_FLTUND
     } else if esr & 0x10 != 0 {
         FPE_FLTRES
     } else {
-        0
+        FPE_FLTUNK
     }
 }
 

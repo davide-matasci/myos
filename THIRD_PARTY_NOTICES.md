@@ -47,7 +47,6 @@ under its own license.
 | ubase | `UBASE_REV` in `ports/ubase/versions.env` | MIT | https://github.com/michaelforney/ubase |
 | uutils coreutils (+ its Rust dependencies) | 0.10.0 (see `packages/coreutils/README.md`) | MIT (dependencies: MIT / Apache-2.0 and similar permissive licenses) | https://github.com/uutils/coreutils |
 | ripgrep (+ its Rust dependencies) | 15.2.0 | Unlicense OR MIT | https://github.com/BurntSushi/ripgrep |
-| PCRE2 (for ripgrep) | 10.45 | BSD-3-Clause | https://github.com/PCRE2Project/pcre2 |
 | oksh (`/sh`) | 7.9 | Public domain (core) + BSD/ISC (portability files) | https://github.com/ibara/oksh |
 | Dropbear SSH | 2026.94 | MIT-style (plus BSD / public-domain parts; see upstream `LICENSE`; the myos patch, `ports/dropbear/*.myos.patch`, under the same license) | https://matt.ucc.asn.au/dropbear/ |
 | TinyCC (`tcc`) and `libtcc1` | `TCC_REV` in `ports/tcc/versions.env` | **LGPL-2.1** | https://github.com/TinyCC/tinycc |
@@ -62,7 +61,7 @@ under its own license.
 | Lua | 5.4.7 | MIT | https://www.lua.org/ |
 | CPython (package `python`, built against mlibc; its bundled expat, libmpdec, `_hacl` and `_blake2` sources under their own permissive licenses, `Doc/license.rst` in the upstream source; the myos patches `packages/python/*.myos.patch` under the same license; `pip`, unpacked from the wheel CPython bundles, MIT, with its vendored packages under their own licenses, all in its `dist-info/licenses`: MIT, BSD, Apache-2.0 and, for `certifi` and its CA bundle, **MPL-2.0** (`licenses/MPL-2.0.txt`)) | `PYTHON_VERSION` in `packages/python/versions.env` | PSF-2.0 (the Python Software Foundation License, GPL-compatible, permissive) | https://www.python.org/ |
 | nginx (package `nginx`) | `NGINX_VERSION` in `packages/nginx/versions.env` | BSD-2-Clause (the myos patches, `packages/nginx/*.myos.patch`, under the same license) | https://nginx.org/ |
-| PCRE2 (`packages/pcre2`, the 8-bit library linked into nginx) | `PCRE2_VERSION` in `packages/pcre2/versions.env` | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2 |
+| PCRE2 (`packages/pcre2`, the 8-bit library linked into ripgrep and nginx) | `PCRE2_VERSION` in `packages/pcre2/versions.env` | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2 |
 | bottom (package `bottom`, `btm`) + its Rust dependencies | `packages/bottom/versions.env` (dependencies: bottom's `Cargo.lock`) | bottom, crossterm, sysinfo, ratatui: MIT (the myos patches to them: the same); dependencies: MIT / Apache-2.0 and similar permissive licenses (Zlib, Unlicense OR MIT); `option-ext` 0.2.0 (used unmodified, through `dirs-sys`): **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/ClementTsang/bottom |
 | X client libraries (package `x11-libs`): xorgproto, xtrans, libXau, xcb-proto, libxcb, libX11, libXext | see `packages/x11-libs/versions.env` | MIT / X11-style (X.Org, The Open Group and others; each upstream `COPYING`) | https://www.x.org/releases/individual/ |
 | TinyX `Xfbdev` (package `tinyx`; the X server) | `TINYX_REV` in `packages/tinyx/versions.env` | **GPL-3.0** (TinyX's changes; the X.Org code it started from is MIT/X11) | https://github.com/tinycorelinux/tinyx |
@@ -80,7 +79,6 @@ under its own license.
 | Mozilla CA certificate bundle (`/lib/cacert.pem`, from curl.se) | latest at build time | **MPL-2.0** | https://curl.se/docs/caextract.html |
 | os-test suite (`/lib/os-test`, when included) | `OSTEST_REV` in `packages/os-test/versions.env` | ISC | https://gitlab.com/sortix/os-test |
 | BSD `syslimits.h` (`toolchain/newlib/libgloss/myos/sys/`) | n/a (file copied into this repo) | BSD-3-Clause, Regents of the University of California (notice kept in the file) | FreeBSD |
-| PCRE2 headers (`ports/ripgrep/pcre2-headers/`) | 10.46 | BSD-3-Clause, University of Cambridge (notice kept in the file) | https://github.com/PCRE2Project/pcre2 |
 
 Portions of this software are copyright © The FreeType Project
 (www.freetype.org). All rights reserved. (The FreeType License's credit, for
@@ -90,7 +88,6 @@ Files in this repository that carry notices from upstream (kept as required):
 `toolchain/newlib/libgloss/myos/{basename.c,dirname.c}` (newlib, Shaun Jackman),
 `toolchain/newlib/libgloss/myos/inet.c` (Paul Vixie / ISC),
 `toolchain/newlib/libgloss/myos/sys/syslimits.h` (UC Regents),
-`ports/ripgrep/pcre2-headers/pcre2.h` (University of Cambridge),
 `ports/termcap/termcap`'s `st` entries (the st authors).
 
 ## Optional components (`--features linux_compat`) and build-time tools

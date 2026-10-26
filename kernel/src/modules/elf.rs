@@ -4,9 +4,10 @@
 //! types rustc actually emits for a `no_std` PIE (`GLOB_DAT`, `JUMP_SLOT`,
 //! `R_*_64`). Symbols come from `.dynsym` or `.symtab`.
 //!
-//! `image_span` / `realize_as` also load the userspace `init` ELF: copy
-//! PT_LOAD into a caller buffer and apply relocs for a chosen load bias
-//! (USER_BASE), with no `module_init`.
+//! `image_span` / `realize_as` also load the userspace images: copy PT_LOAD
+//! into a caller buffer and apply relocs for a chosen load bias (0 for an
+//! `ET_EXEC` image, which loads at its link address), with no
+//! `module_init`.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use myos_abi::{ModuleExit, ModuleInit, ModuleRescan};
@@ -90,6 +91,7 @@ pub unsafe fn free_image(base: *mut u8, size: usize) {
 /// PT_LOAD span and `e_entry` as stored in the file (not biased).
 #[derive(Clone, Copy)]
 pub struct ImageSpan {
+    /// The start of the page the lowest PT_LOAD begins in.
     pub min_vaddr: u64,
     pub span: usize,
     pub entry: u64,
@@ -207,7 +209,7 @@ pub fn image_span(bytes: &[u8]) -> Result<ImageSpan, LoadError> {
 }
 
 /// The highest virtual address a loadable image may reach. Real images (PIE
-/// at 0, `ET_EXEC` near `USER_BASE`, dynamic linkers, kernel modules) sit far
+/// at 0, `ET_EXEC` at a low link address, dynamic linkers, kernel modules) sit far
 /// below this; a crafted ELF claiming an address near the top of the 64-bit
 /// space is rejected here so the loaders' later `vaddr + memsz`, page round-up
 /// and `load_addr - min_vaddr` arithmetic cannot overflow or underflow.
@@ -246,6 +248,10 @@ fn span_from(hdr: &Ehdr, bytes: &[u8]) -> Result<ImageSpan, LoadError> {
     if nload == 0 || min_v >= max_v {
         return Err(LoadError::NoLoad);
     }
+    // From the page the lowest segment starts in: an image is mapped by
+    // pages, and an `ET_EXEC` one at its link address (bias 0) even when its
+    // first segment does not start a page.
+    min_v &= !(PAGE as u64 - 1);
     Ok(ImageSpan {
         min_vaddr: min_v,
         span: (max_v - min_v) as usize,
@@ -334,11 +340,6 @@ fn realize_into(
             info.min_vaddr,
             load_bias,
         )?;
-        // ET_EXEC has no DYN relocs. rust-lld --image-base can still leave a
-        // rust-cache ping linked at 0x200000/0x10000 while PT_LOAD is slid to
-        // USER_BASE; abs vtables (smoltcp) then abort at 0x202218 / 0x11e6a.
-        // When load_bias is 0 the image is already at USER_BASE: skip.
-        rebase_exec_abs_ptrs(bytes, hdr, dest, info.span, load_bias);
     }
     sync_icache(dest, info.span);
     Ok(())
@@ -371,65 +372,6 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
         exit,
         rescan,
     })
-}
-
-/// Add `load_bias` to 8-byte values that point into an executable PT_LOAD.
-/// Used for ET_EXEC (no RELATIVE relocs) after a slide to USER_BASE.
-fn rebase_exec_abs_ptrs(
-    bytes: &[u8],
-    hdr: &Ehdr,
-    dest: *mut u8,
-    span: usize,
-    load_bias: u64,
-) {
-    if hdr.e_type != ET_EXEC || load_bias == 0 || span < 8 {
-        return;
-    }
-    let mut ranges = [(0u64, 0u64); 8];
-    let mut n = 0usize;
-    for i in 0..hdr.e_phnum {
-        let p = match hdr.e_phoff.checked_add(i.saturating_mul(hdr.e_phentsize)) {
-            Some(p) => p,
-            None => continue,
-        };
-        let Ok(pt) = u32_at(bytes, p) else {
-            continue;
-        };
-        if pt != PT_LOAD {
-            continue;
-        }
-        let Ok(flags) = u32_at(bytes, p + 4) else {
-            continue;
-        };
-        if flags & PF_X == 0 {
-            continue;
-        }
-        let Ok(vaddr) = u64_at(bytes, p + 16) else {
-            continue;
-        };
-        let Ok(memsz) = u64_at(bytes, p + 40) else {
-            continue;
-        };
-        if n < ranges.len() {
-            ranges[n] = (vaddr, vaddr.saturating_add(memsz));
-            n += 1;
-        }
-    }
-    if n == 0 {
-        return;
-    }
-    let mut off = 0usize;
-    while off + 8 <= span {
-        let loc = unsafe { dest.add(off) as *mut u64 };
-        let val = unsafe { loc.read_unaligned() };
-        for &(lo, hi) in ranges.iter().take(n) {
-            if val >= lo && val < hi {
-                unsafe { loc.write_unaligned(val.wrapping_add(load_bias)) };
-                break;
-            }
-        }
-        off += 8;
-    }
 }
 
 fn apply_relocs(

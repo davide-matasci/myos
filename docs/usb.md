@@ -1,11 +1,13 @@
 # USB
 
-Six modules give myos a USB bus: `usb`, the core, owns the devices and
+Seven modules give myos a USB bus: `usb`, the core, owns the devices and
 publishes the bus; `xhci` and `dwc2` drive the host controllers (PCI
 xHCI; the Raspberry Pi 3's) and register them with the core; `usb_hub` makes the devices behind hubs reachable,
 `usb_hid` feeds mice and tablets to the console's pointer
 (`/dev/console/mouse`, `docs/tty.md`) and keyboards to its keyboard
 input, and
+`usb_audio` plays through USB speakers (a card of the sound core,
+`docs/sound.md`),
 `usb_storage` turns memory sticks and disk enclosures into `/dev/sdX/`
 (`data`, the whole disk, `p<N>` per GPT partition, and `info`: the
 disk's size, its `/proc/usb` device and vendor:product, and the vendor
@@ -15,7 +17,7 @@ the wifi daemon, `docs/wifi.md`). A device plugged
 in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries a
 controller, a hub, a mouse, two sticks (one plugged in by a test) and a
-serial adapter, and a test plugs in a keyboard.
+serial adapter and a speaker, and a test plugs in a keyboard.
 
 | Module | What |
 |--------|------|
@@ -25,6 +27,7 @@ serial adapter, and a test plugs in a keyboard.
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
 | `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service; boot keyboards (3/1/1): the boot report's keys into the console's `keyboard` service, its Caps Lock LED from the console |
+| `modules/usb_audio` | Audio class (1) speakers, UAC1: the streaming interface's alternate setting with an isochronous OUT endpoint and 16-bit PCM, a playback stream of the sound core fed one packet a millisecond |
 | `modules/usbdev` | Every interface the others leave: `/dev/usb/<id>/`, its control, bulk and interrupt transfers as files for a driver that runs as a program |
 
 ## How the modules reach each other
@@ -113,7 +116,8 @@ the port speed, and runs the enumeration every new device goes through:
    another max packet size for endpoint 0 (`device_ep0`; xHCI:
    `Evaluate Context`).
 4. The first configuration descriptor: its interfaces (alternate setting
-   0) and their endpoints; isochronous endpoints are skipped.
+   0) and their endpoints; isochronous ones wait for their alternate
+   setting (below). The descriptor is kept for `set_interface`.
 5. `device_configure` with every endpoint (xHCI: `Configure Endpoint`,
    one transfer ring each), `SET_CONFIGURATION`.
 6. Every interface is offered to the class drivers in registration order
@@ -165,6 +169,41 @@ size other than 512 bytes, and registers the disk. `READ(10)` /
 `WRITE(10)` move each request as one command: CBW out, data, CSW in; a
 stalled endpoint is cleared (`clear_halt`), a failed command gets a
 `REQUEST SENSE` and one retry, a phase error a bulk-only reset.
+
+## Alternate settings and isochronous transfers
+
+A class driver selects an interface's alternate setting with
+`set_interface`: the core finds the endpoints of the old and the new
+setting in the kept configuration descriptor, has the controller drop
+and add them (`endpoints_change`; xHCI: `Configure Endpoint` with the
+input context's drop and add flags) and sends `SET_INTERFACE`.
+
+An isochronous OUT endpoint of the active setting takes packets with
+`isoch_queue`: up to 64 in flight (`USB_ISOCH_MAX`, `USB_EBUSY` past
+that), each up to 1024 bytes, one per service interval from the next
+free one. `isoch_start` registers the driver's callback, which the core's
+thread calls with the number of packets completed since the last call
+(the controller's `isoch_reap`), until `isoch_stop` or the device goes
+(`USB_EGONE`). The xHCI copies the packets into four pages of slots per
+endpoint and queues one Isoch TRB each (Start Isoch ASAP, an interrupt on
+completion); a missed interval counts as completed, its packet gone. The
+endpoint context of an isochronous endpoint has no error count, and its
+interval is the full-speed frame count's exponent (`bInterval - 1`, in
+microframes: + 3). The DWC2 drives no isochronous transfers yet
+(issue #608).
+
+`usb_audio` claims the audio control interface (class 1, subclass 1:
+nothing to drive) and the streaming one (subclass 2), finds its first
+alternate setting with an isochronous OUT endpoint and a type I format of
+16-bit PCM (`bSubframeSize` 2), and registers a card `usb-audio
+VVVV:PPPP` with one playback stream: the format's channels and those of
+its sampling frequencies the core knows. Starting the stream selects the
+setting, sets the endpoint's sampling frequency (`SET_CUR`, a speaker with
+one rate may refuse) and queues 24 packets of a millisecond each, 8 at a
+time, from the core's buffer (silence for what it lacks; 44.1 kHz carries
+44 or 45 frames a packet); each completion queues more. Stopping it goes
+back to setting 0, which gives the bus its bandwidth back. Capture (a
+microphone's isochronous IN) is issue #610.
 
 ## Hot-plug and unplug
 
@@ -239,8 +278,9 @@ that drives it, so `/dev/usb` needs no IOMMU.
 
 ## Testing
 
-The launcher gives every boot `qemu-xhci`, a `usb-hub` on its `port=1`
-(a USB 2 port, number 5 of the controller's eight: QEMU's hub is
+The launcher gives every boot `qemu-xhci` with five ports of each kind
+(`p2=5,p3=5`), a `usb-hub` on its `port=1`
+(a USB 2 port, number 6 of the controller's ten: QEMU's hub is
 full-speed, and so is the stick behind it) and a `usb-storage` behind the
 hub (`/dev/sdb/data`, the same FAT volume as `/dev/vda/data` in its own image file),
 plus a second stick's drive that `user/tests/host.sh usb-plug` attaches to
@@ -248,7 +288,7 @@ plus a second stick's drive that `user/tests/host.sh usb-plug` attaches to
 `usb-unplug` removes. `kernel.sh` waits for `/dev/sdb/data`,
 checks `/proc/usb`, mounts and reads the volume (`usb_disk`), then plugs,
 reads and unplugs the second stick (`usb_hotplug`). A test boot also has
-a `usb-mouse` on `port=3` (number 7 of the controller's, a high-speed
+a `usb-mouse` on `port=3` (number 8 of the controller's, a high-speed
 device), which `user/c/test.sh`'s `mouse` test moves and
 clicks through the monitor (`user/c/host.sh mouse`: `mouse_move`,
 `mouse_button`) while `mouse_smoke` reads `/dev/console/mouse`;
@@ -267,9 +307,13 @@ descriptor through `ep0` and loops a string through `ep02` and `ep81`
 (after the two status bytes the FTDI puts first). A boot in a
 window (`cargo run` without a test) has a `usb-tablet` there instead,
 which follows the host's pointer without grabbing it (the monitor's
-`mouse_move` is relative, so the tests use the mouse). The boot markers
-`[ OK ] usb`, `xhci`, `usb_hub`, `usb_storage`, `usb_hid`, `usbdev` cover the
-modules' init.
+`mouse_move` is relative, so the tests use the mouse). Every boot has a
+`usb-audio` speaker (full speed, 48 kHz stereo) on `port=5`, which plays
+into a WAV file in a test boot: `user/sndd/test.sh`'s `sound_usb` plays a
+tone through it, which the launcher finds in the file
+(`docs/sound.md`). The boot markers
+`[ OK ] usb`, `xhci`, `usb_hub`, `usb_storage`, `usb_hid`, `usb_audio`,
+`usbdev` cover the modules' init.
 
 ## Limits
 
@@ -286,7 +330,9 @@ modules' init.
   interrupt endpoint's report, a bulk IN endpoint's page) holding one
   for as long as it is queued; its split transactions are untested (QEMU
   has no high-speed hub).
-- No isochronous transfers, no streams, no MSI for the devices: on
+- Isochronous transfers: OUT only and on the xHCI only (issues #610,
+  #608), two endpoints per device; 4 USB speakers. No streams, no MSI
+  for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at
   a time; a control transfer's data stage is 1 KiB at most. A bulk IN
@@ -295,7 +341,7 @@ modules' init.
 - `/dev/usb`: 8 devices, 4 interfaces and 16 endpoints each; an IN
   endpoint's transfer is a page (bulk) or a packet of up to 64 bytes
   (interrupt), and four completed ones wait to be read. No isochronous
-  endpoints; one program per device.
+  endpoints there; one program per device.
 - Keyboards through the boot protocol only: six keys at once (more is
   ErrorRollOver), no media or system keys (they are another interface,
   in the report protocol, which `usb_hid` does not take), and only the

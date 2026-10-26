@@ -18,12 +18,15 @@ const MODULES: &[(&str, &str)] = &[
     ("virtio_scsi", "virtio_scsi"),
     ("nvme", "nvme"),
     ("sdmmc", "sdmmc"),
+    ("sound", "sound"),
+    ("virtio_sound", "virtio_sound"),
     ("usb", "usb"),
     ("xhci", "xhci"),
     ("dwc2", "dwc2"),
     ("usb_hub", "usb_hub"),
     ("usb_storage", "usb_storage"),
     ("usb_hid", "usb_hid"),
+    ("usb_audio", "usb_audio"),
     ("usbdev", "usbdev"),
     ("pcidev", "pcidev"),
     ("pl061", "pl061"),
@@ -122,46 +125,6 @@ fn prepare(repo: &Path, script: &str, bin: &str) {
     }
 }
 
-/// Ping/netd on AArch64/RISC-V are ET_EXEC. netd has absolute smoltcp vtables;
-/// ping keeps the same link base. Kernel slides PT_LOAD without abs relocs.
-fn assert_elf_linked_at_user_base(elf: &Path, bin: &str, target: &str) {
-    const USER_BASE: u64 = 0x4000_0000;
-    let bytes = std::fs::read(elf).unwrap_or_else(|e| panic!("read {bin} ELF: {e}"));
-    if bytes.len() < 64 || &bytes[0..4] != b"\x7fELF" {
-        panic!("{bin} for {target} is not ELF");
-    }
-    // e_entry at offset 24 (ELF64)
-    let entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-    if entry < USER_BASE {
-        panic!(
-            "{bin} for {target} entry {entry:#x} is below USER_BASE {USER_BASE:#x};              --image-base did not apply (absolute vtables would fault after slide)"
-        );
-    }
-    // e_entry alone is not enough (--section-start .text can raise entry while
-    // rodata/vtables stay at 0x200000 / 0x10000).
-    let phoff = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
-    let phentsize = u16::from_le_bytes(bytes[54..56].try_into().unwrap()) as usize;
-    let phnum = u16::from_le_bytes(bytes[56..58].try_into().unwrap()) as usize;
-    let mut min_vaddr = u64::MAX;
-    for i in 0..phnum {
-        let p = phoff + i * phentsize;
-        if p + 40 > bytes.len() {
-            break;
-        }
-        let p_type = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
-        if p_type != 1 {
-            continue; // PT_LOAD
-        }
-        let vaddr = u64::from_le_bytes(bytes[p + 16..p + 24].try_into().unwrap());
-        min_vaddr = min_vaddr.min(vaddr);
-    }
-    if min_vaddr == u64::MAX || min_vaddr < USER_BASE {
-        panic!(
-            "{bin} for {target} min PT_LOAD p_vaddr {min_vaddr:#x} is below USER_BASE              {USER_BASE:#x}; abs data would still fault after slide (entry was {entry:#x})"
-        );
-    }
-}
-
 fn nested_elf(
     cargo: &str,
     manifest_dir: &Path,
@@ -200,15 +163,8 @@ fn nested_elf(
     // Nested target dirs reuse myos-user rlibs aggressively; drop deps when
     // the shared user library changed so fork/exec stubs stay in sync.
     let profile_dir = if profile == "release" { "release" } else { "debug" };
-    // smoltcp (ping) needs a clean link for --image-base; deps-only wipe can
-    // leave a stale ET_EXEC at the default 0x200000 / 0x10000 link base.
-    let need_image_base = user_image_base(bin) && (target.contains("aarch64") || target.contains("riscv64"));
-    if need_image_base {
-        let _ = std::fs::remove_dir_all(&td);
-    } else {
-        let deps = td.join(target).join(profile_dir).join("deps");
-        let _ = std::fs::remove_dir_all(deps);
-    }
+    let deps = td.join(target).join(profile_dir).join("deps");
+    let _ = std::fs::remove_dir_all(deps);
     let mut cmd = Command::new(cargo);
     cmd.arg("build")
         .arg("--manifest-path")
@@ -228,8 +184,8 @@ fn nested_elf(
     if target.contains("x86_64")
         && matches!(
             bin,
-            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "rpi_firmware" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc"
-                | "linux" | "usb" | "xhci" | "dwc2" | "usb_hub" | "usb_storage" | "usb_hid" | "usbdev" | "pcidev" | "pl061" | "tap"
+            "ext2" | "fat" | "virtio_net" | "netfs" | "pci_enum" | "acpi" | "rpi_firmware" | "virtio_blk" | "virtio_scsi" | "nvme" | "sdmmc" | "sound" | "virtio_sound"
+                | "linux" | "usb" | "xhci" | "dwc2" | "usb_hub" | "usb_storage" | "usb_hid" | "usb_audio" | "usbdev" | "pcidev" | "pl061" | "tap"
         )
     {
         rustflags = String::from("-C panic=abort -C relocation-model=pic");
@@ -244,9 +200,8 @@ fn nested_elf(
         );
     }
     // Kernel modules are PIEs on every arch, so the loader applies real
-    // RELATIVE relocs: a static ET_EXEC slid by the loader only gets its code
-    // pointers rebased (`rebase_exec_abs_ptrs`), not pointers into .rodata
-    // (`&str` tables), which then fault in the module. The prebuilt libcore
+    // RELATIVE relocs (a module loads wherever the kernel heap has room,
+    // which a static ET_EXEC could not follow). The prebuilt libcore
     // is not PIC on aarch64/riscv64; `-z notext` lets lld emit dynamic
     // relocs for its read-only sections (the loader relocates before use).
     if is_module && (target.contains("aarch64") || target.contains("riscv64")) {
@@ -258,11 +213,6 @@ fn nested_elf(
     // SSE, which the aes crate's AES-NI code needs; its portable code then.
     if bin == "wifi" && target.contains("x86_64") {
         rustflags.push_str(" --cfg aes_force_soft");
-    }
-    // Belt-and-suspenders with user/ping/build.rs. Prefer split link-arg form
-    // (equals form alone previously left CI at 0x200000/0x10000).
-    if need_image_base {
-        rustflags.push_str(" -C link-arg=--image-base -C link-arg=0x40000000");
     }
     cmd.env("RUSTFLAGS", rustflags);
     cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
@@ -284,9 +234,6 @@ fn nested_elf(
     if !elf.is_file() {
         panic!("{bin} ELF missing at {}", elf.display());
     }
-    if need_image_base {
-        assert_elf_linked_at_user_base(&elf, bin, target);
-    }
     let stable = stable_elf(manifest_dir, bin, target);
     std::fs::copy(&elf, &stable)
         .unwrap_or_else(|e| panic!("copy {bin} ELF to {}: {e}", stable.display()));
@@ -298,13 +245,4 @@ fn stable_elf(manifest_dir: &Path, bin: &str, target: &str) -> PathBuf {
     let ws_target = manifest_dir.join("../target");
     std::fs::create_dir_all(&ws_target).expect("workspace target dir");
     ws_target.join(format!("{bin}-{target}"))
-}
-
-/// Programs linked at USER_BASE (ET_EXEC with absolute vtables; see
-/// `PORT_IMAGE_BASE` in the descriptor).
-fn user_image_base(bin: &str) -> bool {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    ports::load_all(&repo)
-        .iter()
-        .any(|p| p.kind == ports::Kind::User && p.bin == bin && p.image_base)
 }

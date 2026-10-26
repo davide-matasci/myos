@@ -170,6 +170,16 @@ pub struct Pending {
     /// TD's TRBs; null while the endpoint does not exist.
     pub ring_phys: AtomicU64,
     pub ring_trbs: AtomicPtr<[u32; 4]>,
+    /// An isochronous endpoint: a TD per packet, each interrupting; the
+    /// handler counts the ones done (from the slot of the next one,
+    /// `iso_next`): since the core last took the count (`iso_done`,
+    /// `isoch_reap`), and in all (`iso_total`, wrapping); `iso_queued`
+    /// the ones queued in all (less `iso_total`: those on the ring).
+    pub iso: AtomicBool,
+    pub iso_next: AtomicU32,
+    pub iso_done: AtomicU32,
+    pub iso_total: AtomicU32,
+    pub iso_queued: AtomicU32,
 }
 
 impl Pending {
@@ -186,6 +196,11 @@ impl Pending {
             has_callback: AtomicBool::new(false),
             ring_phys: AtomicU64::new(0),
             ring_trbs: AtomicPtr::new(core::ptr::null_mut()),
+            iso: AtomicBool::new(false),
+            iso_next: AtomicU32::new(0),
+            iso_done: AtomicU32::new(0),
+            iso_total: AtomicU32::new(0),
+            iso_queued: AtomicU32::new(0),
         }
     }
 
@@ -202,6 +217,8 @@ impl Pending {
         self.ring_trbs.store(core::ptr::null_mut(), Ordering::Release);
         self.ring_phys.store(0, Ordering::Relaxed);
         self.has_callback.store(false, Ordering::Relaxed);
+        self.iso.store(false, Ordering::Relaxed);
+        self.iso_done.store(0, Ordering::Relaxed);
         self.done.store(false, Ordering::Relaxed);
         self.active.store(false, Ordering::Release);
     }
@@ -256,6 +273,31 @@ pub struct Endpoint {
     pub own_bounce: bool,
     pub user: *mut u8,
     pub user_len: usize,
+    /// An isochronous OUT endpoint's packet buffers, from its first
+    /// `isoch_queue`.
+    pub iso: Option<IsoBuffers>,
+}
+
+/// Pages an isochronous endpoint's packets are copied into.
+pub const ISO_PAGES: usize = 4;
+
+/// An isochronous endpoint's packet buffers: [`ISO_PAGES`] pages of
+/// `slot`-byte slots, used in turn.
+pub struct IsoBuffers {
+    pub pages: [(u64, *mut u8); ISO_PAGES],
+    pub slot: usize,
+    pub slots: usize,
+    pub next: usize,
+}
+
+impl IsoBuffers {
+    /// Slot `i`: its bus address and pointer.
+    pub fn at(&self, i: usize) -> (u64, *mut u8) {
+        let per_page = 4096 / self.slot;
+        let (phys, va) = self.pages[i / per_page];
+        let off = (i % per_page) * self.slot;
+        (phys + off as u64, unsafe { va.add(off) })
+    }
 }
 
 /// The command ring's one command in flight.
@@ -453,6 +495,10 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
             let Some(p) = owner.and_then(|o| crate::dev::pending_at(c.index, o, dci)) else {
                 return;
             };
+            if p.iso.load(Ordering::Acquire) {
+                isoch_event(c, p, e.trb_pointer(), code);
+                return;
+            }
             if !p.active.load(Ordering::Acquire) || p.done.load(Ordering::Acquire) {
                 return;
             }
@@ -514,6 +560,50 @@ fn handle_event(c: &Controller, raw: [u32; 4]) {
         }
         _ => {}
     }
+}
+
+/// A transfer event on an isochronous endpoint: the TDs from the next one
+/// expected up to the one it names are done (sent, or missed: a Missed
+/// Service event names the last TD it skipped). An event naming no TD of
+/// the ring (a ring underrun: it ran dry) completes none.
+fn isoch_event(c: &Controller, p: &Pending, trb: u64, code: u8) {
+    // Ring underrun or overrun, a missed interval (its TRB pointer may be
+    // anything: the next TD's event counts the skipped ones), a stopped
+    // endpoint (its TD did not complete): nothing to count here.
+    if matches!(code, 14 | 15 | 23 | 26 | 27 | 28) {
+        return;
+    }
+    let Some(idx) = Ring::index_in(p.ring_phys.load(Ordering::Relaxed), trb) else {
+        return;
+    };
+    if idx >= TRBS - 1 {
+        return;
+    }
+    let mut at = p.iso_next.load(Ordering::Relaxed) as usize;
+    let mut n = 1;
+    while at != idx && n < TRBS {
+        at = next_slot(at);
+        n += 1;
+    }
+    // A TD counted already (behind `iso_next`) would count the ring over.
+    let on_ring = p.iso_queued.load(Ordering::Acquire).wrapping_sub(p.iso_total.load(Ordering::Acquire));
+    if n as u32 > on_ring {
+        return;
+    }
+    p.iso_next.store(next_slot(idx) as u32, Ordering::Relaxed);
+    p.iso_done.fetch_add(n as u32, Ordering::Release);
+    p.iso_total.fetch_add(n as u32, Ordering::Release);
+    crate::core_wake(c);
+}
+
+/// Queue one packet on an isochronous endpoint's ring: an Isoch TRB of
+/// `len` bytes at `phys`, interrupting, started as soon as the controller
+/// can (the endpoint's next service interval).
+pub fn enqueue_isoch(ep: &mut Endpoint, phys: u64, len: usize) {
+    let mut t = transfer::Isoch::new();
+    t.set_data_buffer_pointer(phys).set_trb_transfer_length(len as u32).set_td_size_or_tbc(0).set_start_isoch_asap();
+    t.set_interrupt_on_completion();
+    ep.ring.push(t.into_raw());
 }
 
 /// Wait for `done` (a command or a TD), `timeout_ms` at most: false on

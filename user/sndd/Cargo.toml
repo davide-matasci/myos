@@ -1,0 +1,29 @@
+[workspace]
+
+[package]
+name = "sndd"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The sound server: mixes its clients' playback into the sound cards, hands them what the cards record."
+
+[[bin]]
+name = "sndd"
+test = false
+bench = false
+
+[dependencies]
+myos-user = { path = "../lib" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

@@ -5,11 +5,13 @@
 use crate::smp::MAX_CPUS;
 use crate::task::STACK_SIZE;
 
-/// User images load at Sv39 root[1].
+/// Where a position-independent image loads (an `ET_EXEC` one loads at
+/// its link address): 1 GiB, which leaves the first gigabyte to programs
+/// linked low (0x10000, 0x200000, 0x400000).
 pub const DEFAULT_USER_BASE: u64 = 0x4000_0000;
-/// The span above the user base that user mappings may lie in (the
-/// kernel's own mappings start outside it): what a user pointer may name.
-/// 65 GiB: the root slots of `upaging`.
+/// The end of the user window, `[0, USER_WINDOW)`, where user mappings lie
+/// (the kernel's own are outside it): what a user pointer may name. 66 GiB:
+/// the root slots of `upaging`.
 pub const USER_WINDOW: u64 = (super::upaging::USER_ROOT_SLOTS as u64) << 30;
 /// The mmap window (after the brk heap), see x86: 64 GiB.
 pub const MMAP_AREA_PAGES: usize = 1 << 24;
@@ -19,8 +21,9 @@ pub const USER_STACK_PAGES: usize = 256;
 /// and GNU make's report over the curated os-test lists needs more than
 /// 4 MiB; 16 MiB, as on the other arches.
 pub const HEAP_PAGES: usize = 4096;
-/// The process lives in the root's user slots: 65 GiB.
-pub const USER_SPAN_PAGES: usize = super::upaging::USER_ROOT_SLOTS << 18;
+/// Image, stack, heap and the mmap window must fit the window above
+/// `DEFAULT_USER_BASE` (65 GiB).
+pub const USER_SPAN_PAGES: usize = ((USER_WINDOW - DEFAULT_USER_BASE) / 4096) as usize;
 
 /// The user registers a new task starts with (fork child, thread).
 #[derive(Clone, Copy)]
@@ -63,6 +66,11 @@ pub const SYSCALL_KEPT: [usize; 0] = [];
 
 /// A kept word as it goes back (none here).
 pub fn kept_word(_i: usize, v: u64) -> u64 {
+    v
+}
+
+/// A kept word as a signal handler starts with it (none here).
+pub fn handler_word(_i: usize, v: u64) -> u64 {
     v
 }
 

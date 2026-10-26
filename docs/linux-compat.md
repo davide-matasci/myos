@@ -528,8 +528,7 @@ Not built there yet, copied from the running system instead: the C and
 `std` programs the kernel embeds (the std demos, c-hello, oksh, getty,
 login) and `http`, whose TLS library is LibreSSL over newlib
 (`MYOS_PREBUILT=http` has `kernel/build.rs` take it as it is). Build
-scripts are linked with clang: Alpine's gcc is not position-independent,
-which the Linux layer requires.
+scripts are linked with clang.
 
 The kernel it builds boots: with it in the image instead of the host's,
 `cargo run -- test-mini` passes. Under TCG a first run takes hours:
@@ -537,17 +536,18 @@ The kernel it builds boots: with it in the image instead of the host's,
 three, the kernel crate itself an hour. Known gaps:
 
 - `http` (LibreSSL and newlib: autotools, `make`, `python3`) and the other
-  C programs are not built in myos;
-- non-PIE Linux programs (Alpine's gcc) do not run (see Limits).
+  C programs are not built in myos.
 
 ## Limits
 
-- PIE musl binaries only (static-PIE or dynamically linked), no glibc ones
-  (not tried: glibc needs more syscalls), and no non-PIE `ET_EXEC` images:
-  the loader places every image in the fixed
-  per-arch user window (non-PIE binaries are linked at 0x400000 / 0x10000,
-  which needs a redesign of the user address-space layout; so e.g. Alpine's
-  prebuilt `busybox.static` does not load).
+- musl binaries only (static or dynamically linked, position-independent
+  or not), no glibc ones (not tried: glibc needs more syscalls). A non-PIE
+  (`ET_EXEC`) program loads at its link address (Alpine's gcc links at
+  0x400000 on x86_64, 0x10000 or 0x400000 elsewhere), which must leave the
+  first 64 KiB unmapped and leave room above the image for the stack, the
+  heap and the mmap window in the user window (`[0, 512 GiB)` on x86_64,
+  `[0, 66 GiB)` on aarch64 and riscv64); a position-independent one loads
+  at 1 GiB.
 - Signals act at syscall exit, as for native programs: a task looping in
   user mode is not interrupted until its next syscall (only `SIGKILL` acts
   on the interrupt return, and a fault's signal at once). No alternate signal stacks, no real-time signal
@@ -623,8 +623,8 @@ three, the kernel crate itself an hour. Known gaps:
     its size (Alpine's cargo is 23 MB). Any other program is read whole: a
     file of at most 16 MiB from a writable filesystem (the initramfs has
     no limit) whose loaded image spans at most 4096 pages (16 MiB);
-  - a per-process `mmap` window of 64 GiB (every arch: the process span
-    is 65 GiB, the image, stack and heap in its first gigabyte) with at
+  - a per-process `mmap` window of 64 GiB (every arch: above the image,
+    its stack and heap, from 1 GiB for a position-independent program) with at
     most 4096 mappings; adjacent mappings with the same
     protection and backing are merged (musl's malloc makes hundreds of
     small neighbouring ones: jq peaks at 188; rustc's Scudo allocator

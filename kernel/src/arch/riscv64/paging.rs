@@ -1,5 +1,8 @@
 //! Add a low-half device map to Limine's existing Sv39 root. Do not replace
-//! `satp`: unlike AArch64 TTBR0, RISC-V has a single page-table register.
+//! `satp`: unlike AArch64 TTBR0, RISC-V has a single page-table register,
+//! so the user window (`upaging`, from VA 0) and the kernel's devices
+//! share the low half: a device below the window's end is mapped above it,
+//! from [`RELOC_VA`].
 
 use core::arch::asm;
 
@@ -50,16 +53,19 @@ pub fn pte_is_table(pte: u64) -> bool {
     pte & PTE_V != 0 && pte & (PTE_R | PTE_W | PTE_X) == 0
 }
 
-unsafe fn install_mid_root(root: &mut [u64; 512]) {
+unsafe fn install_mid_root(root: &mut [u64; 512], slot: usize) {
     let mid = &raw mut MID;
     let mid_phys = limine_boot::kernel_virt_to_phys(mid as usize);
     for i in 0..512 {
         unsafe { (*mid).0[i] = pte_leaf_2m((i as u64) << 21, DEV) };
     }
-    root[0] = pte_table(mid_phys);
+    root[slot] = pte_table(mid_phys);
 }
 
-/// Identity-map the low 1 GiB for UART, CLINT, PLIC, virtio-MMIO, and PCI ECAM.
+/// Map the low 1 GiB (UART, CLINT, PLIC, virtio-MMIO, PCI ECAM) at
+/// [`RELOC_VA`], where [`map_mmio`] finds it, and identity-mapped in the
+/// kernel's root for the boot until the platform's devices move there
+/// (`apply_platform`): a user address space has its own pages in root[0].
 pub fn map_devices() {
     unsafe {
         let satp: u64;
@@ -72,23 +78,19 @@ pub fn map_devices() {
             return;
         }
         let root = &mut *crate::mm::table(root_phys);
-        if root[0] & PTE_V == 0 || !pte_is_table(root[0]) {
-            install_mid_root(root);
-        } else {
-            let mid = &mut *crate::mm::table(pte_phys(root[0]));
-            for i in 0..512 {
-                mid[i] = pte_leaf_2m((i as u64) << 21, DEV);
-            }
-        }
+        install_mid_root(root, RELOC_SLOT);
+        root[0] = root[RELOC_SLOT];
         asm!("sfence.vma", options(nostack));
     }
 }
 
-/// Where a BAR inside the user span (`upaging::USER_ROOT_SLOTS` from
-/// `DEFAULT_USER_BASE`: QEMU `virt`'s 32-bit PCIe window at 1 GiB and its
-/// 64-bit one at 16 GiB are) is mapped instead, at the same offset: 128
-/// GiB, above the span and below the upper half.
+/// Where device memory below the user window's end (`user::USER_WINDOW`,
+/// 66 GiB: the low gigabyte's devices, QEMU `virt`'s 32-bit PCIe window at
+/// 1 GiB and its 64-bit one at 16 GiB) is mapped instead, at its physical
+/// address from here: 128 GiB, above the window and below the upper half.
 pub const RELOC_VA: u64 = 0x20_0000_0000;
+const RELOC_SLOT: usize = (RELOC_VA >> 30) as usize;
+const _: () = assert!(RELOC_VA >= super::user::USER_WINDOW && RELOC_VA + super::user::USER_WINDOW <= 1 << 38);
 
 fn map_2m(root: &mut [u64; 512], pa: u64, va: u64) {
     let i2 = ((va >> 30) & 0x1ff) as usize;
@@ -106,15 +108,16 @@ fn map_2m(root: &mut [u64; 512], pa: u64, va: u64) {
     }
 }
 
-/// Identity-map device MMIO. If `phys` sits in the user span, map it from
-/// [`RELOC_VA`] instead so syscalls (user satp) can still reach the BAR.
+/// Map device MMIO: from [`RELOC_VA`] when `phys` is below the user
+/// window's end (so syscalls, on a user satp, can still reach it; the low
+/// gigabyte is mapped there already), identity-mapped above.
 pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
     if size == 0 {
         return None;
     }
     let end = phys.checked_add(size)?;
-    if phys < 0x4000_0000 && end <= 0x4000_0000 {
-        return Some(phys as usize);
+    if end <= 1 << 30 {
+        return Some((RELOC_VA + phys) as usize);
     }
     let satp: u64;
     unsafe {
@@ -124,9 +127,8 @@ pub fn map_mmio(phys: u64, size: u64) -> Option<usize> {
         return None;
     }
     let root = unsafe { &mut *crate::mm::table(satp_root_phys(satp)) };
-    let user_base = super::user::DEFAULT_USER_BASE;
-    let conflict = phys < user_base + super::user::USER_WINDOW && end > user_base;
-    let relocate = |pa: u64| if conflict { pa - user_base + RELOC_VA } else { pa };
+    let conflict = phys < super::user::USER_WINDOW;
+    let relocate = |pa: u64| if conflict { pa + RELOC_VA } else { pa };
     let pa_end = (end + 0x1F_FFFF) & !0x1F_FFFF;
     let mut pa = phys & !0x1F_FFFF;
     while pa < pa_end {

@@ -3,19 +3,35 @@
 
 use super::*;
 
-/// Realize `bytes` at USER_BASE: frames, stack page, aspace.
+/// The lowest address an `ET_EXEC` image may load at: the first 64 KiB
+/// stay unmapped, so that a null pointer faults (Linux's `mmap_min_addr`).
+const EXEC_MIN_VA: u64 = 0x1_0000;
+
+/// Where `bytes` loads: an `ET_EXEC` image at its link address (the page
+/// its lowest segment starts in), a position-independent one at
+/// [`DEFAULT_USER_BASE`]. `None` when an `ET_EXEC` image would map the
+/// first 64 KiB, or the image with the stack, heap and mmap window after it
+/// would not fit the user window.
+pub(super) fn image_base(bytes: &[u8]) -> Option<u64> {
+    let info = elf::image_span(bytes).ok()?;
+    let base = if elf::is_pie(bytes) { DEFAULT_USER_BASE } else { info.min_vaddr };
+    let pages = info.span.div_ceil(PAGE).max(USER_EXEC_RELOAD_PAGES);
+    let fits = mmap_limit_va(base, (pages * PAGE) as u64) <= USER_WINDOW;
+    (base >= EXEC_MIN_VA && fits).then_some(base)
+}
+
+/// Realize `bytes` at `base` ([`image_base`]): frames, stack page, aspace.
 /// Callers that abandon a prior aspace must [`reclaim_user_aspace`] it.
 /// `relocate == false` leaves the relocations to a dynamic linker (see
 /// [`elf::realize_as`]); the same holds for reload and expand below.
-pub(super) fn load_user_elf(bytes: &[u8], relocate: bool) -> Option<(u64, usize, usize, u64)> {
+pub(super) fn load_user_elf(bytes: &[u8], base: u64, relocate: bool) -> Option<(u64, usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let code_pages = info.span.div_ceil(PAGE);
-    if code_pages == 0 || code_pages > MAX_INIT_PAGES {
+    if code_pages == 0 || code_pages > MAX_ELF_PAGES {
         return None;
     }
-    let n_pages = code_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_INIT_PAGES);
+    let n_pages = code_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_ELF_PAGES);
 
-    let base = USER_BASE.load(Ordering::SeqCst);
     let stack_off = (n_pages * PAGE) as u64;
 
     if info.span > ELF_SCRATCH_BYTES {
@@ -28,14 +44,14 @@ pub(super) fn load_user_elf(bytes: &[u8], relocate: bool) -> Option<(u64, usize,
     }
     // A crafted ELF whose lowest vaddr is above the load base would make
     // this bias underflow (span_from caps it below IMAGE_VADDR_MAX; a real
-    // image's min_vaddr is 0 for PIE or the base for ET_EXEC).
+    // image's min_vaddr is 0 for PIE or the base for ET_EXEC, bias 0).
     let load_bias = base.checked_sub(info.min_vaddr)?;
     let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
         Err(_) => return None,
     };
 
-    // Heap, not kstack: MAX_INIT_PAGES×8 ≈ 8KiB would sit on the same
+    // Heap, not kstack: MAX_ELF_PAGES×8 = 32 KiB would sit on the same
     // 64KiB stack as the live syscall trap frame (riscv64 exec→load fallback).
     let mut frames = alloc::vec![0u64; n_pages];
     for i in 0..n_pages {
@@ -205,7 +221,7 @@ pub(super) fn reload_user_elf(
     }
     // A crafted ELF whose lowest vaddr is above the load base would make
     // this bias underflow (span_from caps it below IMAGE_VADDR_MAX; a real
-    // image's min_vaddr is 0 for PIE or the base for ET_EXEC).
+    // image's min_vaddr is 0 for PIE or the base for ET_EXEC, bias 0).
     let load_bias = base.checked_sub(info.min_vaddr)?;
     let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,
@@ -275,7 +291,7 @@ fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
     }
 }
 
-/// Grow the current aspace and load a large ELF (up to [`MAX_EXPAND_PAGES`]).
+/// Grow the current aspace and load a large ELF (up to [`MAX_ELF_PAGES`]).
 /// Used when [`reload_user_elf`] is too small but we already have an aspace
 /// (post-fork exec of release uutils / ripgrep).
 /// Free the old image's pages past the new code span, and stack/heap pages
@@ -335,10 +351,10 @@ pub(super) fn expand_user_elf(
 ) -> Option<(usize, usize, u64)> {
     let info = elf::image_span(bytes).ok()?;
     let image_pages = info.span.div_ceil(PAGE);
-    if image_pages == 0 || image_pages > MAX_EXPAND_PAGES {
+    if image_pages == 0 || image_pages > MAX_ELF_PAGES {
         return None;
     }
-    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_EXPAND_PAGES);
+    let n_pages = image_pages.max(USER_EXEC_RELOAD_PAGES).min(MAX_ELF_PAGES);
     let new_stack_off = (n_pages * PAGE) as u64;
     if info.span > ELF_SCRATCH_BYTES {
         return None;
@@ -356,7 +372,7 @@ pub(super) fn expand_user_elf(
     }
     // A crafted ELF whose lowest vaddr is above the load base would make
     // this bias underflow (span_from caps it below IMAGE_VADDR_MAX; a real
-    // image's min_vaddr is 0 for PIE or the base for ET_EXEC).
+    // image's min_vaddr is 0 for PIE or the base for ET_EXEC, bias 0).
     let load_bias = base.checked_sub(info.min_vaddr)?;
     let entry = match elf::realize_as(bytes, buf.as_mut_ptr(), load_bias, relocate) {
         Ok(e) => e,

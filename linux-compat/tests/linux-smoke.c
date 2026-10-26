@@ -33,6 +33,7 @@
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/signalfd.h>
+#include <ucontext.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -1522,6 +1523,34 @@ static int fault_store_resumes(volatile char *p) {
 #endif
 }
 
+#if defined(__x86_64__)
+/* x86's single step: three SIGTRAPs, one per instruction after popfq; the
+ * handler starts with TF clear (else it would trap again with SIGTRAP
+ * blocked), rt_sigreturn puts it back, and the third handler turns it off
+ * in the ucontext. */
+static volatile int steps;
+static void on_step(int sig, siginfo_t *si, void *ucv) {
+    ucontext_t *uc = ucv;
+    unsigned long flags;
+    (void)sig;
+    __asm__ volatile("pushfq\n\tpopq %0" : "=r"(flags));
+    if ((flags & 0x100) != 0 || si->si_code != TRAP_TRACE) {
+        steps = -100;
+    }
+    if (++steps == 3) {
+        uc->uc_mcontext.gregs[REG_EFL] &= ~0x100L;
+    }
+}
+
+static void check_single_step(void) {
+    fault_catch(SIGTRAP, on_step);
+    steps = 0;
+    __asm__ volatile("pushfq\n\torq $0x100, (%%rsp)\n\tpopfq\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop" ::: "memory", "cc");
+    signal(SIGTRAP, SIG_DFL);
+    check(steps == 3, "single step: a SIGTRAP per instruction, the handler without TF");
+}
+#endif
+
 static void check_faults(void) {
     fault_catch(SIGILL, on_fault_leave);
     fault_sig = 0;
@@ -1565,6 +1594,9 @@ static void check_faults(void) {
     check(fault_sig == SIGSEGV && fault_addr == fault_page + 16 && kept,
           "a SIGSEGV handler returns to the store, registers kept");
     munmap(fault_page, 4096);
+#if defined(__x86_64__)
+    check_single_step();
+#endif
 }
 
 int main(int argc, char **argv) {

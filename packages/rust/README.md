@@ -42,12 +42,12 @@ rlibs carry a hash of the spec); the root's cargo configuration
 target, so `cargo build` builds for myos, into `target/<arch>-unknown-myos/`.
 
 Both links are Alpine's `lld`'s: the toolchain's own `rust-lld` is not
-position-independent, and the Linux layer runs position-independent
-programs only (issue #585). A myos program links as on the host. Build
-scripts and proc macros are built for the host and run under the layer (no
-C compiler in the root), both linked dynamically against the root's musl
-and `libgcc_s`: aarch64's musl target has no static PIE, and the layer
-loads position-independent programs only. A linker wrapper in
+position-independent, which the Linux layer once required (it runs
+non-PIE programs now: moving to `rust-lld` is issue #602). A myos program
+links as on the host. Build scripts and proc macros are built for the
+host and run under the layer (no C compiler in the root), both linked
+dynamically against the root's musl and `libgcc_s`: aarch64's musl target
+has no static PIE. A linker wrapper in
 `/usr/local/libexec/myos` names musl's loader and points lld at those two
 libraries alone; cargo's `[host]` table (unstable) gives the host's
 programs their linker and `-crt-static`.
@@ -62,7 +62,7 @@ the root only. What it builds is a native myos program, run as any other.
 - Crates that need a C compiler in their build scripts (`cc`) do not build:
   the root has none.
 - The download is about 230 MB and the root about 1.2 GiB (Alpine's lld
-  and its LLVM libraries: issue #585); under emulation the setup takes
+  and its LLVM libraries: issue #602); under emulation the setup takes
   minutes and a first build too.
 
 `test.sh` sets the toolchain up on the scratch disk and builds a program

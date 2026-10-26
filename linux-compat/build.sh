@@ -7,6 +7,8 @@
 #   target/linux-compat/<arch>/ld-musl-<arch>.so.1  musl's libc.so / dynamic linker
 #   target/linux-compat/<arch>/{linux-dyn,libsmoke.so,libsmoke2.so}
 #                                              a dynamically linked test
+#   target/linux-compat/<arch>/{linux-nopie,linux-dyn-nopie}
+#                                              the two tests, non-PIE (ET_EXEC)
 # musl is built from its release tarball with clang for each target; on
 # aarch64/riscv64 its libc.so links compiler-rt's quad-float builtins (fetched
 # per file, like ports/curl/build-softfloat-riscv64.sh). Only needed for
@@ -164,6 +166,23 @@ for arch in "${ARCHES[@]}"; do
   done
   "${dyncc[@]}" -fPIE -pie -Wl,--dynamic-linker="/lib/$ldso" -o "$out/linux-dyn" \
     "$prefix/lib/Scrt1.o" "$prefix/lib/crti.o" "$ROOT/linux-compat/tests/linux-dyn.c" \
+    "$out/libsmoke.so" -L"$prefix/lib" -lc "$prefix/lib/crtn.o"
+
+  # The same two as non-PIE (ET_EXEC) programs, at the address gcc links
+  # them at (0x400000; riscv64's 0x10000): the layer loads them there.
+  case "$arch" in
+    riscv64) nopie=() ;;
+    *) nopie=(-Wl,--image-base=0x400000) ;;
+  esac
+  echo "==> linux-nopie, linux-dyn-nopie ($arch Linux, musl, non-PIE)"
+  "${cc[@]}" -static -no-pie -O2 -nostdinc -nostdlib -fuse-ld=lld "${nopie[@]}" \
+    -isystem "$prefix/include" -isystem "$(clang -print-resource-dir)/include" \
+    -o "$out/linux-nopie" \
+    "$prefix/lib/crt1.o" "$prefix/lib/crti.o" \
+    "$ROOT/linux-compat/tests/linux-smoke.c" \
+    "$prefix/lib/libc.a" "$prefix/lib/crtn.o"
+  "${dyncc[@]}" -no-pie "${nopie[@]}" -Wl,--dynamic-linker="/lib/$ldso" -o "$out/linux-dyn-nopie" \
+    "$prefix/lib/crt1.o" "$prefix/lib/crti.o" "$ROOT/linux-compat/tests/linux-dyn.c" \
     "$out/libsmoke.so" -L"$prefix/lib" -lc "$prefix/lib/crtn.o"
 
 done

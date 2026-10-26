@@ -21,6 +21,7 @@ mod ports;
 mod wifi_net;
 mod wifi_sim;
 mod release;
+mod sound;
 mod test_www;
 
 use boot_test::{Board, Mode, Selection};
@@ -478,14 +479,15 @@ pub struct UsbBus {
     pub port: &'static str,
 }
 
-/// The virt boards' `qemu-xhci`: the devices on root ports of their own.
+/// The virt boards' `qemu-xhci`: the devices on root ports of their own
+/// (five USB 2 ports, the speaker on the fifth, `sound::add`).
 pub const XHCI_USB: UsbBus = UsbBus { name: "xhci.0", port: "" };
 /// The Raspberry Pi 3's DWC2 has one root port: everything hangs from the
 /// hub on it.
 pub const RPI3_USB: UsbBus = UsbBus { name: "usb-bus.0", port: "1." };
 
 fn add_usb(cmd: &mut Command) {
-    cmd.arg("-device").arg("qemu-xhci,id=xhci");
+    cmd.arg("-device").arg("qemu-xhci,id=xhci,p2=5,p3=5");
     add_usb_devices(cmd, XHCI_USB);
 }
 
@@ -681,6 +683,7 @@ fn run_bios(bios_path: &str) {
     add_boot_disk(&mut cmd, &boot_image(Path::new(bios_path)));
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, false);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -718,6 +721,7 @@ fn run_uefi(uefi_path: &str) {
     add_boot_disk(&mut cmd, &boot_image(Path::new(uefi_path)));
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, false);
     add_wifi_radio(&mut cmd);
     let status = cmd.status().expect("failed to start qemu-system-x86_64");
     exit(status.code().unwrap_or(1));
@@ -823,6 +827,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -885,6 +890,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -922,11 +928,19 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
     let disk = target.join(format!("boot-test-{name}.img"));
     limine_image::copy_sparse(image, &disk);
+    sound::set_test_name(name);
     let linux = linux_compat_enabled();
     let slow = name.starts_with("riscv64");
     let outcome = boot_test::run(spawn(&disk), Board::Virt, &mode, linux, slow);
     let mut ok = outcome.ok;
     let ran = |test: &str| outcome.passed.iter().any(|t| t == test);
+    // What the guest played is in the WAV file the boot's QEMU wrote.
+    if ok && ran("sound_play") {
+        ok = sound::check_played(ran("sound_mix"));
+    }
+    if ok && ran("sound_usb") {
+        ok = sound::check_usb_played();
+    }
     // The installed disk is kept before the next boot makes a new scratch disk.
     let installed = target.join(format!("installed-{name}.img"));
     if ok && ran("boot_install_local") {
@@ -1019,6 +1033,7 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
     add_virtio_blk_aarch64(&mut cmd);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, ci);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
@@ -1264,196 +1279,6 @@ fn aarch64_dtb() -> Vec<u8> {
     std::fs::read(&dtb_path).expect("read virt-aarch64.dtb")
 }
 
-
-/// rust-lld default image base (AArch64 0x200000, RISC-V 0x10000). netd (and
-/// ping) are ET_EXEC; netd has absolute smoltcp vtables. The kernel slides
-/// PT_LOAD to USER_BASE without fixing abs relocs, so they must be linked at
-/// 0x40000000.
-const USER_BASE: u64 = 0x4000_0000;
-
-fn assert_elf_linked_at_user_base(elf: &Path, bin: &str, target: &str) {
-    let bytes = std::fs::read(elf).unwrap_or_else(|e| {
-        eprintln!("error: read {bin} ELF {}: {e}", elf.display());
-        exit(1);
-    });
-    if bytes.len() < 64 || &bytes[0..4] != b"\x7fELF" {
-        eprintln!("error: {bin} for {target} is not ELF64");
-        exit(1);
-    }
-    let entry = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-    let phoff = u64::from_le_bytes(bytes[32..40].try_into().unwrap()) as usize;
-    let phentsize = u16::from_le_bytes(bytes[54..56].try_into().unwrap()) as usize;
-    let phnum = u16::from_le_bytes(bytes[56..58].try_into().unwrap()) as usize;
-    let mut min_vaddr = u64::MAX;
-    for i in 0..phnum {
-        let p = phoff + i * phentsize;
-        if p + 40 > bytes.len() {
-            break;
-        }
-        let p_type = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
-        if p_type != 1 {
-            continue;
-        }
-        let vaddr = u64::from_le_bytes(bytes[p + 16..p + 24].try_into().unwrap());
-        min_vaddr = min_vaddr.min(vaddr);
-    }
-    if entry < USER_BASE || min_vaddr == u64::MAX || min_vaddr < USER_BASE {
-        eprintln!(
-            "error: {bin} for {target} entry {entry:#x} min PT_LOAD {min_vaddr:#x} below USER_BASE {USER_BASE:#x}"
-        );
-        exit(1);
-    }
-}
-
-/// Force a correctly-linked `target/{bin}-$target` before the kernel build.
-///
-/// Boot CI does `cargo clean -p kernel --target`, but that can leave the
-/// kernel build-script fingerprint/output "fresh". The reused USER_*_PATH
-/// then `include_bytes!` a rust-cache ELF still linked at 0x200000/0x10000.
-fn ensure_user_at_user_base(cargo: &str, target: &str, bin: &str) {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let target_dir = root.join("target");
-    let stable = target_dir.join(format!("{bin}-{target}"));
-    let _ = std::fs::remove_file(&stable);
-
-    for profile in ["debug", "release"] {
-        let base = target_dir.join(target).join(profile);
-        for sub in ["build", ".fingerprint", "incremental"] {
-            let dir = base.join(sub);
-            if sub == "incremental" {
-                let _ = std::fs::remove_dir_all(&dir);
-            } else if let Ok(rd) = std::fs::read_dir(&dir) {
-                for ent in rd.flatten() {
-                    let name = ent.file_name();
-                    if name.to_string_lossy().starts_with("kernel-") {
-                        let _ = std::fs::remove_dir_all(ent.path());
-                        let _ = std::fs::remove_file(ent.path());
-                    }
-                }
-            }
-        }
-        let host = target_dir.join(profile);
-        for sub in ["build", ".fingerprint", "incremental"] {
-            let dir = host.join(sub);
-            if sub == "incremental" {
-                let _ = std::fs::remove_dir_all(&dir);
-            } else if let Ok(rd) = std::fs::read_dir(&dir) {
-                for ent in rd.flatten() {
-                    let name = ent.file_name();
-                    if name.to_string_lossy().starts_with("kernel-") {
-                        let _ = std::fs::remove_dir_all(ent.path());
-                        let _ = std::fs::remove_file(ent.path());
-                    }
-                }
-            }
-        }
-    }
-
-    // What the crate's build needs first (`PORT_PREPARE`: netd's patched
-    // smoltcp), as kernel/build.rs does before its own build of it.
-    if let Some(script) = ports::load_all(&root)
-        .into_iter()
-        .find(|p| p.kind == ports::Kind::User && p.bin == bin)
-        .and_then(|p| p.prepare)
-    {
-        let ok = Command::new("bash")
-            .arg(root.join(&script))
-            .status()
-            .is_ok_and(|s| s.success());
-        if !ok {
-            eprintln!("error: {script} failed for {bin}");
-            exit(1);
-        }
-    }
-
-    let td = target_dir.join(format!("{bin}-prelink-{target}"));
-    let _ = std::fs::remove_dir_all(&td);
-    let mut rustflags = if target.contains("aarch64") {
-        String::from("-C panic=abort -C relocation-model=static")
-    } else {
-        String::from("-C panic=abort -C relocation-model=static -C code-model=medium")
-    };
-    rustflags.push_str(" -C link-arg=--image-base -C link-arg=0x40000000");
-    let status = Command::new(cargo)
-        .args([
-            "build",
-            "--manifest-path",
-            root.join(format!("user/{bin}/Cargo.toml")).to_str().unwrap(),
-            "--target",
-            target,
-            "--bin",
-            bin,
-            "--target-dir",
-        ])
-        .arg(&td)
-        .env("RUSTFLAGS", &rustflags)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("error: spawn {bin} prelink for {target}: {e}");
-            exit(1);
-        });
-    if !status.success() {
-        eprintln!("error: {bin} prelink failed for {target}");
-        exit(1);
-    }
-    let elf = td.join(target).join("debug").join(bin);
-    if !elf.is_file() {
-        eprintln!("error: {bin} prelink ELF missing at {}", elf.display());
-        exit(1);
-    }
-    assert_elf_linked_at_user_base(&elf, bin, target);
-    std::fs::create_dir_all(&target_dir).expect("target dir");
-    std::fs::copy(&elf, &stable).unwrap_or_else(|e| {
-        eprintln!("error: copy {bin} to {}: {e}", stable.display());
-        exit(1);
-    });
-    stamp_user_into_kernel_outs(&elf, target, bin);
-    eprintln!(
-        "{bin} prelink ok: {} linked at USER_BASE (min PT_LOAD verified)",
-        stable.display()
-    );
-}
-
-fn stamp_user_into_kernel_outs(good: &Path, target: &str, bin: &str) {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
-    let nested_name = format!("{bin}-target");
-    for profile in ["debug", "release"] {
-        for build_root in [
-            root.join(target).join(profile).join("build"),
-            root.join(profile).join("build"),
-        ] {
-            let Ok(rd) = std::fs::read_dir(&build_root) else {
-                continue;
-            };
-            for ent in rd.flatten() {
-                if !ent.file_name().to_string_lossy().starts_with("kernel-") {
-                    continue;
-                }
-                let out = ent.path().join("out");
-                let nested = out
-                    .join(&nested_name)
-                    .join(target)
-                    .join(profile)
-                    .join(bin);
-                if nested.is_file() {
-                    let _ = std::fs::copy(good, &nested);
-                }
-                if let Ok(files) = std::fs::read_dir(&out) {
-                    for f in files.flatten() {
-                        let n = f.file_name();
-                        let ns = n.to_string_lossy();
-                        if ns.starts_with(&format!("{bin}-")) && ns.ends_with(".elf") {
-                            let _ = std::fs::copy(good, f.path());
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-
 /// Boot CI packs aarch64/riscv64 kernels in `ci-build.tar`. When the restore
 /// step sets `MYOS_SKIP_KERNEL_REBUILD=1`, use those ELFs instead of
 /// `cargo clean` + `cargo build` (was the multi-minute compile inside boot).
@@ -1491,12 +1316,6 @@ fn build_aarch64_kernel() -> PathBuf {
     }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    // rust-cache can keep a pre--image-base ET_EXEC at 0x200000; cargo clean -p
-    // kernel alone may skip build.rs. Prelink ping/netd at USER_BASE and
-    // invalidate fingerprints. (CI boot prefers packed kernels via
-    // MYOS_SKIP_KERNEL_REBUILD.)
-    ensure_user_at_user_base(&cargo, AARCH64_TARGET, "ping");
-    ensure_user_at_user_base(&cargo, AARCH64_TARGET, "netd");
     let clean = Command::new(&cargo)
         .args(["clean", "-p", "kernel", "--target", AARCH64_TARGET])
         .status()
@@ -1640,6 +1459,7 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
     add_virtio_blk_riscv64(&mut cmd);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    sound::add(&mut cmd, ci);
     add_wifi_radio(&mut cmd);
     cmd.arg("-drive")
         .arg(format!(
@@ -1745,9 +1565,6 @@ fn build_riscv64_kernel() -> PathBuf {
     }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    // Same rust-cache trap as aarch64 (fault at 0x11e6a).
-    ensure_user_at_user_base(&cargo, RISCV64_TARGET, "ping");
-    ensure_user_at_user_base(&cargo, RISCV64_TARGET, "netd");
     let clean = Command::new(&cargo)
         .args(["clean", "-p", "kernel", "--target", RISCV64_TARGET])
         .status()
