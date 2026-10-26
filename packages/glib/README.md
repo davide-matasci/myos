@@ -25,6 +25,14 @@ defaults: its own printf (gnulib's) for the C99 and positional ones.
 Off: introspection, the tests, libmount, SELinux, xattrs, sysprof, dtrace.
 GIO's file monitor is its polling one (no inotify).
 
+The libraries over GLib compile their resources while they build
+(gdk-pixbuf, GTK), with a `glib-compile-resources` that runs on the build
+host: `build.sh` also builds GLib natively, with the host's compiler, over
+host builds of libffi, PCRE2 and zlib from the same pins, and keeps that
+tool in `target/glib-host/bin` (the CI image has no GLib of its own).
+GLib's other generators (`glib-mkenums`, `glib-genmarshal`) are Python
+and run from the cross prefix.
+
 `glib-myos.myos.patch` gives myos `g_unix_fd_query_path`, through
 `/proc/self/fd` as on Linux (`__myos__`, which the build defines).
 
