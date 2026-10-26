@@ -1428,6 +1428,12 @@ lx_nopie() {
 # connects to a native server by the name it listens under in /net/unix,
 # as an Alpine X client reaches the X server's /tmp/.X11-unix/X0, and gets
 # its bytes echoed.
+# IPv6 datagrams between Linux sockets: [::1], and dual stack from AF_INET.
+lx_inet6() {
+	capture $OUT/lx-inet6.log linux /bin/linux/linux-smoke inet6
+	cat $OUT/lx-inet6.log
+	contains "LINUX-INET6 OK" $OUT/lx-inet6.log
+}
 lx_unix() {
 	/bin/etc/unix_smoke echo /tmp/.lx-unix > $OUT/lx-unix-server.log 2>&1 &
 	spid=$!
@@ -1706,6 +1712,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_dyn lx_dyn
 	t -t linux linux_nopie lx_nopie
 	t -t linux,netfs linux_unix lx_unix
+	t -t linux,netfs,ipv6 linux_inet6 lx_inet6
 	t -t linux,events linux_evfd_root lx_evfd_root
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind

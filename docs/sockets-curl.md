@@ -29,7 +29,44 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    lo 127.0.0.1 255.0.0.0 up,loopback
    net0 10.0.2.15 255.255.255.0 up,broadcast
    ```
-   (`-` for the address and mask until DHCP is done)
+   (`-` for the address and mask until DHCP is done), then a line per IPv6
+   address (below), each interface's lines together, its IPv4 one first:
+   ```
+   lo ::1 ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff up,loopback
+   net0 fe80::5054:ff:fe12:3456 ffff:ffff:ffff:ffff:: up,broadcast
+   net0 fec0::5054:ff:fe12:3456 ffff:ffff:ffff:ffff:: up,broadcast
+   ```
+
+   **IPv6.** smoltcp carries IPv6 beside IPv4 (`proto-ipv6`, neighbor
+   discovery). Each NIC has a link-local address from its MAC (the
+   modified EUI-64 interface identifier under fe80::/64) from the start,
+   and an address of its own (SLAAC, RFC 4862) in the /64 prefix its
+   link's router advertises: netd sends up to three router solicitations,
+   4 s apart, until one answers, and the NIC's device
+   (`user/net/src/lib.rs`, `Net0Device`) picks the router advertisements
+   out of the frames, which smoltcp leaves alone. The advertisement names
+   the default router (its link-local address), the prefix and how long
+   its addresses are valid (the address goes when that runs out), and the
+   DNS servers (RDNSS, RFC 8106). QEMU's user network advertises
+   fec0::/64, its host fec0::2 and, when the host has an IPv6
+   nameserver to forward to (libslirp's condition), its DNS fec0::3.
+   `/net/ndb` shows the
+   preferred NIC's (the wired one with a router, else the first other one)
+   on an `ip6=` line under the IPv4 one, and its servers as `dns=` lines
+   after the IPv4 ones:
+   ```
+   ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2
+   ip6=fec0::5054:ff:fe12:3456/64 ip6gw=fe80::2
+   	dns=10.0.2.4
+   	dns=fec0::3
+   ```
+   `lo` carries ::1 and every NIC's IPv6 addresses too. A connection to
+   a link-local address leaves through the preferred NIC (scope ids are
+   not looked at); one to an address in a NIC's prefix through that NIC,
+   any other through the preferred NIC's router. Not there: duplicate
+   address detection, temporary (privacy) addresses, DHCPv6, more than one
+   prefix per NIC, the advertisement's MTU and hop limit, and fragments
+   (an IPv6 packet that comes in pieces is dropped; issue #611).
 
    netd also drives the virtual NICs of `/dev/tap` (`docs/wifi.md`: the
    Wi-Fi link), each one whose link is up, as `tap0` to `tap3` after
@@ -62,14 +99,15 @@ sockets API on top of `/net`, so C ports (curl) link with `-lc -lgloss`.
 
 | BSD call | `/net` action |
 |----------|----------------|
-| `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`: the fd is the new conversation's `data` (its `/proc/self/fd` link names `N`); open `ctl`; return the **data fd** |
+| `socket(AF_INET, SOCK_STREAM, …)` | open `/net/tcp/clone`: the fd is the new conversation's `data` (its `/proc/self/fd` link names `N`); open `ctl`; return the **data fd**. `AF_INET6` is the same conversation |
 | `socket(…, SOCK_DGRAM, …)` | same with `/net/udp` |
-| `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. 127.0.0.0/8, the host's own address and 0.0.0.0 go over `lo`: a port nobody listens on is refused at once (**ECONNREFUSED**) |
+| `connect(fd, sockaddr_in)` | write `connect a.b.c.d!port` (`sockaddr_in6`: `connect fec0::2!port`) to ctl; blocking waits for `connected`; **O_NONBLOCK** → `EINPROGRESS`, then `poll`/`select` **POLLOUT** (+ `SO_ERROR`) when netd reports Established. 127.0.0.0/8, ::1, the host's own addresses, 0.0.0.0 and :: go over `lo`: a port nobody listens on is refused at once (**ECONNREFUSED**) |
 | `recv(MSG_PEEK)` (TCP) | a read of the conversation's `peek`, which gives what a read of `data` would and leaves it there; it waits (or says `EAGAIN`) as an empty read of `data` does (UDP: issue #454) |
 | `send`/`recv`/`read`/`write` | ordinary fd I/O on data; empty connected read blocks (in `SYS_POLL`) unless `O_NONBLOCK` (then EAGAIN); hangup → EOF. A TCP write takes what netd has room for (below): a blocking one waits for the rest, `O_NONBLOCK` gets a short write or EAGAIN, a hung-up peer EPIPE |
 | UDP `bind`/`connect`/`sendto`/`recvfrom` | see UDP below |
 | `close` | hangup via ctl (`hangup`) then close data (hook from `_close`) |
-| `getaddrinfo` | `localhost` is `127.0.0.1` without a lookup; otherwise a DNS A lookup over `/net/udp` to the `dns=` servers of `/net/ndb` in turn, QEMU's `10.0.2.3` when it names none (same as `user/lib/dns.rs`), each asked up to four times, 5 s apart, for an answer (the wait is in `poll`; a query is one datagram, and CI's resolver has taken over 5 s for a name's first lookup); a server's first answer is final, so a name it does not know fails at once. The launcher moves QEMU's DNS to `10.0.2.4`, so the boot tests' lookups show the lease is followed. mlibc's own resolver (`docs/mlibc.md`) reads `/etc/hosts` (`localhost`) and `/etc/resolv.conf`, or without that file `/net/ndb`'s first `dns=`; `/etc/services` names the DNS port it looks up |
+| `getaddrinfo` | `localhost` is `127.0.0.1` and `::1` without a lookup, a literal its own family's; otherwise a DNS lookup over `/net/udp` to the `dns=` servers of `/net/ndb` in turn (IPv4 or IPv6 ones), QEMU's `10.0.2.3` when it names none (its A lookups the same as `user/lib/dns.rs`), each asked up to four times, 5 s apart, for an answer (the wait is in `poll`; a query is one datagram, and CI's resolver has taken over 5 s for a name's first lookup); a server's first answer is final, so a name it does not know fails at once. `AF_INET` asks for A records, `AF_INET6` for AAAA, `AF_UNSPEC` for both at once (two queries on one socket, as glibc does; the second may take a second longer than the first) when the host has an IPv6 address beyond ::1 and the link-local ones, and lists the IPv4 addresses first: QEMU's user network gives the guest an IPv6 address whatever the host can reach, and a program that tries only the first address would try IPv6 first. The launcher moves QEMU's DNS to `10.0.2.4`, so the boot tests' lookups show the lease is followed. mlibc's own resolver (`docs/mlibc.md`) reads `/etc/hosts` (`localhost`) and `/etc/resolv.conf`, or without that file `/net/ndb`'s first `dns=`; `/etc/services` names the DNS port it looks up (it asks AAAA records for `AF_INET6`, A ones otherwise) |
+| `AF_INET6` | an IPv6 socket on `::` takes IPv4 peers too, which it names `::ffff:a.b.c.d`, as on Linux, unless `IPV6_V6ONLY` (`setsockopt`, taken at the `bind`); one connected or sending to an IPv4-mapped address talks IPv4 to netd. `inet_pton`/`inet_ntop` (RFC 5952 text), `getnameinfo` (numeric), `getifaddrs` (a link-local address's `sin6_scope_id` is its interface's index) take both families |
 | `poll`/`select` | the kernel's `SYS_POLL`: netfs's `poll` hook reports **POLLIN** for bytes, a hangup or an accept not yet taken, **POLLOUT** once "connected" while the conversation has send room; the library adds **POLLOUT** for a connected UDP socket, arms a listener's `accept` before waiting and finishes a connect (`myos_socket_poll_prepare` / `_done`) |
 
 A read of a UDP conversation's `data` returns one datagram (netfs keeps
@@ -79,9 +117,12 @@ the kernel (`docs/linux-compat.md`, Sockets).
 
 ### UDP
 
-Between netfs and netd every datagram carries a 12-byte header, Plan 9's
-udp "headers" layout: remote address, local address, remote port, local
-port. A conversation's `data` leaves it out: a read gives the bare
+Between netfs and netd every datagram carries a 36-byte header, Plan 9's
+udp "headers" layout without its interface address: remote address,
+local address (16 bytes each, an IPv4 one as `::ffff:a.b.c.d`), remote
+port, local port. An all-zeros remote address is none: the connected
+peer without a port (a `data` write), `::` with one (this host, as
+`::ffff:0.0.0.0` is). A conversation's `data` leaves it out: a read gives the bare
 datagram, a write sends one to the connected peer, as plain Plan 9
 `connect` users (the resolver, the Linux layer) expect. Its `hdata` has
 the same datagrams with the header: a read tells the sender, a write names
@@ -101,10 +142,10 @@ the peer's if connected) or `#<n> fail <why>`:
 
 | ctl | |
 |-----|--|
-| `bind a.b.c.d!port[ reuse]` | port 0 picks a free one; the address may be any, 127.0.0.0/8, the host's or a broadcast one (`EADDRNOTAVAIL` otherwise); a taken port (on that address or any) is `EADDRINUSE` unless both binds asked for `SO_REUSEADDR`; a second bind `EINVAL` |
-| `connect a.b.c.d!port` | the peer: the only source datagrams are taken from (netfs drops those it queued from others), and where a header-less send goes; binds a port first if none, and fixes the source address (127.0.0.1 for 127.0.0.0/8, else the host's) |
+| `bind a.b.c.d!port[ reuse][ v6only]` | port 0 picks a free one; the address may be any (`0.0.0.0`: IPv4's; `::`: IPv6's, and IPv4's too unless `v6only`), 127.0.0.0/8, ::1, the host's or an IPv4 broadcast one (`EADDRNOTAVAIL` otherwise); a taken port (one another conversation would take a datagram to: on that address or any, of a version both take) is `EADDRINUSE` unless both binds asked for `SO_REUSEADDR`; a second bind `EINVAL` |
+| `connect a.b.c.d!port` | the peer: the only source datagrams are taken from (netfs drops those it queued from others), and where a header-less send goes; binds a port first if none, and fixes the source address (127.0.0.1 for 127.0.0.0/8, ::1 for ::1, else the host's of the peer's version) |
 | `disconnect` | `connect(AF_UNSPEC)`: no peer, and the address and port bind did not choose given up (Linux's way) |
-| `autobind` | the port a first send binds, asked first so `getsockname` knows it |
+| `autobind[ ::[ v6only]]` | the port a first send binds, asked first so `getsockname` knows it; an IPv6 socket's on `::` (a first send to an IPv6 address binds there too) |
 | `local` | nothing: the answer, for a socket taken on after an exec |
 
 A datagram to a local port nobody bound is answered by an ICMP "port
@@ -188,7 +229,9 @@ before the listeners, as Linux looks up a connection before a listener;
 its test is smoltcp's own (`tests/ipv4.rs`).
 
 `/net/convs` is netd's own table, a line per index in use (`N tcp|udp|icmp
-[STATE] flags`: the TCP socket's state, `listen a.b.c.d!p` or `listen *!p`,
+[STATE] flags`: the TCP socket's state, `listen a.b.c.d!p`, `listen *!p`
+(any IPv4 address), `listen [::]!p` (any IPv6 one and IPv4) or `listen
+[::]6!p` (IPv6 only),
 `peer a.b.c.d!p`, `accept` for a connection netd accepted, `held` while a
 process has its files, `released` once it closed them, `connected`,
 `hungup`, `closing Ns`; for a connection, where its bytes wait: `tx N`
@@ -211,13 +254,19 @@ held for its server's request timeout (nginx 60 s, dropbear 60 s before
 authentication) and then for the peer's half of the close.
 
 TCP listens through netd's `announce` (`listen`/`accept`, dropbear's SSH
-server, nginx): `bind` takes any address, one of 127.0.0.0/8 or the host's
-own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname` reports
-it; `listen` writes `announce a.b.c.d!port` (a bare `announce port` is any
-address), and netd's listener takes only connections to that address.
-`listen` waits for netd's answer: a port another listener has, on that
-address or any, is `EADDRINUSE` there (Linux says so at `bind`; nginx and
-the like take it from either), `SO_REUSEADDR` or not.
+server, nginx): `bind` takes any address, one of 127.0.0.0/8, ::1 or the
+host's own (`/net/ifaddrs`; another is `EADDRNOTAVAIL`), and `getsockname`
+reports it; `listen` writes `announce a.b.c.d!port` (a bare `announce
+port` is any IPv4 address; `announce ::!port` any IPv6 one and IPv4's too,
+`announce ::!port v6only` IPv6's alone), and netd's listener takes only
+connections to that address, of that version: a fifth smoltcp patch
+(`listen-family`) makes a TCP listener or a UDP socket on no address take
+one IP version, so an IPv4 server and an IPv6-only one share a port
+(nginx's `listen 80` beside `listen [::]:80`, whose `ipv6only` is on).
+`listen` waits for netd's answer: a port another listener would take a
+connection to (on that address or any, of a version both take) is
+`EADDRINUSE` there (Linux says so at `bind`; nginx and the like take it
+from either), `SO_REUSEADDR` or not.
 Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go over
 `/net/unix` instead, served by the kernel without netd
 (`docs/sockets-unix.md`).
@@ -255,9 +304,15 @@ Most `SO_*`/`TCP_*` (`<netinet/tcp.h>`) are ignored. `AF_UNIX` stream sockets go
 
 ### Known gaps
 
-- No IPv6; incomplete `getsockname` for TCP (returns INADDR_ANY)
+- Incomplete `getsockname` for TCP (returns the bound address, the any
+  address for a connected socket); an `AF_INET6` TCP socket passed by
+  exec is taken for an `AF_INET` one (a UDP one's family is its address's)
 - UDP: ICMP errors from the network (not the loopback device) reach no
   socket; no `MSG_PEEK`; a zero-length datagram reads as nothing waiting
   to a program that reads `data` without the library
+- IPv6: no duplicate address detection, DHCPv6, privacy addresses,
+  second prefix, fragmentation or RA MTU; a link-local `sin6_scope_id` is
+  not used; the Linux layer has no `AF_INET6` listen or `IPV6_V6ONLY`
+  (issue #611)
 - curl still a large ELF (~0.6–1.2MB stripped); many protocols disabled but not a tiny client
 - Full QEMU smoke may not have been run on the builder box — rely on CI

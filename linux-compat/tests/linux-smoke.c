@@ -1368,6 +1368,46 @@ static void probe_send(int fd, const unsigned char *q, size_t len, const struct 
     out("\n");
 }
 
+/* `inet6`: IPv6 datagrams through the layer, between two of its own
+ * sockets: an AF_INET6 one's port is on `::` (getsockname names it), a
+ * datagram to [::1] reaches it from ::1, and one from an AF_INET socket
+ * to 127.0.0.1 from ::ffff:127.0.0.1 (dual stack, as on Linux). */
+static int inet6_udp(void) {
+    static const unsigned char mapped[16] = { [10] = 0xff, [11] = 0xff, [12] = 127, [15] = 1 };
+    struct sockaddr_in6 me = { 0 }, to = { 0 }, from;
+    struct sockaddr_in to4 = { 0 };
+    socklen_t len = sizeof me;
+    char buf[8];
+    int s = socket(AF_INET6, SOCK_DGRAM, 0);
+    int c6 = socket(AF_INET6, SOCK_DGRAM, 0);
+    int c4 = socket(AF_INET, SOCK_DGRAM, 0);
+    check(s >= 0 && c6 >= 0 && c4 >= 0, "socket AF_INET6/AF_INET SOCK_DGRAM");
+    check(getsockname(s, (struct sockaddr *)&me, &len) == 0 && me.sin6_family == AF_INET6
+              && me.sin6_port != 0 && IN6_IS_ADDR_UNSPECIFIED(&me.sin6_addr),
+          "getsockname: [::]:port");
+    to.sin6_family = AF_INET6;
+    to.sin6_port = me.sin6_port;
+    to.sin6_addr = in6addr_loopback;
+    check(sendto(c6, "six", 3, 0, (struct sockaddr *)&to, sizeof to) == 3, "sendto [::1]");
+    len = sizeof from;
+    check(recvfrom(s, buf, sizeof buf, 0, (struct sockaddr *)&from, &len) == 3 && memcmp(buf, "six", 3) == 0
+              && from.sin6_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&from.sin6_addr),
+          "recvfrom: from ::1");
+    to4.sin_family = AF_INET;
+    to4.sin_port = me.sin6_port;
+    to4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    check(sendto(c4, "four", 4, 0, (struct sockaddr *)&to4, sizeof to4) == 4, "sendto 127.0.0.1");
+    len = sizeof from;
+    check(recvfrom(s, buf, sizeof buf, 0, (struct sockaddr *)&from, &len) == 4 && memcmp(buf, "four", 4) == 0
+              && memcmp(from.sin6_addr.s6_addr, mapped, 16) == 0,
+          "recvfrom: from ::ffff:127.0.0.1");
+    close(s);
+    close(c6);
+    close(c4);
+    out(failures ? "LINUX-INET6 FAIL\n" : "LINUX-INET6 OK\n");
+    return failures != 0;
+}
+
 static void dns_probe(const char *ns, const char *dead) {
     static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 'g', 'i', 't', 'h', 'u',
                                        'b', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
@@ -1568,6 +1608,9 @@ int main(int argc, char **argv) {
     if (argc > 2 && strcmp(argv[1], "mtime") == 0) {
         struct stat st;
         return stat(argv[2], &st) == 0 && st.st_mtime > 1000000000 ? 0 : 1;
+    }
+    if (argc > 1 && strcmp(argv[1], "inet6") == 0) {
+        return inet6_udp();
     }
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);

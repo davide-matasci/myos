@@ -1,6 +1,6 @@
-//! The device under netd's loopback interface (127.0.0.0/8 and the host's
-//! own address; smoltcp's `local-pair` patch keeps the NIC's interface off
-//! those): every packet sent is received back.
+//! The device under netd's loopback interface (127.0.0.0/8, ::1 and the
+//! host's own addresses; smoltcp's `local-pair` patch keeps the NIC's
+//! interface off those): every packet sent is received back.
 //!
 //! An ICMP "port unreachable" going through it answers a datagram sent to
 //! a local port nobody has bound. It is noted in [`LoopDevice::refused`]:
@@ -13,13 +13,13 @@ use alloc::vec::Vec;
 
 use myos_net::smoltcp::phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
 use myos_net::smoltcp::time::Instant;
-use myos_net::smoltcp::wire::Ipv4Address;
+use myos_net::smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 
 /// The datagram an ICMP "port unreachable" answered: who sent it, and to
 /// which address and port.
 pub struct Refused {
     pub src_port: u16,
-    pub dst: Ipv4Address,
+    pub dst: IpAddress,
     pub dst_port: u16,
 }
 
@@ -87,11 +87,19 @@ impl phy::TxToken for TxToken<'_> {
     }
 }
 
-/// The UDP datagram an IPv4 ICMP "port unreachable" quotes: its IP header
-/// and the first 8 bytes after it (RFC 792), the UDP header.
+/// The UDP datagram an ICMP or ICMPv6 "port unreachable" quotes: its IP
+/// header and what follows it, the UDP header first (RFC 792, RFC 4443).
 fn port_unreachable(pkt: &[u8]) -> Option<Refused> {
+    match *pkt.first()? >> 4 {
+        4 => port_unreachable4(pkt),
+        6 => port_unreachable6(pkt),
+        _ => None,
+    }
+}
+
+fn port_unreachable4(pkt: &[u8]) -> Option<Refused> {
     let ihl = (*pkt.first()? as usize & 0xf) * 4;
-    if pkt.first()? >> 4 != 4 || pkt.get(9) != Some(&1) {
+    if pkt.get(9) != Some(&1) {
         return None;
     }
     let icmp = pkt.get(ihl..)?;
@@ -108,7 +116,31 @@ fn port_unreachable(pkt: &[u8]) -> Option<Refused> {
     let dst = orig.get(16..20)?;
     Some(Refused {
         src_port: u16::from_be_bytes([udp[0], udp[1]]),
-        dst: Ipv4Address::new(dst[0], dst[1], dst[2], dst[3]),
+        dst: IpAddress::Ipv4(Ipv4Address::new(dst[0], dst[1], dst[2], dst[3])),
+        dst_port: u16::from_be_bytes([udp[2], udp[3]]),
+    })
+}
+
+/// The loopback device's IPv6 packets carry no extension headers: the
+/// ICMPv6 message right after the fixed header, and in it the datagram's.
+fn port_unreachable6(pkt: &[u8]) -> Option<Refused> {
+    if pkt.get(6) != Some(&58) {
+        return None;
+    }
+    let icmp = pkt.get(40..)?;
+    // Type 1 (destination unreachable), code 4 (port unreachable).
+    if icmp.get(..2)? != [1, 4] {
+        return None;
+    }
+    let orig = icmp.get(8..)?;
+    if orig.get(6) != Some(&17) {
+        return None;
+    }
+    let udp = orig.get(40..44)?;
+    let dst = <[u8; 16]>::try_from(orig.get(24..40)?).ok()?;
+    Some(Refused {
+        src_port: u16::from_be_bytes([udp[0], udp[1]]),
+        dst: IpAddress::Ipv6(Ipv6Address::from(dst)),
         dst_port: u16::from_be_bytes([udp[2], udp[3]]),
     })
 }

@@ -1,12 +1,15 @@
 /*
  * Network interfaces: getifaddrs and the if_* name/index functions, from
- * netd's /net/ifaddrs, a line per interface in index order (lo is 1):
+ * netd's /net/ifaddrs, a line per address of each interface, the
+ * interfaces in index order (lo is 1), each one's IPv4 line first:
  *
  *     lo 127.0.0.1 255.0.0.0 up,loopback
+ *     lo ::1 ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff up,loopback
  *     net0 10.0.2.15 255.255.255.0 up,broadcast
+ *     net0 fe80::5054:ff:fe12:3456 ffff:ffff:ffff:ffff:: up,broadcast
  *
- * the name, the IPv4 address and netmask ("-" while there is none) and the
- * flags. Without netd the list is empty.
+ * the name, the address and netmask (IPv4 "-" while there is none) and the
+ * flags. getifaddrs has an entry per line. Without netd the list is empty.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -22,14 +25,16 @@
 #include "libc.h"
 
 #define IFADDRS_PATH "/net/ifaddrs"
-#define IFADDRS_CAP 512
-#define MAX_IFS 8
+#define IFADDRS_CAP 1024
+/* Lines: lo's two, and three for each NIC (IPv4, link-local, SLAAC). */
+#define MAX_IFS 24
 
 struct ifline {
     char name[IF_NAMESIZE];
-    int has_addr;
-    struct in_addr addr;
-    struct in_addr mask;
+    unsigned int index; /* the interface's: 1 for the first name, ... */
+    int family;         /* AF_INET, AF_INET6, or 0: no address */
+    unsigned char addr[16];
+    unsigned char mask[16];
     unsigned int flags;
 };
 
@@ -106,9 +111,15 @@ static int read_ifs(struct ifline *ifs) {
         if (name != NULL && strlen(name) < IF_NAMESIZE) {
             memset(i, 0, sizeof *i);
             strcpy(i->name, name);
-            i->has_addr = addr != NULL && mask != NULL
-                && inet_pton(AF_INET, addr, &i->addr) == 1
-                && inet_pton(AF_INET, mask, &i->mask) == 1;
+            /* A name's lines are together: a new name is the next index. */
+            i->index = count == 0 ? 1 : ifs[count - 1].index + (strcmp(ifs[count - 1].name, name) != 0);
+            if (addr != NULL && mask != NULL && inet_pton(AF_INET, addr, i->addr) == 1
+                && inet_pton(AF_INET, mask, i->mask) == 1) {
+                i->family = AF_INET;
+            } else if (addr != NULL && mask != NULL && inet_pton(AF_INET6, addr, i->addr) == 1
+                && inet_pton(AF_INET6, mask, i->mask) == 1) {
+                i->family = AF_INET6;
+            }
             i->flags = flags != NULL ? parse_flags(flags) : 0;
             count++;
         }
@@ -120,19 +131,42 @@ static int read_ifs(struct ifline *ifs) {
     return count;
 }
 
-/* One allocation per interface: the entry, its name and its addresses. */
+/* One allocation per entry: the entry, its name and its addresses. */
 struct ifaddrs_block {
     struct ifaddrs ifa;
     char name[IF_NAMESIZE];
-    struct sockaddr_in addr;
-    struct sockaddr_in mask;
-    struct sockaddr_in broad;
+    union {
+        struct sockaddr_in in;
+        struct sockaddr_in6 in6;
+    } addr, mask, broad;
 };
 
-static void set_in(struct sockaddr_in *sin, struct in_addr a) {
+static void set_in(struct sockaddr_in *sin, const unsigned char *a) {
     memset(sin, 0, sizeof *sin);
     sin->sin_family = AF_INET;
-    sin->sin_addr = a;
+    memcpy(&sin->sin_addr, a, 4);
+}
+
+/* A link-local address names its interface (sin6_scope_id). */
+static void set_in6(struct sockaddr_in6 *sin6, const unsigned char *a, unsigned int index) {
+    memset(sin6, 0, sizeof *sin6);
+    sin6->sin6_family = AF_INET6;
+    memcpy(sin6->sin6_addr.s6_addr, a, 16);
+    if (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) {
+        sin6->sin6_scope_id = index;
+    }
+}
+
+/* The interfaces: each one's name, by index (1 and up); how many. */
+static int if_names(const struct ifline *ifs, int n, const char **out) {
+    int k;
+    int count = 0;
+    for (k = 0; k < n; k++) {
+        if (ifs[k].index > (unsigned int)count) {
+            out[count++] = ifs[k].name;
+        }
+    }
+    return count;
 }
 
 int __myos_getifaddrs(struct ifaddrs **ifap) {
@@ -156,17 +190,27 @@ int __myos_getifaddrs(struct ifaddrs **ifap) {
         strcpy(b->name, ifs[k].name);
         b->ifa.ifa_name = b->name;
         b->ifa.ifa_flags = ifs[k].flags;
-        if (ifs[k].has_addr) {
-            struct in_addr broad;
-            set_in(&b->addr, ifs[k].addr);
-            set_in(&b->mask, ifs[k].mask);
+        if (ifs[k].family == AF_INET) {
+            unsigned char broad[4];
+            int j;
+            set_in(&b->addr.in, ifs[k].addr);
+            set_in(&b->mask.in, ifs[k].mask);
             b->ifa.ifa_addr = (struct sockaddr *)&b->addr;
             b->ifa.ifa_netmask = (struct sockaddr *)&b->mask;
             if (ifs[k].flags & IFF_BROADCAST) {
-                broad.s_addr = ifs[k].addr.s_addr | ~ifs[k].mask.s_addr;
-                set_in(&b->broad, broad);
+                for (j = 0; j < 4; j++) {
+                    broad[j] = ifs[k].addr[j] | (unsigned char)~ifs[k].mask[j];
+                }
+                set_in(&b->broad.in, broad);
                 b->ifa.ifa_broadaddr = (struct sockaddr *)&b->broad;
             }
+        } else if (ifs[k].family == AF_INET6) {
+            set_in6(&b->addr.in6, ifs[k].addr, ifs[k].index);
+            set_in6(&b->mask.in6, ifs[k].mask, 0);
+            b->ifa.ifa_addr = (struct sockaddr *)&b->addr;
+            b->ifa.ifa_netmask = (struct sockaddr *)&b->mask;
+            /* IPv6 has no broadcast address. */
+            b->ifa.ifa_flags &= ~(unsigned int)IFF_BROADCAST;
         }
         *tail = &b->ifa;
         tail = &b->ifa.ifa_next;
@@ -185,10 +229,11 @@ void __myos_freeifaddrs(struct ifaddrs *ifa) {
 
 unsigned int __myos_if_nametoindex(const char *ifname) {
     struct ifline ifs[MAX_IFS];
-    int n = read_ifs(ifs);
+    const char *name[MAX_IFS];
+    int n = if_names(ifs, read_ifs(ifs), name);
     int k;
     for (k = 0; k < n; k++) {
-        if (strcmp(ifs[k].name, ifname) == 0) {
+        if (strcmp(name[k], ifname) == 0) {
             return (unsigned int)k + 1;
         }
     }
@@ -198,18 +243,20 @@ unsigned int __myos_if_nametoindex(const char *ifname) {
 
 char *__myos_if_indextoname(unsigned int ifindex, char *ifname) {
     struct ifline ifs[MAX_IFS];
-    int n = read_ifs(ifs);
+    const char *name[MAX_IFS];
+    int n = if_names(ifs, read_ifs(ifs), name);
     if (ifindex == 0 || ifindex > (unsigned int)n) {
         errno = ENXIO;
         return NULL;
     }
-    strcpy(ifname, ifs[ifindex - 1].name);
+    strcpy(ifname, name[ifindex - 1]);
     return ifname;
 }
 
 struct if_nameindex *__myos_if_nameindex(void) {
     struct ifline ifs[MAX_IFS];
-    int n = read_ifs(ifs);
+    const char *name[MAX_IFS];
+    int n = if_names(ifs, read_ifs(ifs), name);
     int k;
     /* The array, its zero terminator, then the names. */
     struct if_nameindex *list = malloc((size_t)(n + 1) * sizeof *list
@@ -221,7 +268,7 @@ struct if_nameindex *__myos_if_nameindex(void) {
     }
     names = (char *)(list + n + 1);
     for (k = 0; k < n; k++) {
-        strcpy(names + k * IF_NAMESIZE, ifs[k].name);
+        strcpy(names + k * IF_NAMESIZE, name[k]);
         list[k].if_index = (unsigned int)k + 1;
         list[k].if_name = names + k * IF_NAMESIZE;
     }

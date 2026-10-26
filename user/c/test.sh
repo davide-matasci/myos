@@ -167,6 +167,14 @@ t -t netfs netconv $SMOKES/netconv_smoke
 # a UDP socket passed by exec (bare datagrams to read(), then the socket
 # calls) (loopback_smoke.c).
 t -t netfs loopback $SMOKES/loopback_smoke
+# IPv6: the interfaces' addresses (SLAAC from QEMU's router), the text
+# forms and lookups, TCP and UDP over ::1, an AF_INET6 socket on :: with
+# IPv4 peers and with IPV6_V6ONLY beside an AF_INET one, ICMPv6's port
+# unreachable and echo (ipv6_smoke.c).
+t -t netfs,ipv6 ipv6 $SMOKES/ipv6_smoke
+# The same over the network: DNS over IPv6 to QEMU's resolver, an AAAA
+# lookup.
+t -t net,netfs,ipv6_dns ipv6_dns $SMOKES/ipv6_smoke dns
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
 # setsid: its own session, no controlling terminal; SIGINT ends a child

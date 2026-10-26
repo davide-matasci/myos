@@ -377,7 +377,9 @@ A Linux socket is a conversation of the native `/net` (`docs/sockets-curl.md`;
 reads, writes, `dup`, `fork` and `close` are ordinary fd operations, and the
 last close hangs the conversation up. `socket` opens `/net/{tcp,udp}/clone`
 (the fd is the new conversation's `data`, its link names it),
-`connect` writes `connect a.b.c.d!port` to its `ctl`, and readiness comes from
+`connect` writes `connect a.b.c.d!port` (an `AF_INET6` socket's peer: its
+IPv6 address, or an IPv4-mapped one's IPv4 address, which it names
+`::ffff:a.b.c.d` back, as Linux does) to its `ctl`, and readiness comes from
 its `status` and the bytes waiting in `data`. The `/net` files never block,
 so a blocking read or connect sleeps until netd's next reply wakes the
 pollers (a write retries while netd's request ring is full, or a TCP
@@ -603,11 +605,15 @@ three, the kernel crate itself an hour. Known gaps:
   `/dev`, `/proc`, ...) and FAT report 0. `utimensat`, `futimens` and
   `utimes` set them there (`UTIME_NOW`, `UTIME_OMIT`; nanoseconds are
   dropped) and fail with `EROFS` elsewhere.
-- Sockets: IPv4 clients and `AF_UNIX` streams only (no `AF_INET`
-  `listen`/`accept`, no IPv6); no half-close (`shutdown` hangs up only for
-  `SHUT_RDWR`); the local address is reported as `0.0.0.0:0`; options are
-  ignored; `poll` reports a connected socket writable even with no send
-  room left (a nonblocking write then says `EAGAIN`).
+- Sockets: IPv4 and IPv6 clients and `AF_UNIX` streams only (no
+  `AF_INET` or `AF_INET6` `listen`/`accept`); no half-close (`shutdown`
+  hangs up only for `SHUT_RDWR`); a TCP socket's local address is reported
+  as the any address, port 0 (a UDP one's is netd's, which musl's
+  getaddrinfo uses to sort IPv6 addresses against IPv4 ones, RFC 6724);
+  options are ignored (`IPV6_V6ONLY` too: an `AF_INET6` datagram socket's
+  port is on `::`, IPv4's too); `poll` reports a connected socket
+  writable even with no send room left (a nonblocking write then says
+  `EAGAIN`).
 - The native limits apply:
   - exec: up to 1024 arguments and 1024 environment strings, at most
     128 KiB together. A dynamically linked, position-independent program

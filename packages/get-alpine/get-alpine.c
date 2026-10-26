@@ -695,10 +695,11 @@ static int install(const char *want, int depth) {
     return 0;
 }
 
-/* A `nameserver` line per `dns=` server of the DHCP lease in /net/ndb
- * (netd's, Plan 9 style), or QEMU user networking's 10.0.2.3. */
+/* A `nameserver` line per `dns=` server of /net/ndb (netd's, Plan 9
+ * style: the DHCP lease's, then the router advertisement's IPv6 ones), or
+ * QEMU user networking's 10.0.2.3. */
 static void write_resolv_conf(FILE *f) {
-    char ndb[257];
+    char ndb[513];
     ssize_t n = 0;
     int fd = open("/net/ndb", O_RDONLY), any = 0;
     if (fd >= 0) {
