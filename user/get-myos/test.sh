@@ -142,8 +142,8 @@ stale_limine() {
 # is stale: slot b gets the mirror's files, which the disk holds (their
 # SHA-256 against the list), and its version; Limine's files are replaced
 # by the release's (on x86 with the BIOS stage); limine.conf boots b by
-# default, a as the fallback, the global lines the release's. A second run
-# without -f has nothing to do.
+# default, a as the fallback, the global lines the release's, and both
+# load the tests module. A second run without -f has nothing to do.
 boot_upgrade() {
 	grep -q 'slot=a' /proc/cmdline || { cat /proc/cmdline; return 1; }
 	stale_limine || return 1
@@ -175,6 +175,9 @@ boot_upgrade() {
 	[ "$(grep '^/' $conf | head -1)" = "/myos b" ] || r=1
 	[ "$(grep 'path:' $conf | head -1)" = "    path: boot():/boot/b/kernel" ] || r=1
 	grep -q '^    cmdline: slot=a$' $conf && grep -q '^timeout: 3$' $conf && grep -q '^serial: yes$' $conf || r=1
+	# The tests module stays, loaded by both entries (the release's config
+	# has no such line: the new Limine's was the template).
+	[ "$(grep -c '^    module_path: boot():/boot/tests$' $conf)" -eq 2 ] || r=1
 	[ $r = 0 ] || return 1
 	get-myos -m $MIRROR --upgrade 2>&1 | grep -q 'up to date'
 }
@@ -233,7 +236,8 @@ boot_install() {
 
 # --install --local on the scratch disk, no mirror: the running system's
 # kernel and initramfs (/proc/boot/) in slot a, at its release, and
-# Limine's files from /lib/myos-boot/. In the full mode it runs after the
+# Limine's files from /lib/myos-boot/, and the tests module this boot
+# loaded with a config that loads it. In the full mode it runs after the
 # mirror's install, last: the host boots the disk it made next (src/main.rs
 # `test_boots`).
 boot_install_local() {
@@ -246,7 +250,9 @@ boot_install_local() {
 		&& grep -q '^initramfs [0-9]* [0-9a-f]* /proc/boot/initramfs$' $list || return 1
 	installed_disk nvme1n1 $list || return 1
 	mount /dev/nvme1n1/p2 /tmp/new-esp fat || return 1
-	cmp /proc/boot/kernel /tmp/new-esp/boot/a/kernel && cmp /proc/boot/initramfs /tmp/new-esp/boot/a/initramfs
+	cmp /proc/boot/kernel /tmp/new-esp/boot/a/kernel && cmp /proc/boot/initramfs /tmp/new-esp/boot/a/initramfs \
+		&& cmp /proc/boot/tests /tmp/new-esp/boot/tests \
+		&& grep -q '^    module_path: boot():/boot/tests$' /tmp/new-esp/boot/limine/limine.conf
 	r=$?
 	umount /tmp/new-esp
 	return $r
