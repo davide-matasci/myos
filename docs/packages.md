@@ -163,6 +163,7 @@ needs x11-xft@698a36aea37a x11-fonts@1399fe7cc6d8
 ```
 
 `run` is the program `run-myos APP` starts (the one named after the port,
+in `bin/custom/` or another directory of `bin/`, tcc's `/bin/tcc/tcc`,
 else its first in `bin/custom/`; a port without programs, a library such
 as `x11-libs`, has none), `needs` the apps it uses (its `PORT_RDEPS`), at
 the versions it was built with; `run-myos` binds those versions. A bare

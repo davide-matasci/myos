@@ -13,7 +13,8 @@
 //! `run-myos` runs (docs/packages.md). The manifest says what:
 //!
 //! ```text
-//! run /bin/custom/vim        the app's command: bin/custom/<name>, else its first
+//! run /bin/custom/vim        the app's command: bin/custom/<name>, else
+//!                            bin/<dir>/<name> (bin/tcc/tcc), else its first
 //!                            program in bin/custom; no line when it has none
 //! needs x11-xft@39e48858a655 x11-fonts@1399fe7cc6d8
 //!                            PORT_RDEPS, the apps whose files it uses, each
@@ -188,9 +189,11 @@ fn write_boot(manifest_dir: &Path, out: &Path, arch: &str) {
 /// `name@version`; `run-myos`, user/get-myos/run-myos).
 fn app_manifest(entries: &[Entry], name: &str, deps: &[String]) -> String {
     let own = format!("bin/custom/{name}");
+    let in_bin = format!("/{name}");
     let run = entries
         .iter()
         .find(|e| e.name == own)
+        .or_else(|| entries.iter().find(|e| e.name.starts_with("bin/") && e.name.ends_with(&in_bin)))
         .or_else(|| entries.iter().find(|e| e.name.starts_with("bin/custom/")));
     let mut text = String::new();
     if let Some(e) = run {
