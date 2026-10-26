@@ -113,6 +113,14 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// holds a socket's buffers, 96 KiB); past this a SYN is answered with a
 /// reset, as Linux drops a SYN when its queue is full.
 const SYN_BACKLOG: usize = 64;
+/// Closed connections kept in TIME-WAIT at a time. The side that closed
+/// first keeps its socket, buffers and all (96 KiB), for smoltcp's 10 s of
+/// TIME-WAIT; a burst of short connections (a test's dozens over loopback,
+/// where netd is both ends and every connection leaves one; a busy server
+/// that closes first) piled up more than netd's heap holds, and netd died
+/// of the failed allocation. Past this the oldest go at once, as Linux
+/// skips TIME-WAIT past tcp_max_tw_buckets.
+const MAX_TIME_WAIT: usize = 16;
 /// Idle sleeps between polls when the NIC has no RX interrupt (poll-mode
 /// fallback): a bounded sleep sets the worst-case RX latency; kernel events
 /// (channel requests from netfs, pipe/console traffic) end the sleep early.
@@ -852,7 +860,8 @@ fn release_conv(
 
 /// Finish the lingering closes: the socket goes once Closed, or is aborted
 /// CLOSE_GRACE after the close began, as Linux gives up on an orphaned
-/// connection. What the peer still sends is read and dropped.
+/// connection; past MAX_TIME_WAIT in TIME-WAIT, the oldest of those go.
+/// What the peer still sends is read and dropped.
 fn sweep_lingering(sockets: &mut SocketSet<'_>, lingering: &mut Vec<Lingering>, now: Instant) {
     lingering.retain_mut(|l| {
         let s = sockets.get_mut::<tcp::Socket>(l.handle);
@@ -870,6 +879,20 @@ fn sweep_lingering(sockets: &mut SocketSet<'_>, lingering: &mut Vec<Lingering>, 
             return true;
         }
         s.abort();
+        sockets.remove(l.handle);
+        false
+    });
+    // Oldest first: `lingering` is in the order the closes began. The
+    // socket goes without a reset; the peer has its ACK of the FIN.
+    let time_wait = |sockets: &SocketSet<'_>, l: &Lingering| {
+        sockets.get::<tcp::Socket>(l.handle).state() == tcp::State::TimeWait
+    };
+    let mut excess = lingering.iter().filter(|l| time_wait(sockets, l)).count().saturating_sub(MAX_TIME_WAIT);
+    lingering.retain(|l| {
+        if excess == 0 || !time_wait(sockets, l) {
+            return true;
+        }
+        excess -= 1;
         sockets.remove(l.handle);
         false
     });
