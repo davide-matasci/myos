@@ -321,16 +321,87 @@ char *inet_ntoa(struct in_addr in) {
     return buf;
 }
 
+const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
+const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
+
+/* RFC 5952: lowercase hex groups without leading zeros, the longest run of
+ * two or more zero groups (the first of equal ones) as "::", and an
+ * IPv4-mapped address's last 32 bits dotted. */
+static int fmt_ipv6(char *dst, size_t size, const unsigned char b[16]) {
+    static const char hex[] = "0123456789abcdef";
+    char buf[INET6_ADDRSTRLEN];
+    size_t pos = 0;
+    int best = -1, best_len = 0;
+    int groups = 8;
+    int i;
+    if (memcmp(b, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12) == 0) {
+        groups = 6;
+    }
+    for (i = 0; i < groups;) {
+        int j = i;
+        while (j < groups && b[2 * j] == 0 && b[2 * j + 1] == 0) {
+            j++;
+        }
+        if (j - i > best_len && j - i >= 2) {
+            best = i;
+            best_len = j - i;
+        }
+        i = j > i ? j : i + 1;
+    }
+    for (i = 0; i < groups;) {
+        unsigned v = ((unsigned)b[2 * i] << 8) | b[2 * i + 1];
+        int shift;
+        int started = 0;
+        if (i == best) {
+            buf[pos++] = ':';
+            buf[pos++] = ':';
+            i += best_len;
+            continue;
+        }
+        if (pos > 0 && buf[pos - 1] != ':') {
+            buf[pos++] = ':';
+        }
+        for (shift = 12; shift >= 0; shift -= 4) {
+            unsigned d = (v >> shift) & 0xf;
+            if (d != 0 || started || shift == 0) {
+                buf[pos++] = hex[d];
+                started = 1;
+            }
+        }
+        i++;
+    }
+    if (groups == 6) {
+        int n;
+        if (pos == 0 || buf[pos - 1] != ':') {
+            buf[pos++] = ':';
+        }
+        n = fmt_ipv4(buf + pos, sizeof buf - pos, b + 12);
+        if (n < 0) {
+            return -1;
+        }
+        pos += (size_t)n;
+    }
+    if (pos >= size) {
+        return -1;
+    }
+    memcpy(dst, buf, pos);
+    dst[pos] = '\0';
+    return (int)pos;
+}
+
 const char *inet_ntop(int af, const void *src, char *dst, size_t size) {
-    if (af != AF_INET) {
+    int n;
+    if (af != AF_INET && af != AF_INET6) {
         errno = EAFNOSUPPORT;
         return NULL;
     }
-    if (src == NULL || dst == NULL || size < INET_ADDRSTRLEN) {
+    if (src == NULL || dst == NULL) {
         errno = ENOSPC;
         return NULL;
     }
-    if (fmt_ipv4(dst, size, (const unsigned char *)src) < 0) {
+    n = af == AF_INET ? fmt_ipv4(dst, size, (const unsigned char *)src)
+                      : fmt_ipv6(dst, size, (const unsigned char *)src);
+    if (n < 0) {
         errno = ENOSPC;
         return NULL;
     }

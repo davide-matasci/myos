@@ -29,6 +29,9 @@ struct in6_addr {
 #define IN6ADDR_ANY_INIT      { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } }
 #define IN6ADDR_LOOPBACK_INIT { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } }
 
+extern const struct in6_addr in6addr_any;
+extern const struct in6_addr in6addr_loopback;
+
 struct sockaddr_in6 {
     sa_family_t sin6_family;
     in_port_t sin6_port;
@@ -69,8 +72,32 @@ struct sockaddr_in6 {
      && (a)->s6_addr[6] == 0 && (a)->s6_addr[7] == 0 && (a)->s6_addr[8] == 0 \
      && (a)->s6_addr[9] == 0 && (a)->s6_addr[10] == 0xff && (a)->s6_addr[11] == 0xff)
 
-#define IPPROTO_TCP 6
-#define IPPROTO_UDP 17
+#define IN6_IS_ADDR_MULTICAST(a) ((a)->s6_addr[0] == 0xff)
+#define IN6_IS_ADDR_LINKLOCAL(a) ((a)->s6_addr[0] == 0xfe && ((a)->s6_addr[1] & 0xc0) == 0x80)
+#define IN6_IS_ADDR_SITELOCAL(a) ((a)->s6_addr[0] == 0xfe && ((a)->s6_addr[1] & 0xc0) == 0xc0)
+#define IN6_IS_ADDR_V4COMPAT(a) \
+    (!IN6_IS_ADDR_UNSPECIFIED(a) && !IN6_IS_ADDR_LOOPBACK(a) && (a)->s6_addr[0] == 0 \
+     && (a)->s6_addr[1] == 0 && (a)->s6_addr[2] == 0 && (a)->s6_addr[3] == 0 \
+     && (a)->s6_addr[4] == 0 && (a)->s6_addr[5] == 0 && (a)->s6_addr[6] == 0 \
+     && (a)->s6_addr[7] == 0 && (a)->s6_addr[8] == 0 && (a)->s6_addr[9] == 0 \
+     && (a)->s6_addr[10] == 0 && (a)->s6_addr[11] == 0)
+#define IN6_ARE_ADDR_EQUAL(a, b) (__builtin_memcmp((a), (b), sizeof(struct in6_addr)) == 0)
+
+#ifndef IPPROTO_IP
+#define IPPROTO_IP     0
+#endif
+#define IPPROTO_ICMP   1
+#ifndef IPPROTO_TCP
+#define IPPROTO_TCP    6
+#define IPPROTO_UDP    17
+#endif
+#define IPPROTO_IPV6   41
+#define IPPROTO_ICMPV6 58
+
+/* IPPROTO_IPV6 options (Linux's numbers): IPV6_V6ONLY is the one taken. */
+#define IPV6_UNICAST_HOPS 16
+#define IPV6_MULTICAST_IF 17
+#define IPV6_V6ONLY       26
 
 /* TCP socket options (stubs in libgloss). */
 #define TCP_NODELAY 1

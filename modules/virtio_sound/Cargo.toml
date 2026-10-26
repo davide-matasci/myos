@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "virtio_sound"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "virtio-sound kernel module: the device's playback and capture streams, for the sound core."
+
+[[bin]]
+name = "virtio_sound"
+test = false
+bench = false
+
+[dependencies]
+myos-abi = { path = "../abi" }
+myos-virtio = { path = "../virtio" }
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = false
+strip = "debuginfo"

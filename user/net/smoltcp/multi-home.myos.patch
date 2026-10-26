@@ -18,9 +18,11 @@ hardware address, for its requests and its replies. An ICMP socket's
 source is the interface's own address, so the first NIC to poll it sent
 it: IcmpSocket::set_source() names it, and with it the NIC.
 
+diff --git a/src/iface/interface/ipv4.rs b/src/iface/interface/ipv4.rs
+index 4a42800..820488b 100644
 --- a/src/iface/interface/ipv4.rs
 +++ b/src/iface/interface/ipv4.rs
-@@ -153,9 +153,12 @@
+@@ -153,9 +153,12 @@ impl InterfaceInner {
                  && matches!(self.caps.medium, Medium::Ethernet)
              {
                  let udp_packet = check!(UdpPacket::new_checked(ip_payload));
@@ -34,20 +36,22 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
                  {
                      // First check for source and dest ports, then do `UdpRepr::parse` if they match.
                      // This way we avoid validating the UDP checksum twice for all non-DHCP UDP packets (one here, one in `process_udp`)
+diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
+index debd83a..5b3f4ea 100644
 --- a/src/iface/interface/mod.rs
 +++ b/src/iface/interface/mod.rs
-@@ -114,6 +114,10 @@
+@@ -114,6 +114,10 @@ pub struct Interface {
      fragmenter: Fragmenter,
  }
  
 +/// myos: how many other NICs' addresses an interface leaves to the
 +/// loopback one ([`Interface::set_elsewhere_addrs`]).
-+pub const ELSEWHERE_MAX: usize = 4;
++pub const ELSEWHERE_MAX: usize = 8;
 +
  /// The device independent part of an Ethernet network interface.
  ///
  /// Separating the device from the data required for processing and dispatching makes
-@@ -144,6 +148,8 @@
+@@ -144,6 +148,8 @@ pub struct InterfaceInner {
      any_ip: bool,
      local_only: bool,
      local_elsewhere: bool,
@@ -56,7 +60,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      routes: Routes,
      #[cfg(feature = "multicast")]
      multicast: multicast::State,
-@@ -251,6 +257,8 @@
+@@ -251,6 +257,8 @@ impl Interface {
                  any_ip: false,
                  local_only: false,
                  local_elsewhere: false,
@@ -65,7 +69,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
                  routes: Routes::new(),
                  #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
                  neighbor_cache: NeighborCache::new(),
-@@ -417,6 +425,29 @@
+@@ -417,6 +425,29 @@ impl Interface {
          self.inner.local_elsewhere = local_elsewhere;
      }
  
@@ -95,7 +99,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      /// Get whether AnyIP is enabled.
      ///
      /// See [`set_any_ip`](Self::set_any_ip) for details on AnyIP
-@@ -683,8 +714,10 @@
+@@ -683,8 +714,10 @@ impl Interface {
              // myos: DHCP is the NIC's interface's (a loopback one has no
              // hardware address to ask with).
              #[cfg(feature = "socket-dhcpv4")]
@@ -108,7 +112,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
              }
              if !item
                  .meta
-@@ -705,7 +738,9 @@
+@@ -705,7 +738,9 @@ impl Interface {
                      .dispatch_ip(t, meta, response, &mut self.fragmenter)
                      .map_err(|e| match e {
                          // myos: the other interface of the pair sends it.
@@ -119,7 +123,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
                              EgressError::NoRoute
                          }
                          _ => EgressError::Dispatch,
-@@ -992,7 +1027,8 @@
+@@ -994,7 +1029,8 @@ impl InterfaceInner {
              #[allow(unreachable_patterns)]
              _ => false,
          };
@@ -129,7 +133,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      }
  
      fn route(&self, addr: &IpAddress, timestamp: Instant) -> Option<IpAddress> {
-@@ -1186,10 +1222,15 @@
+@@ -1188,10 +1224,15 @@ impl InterfaceInner {
          let mut ip_repr = packet.ip_repr();
          assert!(!ip_repr.dst_addr().is_unspecified());
  
@@ -146,9 +150,11 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
  
          // Dispatch IEEE802.15.4:
  
+diff --git a/src/socket/dhcpv4.rs b/src/socket/dhcpv4.rs
+index 72980a9..3113654 100644
 --- a/src/socket/dhcpv4.rs
 +++ b/src/socket/dhcpv4.rs
-@@ -168,6 +168,10 @@
+@@ -168,6 +168,10 @@ pub struct Socket<'a> {
      /// Ignore NAKs.
      ignore_naks: bool,
  
@@ -159,7 +165,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      /// Server port config
      pub(crate) server_port: u16,
  
-@@ -213,9 +217,22 @@
+@@ -213,9 +217,22 @@ impl<'a> Socket<'a> {
              waker: WakerRegistration::new(),
              server_port: DHCP_SERVER_PORT,
              client_port: DHCP_CLIENT_PORT,
@@ -182,9 +188,11 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      /// Set the retry/timeouts configuration.
      pub fn set_retry_config(&mut self, config: RetryConfig) {
          self.retry_config = config;
+diff --git a/src/socket/icmp.rs b/src/socket/icmp.rs
+index dee3416..47720fd 100644
 --- a/src/socket/icmp.rs
 +++ b/src/socket/icmp.rs
-@@ -122,6 +122,8 @@
+@@ -122,6 +122,8 @@ pub struct Socket<'a> {
      endpoint: Endpoint,
      /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
      hop_limit: Option<u8>,
@@ -193,7 +201,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      #[cfg(feature = "async")]
      rx_waker: WakerRegistration,
      #[cfg(feature = "async")]
-@@ -136,6 +138,7 @@
+@@ -136,6 +138,7 @@ impl<'a> Socket<'a> {
              tx_buffer,
              endpoint: Default::default(),
              hop_limit: None,
@@ -201,7 +209,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
              #[cfg(feature = "async")]
              rx_waker: WakerRegistration::new(),
              #[cfg(feature = "async")]
-@@ -205,6 +208,13 @@
+@@ -205,6 +208,13 @@ impl<'a> Socket<'a> {
          self.hop_limit = hop_limit
      }
  
@@ -215,7 +223,7 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
      /// Bind the socket to the given endpoint.
      ///
      /// This function returns `Err(Error::Illegal)` if the socket was open
-@@ -572,7 +582,11 @@
+@@ -572,7 +582,11 @@ impl<'a> Socket<'a> {
              match *remote_endpoint {
                  #[cfg(feature = "proto-ipv4")]
                  IpAddress::Ipv4(dst_addr) => {
@@ -228,3 +236,15 @@ it: IcmpSocket::set_source() names it, and with it the NIC.
                          Some(addr) => addr,
                          None => {
                              net_trace!(
+@@ -604,7 +618,10 @@ impl<'a> Socket<'a> {
+                 }
+                 #[cfg(feature = "proto-ipv6")]
+                 IpAddress::Ipv6(dst_addr) => {
+-                    let src_addr = cx.get_source_address_ipv6(&dst_addr);
++                    let src_addr = match self.source {
++                        Some(IpAddress::Ipv6(a)) => a,
++                        _ => cx.get_source_address_ipv6(&dst_addr),
++                    };
+ 
+                     let packet = Icmpv6Packet::new_unchecked(&*packet_buf);
+                     let repr = match Icmpv6Repr::parse(

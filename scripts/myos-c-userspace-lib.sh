@@ -279,6 +279,8 @@ MYOS_C_SMOKES=(
   "pcidev-smoke user/c/pcidev_smoke.c"
   "tap-smoke user/c/tap_smoke.c"
   "multihome-smoke user/c/multihome_smoke.c"
+  "ipv6-smoke user/c/ipv6_smoke.c"
+  "play user/c/play.c"
 )
 
 # All the C smokes (scripts/build-c-smokes.sh): c-hello's inputs plus the

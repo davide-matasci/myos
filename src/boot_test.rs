@@ -173,7 +173,7 @@ pub struct Outcome {
 /// self-checks (memory, interrupts, the scheduler, the drivers, the VFS
 /// through `/bin/custom/ok`). Required in every mode; a missing one fails
 /// the run even when every test passed.
-const BOOT_MARKERS: [&str; 40] = [
+const BOOT_MARKERS: [&str; 43] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -197,11 +197,14 @@ const BOOT_MARKERS: [&str; 40] = [
     "[ OK ] netmac",
     "[ OK ] nvme",
     "[ OK ] sdmmc",
+    "[ OK ] sound",
+    "[ OK ] virtio-sound",
     "[ OK ] usb",
     "[ OK ] xhci",
     "[ OK ] usb_hub",
     "[ OK ] usb_storage",
     "[ OK ] usb_hid",
+    "[ OK ] usb_audio",
     "[ OK ] usbdev",
     "[ OK ] ext2",
     "[ OK ] ext2 rw",
@@ -239,7 +242,7 @@ impl Board {
 }
 
 /// [`BOOT_MARKERS`] that need no device a Raspberry Pi 3 lacks under QEMU.
-const RPI3_MARKERS: [&str; 31] = [
+const RPI3_MARKERS: [&str; 33] = [
     "Hello from myos",
     "[ OK ] heap",
     "[ OK ] dma pages",
@@ -253,11 +256,13 @@ const RPI3_MARKERS: [&str; 31] = [
     "[ OK ] hello",
     "[ OK ] rpi_firmware",
     "[ OK ] sdmmc",
+    "[ OK ] sound",
     "[ OK ] usb",
     "[ OK ] dwc2",
     "[ OK ] usb_hub",
     "[ OK ] usb_storage",
     "[ OK ] usb_hid",
+    "[ OK ] usb_audio",
     "[ OK ] boot modules",
     "[ OK ] fork",
     "[ OK ] fork exec",

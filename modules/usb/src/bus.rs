@@ -31,6 +31,10 @@ pub const MAX_DRIVERS: usize = 8;
 /// Interrupt transfers queued on one device at a time (its endpoints with
 /// a class driver's callback).
 const MAX_CALLBACKS: usize = 4;
+/// Isochronous endpoints of one device with a class driver's callback.
+const MAX_ISOCH: usize = 2;
+/// Interface numbers whose alternate setting is kept.
+const MAX_INTERFACE_NUMBER: usize = 16;
 /// A control transfer's data stage at most (the descriptors).
 const CONTROL_MAX: usize = 1024;
 /// Hub nesting (route string tiers).
@@ -62,6 +66,14 @@ pub struct Device {
     pub hub_ports: u8,
     pub interfaces: [Option<Interface>; MAX_INTERFACES],
     pub callbacks: [Option<Callback>; MAX_CALLBACKS],
+    /// The isochronous endpoints whose completions a class driver hears
+    /// (`isoch_start`).
+    pub isoch: [Option<Callback>; MAX_ISOCH],
+    /// The configuration descriptor, for the endpoints of the alternate
+    /// settings, and each interface's setting (`set_interface`).
+    pub config: [u8; CONTROL_MAX],
+    pub config_len: usize,
+    pub alternate: [u8; MAX_INTERFACE_NUMBER],
 }
 
 // SAFETY: the callbacks' contexts are the class drivers' own, handed back
@@ -190,6 +202,121 @@ fn take_completion(c: &Controller, s: &Slot) -> Option<(UsbCompletion, *mut c_vo
     None
 }
 
+/// The endpoints of alternate setting `alternate` of interface `interface`
+/// in the configuration descriptor `cfg`: how many went into `out`.
+fn alternate_endpoints(cfg: &[u8], interface: u8, alternate: u8, out: &mut [UsbEndpoint; USB_MAX_ENDPOINTS]) -> usize {
+    let (mut i, mut inside, mut n) = (0usize, false, 0usize);
+    while i + 2 <= cfg.len() {
+        let len = usize::from(cfg[i]);
+        if len < 2 || i + len > cfg.len() {
+            break;
+        }
+        let d = &cfg[i..i + len];
+        match d[1] {
+            4 if len >= 9 => inside = d[2] == interface && d[3] == alternate,
+            5 if len >= 7 && inside && n < out.len() => {
+                out[n] = UsbEndpoint {
+                    address: d[2],
+                    attributes: d[3],
+                    max_packet: u16::from_le_bytes([d[4], d[5]]) & 0x7FF,
+                    interval: d[6],
+                };
+                n += 1;
+            }
+            _ => {}
+        }
+        i += len;
+    }
+    n
+}
+
+/// Select alternate setting `alternate` of `interface` (the host's
+/// `set_interface`): the controller drops the endpoints of the setting
+/// before and takes the new one's, then SET_INTERFACE.
+pub fn set_interface(c: &Controller, dev: &mut Device, interface: u8, alternate: u8) -> i32 {
+    let i = usize::from(interface);
+    if i >= MAX_INTERFACE_NUMBER || !dev.interfaces.iter().flatten().any(|f| f.info.number == interface) {
+        return USB_EIO;
+    }
+    let cfg = &dev.config[..dev.config_len];
+    let mut old = [UsbEndpoint::default(); USB_MAX_ENDPOINTS];
+    let n_old = alternate_endpoints(cfg, interface, dev.alternate[i], &mut old);
+    let mut new = [UsbEndpoint::default(); USB_MAX_ENDPOINTS];
+    let n_new = alternate_endpoints(cfg, interface, alternate, &mut new);
+    if alternate != 0 && n_new == 0 && !cfg_has_alternate(cfg, interface, alternate) {
+        return USB_EIO;
+    }
+    let mut drop = [0u8; USB_MAX_ENDPOINTS];
+    for (d, e) in drop.iter_mut().zip(&old[..n_old]) {
+        *d = e.address;
+    }
+    let r = unsafe { (c.ops.endpoints_change)(c.ctx, dev.hdev, new.as_ptr(), n_new, drop.as_ptr(), n_old) };
+    if r < 0 {
+        return r;
+    }
+    dev.alternate[i] = alternate;
+    let r = control(c, dev, 0x01, 11, u16::from(alternate), u16::from(interface), core::ptr::null_mut(), 0);
+    if r < 0 { r } else { 0 }
+}
+
+/// Whether `cfg` has alternate setting `alternate` of `interface`.
+fn cfg_has_alternate(cfg: &[u8], interface: u8, alternate: u8) -> bool {
+    let mut i = 0usize;
+    while i + 2 <= cfg.len() {
+        let len = usize::from(cfg[i]);
+        if len < 2 || i + len > cfg.len() {
+            break;
+        }
+        if cfg[i + 1] == 4 && len >= 9 && cfg[i + 2] == interface && cfg[i + 3] == alternate {
+            return true;
+        }
+        i += len;
+    }
+    false
+}
+
+/// A class driver hears the completions of the isochronous `endpoint`
+/// (the host's `isoch_start`).
+pub fn isoch_start(dev: &mut Device, endpoint: u8, done: UsbCompletion, ctx: *mut c_void) -> i32 {
+    if dev.isoch.iter().flatten().any(|cb| cb.endpoint == endpoint) {
+        return USB_EIO;
+    }
+    let Some(free) = dev.isoch.iter().position(|cb| cb.is_none()) else {
+        return USB_EIO;
+    };
+    dev.isoch[free] = Some(Callback { endpoint, done, ctx });
+    0
+}
+
+pub fn isoch_stop(dev: &mut Device, endpoint: u8) {
+    for cb in dev.isoch.iter_mut() {
+        if cb.is_some_and(|cb| cb.endpoint == endpoint) {
+            *cb = None;
+        }
+    }
+}
+
+/// The isochronous completions of the device in `s` since the last look:
+/// each endpoint's callback with its count of packets (to be run with the
+/// lock dropped).
+fn take_isoch(c: &Controller, s: &Slot) -> [Option<(UsbCompletion, *mut c_void, i32)>; MAX_ISOCH] {
+    let mut out = [None; MAX_ISOCH];
+    let mut dev = s.dev.lock();
+    let Some(dev) = dev.as_mut() else {
+        return out;
+    };
+    for (o, cb) in out.iter_mut().zip(dev.isoch.iter()) {
+        let Some(Callback { endpoint, done, ctx }) = *cb else {
+            continue;
+        };
+        let r = unsafe { (c.ops.isoch_reap)(c.ctx, dev.hdev, endpoint) };
+        if r != 0 {
+            *o = Some((done, ctx, r));
+        }
+    }
+    out
+}
+
 /// Completed queued transfers of every device: run their callbacks (the
 /// USB thread), each with no lock held: a callback starts the next
 /// transfer.
@@ -203,6 +330,9 @@ pub fn run_async_completions() {
                 continue;
             };
             while let Some((f, ctx, r)) = take_completion(c, s) {
+                unsafe { f(ctx, r) };
+            }
+            for (f, ctx, r) in take_isoch(c, s).into_iter().flatten() {
                 unsafe { f(ctx, r) };
             }
         }
@@ -275,6 +405,10 @@ pub fn attach(c: &Controller, parent: Option<(u32, u8)>, root_port: u8, speed: u
         hub_ports: 0,
         interfaces: [const { None }; MAX_INTERFACES],
         callbacks: [None; MAX_CALLBACKS],
+        isoch: [None; MAX_ISOCH],
+        config: [0; CONTROL_MAX],
+        config_len: 0,
+        alternate: [0; MAX_INTERFACE_NUMBER],
     };
     s.gone.store(false, Ordering::Release);
     let id = dev.info.id;
@@ -350,6 +484,8 @@ fn enumerate(c: &Controller, dev: &mut Device) -> Result<(), i32> {
     }
     dev.info.config = cfg[5];
     parse_config(dev, &cfg[..total]);
+    dev.config[..total].copy_from_slice(&cfg[..total]);
+    dev.config_len = total;
 
     // The endpoints of every interface, each once, to the controller.
     let mut eps = [UsbEndpoint::default(); MAX_INTERFACES * USB_MAX_ENDPOINTS];
@@ -357,7 +493,7 @@ fn enumerate(c: &Controller, dev: &mut Device) -> Result<(), i32> {
     for intf in dev.interfaces.iter().flatten() {
         for e in &intf.info.endpoints[..usize::from(intf.info.n_endpoints)] {
             if e.attributes & 3 == 1 || eps[..n_eps].iter().any(|k| k.address == e.address) {
-                continue; // isochronous: not driven
+                continue; // isochronous: added with its alternate setting (set_interface)
             }
             eps[n_eps] = *e;
             n_eps += 1;
@@ -528,6 +664,11 @@ pub fn detach_id(c: &Controller, id: u32) {
     // driver hears before its `disconnect`, and the record is released.
     while let Some((f, ctx, r)) = take_completion(c, s) {
         unsafe { f(ctx, r) };
+    }
+    // An isochronous endpoint's driver hears the device is gone.
+    let isoch = s.dev.lock().as_mut().map(|dev| core::mem::replace(&mut dev.isoch, [None; MAX_ISOCH]));
+    for cb in isoch.into_iter().flatten().flatten() {
+        unsafe { (cb.done)(cb.ctx, USB_EGONE) };
     }
     // The drivers that took its interfaces, told with the lock dropped
     // (they call back in).

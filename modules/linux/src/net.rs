@@ -1,5 +1,7 @@
-//! Sockets over the native `/net`: `AF_INET` (see `docs/sockets-curl.md`)
-//! and `AF_UNIX` streams (`docs/sockets-unix.md`).
+//! Sockets over the native `/net`: `AF_INET` and `AF_INET6` (see
+//! `docs/sockets-curl.md`) and `AF_UNIX` streams (`docs/sockets-unix.md`).
+//! An `AF_INET6` socket names an IPv4 peer `::ffff:a.b.c.d`, and one it
+//! connects or sends to talks IPv4 to netd, as on Linux.
 //!
 //! A socket is a `/net/{tcp,udp,unix}/N` conversation and its fd is the
 //! conversation's `data` file, so reads, writes, dup, fork and close are
@@ -23,6 +25,7 @@ use crate::k::{fs, signal, task, time, user};
 
 const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;
+const AF_INET6: usize = 10;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
 const SOCK_SEQPACKET: usize = 5;
@@ -62,14 +65,74 @@ const CONNECT_TIMEOUT_NS: u64 = 60_000_000_000;
 /// often (draining it wakes nobody).
 const RETRY_NS: u64 = 10_000_000;
 
-/// An IPv4 address and port.
-pub type Addr = ([u8; 4], u16);
+/// An IP address (IPv4 in the first four bytes, or IPv6) and port.
+#[derive(Clone, Copy)]
+pub struct Addr {
+    v6: bool,
+    ip: [u8; 16],
+    port: u16,
+}
+
+impl Addr {
+    const ANY4: Addr = Addr { v6: false, ip: [0; 16], port: 0 };
+    const ANY6: Addr = Addr { v6: true, ip: [0; 16], port: 0 };
+
+    /// The text netd takes and gives: `a.b.c.d` or an IPv6 address.
+    fn text(&self) -> String {
+        if self.v6 {
+            format!("{}", core::net::Ipv6Addr::from(self.ip))
+        } else {
+            let [a, b, c, d, ..] = self.ip;
+            format!("{a}.{b}.{c}.{d}")
+        }
+    }
+
+    /// netd's `addr!port`.
+    fn parse(t: &str) -> Option<Addr> {
+        let (ip, port) = t.rsplit_once('!')?;
+        let port = port.parse().ok()?;
+        match ip.parse::<core::net::IpAddr>().ok()? {
+            core::net::IpAddr::V4(a) => {
+                let mut ip = [0; 16];
+                ip[..4].copy_from_slice(&a.octets());
+                Some(Addr { v6: false, ip, port })
+            }
+            core::net::IpAddr::V6(a) => Some(Addr { v6: true, ip: a.octets(), port }),
+        }
+    }
+
+    /// The address as in netd's datagram header: an IPv4 one as
+    /// `::ffff:a.b.c.d`, `::` all zeros (this host, with a port).
+    fn hdr(&self) -> [u8; 16] {
+        if self.v6 {
+            return self.ip;
+        }
+        let mut b = [0u8; 16];
+        b[10] = 0xff;
+        b[11] = 0xff;
+        b[12..].copy_from_slice(&self.ip[..4]);
+        b
+    }
+
+    fn from_hdr(b: &[u8], port: u16) -> Addr {
+        let mut ip = [0u8; 16];
+        if b[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
+            ip[..4].copy_from_slice(&b[12..16]);
+            Addr { v6: false, ip, port }
+        } else {
+            ip.copy_from_slice(&b[..16]);
+            Addr { v6: true, ip, port }
+        }
+    }
+}
 
 /// A socket's state beyond its fd (kept in the fd table, `files`).
 #[derive(Clone, Copy)]
 pub struct Sock {
     pub stream: bool,
     pub nonblock: bool,
+    /// `AF_INET6` (its addresses are `sockaddr_in6`s).
+    pub inet6: bool,
     pub peer: Option<Addr>,
     /// `AF_UNIX`: its names (an `AF_INET` socket has none).
     pub unix: Option<UnixNames>,
@@ -125,8 +188,11 @@ fn state(conv: &str) -> State {
     let n = fs::read(&format!("{conv}/status"), 0, &mut b).unwrap_or(0);
     match &b[..n] {
         // Empty until netd acknowledges the `clone`; a unix conversation
-        // is `open` until it connects or announces.
+        // is `open` until it connects or announces. A UDP one's answer to a
+        // tagged command (`#<n> ok ...`, `udp_local`) says nothing of its
+        // state: a datagram socket's peer is the layer's (`Sock::peer`).
         b"" | b"cloned" | b"connecting" | b"open" => State::Pending,
+        [b'#', ..] => State::Pending,
         b"connected" => State::Connected,
         b"announced" => State::Listening,
         b"hangup" => State::HungUp,
@@ -171,33 +237,56 @@ fn wait(mut ready: impl FnMut() -> bool, deadline: u64) -> Result<(), usize> {
     }
 }
 
-fn get_addr(ptr: usize, len: usize) -> Result<Addr, usize> {
-    let mut b = [0u8; 8];
-    if len < 8 {
+/// The `sockaddr_in` (`sockaddr_in6` for an `AF_INET6` socket) at `ptr`
+/// (`len` bytes): an IPv4-mapped IPv6 address is the IPv4 one.
+fn get_addr(ptr: usize, len: usize, inet6: bool) -> Result<Addr, usize> {
+    let mut b = [0u8; 24];
+    let need = if inet6 { 24 } else { 8 };
+    if len < need {
         return Err(EINVAL);
     }
-    get_bytes(ptr, &mut b)?;
-    if u16::from_le_bytes([b[0], b[1]]) as usize != AF_INET {
-        return Err(EAFNOSUPPORT);
+    get_bytes(ptr, &mut b[..need])?;
+    let family = u16::from_le_bytes([b[0], b[1]]) as usize;
+    let port = u16::from_be_bytes([b[2], b[3]]);
+    match (inet6, family) {
+        (false, AF_INET) => {
+            let mut ip = [0; 16];
+            ip[..4].copy_from_slice(&b[4..8]);
+            Ok(Addr { v6: false, ip, port })
+        }
+        // sin6_flowinfo at 4, sin6_addr at 8.
+        (true, AF_INET6) => Ok(Addr::from_hdr(&b[8..24], port)),
+        _ => Err(EAFNOSUPPORT),
     }
-    Ok(([b[4], b[5], b[6], b[7]], u16::from_be_bytes([b[2], b[3]])))
 }
 
-/// Store a `sockaddr_in` at `ptr` (`*len_ptr` bytes of room) and its size
-/// at `len_ptr`.
-fn put_addr(ptr: usize, len_ptr: usize, (ip, port): Addr) -> R {
+/// Store `a` as a `sockaddr_in`, or for an `AF_INET6` socket a
+/// `sockaddr_in6` (an IPv4 address `::ffff:a.b.c.d`, 0.0.0.0 `::`), at `ptr`
+/// (`*len_ptr` bytes of room) and its size at `len_ptr`.
+fn put_addr(ptr: usize, len_ptr: usize, a: Addr, inet6: bool) -> R {
     if ptr == 0 {
         return Ok(0);
     }
     let mut l = [0u8; 4];
     get_bytes(len_ptr, &mut l)?;
     let room = u32::from_le_bytes(l) as usize;
-    let mut b = [0u8; 16];
-    b[..2].copy_from_slice(&(AF_INET as u16).to_le_bytes());
-    b[2..4].copy_from_slice(&port.to_be_bytes());
-    b[4..8].copy_from_slice(&ip);
-    put(ptr, &b[..room.min(16)])?;
-    put(len_ptr, &16u32.to_le_bytes())?;
+    let mut b = [0u8; 28];
+    b[2..4].copy_from_slice(&a.port.to_be_bytes());
+    let size = if inet6 {
+        b[..2].copy_from_slice(&(AF_INET6 as u16).to_le_bytes());
+        if a.v6 || a.ip[..4] != [0; 4] {
+            b[8..24].copy_from_slice(&a.hdr());
+        }
+        28
+    } else {
+        b[..2].copy_from_slice(&(AF_INET as u16).to_le_bytes());
+        if !a.v6 {
+            b[4..8].copy_from_slice(&a.ip[..4]);
+        }
+        16
+    };
+    put(ptr, &b[..room.min(size)])?;
+    put(len_ptr, &(size as u32).to_le_bytes())?;
     Ok(0)
 }
 
@@ -266,7 +355,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
         }
         return new_conv("unix", ty, UNIX_SOCK);
     }
-    if domain != AF_INET {
+    if domain != AF_INET && domain != AF_INET6 {
         return Err(EAFNOSUPPORT);
     }
     let stream = match ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC) {
@@ -275,7 +364,16 @@ pub fn socket(domain: usize, ty: usize) -> R {
         _ => return Err(EPROTOTYPE),
     };
     let proto = if stream { "tcp" } else { "udp" };
-    new_conv(proto, ty, Sock { stream, nonblock: false, peer: None, unix: None, passcred: false })
+    let inet6 = domain == AF_INET6;
+    let fd = new_conv(proto, ty, Sock { stream, nonblock: false, inet6, peer: None, unix: None, passcred: false })?;
+    // An IPv6 datagram socket's port is on `::`, which takes IPv4 datagrams
+    // too, as on Linux (musl's resolver asks IPv4 and IPv6 nameservers
+    // from one such socket); tagged, its answer is no `connected`.
+    if inet6 && !stream {
+        let (conv, _) = sock(fd)?;
+        let _ = fs::write(&format!("{conv}/ctl"), 0, b"autobind :: #0");
+    }
+    Ok(fd)
 }
 
 /// `/net/{proto}`'s VFS path. `/net` is the system's, also inside a
@@ -293,7 +391,7 @@ fn conv_id(file: &str) -> Result<String, usize> {
 }
 
 /// A new unix socket's state.
-const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, peer: None, unix: Some(UNNAMED), passcred: false };
+const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, inet6: false, peer: None, unix: Some(UNNAMED), passcred: false };
 
 /// A new conversation of `/net/{proto}` as socket `sock`: opening `clone`
 /// makes it, and the fd is on its `data` (whose link names it), until
@@ -352,8 +450,16 @@ pub fn connect(fd: usize, addr: usize, len: usize) -> R {
         task::wake_any();
         return Ok(0);
     }
-    let peer = get_addr(addr, len)?;
+    let mut peer = get_addr(addr, len, s.inet6)?;
     ctl_connect(&conv, peer)?;
+    // An unspecified address is this host (netd's way, and Linux's).
+    if peer.ip == [0; 16] {
+        if peer.v6 {
+            peer.ip[15] = 1;
+        } else {
+            peer.ip[..4].copy_from_slice(&[127, 0, 0, 1]);
+        }
+    }
     files::with_sock(fd, |s| s.peer = Some(peer));
     if !s.stream {
         return Ok(0);
@@ -406,8 +512,9 @@ pub fn send(fd: usize, mut io: impl FnMut() -> R) -> R {
 }
 
 /// A UDP datagram's header in a conversation's `hdata`
-/// (`docs/sockets-curl.md`): the remote address and port, the local ones.
-const UDP_HDR: usize = 12;
+/// (`docs/sockets-curl.md`): the remote and local addresses (16 bytes each,
+/// IPv4 as `::ffff:a.b.c.d`), the remote and local ports.
+const UDP_HDR: usize = 36;
 /// The most a datagram carries.
 const UDP_MAX: usize = 65535;
 
@@ -417,10 +524,10 @@ const UDP_MAX: usize = 65535;
 /// and takes the first answer, from whichever).
 fn send_datagram(fd: usize, data: &[u8], to: usize, tolen: usize) -> R {
     let (conv, s) = sock(fd)?;
-    let ([a, b, c, d], port) = get_addr(to, tolen)?;
+    let to = get_addr(to, tolen, s.inet6)?;
     let mut msg = alloc::vec![0u8; UDP_HDR + data.len()];
-    msg[..4].copy_from_slice(&[a, b, c, d]);
-    msg[8..10].copy_from_slice(&port.to_be_bytes());
+    msg[..16].copy_from_slice(&to.hdr());
+    msg[32..34].copy_from_slice(&to.port.to_be_bytes());
     msg[UDP_HDR..].copy_from_slice(data);
     // netd's request ring may be full: a blocking socket retries.
     loop {
@@ -441,7 +548,7 @@ fn send_datagram(fd: usize, data: &[u8], to: usize, tolen: usize) -> R {
 /// `recvfrom` on a datagram socket: the next datagram from `hdata`, its
 /// sender from its header.
 fn recv_datagram(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fromlen: usize) -> R {
-    let (conv, _) = sock(fd)?;
+    let (conv, s) = sock(fd)?;
     let mut msg = alloc::vec![0u8; UDP_HDR + len.min(UDP_MAX)];
     let got = recv(fd, flags & MSG_DONTWAIT != 0, || Ok(fs::read(&format!("{conv}/hdata"), 0, &mut msg).unwrap_or(0)))?;
     if got < UDP_HDR {
@@ -449,13 +556,33 @@ fn recv_datagram(fd: usize, buf: usize, len: usize, flags: usize, from: usize, f
     }
     let n = got - UDP_HDR;
     put(buf, &msg[UDP_HDR..UDP_HDR + n])?;
-    put_addr(from, fromlen, ([msg[0], msg[1], msg[2], msg[3]], u16::from_be_bytes([msg[8], msg[9]])))?;
+    put_addr(from, fromlen, Addr::from_hdr(&msg, u16::from_be_bytes([msg[32], msg[33]])), s.inet6)?;
     Ok(n)
 }
 
-fn ctl_connect(conv: &str, ([a, b, c, d], port): Addr) -> Result<(), usize> {
-    let cmd = format!("connect {a}.{b}.{c}.{d}!{port}");
+fn ctl_connect(conv: &str, a: Addr) -> Result<(), usize> {
+    let cmd = format!("connect {}!{}", a.text(), a.port);
     fs::write(&format!("{conv}/ctl"), 0, cmd.as_bytes()).map(|_| ()).ok_or(EIO)
+}
+
+/// A UDP socket's local address and port, netd's answer to a tagged
+/// `local` (`docs/sockets-curl.md`): what a connect or send chose.
+fn udp_local(conv: &str) -> Option<Addr> {
+    let tag = format!("#{}", time::monotonic_ns());
+    fs::write(&format!("{conv}/ctl"), 0, format!("local {tag}").as_bytes())?;
+    let want = format!("{tag} ok ");
+    let mut found = None;
+    let _ = wait(
+        || {
+            let mut b = [0u8; 160];
+            let n = fs::read(&format!("{conv}/status"), 0, &mut b).unwrap_or(0);
+            let st = core::str::from_utf8(&b[..n]).unwrap_or("");
+            found = st.strip_prefix(want.as_str()).and_then(|t| Addr::parse(t.split(' ').next()?));
+            found.is_some()
+        },
+        time::monotonic_ns() + 1_000_000_000,
+    );
+    found
 }
 
 /// Whether `fd` is an `AF_INET` datagram socket (`hdata` carries its
@@ -484,7 +611,7 @@ pub fn recvfrom(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fr
     }
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || native(user::sys_read(fd, buf, len), EBADF))?;
     if let Some(peer) = s.peer {
-        put_addr(from, fromlen, peer)?;
+        put_addr(from, fromlen, peer, s.inet6)?;
     } else if s.unix.is_some() && from != 0 {
         // A stream's bytes have no source address.
         put(fromlen, &0u32.to_le_bytes())?;
@@ -660,7 +787,7 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
             left = &left[take..];
         }
         if got >= UDP_HDR {
-            put_addr(name, msg + 8, ([data[0], data[1], data[2], data[3]], u16::from_be_bytes([data[8], data[9]])))?;
+            put_addr(name, msg + 8, Addr::from_hdr(&data, u16::from_be_bytes([data[32], data[33]])), s.inet6)?;
         }
         put(msg + 40, &0u64.to_le_bytes())?;
         put(msg + 48, &0u32.to_le_bytes())?;
@@ -668,7 +795,7 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     }
     let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
     if let Some(peer) = s.peer {
-        put_addr(name, msg + 8, peer)?;
+        put_addr(name, msg + 8, peer, s.inet6)?;
     } else if s.unix.is_some() && name != 0 {
         put(msg + 8, &0u32.to_le_bytes())?;
     }
@@ -747,13 +874,16 @@ pub fn shutdown(fd: usize, how: usize) -> R {
     Ok(0)
 }
 
-/// A unix socket's own name; an `AF_INET` socket's local address is not
-/// known: `0.0.0.0:0`.
+/// A unix socket's own name; a UDP socket's local address, netd's; a TCP
+/// one's is not known: any address, port 0.
 pub fn getsockname(fd: usize, addr: usize, alen: usize) -> R {
-    match sock(fd)?.1.unix {
-        Some(u) => put_name(addr, alen, &u.name),
-        None => put_addr(addr, alen, ([0; 4], 0)),
+    let (conv, s) = sock(fd)?;
+    if let Some(u) = s.unix {
+        return put_name(addr, alen, &u.name);
     }
+    let any = if s.inet6 { Addr::ANY6 } else { Addr::ANY4 };
+    let local = if s.stream { None } else { udp_local(&conv) };
+    put_addr(addr, alen, local.unwrap_or(any), s.inet6)
 }
 
 /// The name a unix socket connected to (unnamed: an accepted or paired
@@ -763,7 +893,7 @@ pub fn getpeername(fd: usize, addr: usize, alen: usize) -> R {
     match s.unix {
         Some(u) if state(&conv) == State::Connected => put_name(addr, alen, &u.peer),
         Some(_) => Err(ENOTCONN),
-        None => put_addr(addr, alen, s.peer.ok_or(ENOTCONN)?),
+        None => put_addr(addr, alen, s.peer.ok_or(ENOTCONN)?, s.inet6),
     }
 }
 
@@ -813,7 +943,8 @@ pub fn setsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
 }
 
 /// `bind`: a unix socket takes the name its `listen` announces; an
-/// `AF_INET` one ignores it (a client socket binds implicitly).
+/// `AF_INET` or `AF_INET6` one ignores it (a client socket binds
+/// implicitly).
 pub fn bind(fd: usize, addr: usize, len: usize) -> R {
     let Some(u) = sock(fd)?.1.unix else {
         return Ok(0);
@@ -824,7 +955,7 @@ pub fn bind(fd: usize, addr: usize, len: usize) -> R {
 }
 
 /// `listen`: a bound unix socket announces its name in `/net/unix`. No
-/// `AF_INET` listeners.
+/// `AF_INET` or `AF_INET6` listeners.
 pub fn listen(fd: usize) -> R {
     let (conv, s) = sock(fd)?;
     let Some(u) = s.unix else {

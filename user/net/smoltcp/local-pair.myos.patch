@@ -9,15 +9,16 @@ an interface cannot route silences its socket as if a neighbor were
 missing. set_local_only() makes an interface send only to its own
 addresses and prefixes (and leave the DHCP sockets alone: it has no
 hardware address to ask with), set_local_elsewhere() makes the other one
-leave those (and 127.0.0.0/8) alone, and a packet neither of a pair
-routes waits in its socket for the other interface. Unchanged without
-either. With tests (tests/ipv4.rs). Derived from smoltcp, so under
-smoltcp's license (0BSD).
+leave those (and 127.0.0.0/8 and ::1) alone, and a packet neither of a
+pair routes waits in its socket for the other interface. Unchanged
+without either. With tests (tests/ipv4.rs, tests/ipv6.rs). Derived from
+smoltcp, so under smoltcp's license (0BSD).
 
 diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
+index 4a2458a..debd83a 100644
 --- a/src/iface/interface/mod.rs
 +++ b/src/iface/interface/mod.rs
-@@ -142,6 +142,8 @@
+@@ -142,6 +142,8 @@ pub struct InterfaceInner {
      tag: u16,
      ip_addrs: Vec<IpCidr, IFACE_MAX_ADDR_COUNT>,
      any_ip: bool,
@@ -26,7 +27,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
      routes: Routes,
      #[cfg(feature = "multicast")]
      multicast: multicast::State,
-@@ -247,6 +249,8 @@
+@@ -247,6 +249,8 @@ impl Interface {
                  hardware_addr: config.hardware_addr,
                  ip_addrs: Vec::new(),
                  any_ip: false,
@@ -35,7 +36,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
                  routes: Routes::new(),
                  #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
                  neighbor_cache: NeighborCache::new(),
-@@ -393,6 +397,26 @@
+@@ -393,6 +397,26 @@ impl Interface {
          self.inner.any_ip = any_ip;
      }
  
@@ -62,7 +63,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
      /// Get whether AnyIP is enabled.
      ///
      /// See [`set_any_ip`](Self::set_any_ip) for details on AnyIP
-@@ -651,10 +675,17 @@
+@@ -651,10 +675,17 @@ impl Interface {
          enum EgressError {
              Exhausted,
              Dispatch,
@@ -80,7 +81,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
              if !item
                  .meta
                  .egress_permitted(self.inner.now, |ip_addr| self.inner.has_neighbor(&ip_addr))
-@@ -672,7 +703,13 @@
+@@ -672,7 +703,13 @@ impl Interface {
  
                  inner
                      .dispatch_ip(t, meta, response, &mut self.fragmenter)
@@ -95,7 +96,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
  
                  result = PollResult::SocketStateChanged;
  
-@@ -743,6 +780,7 @@
+@@ -743,6 +780,7 @@ impl Interface {
  
              match result {
                  Err(EgressError::Exhausted) => break, // Device buffer full.
@@ -103,7 +104,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
                  Err(EgressError::Dispatch) => {
                      // `NeighborCache` already takes care of rate limiting the neighbor discovery
                      // requests from the socket. However, without an additional rate limiting
-@@ -942,6 +980,21 @@
+@@ -942,6 +980,23 @@ impl InterfaceInner {
          self.ip_addrs.iter().any(|cidr| cidr.contains_addr(addr))
      }
  
@@ -116,6 +117,8 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
 +        let loopback = match addr {
 +            #[cfg(feature = "proto-ipv4")]
 +            IpAddress::Ipv4(a) => a.is_loopback(),
++            #[cfg(feature = "proto-ipv6")]
++            IpAddress::Ipv6(a) => a.is_loopback(),
 +            #[allow(unreachable_patterns)]
 +            _ => false,
 +        };
@@ -125,7 +128,7 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
      fn route(&self, addr: &IpAddress, timestamp: Instant) -> Option<IpAddress> {
          // Send directly.
          // note: no need to use `self.is_broadcast()` to check for subnet-local broadcast addrs
-@@ -1133,6 +1186,11 @@
+@@ -1133,6 +1188,11 @@ impl InterfaceInner {
          let mut ip_repr = packet.ip_repr();
          assert!(!ip_repr.dst_addr().is_unspecified());
  
@@ -138,9 +141,10 @@ diff --git a/src/iface/interface/mod.rs b/src/iface/interface/mod.rs
  
          #[cfg(feature = "medium-ieee802154")]
 diff --git a/src/iface/interface/tests/ipv4.rs b/src/iface/interface/tests/ipv4.rs
+index 04f2f53..1e3b489 100644
 --- a/src/iface/interface/tests/ipv4.rs
 +++ b/src/iface/interface/tests/ipv4.rs
-@@ -1170,3 +1170,75 @@
+@@ -1170,3 +1170,75 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
          ))
      );
  }
@@ -215,4 +219,64 @@ diff --git a/src/iface/interface/tests/ipv4.rs b/src/iface/interface/tests/ipv4.
 +    sockets.add(crate::socket::dhcpv4::Socket::new());
 +    lo.poll(Instant::ZERO, &mut dev, &mut sockets);
 +    assert!(dev.tx_queue.is_empty());
++}
+diff --git a/src/iface/interface/tests/ipv6.rs b/src/iface/interface/tests/ipv6.rs
+index 5a75b5b..01240ae 100644
+--- a/src/iface/interface/tests/ipv6.rs
++++ b/src/iface/interface/tests/ipv6.rs
+@@ -1603,3 +1603,55 @@ fn test_solicited_node_multicast_autojoin(#[case] medium: Medium) {
+     assert!(!iface.has_multicast_group(addr1.solicited_node()));
+     assert!(!iface.has_multicast_group(addr2.solicited_node()));
+ }
++
++/// myos: a loopback interface beside a NIC's (`set_local_only`,
++/// `set_local_elsewhere`): ::1 and the NIC's own address leave through the
++/// loopback interface only, a remote one through the NIC's only.
++#[test]
++#[cfg(all(feature = "medium-ip", feature = "socket-udp"))]
++fn test_local_only_pair_ipv6() {
++    use crate::socket::udp;
++    use crate::tests::TestingDevice;
++    use crate::wire::IpEndpoint;
++
++    let own = Ipv6Address::new(0xfec0, 0, 0, 0, 0, 0, 0, 0x15);
++    let mut nic_dev = TestingDevice::new(Medium::Ip);
++    let mut nic = Interface::new(Config::new(HardwareAddress::Ip), &mut nic_dev, Instant::ZERO);
++    nic.update_ip_addrs(|a| a.push(IpCidr::new(own.into(), 64)).unwrap());
++    nic.routes_mut()
++        .add_default_ipv6_route(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2))
++        .unwrap();
++    nic.set_local_elsewhere(true);
++    let mut lo_dev = TestingDevice::new(Medium::Ip);
++    let mut lo = Interface::new(Config::new(HardwareAddress::Ip), &mut lo_dev, Instant::ZERO);
++    lo.update_ip_addrs(|a| {
++        a.push(IpCidr::new(Ipv6Address::LOCALHOST.into(), 128)).unwrap();
++        a.push(IpCidr::new(own.into(), 128)).unwrap();
++    });
++    lo.set_local_only(true);
++
++    let mut sockets = SocketSet::new(vec![]);
++    let rx = udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 4], vec![0; 64]);
++    let tx = udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 4], vec![0; 64]);
++    let h = sockets.add(udp::Socket::new(rx, tx));
++    let s = sockets.get_mut::<udp::Socket>(h);
++    s.bind(1234).unwrap();
++    for dst in [
++        Ipv6Address::LOCALHOST,
++        own,
++        Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
++    ] {
++        let mut meta = udp::UdpMetadata::from(IpEndpoint::new(dst.into(), 53));
++        meta.local_address = Some(if dst == Ipv6Address::LOCALHOST { dst } else { own }.into());
++        s.send_slice(b"x", meta).unwrap();
++    }
++
++    nic.poll(Instant::ZERO, &mut nic_dev, &mut sockets);
++    assert!(nic_dev.tx_queue.is_empty());
++    for _ in 0..3 {
++        lo.poll_egress(Instant::ZERO, &mut lo_dev, &mut sockets);
++    }
++    assert_eq!(lo_dev.tx_queue.len(), 2);
++    nic.poll(Instant::ZERO, &mut nic_dev, &mut sockets);
++    assert_eq!(nic_dev.tx_queue.len(), 1);
 +}

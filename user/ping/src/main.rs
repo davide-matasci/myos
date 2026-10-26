@@ -18,7 +18,7 @@ const STATUS_TIMEOUT_MS: i64 = 5_000;
 const DATA_TIMEOUT_MS: i64 = 5_000;
 
 fn usage() -> ! {
-    write(b"usage: ping <ipv4>\n");
+    write(b"usage: ping <ipv4|ipv6>\n");
     exit_code(1);
 }
 
@@ -27,34 +27,9 @@ fn fail(msg: &[u8]) -> ! {
     exit_code(1);
 }
 
-/// Dotted IPv4 `a.b.c.d`; each octet 0..=255, no extra bytes.
-fn parse_ipv4(s: &[u8]) -> bool {
-    let mut i = 0usize;
-    for part in 0..4 {
-        if i >= s.len() || !s[i].is_ascii_digit() {
-            return false;
-        }
-        let mut n = 0u16;
-        let mut digits = 0u8;
-        while i < s.len() && s[i].is_ascii_digit() {
-            digits += 1;
-            if digits > 3 {
-                return false;
-            }
-            n = n * 10 + (s[i] - b'0') as u16;
-            if n > 255 {
-                return false;
-            }
-            i += 1;
-        }
-        if part != 3 {
-            if i >= s.len() || s[i] != b'.' {
-                return false;
-            }
-            i += 1;
-        }
-    }
-    i == s.len()
+/// An IPv4 address `a.b.c.d` or an IPv6 one (netd echoes over ICMPv6).
+fn parse_ip(s: &[u8]) -> bool {
+    core::str::from_utf8(s).ok().is_some_and(|t| t.parse::<core::net::IpAddr>().is_ok())
 }
 
 fn connect_ctl(ip: &[u8], out: &mut [u8]) -> usize {
@@ -104,7 +79,7 @@ fn main() -> ! {
     let Some(ip) = myos_user::arg(1) else {
         usage();
     };
-    if !parse_ipv4(ip) {
+    if !parse_ip(ip) {
         usage();
     }
 

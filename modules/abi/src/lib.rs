@@ -99,7 +99,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// `unmask`.
 /// 57: a fault raises its signal: [`SignalDelivery`] carries the
 /// siginfo's `code` and `addr`.
-pub const ABI_VERSION: u32 = 57;
+/// 58: sound ([`SOUND_SERVICE`]: the `sound` core's [`SoundOps`], a card's
+/// [`SoundCardOps`]); USB alternate settings and isochronous OUT transfers
+/// ([`UsbHostOps::set_interface`], [`UsbHostOps::isoch_queue`], the
+/// controllers' [`UsbHcdOps::endpoints_change`]).
+pub const ABI_VERSION: u32 = 58;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1859,8 +1863,14 @@ pub const MYOS_MAX_MODULE_THREADS: usize = 8;
 /// The name the host controller publishes its [`UsbHostOps`] under.
 pub const USB_SERVICE: &str = "usb";
 /// [`UsbHostOps::version`]. 2 added [`UsbHostOps::interface_label`]; 3
-/// made `interrupt_start` [`UsbHostOps::transfer_start`], bulk IN too.
-pub const USB_HOST_VERSION: u32 = 3;
+/// made `interrupt_start` [`UsbHostOps::transfer_start`], bulk IN too; 4
+/// added alternate settings ([`UsbHostOps::set_interface`]) and
+/// isochronous OUT transfers ([`UsbHostOps::isoch_queue`]).
+pub const USB_HOST_VERSION: u32 = 4;
+/// Isochronous packets queued on an endpoint at most
+/// ([`UsbHostOps::isoch_queue`]), and the bytes of one.
+pub const USB_ISOCH_MAX: usize = 64;
+pub const USB_ISOCH_PACKET_MAX: usize = 1024;
 /// Bytes of a bulk IN transfer `transfer_start` queues at most (a page:
 /// the endpoint's own bounce buffer).
 pub const USB_ASYNC_BULK_MAX: usize = 4096;
@@ -1878,6 +1888,9 @@ pub const USB_EGONE: i32 = -6;
 pub const USB_ESTALL: i32 = -32;
 pub const USB_EIO: i32 = -5;
 pub const USB_ETIMEDOUT: i32 = -110;
+/// [`UsbHostOps::isoch_queue`]: the endpoint has [`USB_ISOCH_MAX`] packets
+/// in flight.
+pub const USB_EBUSY: i32 = -16;
 
 /// Endpoints one interface may have ([`UsbInterfaceInfo::endpoints`]).
 pub const USB_MAX_ENDPOINTS: usize = 15;
@@ -1992,6 +2005,25 @@ pub struct UsbHostOps {
     /// disk's name), shown after the driver's name in `/proc/usb`: at most
     /// [`USB_LABEL_MAX`] bytes, longer is cut. 0, or [`USB_EGONE`].
     pub interface_label: unsafe extern "C" fn(dev: u32, intf: u8, label: *const u8, len: usize) -> i32,
+    /// Select alternate setting `alternate` of interface `interface` (an
+    /// audio streaming interface's, whose endpoints come with its setting
+    /// 1): the controller lets the endpoints of the setting before go and
+    /// takes the new one's, isochronous ones too, then SET_INTERFACE. The
+    /// interface starts at setting 0. 0, or negative.
+    pub set_interface: unsafe extern "C" fn(dev: u32, interface: u8, alternate: u8) -> i32,
+    /// `done(ctx, packets)` runs on the host's thread as packets queued on
+    /// the isochronous OUT `endpoint` complete (sent, or past their
+    /// interval: either way gone), `packets` of them, until `isoch_stop`;
+    /// [`USB_EGONE`] once the device is gone. 0, or negative.
+    pub isoch_start: unsafe extern "C" fn(dev: u32, endpoint: u8, done: UsbCompletion, ctx: *mut core::ffi::c_void) -> i32,
+    /// Queue `n` packets on the isochronous OUT `endpoint`, one per
+    /// service interval from the next free one: `lens[i]` bytes each (at
+    /// most [`USB_ISOCH_PACKET_MAX`]), back to back at `data` (the host
+    /// copies them). 0, or negative: [`USB_EBUSY`] past
+    /// [`USB_ISOCH_MAX`] packets in flight.
+    pub isoch_queue: unsafe extern "C" fn(dev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32,
+    /// No more `done` calls for `endpoint` (what is in flight still plays).
+    pub isoch_stop: unsafe extern "C" fn(dev: u32, endpoint: u8),
 }
 
 /// Safe calls into the host, as [`KernelApi`]'s methods: the host checks
@@ -2041,6 +2073,22 @@ impl UsbHostOps {
     pub fn interface_label(&self, dev: u32, intf: u8, label: &[u8]) -> i32 {
         unsafe { (self.interface_label)(dev, intf, label.as_ptr(), label.len()) }
     }
+
+    pub fn set_interface(&self, dev: u32, interface: u8, alternate: u8) -> i32 {
+        unsafe { (self.set_interface)(dev, interface, alternate) }
+    }
+
+    /// `isoch_queue` of the packets `lens` says, back to back in `data`.
+    pub fn isoch_queue(&self, dev: u32, endpoint: u8, data: &[u8], lens: &[u16]) -> i32 {
+        if lens.iter().map(|&l| usize::from(l)).sum::<usize>() > data.len() {
+            return USB_EIO;
+        }
+        unsafe { (self.isoch_queue)(dev, endpoint, data.as_ptr(), lens.as_ptr(), lens.len()) }
+    }
+
+    pub fn isoch_stop(&self, dev: u32, endpoint: u8) {
+        unsafe { (self.isoch_stop)(dev, endpoint) }
+    }
 }
 
 // Function tables with a name: shared between the modules' threads.
@@ -2076,8 +2124,10 @@ pub struct UsbDriverOps {
 pub const USB_CORE_SERVICE: &str = "usbcore";
 /// [`UsbCoreOps::version`].
 pub const USB_CORE_VERSION: u32 = 1;
-/// [`UsbHcdOps::version`].
-pub const USB_HCD_VERSION: u32 = 1;
+/// [`UsbHcdOps::version`]. 2 added alternate settings and isochronous OUT
+/// transfers ([`UsbHcdOps::endpoints_change`], `isoch_queue`,
+/// `isoch_reap`).
+pub const USB_HCD_VERSION: u32 = 2;
 /// [`UsbHcdOps::transfer_take`]: the transfer has not completed yet.
 pub const USB_EPENDING: i32 = -115;
 
@@ -2198,6 +2248,24 @@ pub struct UsbHcdOps {
     /// The controller's side of recovering a stalled endpoint (the core
     /// sends the CLEAR_FEATURE). 0 ok.
     pub clear_halt: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8) -> i32,
+    /// An interface's alternate setting changed (`set_interface`): the
+    /// endpoints `drop` names (addresses) go, the `n_add` at `add` come,
+    /// set up as `device_configure` does, isochronous ones too. 0 ok.
+    pub endpoints_change: unsafe extern "C" fn(
+        ctrl: usize,
+        dev: u32,
+        add: *const UsbEndpoint,
+        n_add: usize,
+        drop: *const u8,
+        n_drop: usize,
+    ) -> i32,
+    /// [`UsbHostOps::isoch_queue`] on the device: 0, negative, or
+    /// [`USB_EIO`] where the controller does not drive isochronous
+    /// transfers. A packet's completion calls [`UsbCoreOps::wake`].
+    pub isoch_queue: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32,
+    /// The packets of `endpoint` that completed since the last call, or
+    /// negative.
+    pub isoch_reap: unsafe extern "C" fn(ctrl: usize, dev: u32, endpoint: u8) -> i32,
 }
 
 /// The core, for the host controller drivers (the [`USB_CORE_SERVICE`]
@@ -2510,6 +2578,128 @@ pub struct MmioDevice {
     /// The node's phandle (what other nodes name it by), 0 when it has
     /// none.
     pub phandle: u32,
+}
+
+// ---- Sound (docs/sound.md) -------------------------------------------------
+//
+// The `sound` module owns `/dev/sound` and publishes a [`SoundOps`] table
+// as the service [`SOUND_SERVICE`]. A sound card's driver (`virtio_sound`,
+// `usb_audio`) registers the card with its streams, each a playback or a
+// capture stream, and a [`SoundCardOps`] table the core starts and stops
+// them through; each stream becomes a `/dev/sound/N` for the sound server.
+// The PCM goes through the core's buffer: the driver takes what plays
+// ([`SoundOps::playback_take`]) and hands over what it recorded
+// ([`SoundOps::capture_put`]), from its own thread (not an interrupt
+// handler). Samples are interleaved frames, little endian.
+
+/// The name the sound core publishes its [`SoundOps`] under.
+pub const SOUND_SERVICE: &str = "sound";
+/// [`SoundOps::version`] and [`SoundCardOps::version`].
+pub const SOUND_VERSION: u32 = 1;
+/// [`SoundStreamInfo::direction`].
+pub const SOUND_PLAYBACK: u8 = 0;
+pub const SOUND_CAPTURE: u8 = 1;
+/// Sample formats ([`SoundParams::format`]; bit `1 << format` in
+/// [`SoundStreamInfo::formats`]): unsigned 8-bit, signed 16-bit.
+pub const SOUND_FORMAT_U8: u8 = 0;
+pub const SOUND_FORMAT_S16: u8 = 1;
+/// The frame rates a stream may offer, bit `i` of
+/// [`SoundStreamInfo::rates`] for `SOUND_RATES[i]` (virtio-sound's
+/// `VIRTIO_SND_PCM_RATE_*` order).
+pub const SOUND_RATES: [u32; 14] =
+    [5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000, 384000];
+
+/// What a stream can do (a card's registration).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SoundStreamInfo {
+    /// [`SOUND_PLAYBACK`] or [`SOUND_CAPTURE`].
+    pub direction: u8,
+    pub channels_min: u8,
+    pub channels_max: u8,
+    /// Bit `1 << SOUND_FORMAT_*` per format.
+    pub formats: u8,
+    /// Bit `i` per [`SOUND_RATES`]`[i]`.
+    pub rates: u32,
+}
+
+/// How a stream runs ([`SoundCardOps::start`]).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SoundParams {
+    pub rate: u32,
+    pub channels: u8,
+    /// `SOUND_FORMAT_*`.
+    pub format: u8,
+    pub _pad: u16,
+    /// Bytes the driver moves at a time (whole frames), and the most the
+    /// core buffers between the server and the driver (whole periods).
+    pub period_bytes: u32,
+    pub buffer_bytes: u32,
+}
+
+/// A card's driver, for the core: a stream started and stopped. `ctx` is
+/// what the driver registered with the card; `stream` counts the card's
+/// streams from 0. Called from task context, never with the core's lock
+/// held.
+#[repr(C)]
+pub struct SoundCardOps {
+    pub version: u32,
+    /// Run `stream` as `params` says: from then on the driver takes its
+    /// PCM ([`SoundOps::playback_take`]) or hands it over
+    /// ([`SoundOps::capture_put`]) a period at a time. 0, or negative when
+    /// the card cannot.
+    pub start: unsafe extern "C" fn(ctx: usize, stream: u32, params: *const SoundParams) -> i32,
+    /// Stop `stream`; nothing more is taken or handed over.
+    pub stop: unsafe extern "C" fn(ctx: usize, stream: u32),
+}
+
+unsafe impl Sync for SoundCardOps {}
+
+/// The sound core, for card drivers (the [`SOUND_SERVICE`] table).
+#[repr(C)]
+pub struct SoundOps {
+    pub version: u32,
+    /// A card named `name` (`virtio-sound 00:04.0`) with `n` streams
+    /// (`streams[i]` what stream `i` can do), driven through `ops` with
+    /// `ctx`: its number (>= 0), or negative when the core has no room.
+    pub card_register: unsafe extern "C" fn(
+        ops: *const SoundCardOps,
+        ctx: usize,
+        name: StrRef,
+        streams: *const SoundStreamInfo,
+        n: u32,
+    ) -> i32,
+    /// The card is gone (unplugged): its streams' files fail from now on,
+    /// and the core calls it no more.
+    pub card_remove: unsafe extern "C" fn(card: i32),
+    /// Up to `len` bytes of playback stream `stream`'s PCM into `buf`: the
+    /// bytes copied, fewer when the server has not written them yet (an
+    /// underrun; the driver plays silence for the rest).
+    pub playback_take: unsafe extern "C" fn(card: i32, stream: u32, buf: *mut u8, len: usize) -> usize,
+    /// `len` bytes capture stream `stream` recorded; what the server has
+    /// not read when the buffer is full is dropped, the oldest first.
+    pub capture_put: unsafe extern "C" fn(card: i32, stream: u32, buf: *const u8, len: usize),
+}
+
+unsafe impl Sync for SoundOps {}
+
+impl SoundOps {
+    pub fn card_register(&self, ops: &'static SoundCardOps, ctx: usize, name: &str, streams: &[SoundStreamInfo]) -> i32 {
+        unsafe { (self.card_register)(ops, ctx, StrRef::new(name), streams.as_ptr(), streams.len() as u32) }
+    }
+
+    pub fn card_remove(&self, card: i32) {
+        unsafe { (self.card_remove)(card) }
+    }
+
+    pub fn playback_take(&self, card: i32, stream: u32, buf: &mut [u8]) -> usize {
+        unsafe { (self.playback_take)(card, stream, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn capture_put(&self, card: i32, stream: u32, buf: &[u8]) {
+        unsafe { (self.capture_put)(card, stream, buf.as_ptr(), buf.len()) }
+    }
 }
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).

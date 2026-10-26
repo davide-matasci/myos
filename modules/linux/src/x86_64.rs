@@ -346,8 +346,11 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     regs.set_word(R_RDX, uc_va as u64);
     regs.set_word(R_RSP, frame_va as u64);
     regs.set_word(R_RIP, f.handler as u64);
-    // The ABI wants DF clear at function entry.
-    regs.set_word(R_RFLAGS, regs.word(R_RFLAGS) & !0x400);
+    // The ABI wants DF clear at function entry, and TF off: a program
+    // single-stepping itself traps in its own code, not in the handler
+    // (which would fault again with SIGTRAP blocked); the sigcontext keeps
+    // both for rt_sigreturn, as on Linux.
+    regs.set_word(R_RFLAGS, regs.word(R_RFLAGS) & !(0x400 | 0x100));
     Some(0)
 }
 
