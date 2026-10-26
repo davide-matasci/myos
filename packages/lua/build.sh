@@ -80,6 +80,8 @@ build_arch() {
     -include "$HERE/myos_compat.h"
   )
 
+  # Afresh: the script runs when an input changed, the flags included.
+  rm -rf "$objdir"
   mkdir -p "$objdir"
   for f in "${CORE_SRCS[@]}" "${LUA_SRCS[@]}"; do
     o="$objdir/${f%.c}.o"

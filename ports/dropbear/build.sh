@@ -123,6 +123,9 @@ for arch in x86_64 aarch64 riscv64; do
     -Wno-incompatible-function-pointer-types
     -isystem "$clang_res" -isystem "$inc" -I"$HERE/include" -I"$LTM")
 
+  # The libraries' objects afresh: the script runs when an input changed,
+  # the compiler's flags included.
+  rm -f "$ROOT/target/ltc_${arch}_"*.o "$ROOT/target/ltm_${arch}_"*.o
   LTC_A="$(build_ltc "$arch" "$triple")"
   LTM_A="$(build_ltm "$arch" "$triple")"
 
@@ -131,10 +134,8 @@ for arch in x86_64 aarch64 riscv64; do
   extra_objs=()
   if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
     extra_objs+=("$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o")
-    if [[ ! -f "$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o" ]]; then
-      "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
-        -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o"
-    fi
+    "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
+      -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o"
   fi
 
   # dropbear objects, compiled afresh: a rebuild means the sources (or the
