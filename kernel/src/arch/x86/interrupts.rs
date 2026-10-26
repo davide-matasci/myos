@@ -743,7 +743,8 @@ extern "C" fn x86_user_trap(vector: u64, code: u64, block: *mut u64) {
 
 /// The `si_code` of an FP exception from its unmasked status bits (x87 and
 /// SSE share them: invalid, denormal, divide by zero, overflow, underflow,
-/// precision), the first in Linux's order.
+/// precision), the first in Linux's order; `FPE_FLTUNK` when none is (a
+/// fault code all the same, not a signal sent's).
 fn fpe_code(e: u32) -> u32 {
     use crate::signal::code::*;
     if e & 0x01 != 0 {
@@ -757,7 +758,7 @@ fn fpe_code(e: u32) -> u32 {
     } else if e & 0x20 != 0 {
         FPE_FLTRES
     } else {
-        0
+        FPE_FLTUNK
     }
 }
 

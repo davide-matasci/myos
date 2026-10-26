@@ -69,6 +69,11 @@ pub fn kept_word(_i: usize, v: u64) -> u64 {
     v
 }
 
+/// A kept word as a signal handler starts with it (none here).
+pub fn handler_word(_i: usize, v: u64) -> u64 {
+    v
+}
+
 /// Length of the `ecall` instruction.
 pub const SYSCALL_INSN_LEN: usize = 4;
 /// A rewound syscall restarts with its first argument in the result register.

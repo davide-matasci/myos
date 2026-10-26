@@ -67,11 +67,22 @@ pub const SYSCALL_KEPT: [usize; 3] = [4, 10, 11];
 /// flags, TF, DF and AC); IF is always on.
 const FLAGS_USER: u64 = 0x4_0dd5;
 const FLAGS_IF: u64 = 0x202;
+/// The trap flag (single step) and the direction flag.
+const FLAGS_TF: u64 = 0x100;
+const FLAGS_DF: u64 = 0x400;
 
 /// A kept word as it goes back: rflags with only the bits a program may
 /// set (a frame on the user stack can say anything).
 pub fn kept_word(i: usize, v: u64) -> u64 {
     if i == 4 { (v & FLAGS_USER) | FLAGS_IF } else { v }
+}
+
+/// A kept word as a signal handler starts with it: rflags without TF, so
+/// a program single-stepping itself traps in its own code and not in the
+/// handler (which would fault again with SIGTRAP blocked), nor DF (the
+/// ABI's); the frame keeps both for the return, as on Linux.
+pub fn handler_word(i: usize, v: u64) -> u64 {
+    if i == 4 { v & !(FLAGS_TF | FLAGS_DF) } else { v }
 }
 /// The number travels in rax, which the result overwrites.
 pub const SYSCALL_NR_REG: Option<usize> = None;

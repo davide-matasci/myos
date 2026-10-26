@@ -94,7 +94,13 @@ registers (`signal::on_fault`), without waiting for a syscall:
 | x86 `#GP` (a privileged instruction, a non-canonical address), `into`, `bound` | `SIGSEGV` | `SI_KERNEL` | 0 |
 | a misaligned access, PC or SP (x86 `#AC`, aarch64, riscv64) | `SIGBUS` | `BUS_ADRALN` | the address |
 | x86 divide error | `SIGFPE` | `FPE_INTDIV` | the instruction |
-| an FP exception that traps (x87, SSE, aarch64) | `SIGFPE` | `FPE_FLT*` from the status flags | the instruction |
+| an FP exception that traps (x87, SSE, aarch64) | `SIGFPE` | `FPE_FLT*` from the status flags (`FPE_FLTUNK`, 14, when they say nothing: aarch64 without TFV; the libcs' headers do not name it) | the instruction |
+
+A handler starts with x86's TF (the trap flag) and DF clear, as on Linux:
+a program that single-steps itself (TF through `popf` or a signal frame)
+gets a `SIGTRAP` after each of its own instructions, not in the handler,
+which would fault again with `SIGTRAP` blocked; the frame keeps the flags,
+and the handler's return steps on.
 
 The codes are POSIX's, at Linux's values (newlib's `SI_USER` is 1 like
 `SEGV_MAPERR`: tell them apart by the signal). A handler runs as for a

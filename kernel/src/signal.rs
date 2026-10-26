@@ -79,6 +79,8 @@ pub mod code {
     pub const FPE_FLTUND: u32 = 5;
     pub const FPE_FLTRES: u32 = 6;
     pub const FPE_FLTINV: u32 = 7;
+    /// An FP exception whose cause the hardware does not say.
+    pub const FPE_FLTUNK: u32 = 14;
     pub const SEGV_MAPERR: u32 = 1;
     pub const SEGV_ACCERR: u32 = 2;
     pub const BUS_ADRALN: u32 = 1;
@@ -416,6 +418,7 @@ fn deliver(regs: &mut SyscallRegs, info: Info, act: &task::SigAction, tramp: usi
     }
     regs.set_pc(tramp);
     regs.set_sp(frame_va);
+    regs.enter_handler();
     ret
 }
 
