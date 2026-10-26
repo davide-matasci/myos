@@ -17,6 +17,12 @@
  * socket passed by exec: the new program reads a bare datagram with
  * read(), then uses the fd as the socket it is (getsockname, sendto,
  * recvfrom). Prints [ OK ] loopback.
+ *
+ * `loopback_smoke burst`: BURST short TCP connections back to back, the
+ * client closing first, then one more that talks: each leaves its client
+ * socket in TIME-WAIT, buffers and all, and netd used to keep them all
+ * until its heap ran out (it died of it, every socket call after it
+ * waiting). Prints [ OK ] loopback burst.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -35,6 +41,9 @@
 #define BOUND_PORT 7703
 #define HUNG_PORT 7704
 #define NEXT_PORT 7705
+#define BURST_PORT 7706
+/* More than netd's heap held in TIME-WAIT (about 165). */
+#define BURST 200
 
 static int fail(const char *what) {
     printf("[ FAIL ] loopback %s (errno %d)\n", what, errno);
@@ -366,10 +375,47 @@ static int exec_udp(void) {
     return 0;
 }
 
+/* BURST connections, each closed by the client first, then one that talks. */
+static int tcp_burst(void) {
+    struct sockaddr_in any = addr_of(htonl(INADDR_ANY), BURST_PORT);
+    struct sockaddr_in to = addr_of(htonl(INADDR_LOOPBACK), BURST_PORT);
+    char buf[8];
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    int c, s;
+    if (l < 0 || bind(l, (struct sockaddr *)&any, sizeof any) < 0 || listen(l, 4) < 0) {
+        return fail("burst listen");
+    }
+    for (int i = 0; i <= BURST; i++) {
+        c = socket(AF_INET, SOCK_STREAM, 0);
+        if (c < 0 || connect(c, (struct sockaddr *)&to, sizeof to) < 0) {
+            printf("[ FAIL ] loopback burst: connection %d (errno %d)\n", i, errno);
+            return 1;
+        }
+        if ((s = accept(l, NULL, NULL)) < 0) {
+            printf("[ FAIL ] loopback burst: accept %d (errno %d)\n", i, errno);
+            return 1;
+        }
+        if (i == BURST && (write(c, "hi", 2) != 2 || read(s, buf, sizeof buf) != 2 || memcmp(buf, "hi", 2) != 0)) {
+            return fail("burst: the last connection's exchange");
+        }
+        close(c);
+        close(s);
+    }
+    close(l);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     in_addr_t own;
     if (argc == 4 && strcmp(argv[1], "exec") == 0) {
         return exec_child(atoi(argv[2]), (unsigned short)atoi(argv[3]));
+    }
+    if (argc == 2 && strcmp(argv[1], "burst") == 0) {
+        if (tcp_burst()) {
+            return 1;
+        }
+        printf("[ OK ] loopback burst\n");
+        return 0;
     }
     if (interfaces(&own) || udp(own) || tcp() || tcp_hungup() || tcp_bound(own) || exec_udp()) {
         return 1;

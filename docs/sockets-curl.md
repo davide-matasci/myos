@@ -187,6 +187,13 @@ reads and drops what the peer still sends, and forgets the socket when the
 TCP close completes, or aborts it 60 seconds after the close when the peer
 never answers it (a scanner behind a firewall, a client that keeps a
 half-closed connection), as Linux gives up on an orphaned connection.
+The side that closed first waits out smoltcp's 10 seconds of TIME-WAIT
+with its socket and buffers (96 KiB); 16 at most, past which the oldest
+go at once, as Linux skips TIME-WAIT past `tcp_max_tw_buckets`. Over
+loopback, where netd is both ends and every connection leaves one, a
+burst of short connections (the IPv6 smoke's, run back to back) used to
+pile up more of them than netd's 16 MiB heap holds, and netd died of the
+failed allocation, every socket call after it waiting on nobody.
 Kept at its index as a closing conversation, it pinned the index (these
 ran a VPS out of indices, with the status files looking empty), said
 `hangup` about it after a new clone got it (netfs ignores what netd says
