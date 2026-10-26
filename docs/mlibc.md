@@ -106,6 +106,36 @@ or the shared C. In CI a change under `toolchain/mlibc` or `user/c-mlibc`
 selects the `mlibc` tests; one under `toolchain/libmyos` runs everything
 (both libcs are built on it).
 
+## C++
+
+`toolchain/libcxx` builds LLVM's C++ runtimes against mlibc, at the LLVM
+release mlibc's compiler-rt builtins come from (`LLVM_TAG`): libc++,
+libc++abi (merged into `libc++.a`) and libunwind, static, in
+`target/libcxx-<arch>` (`include/c++/v1`, `lib/`). C++ has exceptions and
+RTTI (libunwind's DWARF unwinder finds a program's frames through mlibc's
+`dl_iterate_phdr`), threads and `thread_local` on mlibc's pthreads, the
+locales through mlibc's `newlocale`/`uselocale` and `*_l` functions, and
+`<filesystem>`, `<random>` (`random_device` reads `/dev/urandom`) and
+`<chrono>`; no time zone database (no tzdata in the image).
+
+```sh
+./toolchain/libcxx/build.sh                                       # once: target/libcxx-<arch>
+clang++ $(myos_libcxx_cxxflags x86_64) -std=c++23 -O2 -c prog.cpp -o prog.o
+myos_libcxx_link x86_64 prog prog.o    # mlibc's link with libc++ and libunwind
+```
+
+libc++ knows no platform for myos's bare triple: the build takes mlibc's
+POSIX locale functions as they are, libc++'s own ctype table
+(`_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE`, in `__config_site`) and pthreads.
+A C++ compile is hosted, not freestanding as `myos_mlibc_cflags` is for C
+(a freestanding compile mangles `main` like any function and makes libc++
+a freestanding library), and defines `_GNU_SOURCE`, as g++ does on Linux
+(libc++'s headers call the `*_l` functions mlibc declares under it). The
+smoke (`toolchain/libcxx/smoke.cpp`, `/bin/etc/mlibc/cxx_smoke`, the `cxx`
+test) throws through frames and across threads, uses RTTI, a global's
+constructor, threads, `thread_local`s, atomic waits, the containers,
+iostream, `std::format`, `<filesystem>`, `<chrono>` and `<random>`.
+
 ## Not there
 
 No shared objects or `dlopen` (mlibc is built static, as newlib is); no

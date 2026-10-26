@@ -28,6 +28,7 @@ myos_port_dir() {
 
 MYOS_NEWLIB_VERSION="$MYOS_ROOT/target/.myos-newlib-version"
 MYOS_MLIBC_VERSION="$MYOS_ROOT/target/.myos-mlibc-version"
+MYOS_LIBCXX_VERSION="$MYOS_ROOT/target/.myos-libcxx-version"
 MYOS_C_HELLO_VERSION="$MYOS_ROOT/target/.myos-c-hello-version"
 MYOS_C_SMOKES_VERSION="$MYOS_ROOT/target/.myos-c-smokes-version"
 MYOS_C_SMOKES_MLIBC_VERSION="$MYOS_ROOT/target/.myos-c-smokes-mlibc-version"
@@ -164,6 +165,34 @@ myos_mlibc_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/libc.a" && -f "$MYOS_ROOT/target/mlibc-${arch}/lib/crt0.o" ]] || return 1
+  done
+  return 0
+}
+
+# libc++, libc++abi and libunwind against mlibc (toolchain/libcxx): its
+# pins and scripts, the smoke, and mlibc's inputs.
+myos_libcxx_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      find "$MYOS_ROOT/toolchain/libcxx" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      # The flags and the link the build and the smoke take (below).
+      declare -f myos_mlibc_hosted_cflags myos_libcxx_cxxflags myos_mlibc_link myos_libcxx_link
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_libcxx_is_current() {
+  local arch
+  [[ -f "$MYOS_LIBCXX_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LIBCXX_VERSION")" == "$(myos_libcxx_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/libcxx-${arch}/lib/libc++.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/cxx-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
   return 0
 }
@@ -805,6 +834,38 @@ myos_mlibc_cflags() {
 # -L, -l) against mlibc, the way scripts/build-c-smokes.sh links against
 # newlib: its crt0 first, then libc.a and the compiler builtins a program
 # calls beside it (toolchain/mlibc/build.sh).
+# myos_mlibc_hosted_cflags ARCH: myos_mlibc_cflags without -ffreestanding,
+# for C++: a freestanding compile mangles main like any function, and
+# libc++ takes it for a freestanding library (__STDC_HOSTED__ 0); mlibc is
+# a hosted one.
+myos_mlibc_hosted_cflags() {
+  local f
+  for f in $(myos_mlibc_cflags "$1"); do
+    [[ "$f" == -ffreestanding ]] || printf '%s ' "$f"
+  done
+}
+
+# myos_libcxx_cxxflags ARCH: the compiler's flags for C++ against libc++
+# and mlibc (toolchain/libcxx): libc++'s headers before mlibc's and
+# clang's, and _GNU_SOURCE, as g++ defines it for C++ on Linux: libc++'s
+# headers call the *_l locale functions mlibc declares under it.
+myos_libcxx_cxxflags() {
+  local arch="$1"
+  printf '%s ' -nostdinc++ -isystem "$MYOS_ROOT/target/libcxx-${arch}/include/c++/v1" -D_GNU_SOURCE
+  myos_mlibc_hosted_cflags "$arch"
+}
+
+# myos_libcxx_link ARCH OUT INPUT...: a static PIE of C++ INPUTs, with
+# libc++ (libc++abi in it), libunwind and mlibc. With the .eh_frame index
+# (PT_GNU_EH_FRAME), where libunwind finds a throw's frames through
+# dl_iterate_phdr (clang's own link adds it; ld.lld alone does not).
+myos_libcxx_link() {
+  local arch="$1" out="$2"
+  shift 2
+  myos_mlibc_link "$arch" "$out" --eh-frame-hdr "$@" -L"$MYOS_ROOT/target/libcxx-${arch}/lib" \
+    --start-group -lc++ -lunwind --end-group
+}
+
 myos_mlibc_link() {
   local arch="$1" out="$2" lib="$MYOS_ROOT/target/mlibc-$1/lib"
   shift 2
