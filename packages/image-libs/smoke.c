@@ -242,6 +242,9 @@ static int x11(const uint32_t *bits, char *exts, size_t cap) {
 
     /* Xcursor: an ARGB cursor (over RENDER's CreateCursor). */
     XcursorImage *ci = XcursorImageCreate(16, 16);
+    if (ci) {
+        ci->xhot = ci->yhot = 8; /* not set by XcursorImageCreate */
+    }
     for (int i = 0; ci && i < 16 * 16; i++) {
         ci->pixels[i] = 0xff0000ff;
     }
