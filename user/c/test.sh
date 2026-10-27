@@ -21,6 +21,11 @@ t -t tty,console tty $SMOKES/tty_smoke
 # client, a transfer larger than the buffers, 60000 bytes ahead of the reader,
 # 48 conversations at once, EOF, names (unix_smoke.c).
 t -t netfs unix $SMOKES/unix_smoke
+# Record sockets (SOCK_SEQPACKET): records read whole, sendmsg's pieces one
+# record, MSG_TRUNC, EMSGSIZE, a record refused whole until it fits, fds
+# with their record, a named record listener, and a record socket passed in
+# SCM_RIGHTS or inherited by exec still one (unix_smoke.c).
+t -t netfs,unix unix_seqpacket $SMOKES/unix_smoke seqpacket
 # /dev/fb: the geometry in ctl, a MAP_SHARED mapping of data that is the
 # framebuffer itself (shared with read/write and a forked child), a
 # MAP_PRIVATE one that is a copy, and the screen handed to a program and back

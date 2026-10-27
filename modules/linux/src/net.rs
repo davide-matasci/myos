@@ -1,5 +1,6 @@
 //! Sockets over the native `/net`: `AF_INET` and `AF_INET6` (see
-//! `docs/sockets-curl.md`) and `AF_UNIX` streams (`docs/sockets-unix.md`).
+//! `docs/sockets-curl.md`) and `AF_UNIX` streams and records
+//! (`SOCK_SEQPACKET`, `docs/sockets-unix.md`).
 //! An `AF_INET6` socket names an IPv4 peer `::ffff:a.b.c.d`, and one it
 //! connects or sends to talks IPv4 to netd, as on Linux.
 //!
@@ -31,6 +32,7 @@ const SOCK_DGRAM: usize = 2;
 const SOCK_SEQPACKET: usize = 5;
 const SOCK_NONBLOCK: usize = 0o4000;
 const SOCK_CLOEXEC: usize = 0o2000000;
+const MSG_TRUNC: u32 = 0x20;
 const MSG_DONTWAIT: usize = 0x40;
 const SHUT_RDWR: usize = 2;
 const SOL_SOCKET: usize = 1;
@@ -138,6 +140,8 @@ pub struct Sock {
     pub unix: Option<UnixNames>,
     /// `SO_PASSCRED`: reads come with the sender's `SCM_CREDENTIALS`.
     pub passcred: bool,
+    /// `AF_UNIX` `SOCK_SEQPACKET`: its conversation keeps records.
+    pub records: bool,
 }
 
 /// The names of an `AF_UNIX` socket in `/net/unix`: its own (`bind`; an
@@ -350,10 +354,7 @@ fn put_name(ptr: usize, len_ptr: usize, name: &Name) -> R {
 
 pub fn socket(domain: usize, ty: usize) -> R {
     if domain == AF_UNIX {
-        if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
-            return Err(EPROTOTYPE);
-        }
-        return new_conv("unix", ty, UNIX_SOCK);
+        return new_unix(ty);
     }
     if domain != AF_INET && domain != AF_INET6 {
         return Err(EAFNOSUPPORT);
@@ -365,7 +366,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
     };
     let proto = if stream { "tcp" } else { "udp" };
     let inet6 = domain == AF_INET6;
-    let fd = new_conv(proto, ty, Sock { stream, nonblock: false, inet6, peer: None, unix: None, passcred: false })?;
+    let fd = new_conv(proto, ty, Sock { stream, nonblock: false, inet6, peer: None, unix: None, passcred: false, records: false })?;
     // An IPv6 datagram socket's port is on `::`, which takes IPv4 datagrams
     // too, as on Linux (musl's resolver asks IPv4 and IPv6 nameservers
     // from one such socket); tagged, its answer is no `connected`.
@@ -391,7 +392,93 @@ fn conv_id(file: &str) -> Result<String, usize> {
 }
 
 /// A new unix socket's state.
-const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, inet6: false, peer: None, unix: Some(UNNAMED), passcred: false };
+const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, inet6: false, peer: None, unix: Some(UNNAMED), passcred: false, records: false };
+
+/// The largest record: what the kernel hands a file in one write (a larger
+/// `write` would reach `/net/unix` in pieces, each a record).
+const RECORD_MAX: usize = 8 << 10;
+
+/// A new unix socket of type `ty` (with its flags): a stream, or a record
+/// socket whose conversation keeps records from the start (`seqpacket`).
+fn new_unix(ty: usize) -> R {
+    let records = match ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC) {
+        SOCK_STREAM => false,
+        SOCK_SEQPACKET => true,
+        _ => return Err(EPROTOTYPE),
+    };
+    let fd = new_conv("unix", ty, Sock { records, ..UNIX_SOCK })?;
+    if records {
+        let (conv, _) = sock(fd)?;
+        if fs::write(&format!("{conv}/ctl"), 0, b"seqpacket").is_none() {
+            super::sys::close(fd).ok();
+            return Err(EMFILE);
+        }
+    }
+    Ok(fd)
+}
+
+/// readv / writev / sendmsg / recvmsg on a record socket: one record,
+/// gathered from or scattered over the `iovec`s (a write per piece would
+/// make each its own record); a read waits for one unless `dontwait` (or
+/// the socket is non-blocking). `None` for any other fd.
+pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool, dontwait: bool) -> Option<R> {
+    let (conv, s) = sock(fd).ok()?;
+    if !s.records {
+        return None;
+    }
+    if cnt > 1024 {
+        return Some(Err(EINVAL));
+    }
+    let mut pieces = Vec::new();
+    let mut total = 0usize;
+    for i in 0..cnt {
+        let (Ok(base), Ok(len)) = (get_u64(iov + i * 16), get_u64(iov + i * 16 + 8)) else {
+            return Some(Err(EFAULT));
+        };
+        pieces.push((base as usize, len as usize));
+        total = total.saturating_add(len as usize);
+    }
+    let data = format!("{conv}/data");
+    if write {
+        if total > RECORD_MAX {
+            return Some(Err(EMSGSIZE));
+        }
+        let mut rec = alloc::vec![0u8; total];
+        let mut at = 0;
+        for &(base, len) in &pieces {
+            if get_bytes(base, &mut rec[at..at + len]).is_err() {
+                return Some(Err(EFAULT));
+            }
+            at += len;
+        }
+        return Some(send(fd, || fs::write(&data, 0, &rec).ok_or(EAGAIN)));
+    }
+    let mut rec = alloc::vec![0u8; total.min(RECORD_MAX)];
+    Some(recv(fd, dontwait, || {
+        let n = fs::read(&data, 0, &mut rec).unwrap_or(0);
+        let mut left = &rec[..n];
+        for &(base, len) in &pieces {
+            let take = len.min(left.len());
+            put(base, &left[..take])?;
+            left = &left[take..];
+        }
+        Ok(n)
+    }))
+}
+
+/// Whether a write of `len` bytes to `fd` is a record no socket buffer
+/// holds (`EMSGSIZE`).
+pub fn record_too_big(fd: usize, len: usize) -> bool {
+    len > RECORD_MAX && sock(fd).is_ok_and(|(_, s)| s.records)
+}
+
+/// Whether the last read of record socket `conv` dropped the rest of a
+/// record (its `ctl` says `seqpacket cut`).
+fn record_cut(conv: &str) -> bool {
+    let mut b = [0u8; 32];
+    let n = fs::read(&format!("{conv}/ctl"), 0, &mut b).unwrap_or(0);
+    b[..n].windows(3).any(|w| w == b"cut")
+}
 
 /// A new conversation of `/net/{proto}` as socket `sock`: opening `clone`
 /// makes it, and the fd is on its `data` (whose link names it), until
@@ -750,7 +837,11 @@ fn adopt(fd: usize) {
     });
     let unix = unix.and_then(|id| Some(format!("{}/{id}", net_dir("unix").ok()?)));
     if let Some(conv) = unix {
-        files::set_sock(fd, conv, UNIX_SOCK);
+        // A record socket's ctl says so.
+        let mut b = [0u8; 32];
+        let n = fs::read(&format!("{conv}/ctl"), 0, &mut b).unwrap_or(0);
+        let records = b[..n].starts_with(b"seqpacket");
+        files::set_sock(fd, conv, Sock { records, ..UNIX_SOCK });
     } else if path.starts_with("/dev/sig/") {
         files::set_sigfd(fd, true);
     } else if path.starts_with('/') {
@@ -793,7 +884,18 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
         put(msg + 48, &0u32.to_le_bytes())?;
         return Ok(n);
     }
-    let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
+    // A record socket's read waits (or not) once, in record_rw.
+    let dontwait = flags & MSG_DONTWAIT != 0;
+    let n = match record_rw(fd, iov, iovlen, false, dontwait) {
+        Some(r) => r?,
+        None => recv(fd, dontwait, || super::sys::rw_vec(fd, iov, iovlen, false))?,
+    };
+    let mut room = 0usize;
+    for i in 0..iovlen.min(1024) {
+        room = room.saturating_add(get_u64(iov + i * 16 + 8)? as usize);
+    }
+    // A record that filled the buffers may have been longer.
+    let cut = s.records && n > 0 && n >= room.min(RECORD_MAX) && record_cut(&conv);
     if let Some(peer) = s.peer {
         put_addr(name, msg + 8, peer, s.inet6)?;
     } else if s.unix.is_some() && name != 0 {
@@ -803,7 +905,8 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     let from = if s.unix.is_some() && s.passcred && n > 0 { sender(&conv) } else { None };
     let (used, truncated) = put_control(msg, from, &fds)?;
     put(msg + 40, &(used as u64).to_le_bytes())?;
-    put(msg + 48, &(if truncated { MSG_CTRUNC } else { 0 }).to_le_bytes())?;
+    let flags = (if truncated { MSG_CTRUNC } else { 0 }) | (if cut { MSG_TRUNC } else { 0 });
+    put(msg + 48, &flags.to_le_bytes())?;
     Ok(n)
 }
 
@@ -916,6 +1019,7 @@ pub fn getsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
     }
     let v: i32 = match (level, opt) {
         (SOL_SOCKET, SO_PEERSEC | SO_PEERGROUPS | SO_PEERPIDFD) => return Err(ENOPROTOOPT),
+        (SOL_SOCKET, SO_TYPE) if s.records => SOCK_SEQPACKET as i32,
         (SOL_SOCKET, SO_TYPE) => (if s.stream { SOCK_STREAM } else { SOCK_DGRAM }) as i32,
         (SOL_SOCKET, SO_ERROR) if state(&conv) == State::Failed => ECONNREFUSED as i32,
         (SOL_SOCKET, SO_SNDBUF | SO_RCVBUF) => if s.unix.is_some() { 64 << 10 } else { 8 << 10 },
@@ -993,28 +1097,24 @@ pub fn accept(fd: usize, addr: usize, alen: usize, flags: usize) -> R {
         wait(|| queued(&conv), 0)?;
     };
     let names = UnixNames { name: u.name, peer: Name::NONE };
-    let new = open_conv("unix", &id, flags, Sock { unix: Some(names), ..UNIX_SOCK })?;
+    let new = open_conv("unix", &id, flags, Sock { unix: Some(names), records: s.records, ..UNIX_SOCK })?;
     put_name(addr, alen, &Name::NONE)?;
     Ok(new)
 }
 
 /// `socketpair(AF_UNIX, ...)`: a `/net/unix` conversation and the one its
 /// `pair` connects to it (taken from its `listen`), both kept as sockets
-/// like TCP's. Stream semantics for `SOCK_SEQPACKET` too: no message
-/// boundaries, and no fd passing.
+/// like TCP's; with `SOCK_SEQPACKET`, both keep records.
 pub fn socketpair(domain: usize, ty: usize, sv: usize) -> R {
     if domain != AF_UNIX {
         return Err(EAFNOSUPPORT);
     }
-    if !matches!(ty & !(SOCK_NONBLOCK | SOCK_CLOEXEC), SOCK_STREAM | SOCK_SEQPACKET) {
-        return Err(EPROTOTYPE);
-    }
-    let a = new_conv("unix", ty, UNIX_SOCK)?;
-    let (conv, _) = sock(a)?;
+    let a = new_unix(ty)?;
+    let (conv, s) = sock(a)?;
     let b = fs::write(&format!("{conv}/ctl"), 0, b"pair")
         .ok_or(EMFILE)
         .and_then(|_| conv_id(&format!("{conv}/listen")))
-        .and_then(|id| open_conv("unix", &id, ty, UNIX_SOCK));
+        .and_then(|id| open_conv("unix", &id, ty, Sock { records: s.records, ..UNIX_SOCK }));
     let b = match b {
         Ok(b) => b,
         Err(e) => {

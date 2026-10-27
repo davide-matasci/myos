@@ -13,6 +13,9 @@
  * `unix_smoke echo NAME`: listen under NAME, echo one connection's bytes
  * back until it ends, exit 0 (a native server for the Linux layer's
  * clients, user/tests/kernel.sh).
+ *
+ * `unix_smoke seqpacket`: record sockets (SOCK_SEQPACKET) instead; see
+ * seqpacket() below. Prints [ OK ] unix seqpacket.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -318,6 +321,186 @@ static const char *pass_fds(void) {
     return NULL;
 }
 
+/* Whether `fd` is a SOCK_SEQPACKET socket (SO_TYPE). */
+static int is_seqpacket(int fd) {
+    int type = 0;
+    socklen_t len = sizeof type;
+    return getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &len) == 0 && type == SOCK_SEQPACKET;
+}
+
+/* One record of three pieces (sendmsg's iovecs make one). */
+static int send3(int fd, const char *a, const char *b, const char *c) {
+    struct iovec iov[3] = {{(void *)a, strlen(a)}, {(void *)b, strlen(b)}, {(void *)c, strlen(c)}};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_iov = iov;
+    m.msg_iovlen = 3;
+    return sendmsg(fd, &m, 0) == (ssize_t)(strlen(a) + strlen(b) + strlen(c)) ? 0 : -1;
+}
+
+/* `unix_smoke seqchild FD`: the record socket FD, inherited by exec, is one:
+ * its first call, a write too large for a record, is refused whole (not
+ * sent as pieces, each a record), and a record of three pieces goes out
+ * whole. */
+static int seqchild(const char *arg) {
+    static char big[9000];
+    int fd = 0;
+    while (*arg >= '0' && *arg <= '9') {
+        fd = fd * 10 + (*arg++ - '0');
+    }
+    errno = 0;
+    if (write(fd, big, sizeof big) != -1 || errno != EMSGSIZE) {
+        return 2;
+    }
+    return is_seqpacket(fd) && send3(fd, "ex", "ec", "'d") == 0 ? 0 : 1;
+}
+
+/* Record sockets (SOCK_SEQPACKET, the conversation's `seqpacket` mode):
+ * each write is a record read whole by one read, sendmsg's pieces one
+ * record; a record a buffer has no room for is cut short (MSG_TRUNC) and
+ * the next read starts at the next one; a record over 8 KiB is EMSGSIZE;
+ * one that does not fit the peer's free room (64 KiB, eight full records)
+ * is refused whole (EAGAIN) until it does, as is a 513th small one; a
+ * writev too large for one record is EMSGSIZE, also as an exec'd
+ * child's first call; fds come with their record; a named
+ * listener takes record clients only; a record socket passed in an
+ * SCM_RIGHTS message or inherited by exec is still one. NULL, or what
+ * failed. */
+static const char *seqpacket(const char *self) {
+    static char big[9000];
+    char buf[64];
+    int sv[2], q[2], fds[4], n, flags, i;
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) != 0 || !is_seqpacket(sv[0]) || !is_seqpacket(sv[1])) {
+        return "socketpair";
+    }
+    if (write(sv[0], "one", 3) != 3 || write(sv[0], "three", 5) != 5 || read(sv[1], buf, sizeof buf) != 3
+        || memcmp(buf, "one", 3) != 0 || read(sv[1], buf, sizeof buf) != 5 || memcmp(buf, "three", 5) != 0) {
+        return "two writes are two records";
+    }
+    if (send3(sv[0], "ab", "cd", "ef") != 0 || read(sv[1], buf, sizeof buf) != 6 || memcmp(buf, "abcdef", 6) != 0) {
+        return "sendmsg's pieces are one record";
+    }
+    if (write(sv[0], "0123456789", 10) != 10 || write(sv[0], "next", 4) != 4
+        || recv_fds(sv[1], buf, 4, fds, 0, &n, &flags) != 4 || !(flags & MSG_TRUNC)
+        || read(sv[1], buf, sizeof buf) != 4 || memcmp(buf, "next", 4) != 0) {
+        return "a record cut short (MSG_TRUNC), the next read the next record";
+    }
+    if (write(sv[0], "fits", 4) != 4 || recv_fds(sv[1], buf, 4, fds, 0, &n, &flags) != 4 || (flags & MSG_TRUNC)) {
+        return "a record that fits exactly is no MSG_TRUNC";
+    }
+    errno = 0;
+    if (write(sv[0], big, sizeof big) != -1 || errno != EMSGSIZE) {
+        return "a record over 8 KiB: EMSGSIZE";
+    }
+    /* So is a writev past what one write gathers (64 KiB): not one record
+     * per buffer. */
+    {
+        struct iovec iov[9];
+        for (i = 0; i < 9; i++) {
+            iov[i].iov_base = big;
+            iov[i].iov_len = 8192;
+        }
+        errno = 0;
+        if (writev(sv[0], iov, 9) != -1 || errno != EMSGSIZE) {
+            return "a writev of 72 KiB: EMSGSIZE";
+        }
+    }
+    fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    fcntl(sv[1], F_SETFL, O_NONBLOCK);
+    errno = 0;
+    if (read(sv[1], buf, sizeof buf) != -1 || errno != EAGAIN) {
+        return "a refused record sends nothing";
+    }
+    fcntl(sv[1], F_SETFL, 0);
+    /* Small records are bounded by count: 512 of one byte fill a buffer. */
+    for (i = 0; i < 512; i++) {
+        if (write(sv[0], "x", 1) != 1) {
+            return "512 one-byte records";
+        }
+    }
+    errno = 0;
+    if (write(sv[0], "x", 1) != -1 || errno != EAGAIN || read(sv[1], buf, sizeof buf) != 1 || write(sv[0], "x", 1) != 1) {
+        return "a 513th record waits for the reader";
+    }
+    for (i = 0; i < 512; i++) {
+        if (read(sv[1], buf, sizeof buf) != 1) {
+            return "each one-byte record read";
+        }
+    }
+    for (i = 0; i < 8; i++) {
+        if (write(sv[0], big, 8192) != 8192) {
+            return "eight records of 8 KiB fill the peer's buffer";
+        }
+    }
+    errno = 0;
+    if (write(sv[0], big, 8192) != -1 || errno != EAGAIN) {
+        return "a record the peer has no room for is refused whole";
+    }
+    if (read(sv[1], big, sizeof big) != 8192 || write(sv[0], big, 8192) != 8192) {
+        return "the record fits once the reader read one";
+    }
+    for (i = 0; i < 8; i++) {
+        if (read(sv[1], big, sizeof big) != 8192) {
+            return "each 8 KiB record read whole";
+        }
+    }
+    fcntl(sv[0], F_SETFL, 0);
+    /* A record socket in an SCM_RIGHTS message is one: its record of three
+     * pieces arrives whole. */
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, q) != 0 || send_fds(sv[0], 'R', &q[1], 1) != 0) {
+        return "send a record socket";
+    }
+    close(q[1]);
+    if (recv_fds(sv[1], buf, sizeof buf, fds, 4, &n, &flags) != 1 || buf[0] != 'R' || n != 1
+        || !is_seqpacket(fds[0]) || send3(fds[0], "pa", "ss", "ed") != 0 || read(q[0], buf, sizeof buf) != 6
+        || memcmp(buf, "passed", 6) != 0) {
+        return "a record socket received in SCM_RIGHTS keeps records";
+    }
+    close(fds[0]);
+    /* Inherited by exec: the same. */
+    pid_t pid = fork();
+    if (pid == 0) {
+        char arg[12];
+        snprintf(arg, sizeof arg, "%d", sv[0]);
+        execl(self, self, "seqchild", arg, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0
+        || read(sv[1], buf, sizeof buf) != 6 || memcmp(buf, "exec'd", 6) != 0) {
+        return "a record socket inherited by exec keeps records";
+    }
+    close(q[0]);
+    close(sv[0]);
+    close(sv[1]);
+
+    /* A named record listener: a stream client is refused, a record one
+     * connects and its records arrive one by one. */
+    int l = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    struct sockaddr_un a = addr(NAME "-seq");
+    if (l < 0 || bind(l, (struct sockaddr *)&a, sizeof a) != 0 || listen(l, 4) != 0) {
+        return "a record listener";
+    }
+    int c = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (c < 0 || connect(c, (struct sockaddr *)&a, sizeof a) == 0) {
+        return "a stream client of a record listener is refused";
+    }
+    close(c);
+    c = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    if (c < 0 || connect(c, (struct sockaddr *)&a, sizeof a) != 0 || write(c, "hi", 2) != 2 || write(c, "there", 5) != 5) {
+        return "a record client connects";
+    }
+    int s = accept(l, NULL, NULL);
+    if (s < 0 || !is_seqpacket(s) || read(s, buf, sizeof buf) != 2 || read(s, buf, sizeof buf) != 5
+        || memcmp(buf, "there", 5) != 0) {
+        return "the accepted record socket reads record by record";
+    }
+    close(s);
+    close(c);
+    close(l);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     static char bulk[BULK];
     char buf[8];
@@ -325,6 +508,18 @@ int main(int argc, char **argv) {
 
     if (argc > 2 && strcmp(argv[1], "echo") == 0) {
         return echo(argv[2]);
+    }
+    if (argc > 2 && strcmp(argv[1], "seqchild") == 0) {
+        return seqchild(argv[2]);
+    }
+    if (argc > 1 && strcmp(argv[1], "seqpacket") == 0) {
+        const char *why = seqpacket(argv[0]);
+        if (why != NULL) {
+            printf("[ FAIL ] unix seqpacket: %s (errno %d)\n", why, errno);
+            return 1;
+        }
+        printf("[ OK ] unix seqpacket\n");
+        return 0;
     }
 
     /* socketpair: both directions, then EOF once one end closes. */

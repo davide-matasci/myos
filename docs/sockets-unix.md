@@ -1,7 +1,8 @@
 # Local sockets: `/net/unix` and `AF_UNIX`
 
 Local stream connections between processes, the way a display server talks
-to its clients. As with TCP (`docs/sockets-curl.md`) there is no socket
+to its clients, and record connections (`SOCK_SEQPACKET`), the way WebKit
+talks to its web process. As with TCP (`docs/sockets-curl.md`) there is no socket
 syscall: the netfs module serves `/net/unix`, a Plan 9 style directory, and
 the libgloss socket library maps `AF_UNIX` onto it. Unlike TCP, nothing goes
 through netd: the bytes stay in the kernel.
@@ -13,8 +14,8 @@ The files are those of `/net/tcp`, plus `listen`, `rights` and `from`:
 | File | |
 |------|-|
 | `clone` | opening it makes a conversation, and the fd is its `N/data` (whose `/proc/self/fd` link names it); its files are the opening process's user's alone (`docs/security.md`) |
-| `N/ctl` | commands: `announce NAME`, `connect NAME`, `pair`, `hangup`, `rights FD...`, `norights` |
-| `N/data` | the byte stream; `st_size` is the number of bytes waiting |
+| `N/ctl` | commands: `seqpacket`, `announce NAME`, `connect NAME`, `pair`, `hangup`, `rights FD...`, `norights`; reading it says `seqpacket` for a record conversation (`seqpacket cut` after a read that cut a record short), nothing for a stream |
+| `N/data` | the byte stream, or the records; `st_size` is the number of bytes waiting (a record conversation's: the length of the next record) |
 | `N/status` | `open`, `announced`, `connected` or `hangup` |
 | `N/listen` | reading it hands out the next connection queued here (`"M\n"`, nothing when none waits); `st_size` is how many wait |
 | `N/rights` | reading it makes the fds that came with the last read of `data` the reader's, and gives their numbers (`"5 6\n"`) |
@@ -31,6 +32,20 @@ The files are those of `/net/tcp`, plus `listen`, `rights` and `from`:
 - `pair` makes a second conversation connected to this one and queues it on
   this one's `listen` (`socketpair`).
 - `hangup` ends the connection both ways (`shutdown`).
+- `seqpacket`, before `announce`, `connect` or `pair`, makes the
+  conversation keep records: each write is one record, taken whole or
+  refused (no partial write), and a read returns at most one record,
+  dropping what of it the reader had no room for. A record is at most
+  8 KiB: the kernel hands a file a larger write in pieces, each of which
+  would be a record of its own, so the libraries refuse it (`EMSGSIZE`)
+  before it is written (issue #645), a `writev` too (never one record
+  per buffer), also on a socket the process inherited or received. One
+  that does not fit the room left in the 64 KiB buffer, or past the 512
+  records a buffer holds (each costs bookkeeping beyond its bytes), is
+  refused until it does, and `poll` says `POLLOUT` only once it would.
+  `pair`'s other end and the server's end of a `connect` keep records too;
+  `connect` to a record listener from a stream conversation (or the other
+  way round) is refused.
 - `rights FD...` passes the writer's own fds (`SCM_RIGHTS`) with the next
   write of `data`: they are held as the writer's fds hold them (a pipe
   end, an open file description with its rights, a socket: the kernel's
@@ -70,17 +85,19 @@ lock, so the unix conversations have their own spinlock.
 | Call | `/net/unix` |
 |------|-------------|
 | `socket(AF_UNIX, SOCK_STREAM, 0)` | opens `clone` (the data fd) and `ctl`; returns the data fd |
+| `socket(AF_UNIX, SOCK_SEQPACKET, 0)` | the same, then `seqpacket` |
 | `bind(sockaddr_un)` | remembers the name (an abstract name, leading NUL, becomes `@name`) |
 | `listen` | `announce NAME`; `EADDRINUSE` if the name has a listener |
 | `accept` | takes a number from `listen` and opens its `data`; blocking waits in `poll` for a queued connection, nonblocking says `EAGAIN` |
 | `connect(sockaddr_un)` | `connect NAME`; done at once, or `ECONNREFUSED` (no listener, or its queue is full) |
-| `socketpair(AF_UNIX, SOCK_STREAM, 0, sv)` | `pair`, then the second end from `listen` |
+| `socketpair(AF_UNIX, SOCK_STREAM or SOCK_SEQPACKET, 0, sv)` | `pair`, then the second end from `listen` |
 | `read` / `recv` | `data`; empty and blocking waits for data or `hangup` (EOF) |
 | `write` / `send` | `data`; a full peer buffer waits in `poll` for room (blocking) or says `EAGAIN`; a closed peer `EPIPE` (no `SIGPIPE`) |
 | `poll` / `select` | netfs's `poll` hook: `POLLIN` for bytes, a queued connection or the peer gone, `POLLOUT` while the peer's buffer has room |
 | `getsockname` / `getpeername` | the bound or connected name; accepted sockets have the listener's name and an unnamed peer |
-| `sendmsg` | `rights` with an `SCM_RIGHTS` message, then the data gathered into one write (`norights` when it fails) |
-| `recvmsg` | one read of `data`, then `rights` for the fds that came with it as an `SCM_RIGHTS` message; those `msg_control` has no room for are closed (`MSG_CTRUNC`); `MSG_CMSG_CLOEXEC` |
+| `sendmsg` | `rights` with an `SCM_RIGHTS` message, then the data gathered into one write (`norights` when it fails): one record on a record socket, `EMSGSIZE` past 8 KiB (`write` and `writev` too) |
+| `recvmsg` | one read of `data`, then `rights` for the fds that came with it as an `SCM_RIGHTS` message; those `msg_control` has no room for are closed (`MSG_CTRUNC`); `MSG_CMSG_CLOEXEC`; on a record socket whose read filled the buffers, `ctl` says whether the record was longer (`MSG_TRUNC`) |
+| a socket fd inherited by `exec` or received in `SCM_RIGHTS` | known by its `/proc/self/fd` link (`/net/unix/N/data`) at its first socket call: a stream or a record socket as `ctl` says, connected or listening as `status` says |
 
 `SOCK_DGRAM` is not supported (`EPROTONOSUPPORT`).
 
@@ -98,7 +115,8 @@ Linux and native programs connect to each other by name.
 
 ## Test
 
-`user/c/unix_smoke.c` (`t unix` in `user/c/test.sh`, in the mini list):
+`user/c/unix_smoke.c` (`t unix` in `user/c/test.sh`, in the mini list, and
+`t unix_seqpacket`, its record sockets: `unix_smoke seqpacket`):
 `socketpair` both ways and EOF, 60000 bytes written before the reader
 reads any, 48 conversations open at once, `EADDRINUSE` and `ECONNREFUSED`,
 a nonblocking `accept`, `poll` on a listener, a forked client exchanging a

@@ -6,7 +6,8 @@
  * or a pipe gets is one write, as with a real writev (a request header and
  * its data arrive together). Past GATHER_MAX it writes the buffers one by
  * one and stops at the first short write, which is still a valid writev
- * result: the count of bytes written, in order. readv makes one read into a
+ * result: the count of bytes written, in order; a unix record socket's
+ * writev is always one write (one record), or EMSGSIZE. readv makes one read into a
  * bounce buffer and scatters it.
  */
 #include <errno.h>
@@ -16,6 +17,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include "libc.h"
+#include "myos_syscalls.h"
 
 #ifndef SSIZE_MAX
 #define SSIZE_MAX ((ssize_t)(~(size_t)0 >> 1))
@@ -50,7 +52,17 @@ ssize_t __myos_writev(int fd, const struct iovec *iov, int iovcnt) {
     if (iovcnt == 1) {
         return write(fd, iov[0].iov_base, iov[0].iov_len);
     }
+    /* A unix record socket's write is one record: one too large for it
+     * is refused whole, and its buffers are never written one by one. */
+    if (myos_socket_record_too_big(fd, (size_t)total)) {
+        errno = EMSGSIZE;
+        return -1;
+    }
     char *buf = total <= GATHER_MAX ? malloc(total ? (size_t)total : 1) : NULL;
+    if (!buf && myos_socket_is_record(fd)) {
+        errno = ENOMEM;
+        return -1;
+    }
     if (buf) {
         size_t off = 0;
         for (int i = 0; i < iovcnt; i++) {

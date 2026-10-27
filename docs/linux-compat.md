@@ -584,9 +584,10 @@ three, the kernel crate itself an hour. Known gaps:
 - `AF_UNIX` sockets are `/net/unix` conversations (Sockets above), and
   `socketpair(AF_UNIX, SOCK_STREAM | SOCK_SEQPACKET)` a `/net/unix` pair,
   their ends kept like TCP sockets (Rust's `Command` reports a failed exec
-  through one). Stream semantics for `SOCK_SEQPACKET` too: no message
-  boundaries; no fd passing (`SCM_RIGHTS`: issue #340) and no
-  `SOCK_DGRAM`.
+  through one). A `SOCK_SEQPACKET` socket's conversation keeps records
+  (`docs/sockets-unix.md`): a write, a `writev` or a `sendmsg` is one
+  record, a read returns one (`MSG_TRUNC` when it was longer), and one
+  past 8 KiB is `EMSGSIZE`. No `SOCK_DGRAM`.
 - File locks are the native ones (`README.md`, "File locks"): `flock`,
   `fcntl`'s record locks (`F_SETLK`, `F_SETLKW`, `F_GETLK`) and the open
   file description's (`F_OFD_SETLK`, ...), so cargo, SQLite and git

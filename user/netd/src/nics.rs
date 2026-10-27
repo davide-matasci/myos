@@ -22,10 +22,10 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 use myos_net::smoltcp::iface::{Context, Interface, SocketHandle, SocketSet};
-use myos_net::smoltcp::socket::dhcpv4;
+use myos_net::smoltcp::socket::{dhcpv4, tcp, Socket};
 use myos_net::smoltcp::time::{Duration, Instant};
-use myos_net::smoltcp::wire::{IpAddress, IpCidr, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr};
-use myos_net::{build_interface, in_prefix, link_local, link_up, Net0Device, RouterAdvert};
+use myos_net::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr};
+use myos_net::{build_interface, in_prefix, link_local, link_up, Net0Device, RouterAdvert, Unreachable};
 use myos_user::{close, PollFd, POLLIN};
 
 use crate::{reply, REP_IFADDRS, REP_NDB};
@@ -165,6 +165,9 @@ impl Nics {
     pub fn poll(&mut self, now: Instant, sockets: &mut SocketSet<'_>) {
         for n in self.list.iter_mut() {
             n.iface.poll(now, &mut n.dev, sockets);
+            for u in n.dev.take_unreachable() {
+                unreachable(sockets, u);
+            }
         }
     }
 
@@ -485,6 +488,28 @@ impl Nics {
 }
 
 /// The IPv6 netmask of a `len`-bit prefix.
+/// The connect a "destination unreachable" answered fails at once (netd
+/// reports the socket closed before it was established: a refused
+/// connect), as on Linux; smoltcp would send the SYN again until the
+/// caller gave up. QEMU's user network answers so every SYN to an IPv6
+/// address on a host without IPv6, where an address list with the IPv6
+/// ones first (curl, c-ares's order) then reached IPv4 only through curl's
+/// happy-eyeballs timer, and a connect left with no IPv4 address to try
+/// waited out curl's five minutes.
+fn unreachable(sockets: &mut SocketSet<'_>, u: Unreachable) {
+    let (local, remote) = (IpEndpoint::new(u.src, u.src_port), IpEndpoint::new(u.dst, u.dst_port));
+    for (_, s) in sockets.iter_mut() {
+        if let Socket::Tcp(s) = s {
+            if s.state() == tcp::State::SynSent
+                && s.local_endpoint() == Some(local)
+                && s.remote_endpoint() == Some(remote)
+            {
+                s.abort();
+            }
+        }
+    }
+}
+
 fn mask6(len: u8) -> Ipv6Address {
     Ipv6Address::from(u128::MAX.checked_shl(128 - len as u32).unwrap_or(0))
 }
