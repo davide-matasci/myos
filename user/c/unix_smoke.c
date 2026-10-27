@@ -339,11 +339,18 @@ static int send3(int fd, const char *a, const char *b, const char *c) {
 }
 
 /* `unix_smoke seqchild FD`: the record socket FD, inherited by exec, is one:
- * a record of three pieces goes out whole. */
+ * its first call, a write too large for a record, is refused whole (not
+ * sent as pieces, each a record), and a record of three pieces goes out
+ * whole. */
 static int seqchild(const char *arg) {
+    static char big[9000];
     int fd = 0;
     while (*arg >= '0' && *arg <= '9') {
         fd = fd * 10 + (*arg++ - '0');
+    }
+    errno = 0;
+    if (write(fd, big, sizeof big) != -1 || errno != EMSGSIZE) {
+        return 2;
     }
     return is_seqpacket(fd) && send3(fd, "ex", "ec", "'d") == 0 ? 0 : 1;
 }
@@ -353,7 +360,9 @@ static int seqchild(const char *arg) {
  * record; a record a buffer has no room for is cut short (MSG_TRUNC) and
  * the next read starts at the next one; a record over 8 KiB is EMSGSIZE;
  * one that does not fit the peer's free room (64 KiB, eight full records)
- * is refused whole (EAGAIN) until it does; fds come with their record; a named
+ * is refused whole (EAGAIN) until it does, as is a 513th small one; a
+ * writev too large for one record is EMSGSIZE, also as an exec'd
+ * child's first call; fds come with their record; a named
  * listener takes record clients only; a record socket passed in an
  * SCM_RIGHTS message or inherited by exec is still one. NULL, or what
  * failed. */
@@ -383,7 +392,41 @@ static const char *seqpacket(const char *self) {
     if (write(sv[0], big, sizeof big) != -1 || errno != EMSGSIZE) {
         return "a record over 8 KiB: EMSGSIZE";
     }
+    /* So is a writev past what one write gathers (64 KiB): not one record
+     * per buffer. */
+    {
+        struct iovec iov[9];
+        for (i = 0; i < 9; i++) {
+            iov[i].iov_base = big;
+            iov[i].iov_len = 8192;
+        }
+        errno = 0;
+        if (writev(sv[0], iov, 9) != -1 || errno != EMSGSIZE) {
+            return "a writev of 72 KiB: EMSGSIZE";
+        }
+    }
     fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    fcntl(sv[1], F_SETFL, O_NONBLOCK);
+    errno = 0;
+    if (read(sv[1], buf, sizeof buf) != -1 || errno != EAGAIN) {
+        return "a refused record sends nothing";
+    }
+    fcntl(sv[1], F_SETFL, 0);
+    /* Small records are bounded by count: 512 of one byte fill a buffer. */
+    for (i = 0; i < 512; i++) {
+        if (write(sv[0], "x", 1) != 1) {
+            return "512 one-byte records";
+        }
+    }
+    errno = 0;
+    if (write(sv[0], "x", 1) != -1 || errno != EAGAIN || read(sv[1], buf, sizeof buf) != 1 || write(sv[0], "x", 1) != 1) {
+        return "a 513th record waits for the reader";
+    }
+    for (i = 0; i < 512; i++) {
+        if (read(sv[1], buf, sizeof buf) != 1) {
+            return "each one-byte record read";
+        }
+    }
     for (i = 0; i < 8; i++) {
         if (write(sv[0], big, 8192) != 8192) {
             return "eight records of 8 KiB fill the peer's buffer";
