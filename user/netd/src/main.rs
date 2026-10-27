@@ -109,10 +109,16 @@ const CLOSE_GRACE: Duration = Duration::from_secs(60);
 /// (tcp_synack_retries); a client that is there answers within a round
 /// trip.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
-/// Half-open connections kept at a time, every listener together (each
+/// Half-open connections kept at a time, with the completed ones waiting
+/// for room in their listener's queue, every listener together (each
 /// holds a socket's buffers, 96 KiB); past this a SYN is answered with a
 /// reset, as Linux drops a SYN when its queue is full.
 const SYN_BACKLOG: usize = 64;
+/// Completed connections one listener may have waiting for its queue
+/// ([`queue_full`]): half the backlog, so that a server that stopped
+/// taking its connections leaves the other ports their handshakes. Past
+/// this a completed connection is reset, as it always was past two.
+const ACCEPT_WAIT: usize = SYN_BACKLOG / 2;
 /// Closed connections kept in TIME-WAIT at a time. The side that closed
 /// first keeps its socket, buffers and all (96 KiB), for smoltcp's 10 s of
 /// TIME-WAIT; a burst of short connections (a test's dozens over loopback,
@@ -294,7 +300,9 @@ impl Conv {
 /// An incoming connection whose handshake is not done: its socket left
 /// the listener's Listen state on a SYN. It becomes a conversation (an
 /// index, netfs told, the listener's status naming it) once Established,
-/// as accept on Linux only returns a completed handshake. Handed out at
+/// as accept on Linux only returns a completed handshake, and waits here
+/// while two of its listener's connections are still to be taken (its
+/// queue, [`queue_full`]), as on Linux's accept queue. Handed out at
 /// SynReceived, as before, each handshake that never completed pinned an
 /// index and a server process (dropbear forks per connection) for the
 /// server's own request timeout: a scanned VPS held forty at a time.
@@ -1542,11 +1550,11 @@ fn force_free_orphan(
 }
 
 /// Move a connection whose handshake is done, socket `h` of listener `l`,
-/// to a free conv and tell the listener's user. False when there is no
-/// room for it: the listener's queue is full (two connections not taken
-/// yet) or every index is a live session; the caller resets the
-/// connection and the port stays answerable (keeping it on the listener
-/// instead left no Listen socket and dropped every later SYN, CI #1164).
+/// to a free conv and tell the listener's user; the caller checks first
+/// that the listener's queue has room ([`queue_full`]). False when every
+/// index is a live session; the caller resets the connection and the port
+/// stays answerable (keeping it on the listener instead left no Listen
+/// socket and dropped every later SYN, CI #1164).
 fn hand_off(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
@@ -1559,9 +1567,7 @@ fn hand_off(
         Some(IpEndpoint { addr, port }) => (addr, port),
         None => (ANY4, 0),
     };
-    // Park up to two handoffs (dropbear decoding sessions); a third
-    // connection is reset rather than kept waiting.
-    if convs[l].accepted.is_some() && convs[l].accepted_pending.is_some() {
+    if queue_full(convs, l) {
         return false;
     }
     let slot = (0..MAX_CONV).find(|&n| matches!(convs[n].kind, Kind::Empty));
@@ -1624,11 +1630,37 @@ fn hand_off(
     true
 }
 
+/// Listener `l` has two handoffs its user has still to take (dropbear
+/// decoding sessions). A further completed connection waits among the
+/// handshakes until one is taken ([`ACCEPT_WAIT`] of them at most); reset
+/// instead, it lost what its client had already sent (issue #630).
+fn queue_full(convs: &[Conv; MAX_CONV], l: usize) -> bool {
+    convs[l].accepted.is_some() && convs[l].accepted_pending.is_some()
+}
+
+/// Connection `n` is in a listener's queue, its user has still to take it.
+fn queued(convs: &[Conv; MAX_CONV], n: usize) -> bool {
+    convs.iter().any(|c| c.accepted == Some(n as u16) || c.accepted_pending == Some(n as u16))
+}
+
+/// The completed connections among `handshakes` waiting for listener `l`'s
+/// queue ([`queue_full`]).
+fn waiting(handshakes: &[Handshake], sockets: &SocketSet<'_>, l: usize) -> usize {
+    handshakes
+        .iter()
+        .filter(|hs| {
+            let state = sockets.get::<tcp::Socket>(hs.handle).state();
+            usize::from(hs.listener) == l
+                && matches!(state, tcp::State::Established | tcp::State::CloseWait)
+        })
+        .count()
+}
+
 /// Incoming connections. A listening socket that left the Listen state
 /// took a SYN and is that connection now: it joins the handshakes beside
 /// a fresh listener on the port. A handshake that completed is handed to
-/// a conv (`hand_off`); one reset by its peer, timed out, or whose
-/// listener closed is forgotten.
+/// a conv (`hand_off`) once its listener's queue has room; one reset by
+/// its peer, timed out, or whose listener closed is forgotten.
 fn pump_accepts(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
@@ -1654,6 +1686,16 @@ fn pump_accepts(
             // Reset by the peer (back in Listen), closed, or timed out.
             _ => false,
         };
+        // A completed one waits its turn while the listener's queue is
+        // full, behind the ones that waited before it.
+        if done
+            && listening
+            && queue_full(convs, l)
+            && waiting(&handshakes[..k], sockets, l) < ACCEPT_WAIT
+        {
+            k += 1;
+            continue;
+        }
         handshakes.remove(k);
         if !(done && listening && hand_off(convs, sockets, chan, l, h)) {
             drop_handshake(sockets, h);
@@ -1704,13 +1746,15 @@ fn pump_accepts(
         rearm_listener(convs, sockets, i);
         convs[i].connected = false;
         convs[i].hungup = false;
-        if !done {
-            if handshakes.len() < SYN_BACKLOG {
-                handshakes.push(Handshake { handle: h, listener: i as u16, since: now });
-            } else {
+        if done && !queue_full(convs, i) {
+            if !hand_off(convs, sockets, chan, i, h) {
                 drop_handshake(sockets, h);
             }
-        } else if !hand_off(convs, sockets, chan, i, h) {
+        } else if handshakes.len() < SYN_BACKLOG
+            && (!done || waiting(handshakes, sockets, i) < ACCEPT_WAIT)
+        {
+            handshakes.push(Handshake { handle: h, listener: i as u16, since: now });
+        } else {
             drop_handshake(sockets, h);
         }
     }
@@ -2164,12 +2208,19 @@ fn main() -> ! {
             nics.poll(now, &mut sockets);
             poll_loopback(&mut lo, &mut lodev, &mut sockets, now, &convs, chan);
         }
+        // A connection its listener's user has still to take stays, ended
+        // by its peer or not: accept returns it and its user reads what came
+        // and the end, as on Linux. Dropped here, the listen smoke's last
+        // connection (its "done", then the host's close) was lost while the
+        // smoke still took the ones before it, and it waited forever
+        // (issue #630).
         for i in 0..MAX_CONV {
             if convs[i].hungup
                 && !convs[i].closing
                 && !convs[i].closing_after_flush
                 && convs[i].listen_port == 0
                 && !matches!(convs[i].kind, Kind::Empty)
+                && !queued(&convs, i)
             {
                 drain_tcp_rx_into_rep(&mut convs, &mut sockets, chan, i);
                 drop_conv(&mut convs, &mut sockets, i);
