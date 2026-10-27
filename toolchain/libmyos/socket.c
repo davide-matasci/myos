@@ -1,8 +1,8 @@
 /*
  * Userspace BSD sockets over Plan 9 /net + netd (smoltcp).
  * No socket() syscall — TCP and UDP via clone/ctl/data, and AF_UNIX
- * stream sockets over /net/unix, which the kernel serves itself
- * (docs/sockets-unix.md).
+ * stream and record (SOCK_SEQPACKET) sockets over /net/unix, which the
+ * kernel serves itself (docs/sockets-unix.md).
  *
  * AF_INET and AF_INET6 are the same conversations: netd names an address
  * in its text form either way (`a.b.c.d!port`, `fec0::2!port`). An
@@ -50,6 +50,9 @@
  * socket per client). */
 #define MYOS_MAX_SOCKS MYOS_OPEN_MAX
 #define UN_NAME_CAP ((int)sizeof(((struct sockaddr_un *)0)->sun_path))
+/* The largest SOCK_SEQPACKET record: what one end of a /net/unix
+ * conversation buffers (netfs's BUF_CAP). A larger one is EMSGSIZE. */
+#define UN_RECORD_MAX (64 * 1024)
 #define CONNECT_TIMEOUT_MS 30000
 /* A UDP datagram's header to and from netd, and the most one netfs
  * message carries behind it. */
@@ -82,7 +85,7 @@ struct ep {
 struct myos_sock {
     int used;
     int state;
-    int type;       /* SOCK_STREAM / SOCK_DGRAM */
+    int type;       /* SOCK_STREAM / SOCK_DGRAM / SOCK_SEQPACKET (AF_UNIX) */
     int data_fd;    /* returned to the app; /net/.../data */
     int ctl_fd;     /* kept open through connect */
     int nonblock;   /* O_NONBLOCK via fcntl F_SETFL (userspace-tracked) */
@@ -627,24 +630,30 @@ int myos_socket_empty_read(int fd) {
 }
 
 /*
- * Called from _write when the kernel refused a write on a tracked socket fd.
- * A stream refuses a write when it has no room: a unix peer's buffer is
- * full, or netd has a TCP conversation's 8 KiB of sends still queued.
+ * Called from _write when the kernel refused a write of `cnt` bytes on a
+ * tracked socket fd. A stream refuses a write when it has no room: a unix
+ * peer's buffer is full, or netd has a TCP conversation's 8 KiB of sends
+ * still queued; a unix record socket when the whole record does not fit.
  *   0 = not handled (keep the generic error)
  *   1 = no room + nonblocking -> EAGAIN
  *   2 = peer gone -> EPIPE
  *   3 = waited for room: retry the write
  *   4 = not connected -> ENOTCONN
  *   5 = the wait was interrupted -> EINTR
+ *   6 = a record larger than a socket buffer -> EMSGSIZE
  */
-int myos_socket_write_failed(int fd) {
+int myos_socket_write_failed(int fd, size_t cnt) {
     struct myos_sock *s = sock_by_fd(fd);
     struct pollfd p = {fd, POLLOUT, 0};
-    if (s == NULL || s->type != SOCK_STREAM) {
+    if (s == NULL || (s->type != SOCK_STREAM && s->type != SOCK_SEQPACKET)) {
         return 0;
     }
     if (s->state != SOCK_CONNECTED) {
         return 4;
+    }
+    /* A record that can never fit (the kernel refuses it whole). */
+    if (s->type == SOCK_SEQPACKET && cnt > UN_RECORD_MAX) {
+        return 6;
     }
     if (status_is_hangup(s)) {
         return 2;
@@ -764,7 +773,7 @@ int myos_socket_poll_prepare(int fd, short events, short *now, short *kevents) {
         *kevents = POLLOUT | (want_in ? POLLIN : 0);
         break;
     case SOCK_CONNECTED:
-        if (s->type == SOCK_STREAM) {
+        if (s->type != SOCK_DGRAM) {
             *kevents = (want_in ? POLLIN : 0) | (want_out ? POLLOUT : 0);
         } else {
             *now = want_out ? POLLOUT : 0;
@@ -883,7 +892,7 @@ int __myos_socket(int domain, int type, int protocol) {
     (void)protocol;
 
     if (domain == AF_UNIX) {
-        if (type != SOCK_STREAM) {
+        if (type != SOCK_STREAM && type != SOCK_SEQPACKET) {
             errno = EPROTONOSUPPORT;
             return -1;
         }
@@ -941,6 +950,14 @@ int __myos_socket(int domain, int type, int protocol) {
         return -1;
     }
 
+    /* A record socket's conversation keeps records from the start. */
+    if (type == SOCK_SEQPACKET && write(ctl_fd, "seqpacket", 9) < 0) {
+        close(ctl_fd);
+        close(data_fd);
+        sock_free(s);
+        errno = EIO;
+        return -1;
+    }
     strncpy(s->proto_path, proto, sizeof s->proto_path - 1);
     s->proto_path[sizeof s->proto_path - 1] = '\0';
     s->conv = id;
@@ -1208,8 +1225,8 @@ static int un_take(struct myos_sock *s, unsigned short *id) {
     return parse_clone_id(buf, (size_t)n, id) == 0 ? 1 : (errno = EIO, -1);
 }
 
-/* AF_UNIX: open conversation <id> (connected) as a socket fd. */
-static int un_open(unsigned short id, const char *name) {
+/* AF_UNIX: open conversation <id> (connected) as a socket fd of `type`. */
+static int un_open(unsigned short id, const char *name, int type) {
     char path[64];
     struct myos_sock *s = sock_alloc();
     if (s == NULL) {
@@ -1218,7 +1235,7 @@ static int un_open(unsigned short id, const char *name) {
     }
     strcpy(s->proto_path, "/net/unix");
     s->conv = id;
-    s->type = SOCK_STREAM;
+    s->type = type;
     s->family = AF_UNIX;
     s->state = SOCK_CONNECTED;
     s->peer_set = 1;
@@ -1254,7 +1271,7 @@ static int un_accept(struct myos_sock *ls, struct sockaddr *addr, socklen_t *add
             return -1;
         }
     }
-    fd = un_open(id, ls->un_name);
+    fd = un_open(id, ls->un_name, ls->type);
     if (fd >= 0) {
         un_put_name("", addr, addrlen);
     }
@@ -1270,11 +1287,11 @@ int __myos_socketpair(int domain, int type, int protocol, int sv[2]) {
         errno = EAFNOSUPPORT;
         return -1;
     }
-    if (type != SOCK_STREAM) {
+    if (type != SOCK_STREAM && type != SOCK_SEQPACKET) {
         errno = EPROTONOSUPPORT;
         return -1;
     }
-    a = __myos_socket(AF_UNIX, SOCK_STREAM, protocol);
+    a = __myos_socket(AF_UNIX, type, protocol);
     if (a < 0) {
         return -1;
     }
@@ -1287,7 +1304,7 @@ int __myos_socketpair(int domain, int type, int protocol, int sv[2]) {
         return -1;
     }
     finish_connect(s);
-    b = un_open(id, "");
+    b = un_open(id, "", type);
     if (b < 0) {
         close(a);
         return -1;
@@ -1305,7 +1322,7 @@ int __myos_listen(int sockfd, int backlog) {
         errno = ENOTSOCK;
         return -1;
     }
-    if (s->type != SOCK_STREAM) {
+    if (s->type != SOCK_STREAM && s->type != SOCK_SEQPACKET) {
         errno = EOPNOTSUPP;
         return -1;
     }
@@ -1918,6 +1935,18 @@ ssize_t __myos_sendmsg(int sockfd, const struct msghdr *msg, int flags) {
         errno = EINVAL;
         return -1;
     }
+    /* One record: writev gathers it into one write up to its own limit,
+     * which is the largest record. */
+    if (s != NULL && s->type == SOCK_SEQPACKET) {
+        size_t total = 0, i;
+        for (i = 0; i < msg->msg_iovlen; i++) {
+            total += msg->msg_iov[i].iov_len;
+        }
+        if (total > UN_RECORD_MAX) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+    }
     if (n > 0) {
         char cmd[sizeof "rights" + 253 * 4];
         size_t pos = 6;
@@ -2012,6 +2041,22 @@ static int received_rights(struct myos_sock *s, int *fds, int cap) {
     return n;
 }
 
+/* Whether the last read of record socket `s` dropped the rest of a record:
+ * its conversation's ctl says "seqpacket cut". */
+static int un_record_cut(struct myos_sock *s) {
+    char path[64];
+    char buf[32];
+    ssize_t n;
+    int fd;
+    if (conv_path(path, sizeof path, s->proto_path, s->conv, "ctl") < 0
+        || (fd = open(path, O_RDONLY)) < 0) {
+        return 0;
+    }
+    n = read(fd, buf, sizeof buf);
+    close(fd);
+    return n > 0 && buf_has(buf, (size_t)n, "cut");
+}
+
 /* recvmsg: the data, and on a unix socket the fds that came with it as an
  * SCM_RIGHTS message; those msg_control has no room for are closed
  * (MSG_CTRUNC). */
@@ -2054,6 +2099,10 @@ ssize_t __myos_recvmsg(int sockfd, struct msghdr *msg, int flags) {
     msg->msg_namelen = 0;
     if (r > 0 && s != NULL && s->family == AF_UNIX) {
         n = received_rights(s, fds, 253);
+    }
+    /* A record that filled the buffers may have been longer. */
+    if (r > 0 && s != NULL && s->type == SOCK_SEQPACKET && un_record_cut(s)) {
+        msg->msg_flags |= MSG_TRUNC;
     }
     kept = 0;
     if (n > 0 && msg->msg_control != NULL && msg->msg_controllen >= CMSG_LEN(sizeof(int))) {
@@ -2450,12 +2499,52 @@ ssize_t myos_socket_dgram_write(int fd, const void *buf, size_t cnt) {
     return udp_send(sock_by_fd(fd), buf, cnt, 0, NULL, 0);
 }
 
-/* A socket fd this process got by exec, which its table does not know:
- * /proc/self/fd/N names /net/tcp/N/data or /net/udp/N/data. Its state is
- * the conversation's: a TCP status of "connected" or a listener's; a UDP
- * socket's local address and peer, asked of netd. What the exec'ing
- * process kept to itself (O_NONBLOCK, a TCP peer's address) is lost.
- * NULL (errno untouched) when the fd is no such socket. */
+/* sock_adopt for a /net/unix conversation, `rest` its "N/data": a stream
+ * or a record socket as its ctl says, connected or a listener as its
+ * status says. Its names are not known (getsockname: unnamed). */
+static struct myos_sock *un_adopt(int fd, const char *rest) {
+    char path[64];
+    char buf[32];
+    unsigned short id;
+    struct myos_sock *s;
+    ssize_t n;
+    int ctl;
+    if (parse_clone_id(rest, strcspn(rest, "/"), &id) < 0
+        || strcmp(rest + strcspn(rest, "/"), "/data") != 0
+        || (s = sock_alloc()) == NULL) {
+        return NULL;
+    }
+    strcpy(s->proto_path, "/net/unix");
+    s->conv = id;
+    s->data_fd = fd;
+    s->family = AF_UNIX;
+    s->type = SOCK_STREAM;
+    if (conv_path(path, sizeof path, s->proto_path, id, "ctl") == 0 && (ctl = open(path, O_RDONLY)) >= 0) {
+        n = read(ctl, buf, sizeof buf);
+        close(ctl);
+        if (n > 0 && buf_has(buf, (size_t)n, "seqpacket")) {
+            s->type = SOCK_SEQPACKET;
+        }
+    }
+    s->state = SOCK_OPEN;
+    if (listener_status(s, buf, sizeof buf) == 0) {
+        if (strncmp(buf, "connected", 9) == 0 || strncmp(buf, "hangup", 6) == 0) {
+            s->state = SOCK_CONNECTED;
+            s->peer_set = 1;
+        } else if (strncmp(buf, "announced", 9) == 0) {
+            s->state = SOCK_LISTENING;
+        }
+    }
+    return s;
+}
+
+/* A socket fd this process got by exec (or in an SCM_RIGHTS message),
+ * which its table does not know: /proc/self/fd/N names /net/tcp/N/data,
+ * /net/udp/N/data or /net/unix/N/data. Its state is the conversation's: a
+ * TCP or unix status of "connected" or a listener's; a UDP socket's local
+ * address and peer, asked of netd. What the process it came from kept to
+ * itself (O_NONBLOCK, a TCP peer's address) is lost. NULL (errno
+ * untouched) when the fd is no such socket. */
 static struct myos_sock *sock_adopt(int fd) {
     char link[32] = "/proc/self/fd/";
     char path[64];
@@ -2475,6 +2564,11 @@ static struct myos_sock *sock_adopt(int fd) {
         return NULL;
     }
     path[n] = '\0';
+    if (strncmp(path, "/net/unix/", 10) == 0) {
+        s = un_adopt(fd, path + 10);
+        errno = saved;
+        return s;
+    }
     if (strncmp(path, "/net/tcp/", 9) == 0) {
         type = SOCK_STREAM;
     } else if (strncmp(path, "/net/udp/", 9) == 0) {

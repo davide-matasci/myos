@@ -194,6 +194,9 @@ pub fn write(fd: usize, buf: usize, len: usize) -> R {
     if would_block(fd, 2) {
         return Err(EAGAIN);
     }
+    if net::record_too_big(fd, len) {
+        return Err(EMSGSIZE);
+    }
     if is_socket(fd) { net::send(fd, io) } else { io() }
 }
 
@@ -205,6 +208,10 @@ fn is_socket(fd: usize) -> bool {
 pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
     if cnt > 1024 {
         return Err(EINVAL);
+    }
+    // A record socket's `iovec`s make one record.
+    if let Some(r) = super::net::record_rw(fd, iov, cnt, write) {
+        return r;
     }
     let io = || {
         let mut total = 0usize;

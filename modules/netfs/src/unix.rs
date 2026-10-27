@@ -1,4 +1,5 @@
-//! `/net/unix`: local stream connections, Plan 9 style, without netd.
+//! `/net/unix`: local stream and record connections, Plan 9 style,
+//! without netd.
 //!
 //! The same files as `/net/tcp` (`clone`, `N/ctl`, `N/data`, `N/status`) plus
 //! `N/listen`. Opening `clone` makes a conversation (the fd is on its
@@ -12,6 +13,16 @@
 //! - `pair`: a second conversation connected to this one, handed out through
 //!   this one's `listen` the same way (`socketpair`);
 //! - `hangup`: close the connection both ways (`shutdown`);
+//! - `seqpacket`: before it is announced, connected or paired, make the
+//!   conversation keep records (`SOCK_SEQPACKET`): each write is one,
+//!   taken whole or refused (a record larger than [`BUF_CAP`] can never
+//!   be), and a read returns at most one, the rest of a record it has no
+//!   room for dropped. `pair`'s other end and the server's end of a
+//!   `connect` keep records too, and only a record client connects to a
+//!   record listener. Reading `ctl` says `seqpacket` for such a
+//!   conversation (nothing for a stream), `seqpacket cut` when the last
+//!   read of `data` dropped the rest of a record (`MSG_TRUNC`), and
+//!   `data`'s size is the length of its next record;
 //! - `rights FD...`: send the writer's own fds with the next write of
 //!   `data` (`SCM_RIGHTS`). They are held as the writer's fds hold them
 //!   (the kernel's `fd_hold`) and come with the first byte of that write:
@@ -58,6 +69,10 @@ const NAME_CAP: usize = 108;
 const BACKLOG: usize = 8;
 /// Fds one write carries at most (Linux's `SCM_MAX_FD`).
 const RIGHTS_MAX: usize = 253;
+/// What reading a record conversation's `ctl` says, and after a read that
+/// dropped the rest of a record.
+const SEQPACKET: &[u8] = b"seqpacket\n";
+const SEQPACKET_CUT: &[u8] = b"seqpacket cut\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -73,6 +88,13 @@ enum State {
 
 struct Conv {
     state: State,
+    /// Records, not a byte stream (`seqpacket`).
+    records: bool,
+    /// The last read of `data` dropped the rest of a record.
+    cut: bool,
+    /// The length of the last record this end could not write for want of
+    /// room in its peer's buffer: `poll` says `POLLOUT` once it fits.
+    want: usize,
     /// How many times the end changed (its state, bytes in or out of its
     /// buffer, room in its peer's): the change count its `data`'s `poll`
     /// reports. Kept across the slot's reuse ([`reset`]).
@@ -98,7 +120,7 @@ struct Conv {
     /// Fds that came with the last read of `data`, for `rights`.
     delivered: Vec<usize>,
     /// Where in this end's stream each writer's bytes start (an entry when
-    /// the writer changes), with its pid.
+    /// the writer changes, and for each record), with its pid.
     writers: VecDeque<(u64, u32)>,
     /// The pid of the writer of the last read's bytes, for `from` (0: none).
     from: u32,
@@ -107,6 +129,9 @@ struct Conv {
 impl Conv {
     const FREE: Self = Self {
         state: State::Free,
+        records: false,
+        cut: false,
+        want: 0,
         changes: 0,
         owner: crate::NO_OWNER,
         peer: None,
@@ -281,12 +306,22 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
         let ino = 1000 + id as u32 * 8 + tag;
         Some(match tag {
             0 => (S_IFDIR | 0o755, 0, ino),
-            2 => (S_IFREG | 0o666, c.rx.len() as u32, ino),
+            2 => (S_IFREG | 0o666, waiting(c) as u32, ino),
             3 => (S_IFREG | 0o666, c.status().len() as u32, ino),
             4 => (S_IFREG | 0o666, c.queued as u32, ino),
             _ => (S_IFREG | 0o666, 0, ino),
         })
     })
+}
+
+/// The bytes a read of `data` could take: all that is buffered, or a
+/// record conversation's next record.
+fn waiting(c: &Conv) -> usize {
+    let next = c.writers.iter().map(|&(at, _)| at).find(|&at| at > c.rx_base);
+    match next {
+        Some(at) if c.records => (at - c.rx_base) as usize,
+        _ => c.rx.len(),
+    }
 }
 
 pub fn listdir(node: Node, dst: &mut [u8], n: &mut usize) -> bool {
@@ -332,12 +367,12 @@ pub fn poll(node: Node, changes: *mut u64) -> u32 {
         let Some(c) = get_own(convs, id) else {
             return MYOS_POLLERR | MYOS_POLLHUP;
         };
-        let (readable, state, peer) = (!c.rx.is_empty() || c.queued != 0, c.state, c.peer);
+        let (readable, state, peer, want) = (!c.rx.is_empty() || c.queued != 0, c.state, c.peer, c.want.max(1));
         let mut bits = if readable { MYOS_POLLIN } else { 0 };
         if state == State::Hangup {
             bits |= MYOS_POLLIN | MYOS_POLLHUP;
         }
-        if state == State::Connected && peer.is_some_and(|p| convs[p as usize].rx.len() < BUF_CAP) {
+        if state == State::Connected && peer.is_some_and(|p| BUF_CAP - convs[p as usize].rx.len() >= want) {
             bits |= MYOS_POLLOUT;
         }
         bits
@@ -377,6 +412,16 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
                 *o = b;
             }
             c.rx_base += n as u64;
+            // A record is read whole: what did not fit is dropped (with the
+            // fds of a record that started in it, none: they come with a
+            // record's first byte).
+            c.cut = false;
+            if c.records && n > 0 {
+                let end = c.writers.get(1).map_or(c.rx.len(), |&(at, _)| (at - c.rx_base) as usize);
+                c.rx.drain(..end);
+                c.rx_base += end as u64;
+                c.cut = end > 0;
+            }
             if c.rx.is_empty() && c.rx.capacity() > BUF_KEEP {
                 c.rx = VecDeque::new();
             }
@@ -410,7 +455,15 @@ fn read_locked(node: Node, pos: usize, out: &mut [u8]) -> i32 {
             dec(next, out)
         }
         Node::Ctl(_, id) => {
-            if get_own(convs, id).is_none() { -1 } else { 0 }
+            let Some(c) = get_own(convs, id) else {
+                return -1;
+            };
+            let mode: &[u8] = match (c.records, c.cut) {
+                (false, _) => b"",
+                (true, false) => SEQPACKET,
+                (true, true) => SEQPACKET_CUT,
+            };
+            crate::copy_at(mode, pos, out)
         }
         Node::From(_, id) => {
             let Some(c) = get_own(convs, id) else {
@@ -469,8 +522,22 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             let Some(peer) = get_own(convs, id).and_then(|c| c.peer) else {
                 return -1;
             };
+            let records = convs[id as usize].records;
             let p = &mut convs[peer as usize];
-            let n = src.len().min(BUF_CAP - p.rx.len());
+            let room = BUF_CAP - p.rx.len();
+            // A record is taken whole or not at all; an empty one is none.
+            if records && src.len() > room {
+                // One that never fits (`EMSGSIZE`, the library's) waits
+                // for nothing.
+                if src.len() <= BUF_CAP {
+                    convs[id as usize].want = src.len();
+                }
+                return -1;
+            }
+            if records && src.is_empty() {
+                return 0;
+            }
+            let n = src.len().min(room);
             // Full (or no heap for it): the library waits for the reader and
             // retries.
             if n == 0 || p.rx.try_reserve(n).is_err() || p.marks.try_reserve(1).is_err() || p.writers.try_reserve(1).is_err() {
@@ -479,9 +546,10 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             let at = p.rx_base + p.rx.len() as u64;
             p.rx.extend(&src[..n]);
             let pid = crate::api().current_pid() as u32;
-            if p.writers.back().is_none_or(|&(_, last)| last != pid) {
+            if records || p.writers.back().is_none_or(|&(_, last)| last != pid) {
                 p.writers.push_back((at, pid));
             }
+            convs[id as usize].want = 0;
             // The fds `rights` took come with this write's first byte.
             let fds = core::mem::take(&mut convs[id as usize].pending);
             if !fds.is_empty() {
@@ -510,10 +578,16 @@ fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8], drops: &mut Vec<usize>) -> bo
         disconnect(convs, id);
         return true;
     }
+    if cmd == b"seqpacket" {
+        convs[id as usize].records |= open;
+        return open;
+    }
+    let records = convs[id as usize].records;
     if cmd == b"pair" {
         let Some(other) = open.then(|| alloc(convs)).flatten() else {
             return false;
         };
+        convs[other as usize].records = records;
         link(convs, id, other);
         return enqueue(convs, id, other);
     }
@@ -532,7 +606,7 @@ fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8], drops: &mut Vec<usize>) -> bo
         let Some(server) = listener(convs, name) else {
             return false;
         };
-        if !open || convs[server as usize].queued == BACKLOG {
+        if !open || convs[server as usize].queued == BACKLOG || convs[server as usize].records != records {
             return false;
         }
         let Some(end) = alloc(convs) else {
@@ -540,6 +614,7 @@ fn ctl(convs: &mut Vec<Conv>, id: u16, cmd: &[u8], drops: &mut Vec<usize>) -> bo
         };
         // The server's end is the listener's user's.
         convs[end as usize].owner = convs[server as usize].owner;
+        convs[end as usize].records = records;
         link(convs, id, end);
         return enqueue(convs, server, end);
     }

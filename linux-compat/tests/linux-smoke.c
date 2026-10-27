@@ -40,6 +40,7 @@
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/timerfd.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -555,6 +556,64 @@ static const char *pass_fds(void) {
     return NULL;
 }
 
+/* Record sockets (SOCK_SEQPACKET): each write a record read whole, writev's
+ * pieces one record, a record cut short says MSG_TRUNC, one larger than a
+ * socket buffer is EMSGSIZE, a record socket received in SCM_RIGHTS is
+ * still one, and a stream client of a record listener is refused. NULL, or
+ * what failed. */
+static const char *seqpacket(void) {
+    static char big[70000];
+    char buf[64];
+    int sv[2], q[2], fds[4], n, flags, type = 0;
+    socklen_t len = sizeof type;
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) != 0
+        || getsockopt(sv[0], SOL_SOCKET, SO_TYPE, &type, &len) != 0 || type != SOCK_SEQPACKET) {
+        return "SOCK_SEQPACKET: socketpair, SO_TYPE";
+    }
+    if (write(sv[0], "one", 3) != 3 || write(sv[0], "three", 5) != 5 || read(sv[1], buf, sizeof buf) != 3
+        || read(sv[1], buf, sizeof buf) != 5 || memcmp(buf, "three", 5) != 0) {
+        return "SOCK_SEQPACKET: two writes are two records";
+    }
+    struct iovec iov[2] = {{"ab", 2}, {"cd", 2}};
+    if (writev(sv[0], iov, 2) != 4 || read(sv[1], buf, sizeof buf) != 4 || memcmp(buf, "abcd", 4) != 0) {
+        return "SOCK_SEQPACKET: writev's pieces are one record";
+    }
+    if (write(sv[0], "0123456789", 10) != 10 || write(sv[0], "next", 4) != 4
+        || recv_fds(sv[1], buf, 4, fds, 0, &n, &flags) != 4 || !(flags & MSG_TRUNC)
+        || read(sv[1], buf, sizeof buf) != 4 || memcmp(buf, "next", 4) != 0) {
+        return "SOCK_SEQPACKET: MSG_TRUNC, then the next record";
+    }
+    errno = 0;
+    if (write(sv[0], big, sizeof big) != -1 || errno != EMSGSIZE) {
+        return "SOCK_SEQPACKET: EMSGSIZE";
+    }
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, q) != 0 || send_fds(sv[0], 'R', &q[1], 1) != 0) {
+        return "SOCK_SEQPACKET: send a record socket";
+    }
+    close(q[1]);
+    if (recv_fds(sv[1], buf, sizeof buf, fds, 4, &n, &flags) != 1 || n != 1 || writev(fds[0], iov, 2) != 4
+        || read(q[0], buf, sizeof buf) != 4) {
+        return "SOCK_SEQPACKET: a record socket received keeps records";
+    }
+    close(fds[0]);
+    close(q[0]);
+    close(sv[0]);
+    close(sv[1]);
+    struct sockaddr_un a;
+    socklen_t alen = un_addr(&a, "/tmp/.linux-smoke-seq");
+    int ls = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    if (ls < 0 || bind(ls, (struct sockaddr *)&a, alen) != 0 || listen(ls, 4) != 0) {
+        return "SOCK_SEQPACKET: a record listener";
+    }
+    int c = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (c < 0 || connect(c, (struct sockaddr *)&a, alen) == 0) {
+        return "SOCK_SEQPACKET: a stream client of a record listener is refused";
+    }
+    close(c);
+    close(ls);
+    return NULL;
+}
+
 static void check_unix_sockets(void) {
     const char *name = "/tmp/.linux-smoke";
     int ls = un_listener(name);
@@ -606,6 +665,8 @@ static void check_unix_sockets(void) {
     check(e == NULL, e != NULL ? e : "memfd seals");
     e = pass_creds();
     check(e == NULL, e != NULL ? e : "SCM_CREDENTIALS");
+    e = seqpacket();
+    check(e == NULL, e != NULL ? e : "SOCK_SEQPACKET");
 }
 
 /* select and pselect (musl: the select syscall on x86_64, pselect6 on

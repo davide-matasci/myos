@@ -43,8 +43,8 @@ void myos_socket_on_close(int fd) { (void)fd; }
 int myos_socket_empty_read(int fd) __attribute__((weak));
 int myos_socket_empty_read(int fd) { (void)fd; return 0; }
 
-int myos_socket_write_failed(int fd) __attribute__((weak));
-int myos_socket_write_failed(int fd) { (void)fd; return 0; }
+int myos_socket_write_failed(int fd, size_t cnt) __attribute__((weak));
+int myos_socket_write_failed(int fd, size_t cnt) { (void)fd; (void)cnt; return 0; }
 
 /* A datagram socket's read(2) / write(2), whole (socket.c): its datagrams
  * and errors are the library's. -2 = not a datagram socket. */
@@ -300,7 +300,7 @@ static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long fla
         }
         if (ret == (long)MYOS_SYSERR) {
             /* A stream socket refuses a write while it has no room. */
-            switch (myos_socket_write_failed(fd)) {
+            switch (myos_socket_write_failed(fd, cnt - done)) {
             case 1:
                 errno = EAGAIN;
                 return done ? (ssize_t)done : -1;
@@ -314,6 +314,9 @@ static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long fla
                 return done ? (ssize_t)done : -1;
             case 5:
                 errno = EINTR; /* a caught signal ended the wait */
+                return done ? (ssize_t)done : -1;
+            case 6:
+                errno = EMSGSIZE; /* a record no socket buffer holds */
                 return done ? (ssize_t)done : -1;
             }
             myos_set_errno_io();

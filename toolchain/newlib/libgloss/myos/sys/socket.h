@@ -26,6 +26,7 @@ typedef unsigned short sa_family_t;
 
 #define SOCK_STREAM 1
 #define SOCK_DGRAM  2
+#define SOCK_SEQPACKET 5
 
 #define IPPROTO_IP  0
 #define IPPROTO_TCP 6

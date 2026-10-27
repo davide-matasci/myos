@@ -24,6 +24,7 @@ t -t mlibc,pty_reclaim mlibc_pty_reclaim $MLIBC/pty_smoke 6
 t -t smoke,mlibc,urandom mlibc_urandom $MLIBC/urandom_smoke
 t -t tty,console,mlibc mlibc_tty $MLIBC/tty_smoke
 t -t netfs,mlibc,unix mlibc_unix $MLIBC/unix_smoke
+t -t netfs,mlibc,unix,unix_seqpacket mlibc_unix_seqpacket $MLIBC/unix_smoke seqpacket
 t -t console,fb,mlibc mlibc_fb $MLIBC/fb_smoke
 t -t console,fb,mlibc,fb_text mlibc_fb_text $MLIBC/fb_smoke text
 t -t events,mlibc,poll mlibc_poll $MLIBC/poll_smoke
