@@ -2528,7 +2528,7 @@ static struct myos_sock *un_adopt(int fd, const char *rest) {
     s->data_fd = fd;
     s->family = AF_UNIX;
     s->type = SOCK_STREAM;
-    if (conv_path(path, sizeof path, s->proto_path, id, "ctl") == 0 && (ctl = open(path, O_RDONLY)) >= 0) {
+    if (conv_path(path, sizeof path, s->proto_path, id, "ctl") >= 0 && (ctl = open(path, O_RDONLY)) >= 0) {
         n = read(ctl, buf, sizeof buf);
         close(ctl);
         if (n > 0 && buf_has(buf, (size_t)n, "seqpacket")) {
