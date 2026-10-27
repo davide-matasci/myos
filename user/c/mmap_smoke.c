@@ -11,6 +11,9 @@
  * a MAP_PRIVATE mapping stays a copy. Through a read-only fd a MAP_SHARED
  * mapping reads the file (the writes of the others included) and refuses
  * PROT_WRITE. A 16-page pattern goes through and comes back whole.
+ * madvise(MADV_DONTNEED) drops pages: an anonymous one reads zero, a
+ * MAP_PRIVATE copy of a file reads the file again, the pages around them
+ * keep what they had; other advice is taken.
  *
  * `mmap_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it on
  * the scratch disk.
@@ -230,6 +233,32 @@ static void protections(void) {
     unlink(f);
 }
 
+static void discard(void) {
+    const char *f = in_dir("mmap_discard");
+    int fd = make_file(f, PAGES);
+    unsigned char *a = mmap(NULL, PAGES * PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    unsigned char *p = mmap(NULL, PAGES * PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+
+    check(a != MAP_FAILED && p != MAP_FAILED, "the mappings to discard");
+    if (a != MAP_FAILED && p != MAP_FAILED) {
+        memset(a, 'A', PAGES * PAGE);
+        memset(p, 'P', PAGES * PAGE);
+        check(madvise(a + PAGE, PAGE, MADV_DONTNEED) == 0, "madvise(MADV_DONTNEED) anonymous");
+        check(a[PAGE] == 0 && a[2 * PAGE - 1] == 0, "a discarded anonymous page reads zero");
+        check(a[PAGE - 1] == 'A' && a[2 * PAGE] == 'A', "the pages around it keep theirs");
+        check(madvise(p + PAGE, PAGE, MADV_DONTNEED) == 0, "madvise(MADV_DONTNEED) file");
+        check(p[PAGE + 5] == pattern(PAGE + 5), "a discarded private page reads the file");
+        check(p[5] == 'P' && p[2 * PAGE] == 'P', "the copies around it stay");
+        check(byte_at(fd, PAGE + 5) == pattern(PAGE + 5), "the file is untouched");
+        check(madvise(a, PAGES * PAGE, MADV_WILLNEED) == 0, "other advice is taken");
+        check(madvise(a + 1, PAGE, MADV_DONTNEED) == -1 && errno == EINVAL, "a misaligned address is refused");
+        munmap(a, PAGES * PAGE);
+        munmap(p, PAGES * PAGE);
+    }
+    close(fd);
+    unlink(f);
+}
+
 static void whole(void) {
     const char *f = in_dir("mmap_whole");
     int pages = 16, fd, bad = 0;
@@ -376,6 +405,7 @@ int main(int argc, char **argv) {
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     shared();
     protections();
+    discard();
     whole();
     fault_around();
     many_files();

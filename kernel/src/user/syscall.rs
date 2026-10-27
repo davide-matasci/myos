@@ -170,6 +170,12 @@ const SYS_MSYNC: usize = 92;
 /// resolved), written NUL-terminated to the caller's buffer. Backs the std
 /// port's `fs::canonicalize` and a real libgloss `realpath`.
 const SYS_REALPATH: usize = 93;
+/// `madvise(addr, len, advice)`: `MADV_DONTNEED` drops the pages of the
+/// range in the mmap window ([`mmap_discard`]: they read as new on their
+/// next touch); every other advice is a hint, taken and ignored.
+const SYS_MADVISE: usize = 95;
+/// `MADV_DONTNEED`, as on Linux.
+const MADV_DONTNEED: usize = 4;
 const LOCK_SH: usize = 1;
 const LOCK_EX: usize = 2;
 const LOCK_NB: usize = 4;
@@ -414,6 +420,7 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
         }
         SYS_CLOCK_MONOTONIC => crate::time::monotonic_ns() as usize,
         SYS_MSYNC => sys_msync(a0, a1),
+        SYS_MADVISE => sys_madvise(a0, a1, a2),
         at::SYS_STATFSAT => {
             let [a3, a4, _] = regs.args_3_5();
             at::sys_statfsat(a0, a1, a2, a3, a4)
@@ -2027,6 +2034,16 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
         return SYSERR;
     }
     0
+}
+
+/// `madvise(addr, len, advice)`: `MADV_DONTNEED` frees the pages of `[addr,
+/// addr + len)` ([`mmap_discard`]), which must be in the mmap window; any
+/// other advice only needs an aligned address.
+pub(crate) fn sys_madvise(addr: usize, len: usize, advice: usize) -> usize {
+    if advice == MADV_DONTNEED {
+        return if mmap_discard(addr, len) { 0 } else { SYSERR };
+    }
+    if addr % PAGE != 0 { SYSERR } else { 0 }
 }
 
 /// `msync(addr, len, flags)`: the shared file mappings in `[addr, addr +

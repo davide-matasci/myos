@@ -122,6 +122,7 @@ void *__myos_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t 
 int __myos_munmap(void *addr, size_t length);
 int __myos_mprotect(void *addr, size_t length, int prot);
 int __myos_msync(void *addr, size_t length, int flags);
+int __myos_madvise(void *addr, size_t length, int advice);
 int __myos_shm_open(const char *name, int oflag, mode_t mode);
 int __myos_shm_unlink(const char *name);
 int __myos_memfd_create(const char *name, unsigned flags);

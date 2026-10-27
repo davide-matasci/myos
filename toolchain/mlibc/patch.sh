@@ -83,6 +83,33 @@ int memfd_create(const char *__name, unsigned int __flags);
     print("patched sys/mman.h: memfd_create without the linux option")
 PY
 
+# madvise likewise (libmyos/mmap.c defines it, as memfd_create in shm.c);
+# mincore stays Linux's.
+python3 - "$SRC/options/posix/include/sys/mman.h" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "madvise is not Linux's alone" not in s:
+    old = """#if __MLIBC_LINUX_OPTION && defined(_DEFAULT_SOURCE)
+int madvise(void *__addr, size_t __size, int __advise);
+int mincore(void *__addr, size_t __size, unsigned char *__vec);
+#endif /* __MLIBC_LINUX_OPTION && defined(_DEFAULT_SOURCE) */
+"""
+    new = """/* madvise is not Linux's alone either (the BSDs have it): a sysdep
+ * without the linux option provides it or not (myos does). */
+#if defined(_DEFAULT_SOURCE)
+int madvise(void *__addr, size_t __size, int __advise);
+#endif /* defined(_DEFAULT_SOURCE) */
+
+#if __MLIBC_LINUX_OPTION && defined(_DEFAULT_SOURCE)
+int mincore(void *__addr, size_t __size, unsigned char *__vec);
+#endif /* __MLIBC_LINUX_OPTION && defined(_DEFAULT_SOURCE) */
+"""
+    assert s.count(old) == 1, "sys/mman.h: the madvise block not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched sys/mman.h: madvise without the linux option")
+PY
+
 # A locked mutex's destroy is EBUSY, an unlock of a mutex nobody holds EPERM
 # and a thread's join of itself EDEADLK (POSIX lets them fail so; libgloss's
 # do, and the pthread smoke checks it), not a panic or a wait.

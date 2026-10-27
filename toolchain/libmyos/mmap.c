@@ -1,4 +1,4 @@
-/* mmap / munmap / mprotect / msync. */
+/* mmap / munmap / mprotect / msync / madvise. */
 #include <errno.h>
 #include <sys/types.h>
 #include <stdint.h>
@@ -60,6 +60,16 @@ int __myos_msync(void *addr, size_t length, int flags) {
     return 0;
 }
 
+int __myos_madvise(void *addr, size_t length, int advice) {
+    long ret = myos_syscall3(
+        MYOS_SYS_MADVISE, (long)(uintptr_t)addr, (long)length, (long)advice);
+    if (ret == (long)MYOS_SYSERR) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
 void __clear_cache(void *start, void *end) {
 #if defined(__aarch64__)
     unsigned long s = (unsigned long)start & ~63ul;
@@ -87,3 +97,4 @@ MYOS_ALIAS(mmap)
 MYOS_ALIAS(munmap)
 MYOS_ALIAS(mprotect)
 MYOS_ALIAS(msync)
+MYOS_PUBLIC(madvise)

@@ -113,9 +113,8 @@ int Sysdeps<Msync>::operator()(void *addr, size_t length, int flags) {
 	return err(__myos_msync(addr, length, flags));
 }
 
-// No paging advice to give: every page is resident.
-int Sysdeps<Madvise>::operator()(void *, size_t, int) {
-	return 0;
+int Sysdeps<Madvise>::operator()(void *addr, size_t length, int advice) {
+	return err(__myos_madvise(addr, length, advice));
 }
 
 int Sysdeps<PosixMadvise>::operator()(void *, size_t, int) {
