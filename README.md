@@ -188,14 +188,14 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/sdmmc` | SD cards `/dev/mmcblkN`: a standard SDHCI controller (PCI class 08/05, the Pi 4's EMMC2) or the Raspberry Pi 3's sdhost, the card layer on the `sdio-host` crate; high speed (50 MHz) when the card takes it, the blocks by ADMA2 on SDHCI, waits sleeping on the controller's interrupt, the Pi's clocks from its firmware. SDIO cards (the Pi's Wi-Fi chip, powered through the firmware) as `/dev/sdio/N` for a driver that is a program, the card layer the host-tested `sdio` crate (`docs/raspberry-pi.md`) |
 | `modules/usb` | The USB core: the devices, their enumeration and hot-plug on its own kernel thread, the class drivers' bus service (`UsbHostOps`), `/proc/usb`; the host controller drivers register their controllers with it (`UsbHcdOps`, `docs/usb.md`) |
 | `modules/xhci` | xHCI USB host controller driver: rings, slots, contexts and the transfers of its controllers, for the core |
-| `modules/ehci` | EHCI (USB 2.0) host controller driver: its schedules and the transfers of its high-speed devices, the full- and low-speed ones handed to its companions, for the core (`docs/usb.md`) |
+| `modules/ehci` | EHCI (USB 2.0) host controller driver: its schedules and the transfers of its high-speed devices (isochronous OUT too), the full- and low-speed ones handed to its companions, for the core (`docs/usb.md`) |
 | `modules/uhci` | UHCI (USB 1.1) host controller driver, an EHCI's companion: its frame list, the transfers, isochronous OUT, for the core (`docs/usb.md`) |
 | `modules/ohci` | OHCI (USB 1.1) host controller driver, the companion of non-Intel EHCIs: its ED lists, the transfers, isochronous OUT, for the core (`docs/usb.md`) |
 | `modules/dwc2` | DWC2 USB host controller driver, the Raspberry Pi 3's: host channels, split transactions, for the core (`docs/raspberry-pi.md`) |
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |
 | `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
-| `modules/usb_audio` | USB Audio Class 1 speakers: a playback stream of the sound core over an isochronous OUT endpoint (`docs/usb.md`, `docs/sound.md`) |
+| `modules/usb_audio` | USB Audio Class 1 and 2 playback: a playback stream of the sound core over an isochronous OUT endpoint (`docs/usb.md`, `docs/sound.md`) |
 | `modules/sound` | The sound core: the cards' PCM streams as `/dev/sound/N/{ctl,data}`, their buffers, the `sound` service the card drivers register with (`docs/sound.md`) |
 | `modules/virtio_sound` | virtio-sound cards (PCI or MMIO): their playback and capture streams, for the sound core |
 | `modules/usbdev` | Userspace USB drivers: `/dev/usb`, the interfaces no kernel driver takes, their control, bulk and interrupt transfers as files (`docs/usb.md`) |

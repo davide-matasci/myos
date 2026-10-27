@@ -8,8 +8,9 @@
 //! only: a full- or low-speed device on one of its ports is handed to the
 //! port's companion controller (UHCI or OHCI: the `uhci` and `ohci`
 //! modules), and one behind a high-speed hub is reached through the hub's
-//! transaction translator (split transactions, the QH's hub and port). Isochronous
-//! transfers are not driven (issue #622).
+//! transaction translator (split transactions, the QH's hub and port).
+//! Isochronous OUT packets go in the frame list: in iTDs for a high-speed
+//! device, in split siTDs for a full-speed one behind such a hub.
 
 #![no_std]
 #![no_main]
@@ -22,11 +23,11 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use myos_abi::{
     ABI_VERSION, ApiCell, DmaDevice, KernelApi, SleepLock, StrRef, USB_CORE_SERVICE, USB_CORE_VERSION, USB_EGONE, USB_EIO,
-    USB_EPENDING, USB_HCD_VERSION, USB_SPEED_HIGH, UsbCoreOps, UsbDevicePath, UsbEndpoint, UsbHcdOps,
+    USB_EPENDING, USB_HCD_VERSION, USB_ISOCH_MAX, USB_SPEED_HIGH, UsbCoreOps, UsbDevicePath, UsbEndpoint, UsbHcdOps,
     UsbPortStatus, status_fail, status_ok,
 };
 
-use hc::{Controller, PID_IN, PID_OUT, PID_SETUP, Pipe, Target};
+use hc::{Controller, Iso, IsoTarget, PID_IN, PID_OUT, PID_SETUP, Pipe, Target};
 
 /// A control transfer's data stage at most (the descriptors), in the
 /// endpoint's data page after the setup packet.
@@ -38,6 +39,10 @@ const CONTROL_TIMEOUT_MS: u64 = 2000;
 const MAX_DEVICES: usize = 32;
 /// Endpoints of a device besides endpoint 0.
 const MAX_ENDPOINTS: usize = 15;
+/// Isochronous OUT endpoints of a device, and running at once over every
+/// controller.
+const MAX_ISO_ENDPOINTS: usize = 4;
+const MAX_ISO: usize = 8;
 
 pub static API: ApiCell = ApiCell::new();
 static CORE: AtomicPtr<UsbCoreOps> = AtomicPtr::new(core::ptr::null_mut());
@@ -137,6 +142,9 @@ struct Device {
     ep0_max_packet: u16,
     ep0: Pipe,
     eps: [Option<Endpoint>; MAX_ENDPOINTS],
+    /// Its isochronous OUT endpoints (their rings, `ISOS`, made with their
+    /// first packets).
+    isos: [Option<UsbEndpoint>; MAX_ISO_ENDPOINTS],
 }
 
 struct Slot {
@@ -149,6 +157,9 @@ struct Slot {
 
 static DEVICES: [[Slot; MAX_DEVICES]; hc::MAX_CTRL] =
     [const { [const { Slot { gone: AtomicBool::new(false), dev: SleepLock::new(&API, None) } }; MAX_DEVICES] }; hc::MAX_CTRL];
+
+/// The isochronous endpoints' rings, `(controller, device, endpoint)`.
+static ISOS: [SleepLock<Option<(usize, u32, u8, Iso)>>; MAX_ISO] = [const { SleepLock::new(&API, None) }; MAX_ISO];
 
 fn slot(ctrl: usize, hdev: u32) -> Option<&'static Slot> {
     if hdev == 0 {
@@ -197,8 +208,16 @@ fn endpoint_target(d: &Device, e: &UsbEndpoint) -> Target {
 }
 
 /// The endpoints of `eps` this controller drives (bulk and interrupt),
-/// each with its QH, into `d`.
+/// each with its QH, into `d`; its isochronous OUT ones recorded (a
+/// high-speed device's, or one behind a translator: a full-speed device on
+/// a root port is the companion's).
 fn add_endpoints(c: &Controller, d: &mut Device, eps: &[UsbEndpoint]) -> Result<(), i32> {
+    for e in eps.iter().filter(|e| e.attributes & 3 == 1 && e.address & 0x80 == 0) {
+        if (d.speed == USB_SPEED_HIGH || d.tt.is_some()) && !d.isos.iter().flatten().any(|x| x.address == e.address) {
+            let free = d.isos.iter().position(|x| x.is_none()).ok_or(USB_EIO)?;
+            d.isos[free] = Some(*e);
+        }
+    }
     for e in eps.iter().filter(|e| matches!(e.attributes & 3, 2 | 3)) {
         if d.eps.iter().flatten().any(|x| x.address == e.address) {
             continue;
@@ -326,7 +345,15 @@ unsafe extern "C" fn device_new(ctrl: usize, path: *const UsbDevicePath) -> i32 
         if entry.is_some() {
             continue;
         }
-        let mut d = Device { address: 0, speed: path.speed, tt, ep0_max_packet: mps0, ep0: unsafe { core::mem::zeroed() }, eps: [None; MAX_ENDPOINTS] };
+        let mut d = Device {
+            address: 0,
+            speed: path.speed,
+            tt,
+            ep0_max_packet: mps0,
+            ep0: unsafe { core::mem::zeroed() },
+            eps: [None; MAX_ENDPOINTS],
+            isos: [None; MAX_ISO_ENDPOINTS],
+        };
         let Some(ep0) = hc::pipe_new(c, &ep0_target(&d), true) else {
             return USB_EIO;
         };
@@ -394,6 +421,11 @@ unsafe extern "C" fn device_configure(ctrl: usize, hdev: u32, eps: *const UsbEnd
             hc::pipe_free(c, &e.pipe);
         }
     }
+    for e in d.isos.iter_mut() {
+        if let Some(e) = e.take() {
+            drop_iso(c, ctrl, hdev, e.address);
+        }
+    }
     match add_endpoints(c, d, eps) {
         Ok(()) => 0,
         Err(e) => e,
@@ -421,22 +453,88 @@ unsafe extern "C" fn endpoints_change(ctrl: usize, hdev: u32, add: *const UsbEnd
             hc::pipe_free(c, &e.take().unwrap().pipe);
         }
     }
-    // Isochronous endpoints are not driven here: an alternate setting with
-    // one comes up, its transfers refused (`isoch_queue`).
+    for e in d.isos.iter_mut() {
+        if e.is_some_and(|e| drop.contains(&e.address)) {
+            drop_iso(c, ctrl, hdev, e.take().unwrap().address);
+        }
+    }
     match add_endpoints(c, d, add) {
         Ok(()) => 0,
         Err(e) => e,
     }
 }
 
-/// Isochronous transfers (high-speed iTDs, split siTDs) are not driven
-/// (issue #622).
-unsafe extern "C" fn isoch_queue(_ctrl: usize, _hdev: u32, _endpoint: u8, _data: *const u8, _lens: *const u16, _n: usize) -> i32 {
+/// The ring of isochronous `endpoint`, if it has one: out of the frame
+/// list, free.
+fn drop_iso(c: &Controller, ctrl: usize, hdev: u32, endpoint: u8) {
+    for s in ISOS.iter() {
+        let taken = {
+            let mut s = s.lock();
+            if s.as_ref().is_some_and(|i| i.0 == ctrl && i.1 == hdev && i.2 == endpoint) { s.take() } else { None }
+        };
+        if let Some((_, _, _, iso)) = taken {
+            hc::iso_free(c, iso);
+        }
+    }
+}
+
+/// Isochronous OUT packets on `endpoint`, one a service interval
+/// ([`hc::iso_queue`]); the endpoint's ring made on its first packets.
+unsafe extern "C" fn isoch_queue(ctrl: usize, hdev: u32, endpoint: u8, data: *const u8, lens: *const u16, n: usize) -> i32 {
+    let Some(c) = controller(ctrl) else {
+        return USB_EGONE;
+    };
+    if n == 0 || n > USB_ISOCH_MAX || data.is_null() || lens.is_null() || endpoint & 0x80 != 0 {
+        return USB_EIO;
+    }
+    let lens = unsafe { core::slice::from_raw_parts(lens, n) };
+    let total: usize = lens.iter().map(|&l| usize::from(l)).sum();
+    let data = unsafe { core::slice::from_raw_parts(data, total) };
+    let d = match get(ctrl, hdev) {
+        Ok(d) => d,
+        Err(e) => return e,
+    };
+    let Some(e) = d.isos.iter().flatten().find(|e| e.address == endpoint).copied() else {
+        return USB_EIO;
+    };
+    let mine = |i: &(usize, u32, u8, Iso)| i.0 == ctrl && i.1 == hdev && i.2 == endpoint;
+    if !ISOS.iter().any(|s| s.lock().as_ref().is_some_and(mine)) {
+        let Some(free) = ISOS.iter().find(|s| s.lock().is_none()) else {
+            return USB_EIO;
+        };
+        let t = IsoTarget { address: d.address, endpoint: endpoint & 0xF, max_packet: e.max_packet, interval: e.interval, tt: d.tt };
+        let Some(iso) = hc::iso_new(c, &t) else {
+            return USB_EIO;
+        };
+        *free.lock() = Some((ctrl, hdev, endpoint, iso));
+    }
+    for s in ISOS.iter() {
+        let mut s = s.lock();
+        if let Some(i) = s.as_mut().filter(|i| mine(i)) {
+            return hc::iso_queue(c, &mut i.3, data, lens);
+        }
+    }
     USB_EIO
 }
 
-unsafe extern "C" fn isoch_reap(_ctrl: usize, _hdev: u32, _endpoint: u8) -> i32 {
-    USB_EIO
+/// The packets of `endpoint` that went since the last call.
+unsafe extern "C" fn isoch_reap(ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
+    let Some(c) = controller(ctrl) else {
+        return USB_EGONE;
+    };
+    if slot(ctrl, hdev).is_none_or(|s| s.gone.load(Ordering::Acquire)) {
+        return USB_EGONE;
+    }
+    for s in ISOS.iter() {
+        let mut s = s.lock();
+        if let Some(i) = s.as_mut().filter(|i| i.0 == ctrl && i.1 == hdev && i.2 == endpoint) {
+            hc::iso_reap(c, &mut i.3, false);
+            let done = i.3.done;
+            i.3.done = 0;
+            return done as i32;
+        }
+    }
+    0
 }
 
 /// A hub needs nothing of the controller: its children's QHs name it as
@@ -471,6 +569,9 @@ unsafe extern "C" fn device_free(ctrl: usize, hdev: u32) {
     if let Some(d) = entry.take() {
         for e in d.eps.iter().flatten() {
             hc::pipe_free(c, &e.pipe);
+        }
+        for e in d.isos.iter().flatten() {
+            drop_iso(c, ctrl, hdev, e.address);
         }
         hc::pipe_free(c, &d.ep0);
     }

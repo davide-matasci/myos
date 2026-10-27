@@ -17,6 +17,15 @@
 //! toggle of bulk and interrupt endpoints (DTC clear); control transfers
 //! carry theirs in the qTDs.
 //!
+//! An isochronous OUT endpoint's packets go in the frame list itself, a
+//! few frames ahead of the controller, in front of the anchor QH: in
+//! isochronous transfer descriptors (iTD) for a high-speed endpoint, up to
+//! eight packets each (one per microframe of its interval), and in split
+//! ones (siTD) for a full-speed endpoint behind a high-speed hub's
+//! transaction translator, one packet each. They come from the
+//! controller's pool of descriptor slots and are taken out of the frame
+//! list once done or once their frame has passed (`isoch_reap`).
+//!
 //! Every structure the controller reads is in pages below 4 GiB
 //! (`DmaDevice::below`): 32-bit pointers, the segment register 0.
 
@@ -49,6 +58,7 @@ const HCCPARAMS: usize = 0x08;
 const USBCMD: usize = 0x00;
 const USBSTS: usize = 0x04;
 const USBINTR: usize = 0x08;
+const FRINDEX: usize = 0x0C;
 const CTRLDSSEGMENT: usize = 0x10;
 const PERIODICLISTBASE: usize = 0x14;
 const ASYNCLISTADDR: usize = 0x18;
@@ -223,6 +233,14 @@ pub struct Controller {
     pub dma: i32,
     /// The async schedule's head QH, then the periodic anchor QH.
     heads: Pipe,
+    /// The periodic frame list (1024 entries).
+    frames: *mut u32,
+    /// Frames ahead of the controller an isochronous descriptor goes in at
+    /// the earliest (HCCPARAMS's isochronous scheduling threshold, and one
+    /// more).
+    iso_ahead: u16,
+    /// The isochronous descriptors' slots, made with the first endpoint.
+    iso_pool: SleepLock<Option<IsoPool>>,
     pub bounce: SleepLock<Bounce>,
     /// The QHs linked into the schedules, `(bus address, va)`: an unlink
     /// walks from one to the next by the bus address the links hold.
@@ -371,6 +389,11 @@ pub fn init(mmio: usize, pci: (u8, u8, u8), dma: i32, index: u8) -> Result<Contr
         companions,
         dma,
         heads: Pipe { bus: heads_bus, va: heads_va, data_bus: 0, data: core::ptr::null_mut(), periodic: false },
+        frames: frames_va.cast(),
+        // IST (bits 7:4): with bit 7, the controller may hold a whole frame
+        // (bits 6:4 of them) ahead; else up to 7 microframes.
+        iso_ahead: if hcc & (1 << 7) != 0 { ((hcc >> 4) & 7) as u16 + 2 } else { 2 },
+        iso_pool: SleepLock::new(&API, None),
         bounce: SleepLock::new(&API, Bounce { bus: bounce_bus, va: bounce_va }),
         schedule: Lock::new(Linked { qhs: [(0, 0); MAX_LINKED], n: 0 }),
         iaa: AtomicBool::new(false),
@@ -769,4 +792,387 @@ pub fn unhalt(p: &Pipe) {
     p.set_qh_word(QH_NEXT, LINK_TERMINATE);
     p.set_qh_word(QH_TOKEN, dt);
     wmb();
+}
+
+
+// ---- Isochronous ------------------------------------------------------------
+
+/// The pool's descriptor slots: 128 bytes each (an iTD is 92 with the
+/// 64-bit words, an siTD 36), 32-byte aligned as links need; a link's bus
+/// address finds its slot by the offset.
+const ISO_SLOT: usize = 128;
+const ISO_POOL_PAGES: usize = 8;
+const ISO_SLOTS: usize = ISO_POOL_PAGES * PAGE / ISO_SLOT;
+/// Isochronous packets on an endpoint at most (`USB_ISOCH_MAX`).
+pub const ISO_PACKETS: usize = 64;
+/// Descriptors of an endpoint's ring at most: a packet each, and the one
+/// being filled.
+const ISO_RING: usize = ISO_PACKETS + 2;
+/// Frames between an endpoint's descriptors at most (a longer interval is
+/// served this often), and how far ahead of the controller the last one
+/// may be: within half the frame list, so a frame behind it is a frame
+/// passed (`iso_reap`).
+const ISO_FRAME_STEP_MAX: usize = 4;
+const ISO_AHEAD_MAX: u16 = 400;
+
+// Link pointer types (bits 2:1), and their mask.
+const LINK_TYPE_MASK: u32 = 3 << 1;
+const LINK_TYPE_ITD: u32 = 0;
+const LINK_TYPE_SITD: u32 = 2 << 1;
+// iTD transaction words, siTD transfer state.
+const ITD_ACTIVE: u32 = 1 << 31;
+const ITD_IOC: u32 = 1 << 15;
+const SITD_ACTIVE: u32 = 1 << 7;
+const SITD_IOC: u32 = 1 << 31;
+/// A full-speed OUT start-split carries 188 bytes at most.
+const SPLIT_BYTES: usize = 188;
+
+/// The controller's isochronous descriptor slots (one contiguous block).
+pub struct IsoPool {
+    bus: u64,
+    va: *mut u8,
+    used: [u64; ISO_SLOTS / 64],
+}
+
+unsafe impl Send for IsoPool {}
+
+impl IsoPool {
+    fn slot_va(&self, slot: u16) -> *mut u32 {
+        unsafe { self.va.add(usize::from(slot) * ISO_SLOT).cast() }
+    }
+
+    fn slot_bus(&self, slot: u16) -> u32 {
+        (self.bus + (usize::from(slot) * ISO_SLOT) as u64) as u32
+    }
+
+    /// The descriptor a link names, if it is one of the pool's.
+    fn va_of(&self, link: u32) -> Option<*mut u32> {
+        let at = u64::from(link & !0x1F).checked_sub(self.bus)? as usize;
+        (at < ISO_SLOTS * ISO_SLOT).then(|| unsafe { self.va.add(at).cast() })
+    }
+}
+
+/// An isochronous OUT endpoint, as its descriptors name it: a high-speed
+/// one (iTDs) with its transactions per microframe, or a full-speed one
+/// behind the translator of hub `tt` (siTDs); its service interval
+/// (`bInterval`, an exponent).
+#[derive(Clone, Copy)]
+pub struct IsoTarget {
+    pub address: u8,
+    pub endpoint: u8,
+    /// `wMaxPacketSize` as the descriptor has it (high speed: the
+    /// additional transactions in bits 12:11).
+    pub max_packet: u16,
+    pub interval: u8,
+    pub tt: Option<(u8, u8)>,
+}
+
+/// An isochronous OUT endpoint's ring of descriptors (pool slots), each
+/// with a data region of its own; the frame each is in.
+pub struct Iso {
+    t: IsoTarget,
+    /// Packets a descriptor carries, the microframes between them (an iTD),
+    /// the frames between descriptors.
+    per_desc: usize,
+    uframe_step: usize,
+    frame_step: u16,
+    /// A packet's room, and the largest one.
+    slot: usize,
+    packet_max: usize,
+    ring: usize,
+    slots: [u16; ISO_RING],
+    data_bus: u64,
+    data: *mut u8,
+    data_pages: usize,
+    /// Per descriptor: its frame (`u16::MAX`: free), and its packets.
+    frame: [u16; ISO_RING],
+    packets: [u8; ISO_RING],
+    next: usize,
+    /// The frame (list index) the next descriptor goes in.
+    tail: u16,
+    pub in_flight: usize,
+    /// Completed, not reaped yet.
+    pub done: u32,
+}
+
+unsafe impl Send for Iso {}
+
+impl Iso {
+    fn split(&self) -> bool {
+        self.t.tt.is_some()
+    }
+
+    fn region(&self) -> usize {
+        self.per_desc * self.slot
+    }
+}
+
+/// The frame (list index) the controller is in.
+fn frame_now(c: &Controller) -> u16 {
+    ((c.read(FRINDEX) >> 3) & 0x3FF) as u16
+}
+
+/// An isochronous OUT endpoint `t`'s ring: its descriptors' slots and
+/// data. The pool is made with the first.
+pub fn iso_new(c: &Controller, t: &IsoTarget) -> Option<Iso> {
+    let mps = usize::from(t.max_packet & 0x7FF).max(1);
+    let interval = 1usize << (t.interval.clamp(1, 16) - 1);
+    let (per_desc, uframe_step, frame_step, packet_max) = if t.tt.is_some() {
+        // Full speed: a packet a frame of its interval, 1023 bytes at most.
+        (1, 8, interval.min(ISO_FRAME_STEP_MAX) as u16, mps.min(1023))
+    } else {
+        // High speed: its interval in microframes; up to three
+        // transactions a microframe.
+        let mult = usize::from((t.max_packet >> 11) & 3) + 1;
+        let packet_max = (mps * mult).min(myos_abi::USB_ISOCH_PACKET_MAX);
+        if interval <= 8 {
+            (8 / interval, interval, 1, packet_max)
+        } else {
+            (1, 8, (interval / 8).min(ISO_FRAME_STEP_MAX) as u16, packet_max)
+        }
+    };
+    let slot = packet_max.max(16).next_power_of_two();
+    let ring = (ISO_PACKETS.div_ceil(per_desc) + 2).min(ISO_RING);
+    let data_pages = (ring * per_desc * slot).div_ceil(PAGE);
+    let mut slots = [0u16; ISO_RING];
+    {
+        let mut pool = c.iso_pool.lock();
+        if pool.is_none() {
+            let (bus, va) = pages(c.dma, ISO_POOL_PAGES)?;
+            *pool = Some(IsoPool { bus, va, used: [0; ISO_SLOTS / 64] });
+        }
+        let pool = pool.as_mut()?;
+        let free = (0..ISO_SLOTS).filter(|&s| pool.used[s / 64] & (1 << (s % 64)) == 0).count();
+        if free < ring {
+            return None;
+        }
+        let mut n = 0;
+        for s in 0..ISO_SLOTS {
+            if n < ring && pool.used[s / 64] & (1 << (s % 64)) == 0 {
+                pool.used[s / 64] |= 1 << (s % 64);
+                slots[n] = s as u16;
+                n += 1;
+            }
+        }
+    }
+    let Some((data_bus, data)) = pages(c.dma, data_pages) else {
+        if let Some(pool) = c.iso_pool.lock().as_mut() {
+            for &s in &slots[..ring] {
+                pool.used[usize::from(s) / 64] &= !(1 << (s % 64));
+            }
+        }
+        return None;
+    };
+    Some(Iso {
+        t: *t,
+        per_desc,
+        uframe_step,
+        frame_step,
+        slot,
+        packet_max,
+        ring,
+        slots,
+        data_bus,
+        data,
+        data_pages,
+        frame: [u16::MAX; ISO_RING],
+        packets: [0; ISO_RING],
+        next: 0,
+        tail: 0,
+        in_flight: 0,
+        done: 0,
+    })
+}
+
+/// Queue `lens` packets from `data`, one a service interval after the last
+/// one queued (from [`Controller::iso_ahead`] frames ahead of the
+/// controller when it has none): an iTD per frame for up to eight, an siTD
+/// per packet. `USB_EBUSY` when the ring has no room.
+pub fn iso_queue(c: &Controller, iso: &mut Iso, data: &[u8], lens: &[u16]) -> i32 {
+    iso_reap(c, iso, false);
+    let descs = lens.len().div_ceil(iso.per_desc);
+    let busy = iso.frame[..iso.ring].iter().filter(|&&f| f != u16::MAX).count();
+    if iso.in_flight + lens.len() > ISO_PACKETS || busy + descs > iso.ring {
+        return myos_abi::USB_EBUSY;
+    }
+    let now = frame_now(c);
+    let ahead = iso.tail.wrapping_sub(now) & 0x3FF;
+    if iso.in_flight == 0 || ahead < c.iso_ahead || ahead > 512 {
+        iso.tail = (now + c.iso_ahead) & 0x3FF;
+    }
+    if (iso.tail.wrapping_sub(now) & 0x3FF) + descs as u16 * iso.frame_step > ISO_AHEAD_MAX {
+        return myos_abi::USB_EBUSY;
+    }
+    let pool = c.iso_pool.lock();
+    let Some(pool) = pool.as_ref() else {
+        return USB_EIO;
+    };
+    let mut at = 0usize;
+    for (n, chunk) in lens.chunks(iso.per_desc).enumerate() {
+        let last = n + 1 == descs;
+        let i = iso.next;
+        iso.next = (iso.next + 1) % iso.ring;
+        let region_bus = iso.data_bus + (i * iso.region()) as u64;
+        let region = unsafe { iso.data.add(i * iso.region()) };
+        let mut lens_k = [0usize; 8];
+        for (k, &len) in chunk.iter().enumerate() {
+            let len = usize::from(len).min(iso.packet_max);
+            unsafe { core::ptr::copy_nonoverlapping(data[at..].as_ptr(), region.add(k * iso.slot), len) };
+            at += usize::from(chunk[k]);
+            lens_k[k] = len;
+        }
+        sync_to(c, region, iso.region());
+        let slot = iso.slots[i];
+        let d = pool.slot_va(slot);
+        let w = |k: usize, v: u32| unsafe { core::ptr::write_volatile(d.add(k), v) };
+        for k in 0..ISO_SLOT / 4 {
+            w(k, 0);
+        }
+        let page0 = (region_bus & !0xFFF) as u32;
+        let link_type = if iso.split() {
+            let (hub, port) = iso.t.tt.unwrap_or((0, 0));
+            let len = lens_k[0];
+            // The start-splits: one a microframe from microframe 0, 188 bytes
+            // each; no complete-split for an OUT.
+            let starts = len.div_ceil(SPLIT_BYTES).max(1) as u32;
+            w(1, u32::from(iso.t.address & 0x7F) | u32::from(iso.t.endpoint & 0xF) << 8 | u32::from(hub & 0x7F) << 16 | u32::from(port & 0x7F) << 24);
+            w(2, (1 << starts) - 1);
+            w(3, SITD_ACTIVE | (len as u32 & 0x3FF) << 16 | if last { SITD_IOC } else { 0 });
+            w(4, region_bus as u32);
+            // Page 1, the transaction position (all, or the first of
+            // several) and the start-split count.
+            w(5, (page0 + PAGE as u32) | if starts > 1 { 1 << 3 } else { 0 } | starts);
+            w(6, LINK_TERMINATE);
+            LINK_TYPE_SITD
+        } else {
+            for (k, &len) in lens_k[..chunk.len()].iter().enumerate() {
+                let off = (region_bus & 0xFFF) as usize + k * iso.slot;
+                let ioc = last && k + 1 == chunk.len();
+                w(1 + k * iso.uframe_step, ITD_ACTIVE | (len as u32 & 0xFFF) << 16 | if ioc { ITD_IOC } else { 0 } | ((off >> 12) as u32) << 12 | (off & 0xFFF) as u32);
+            }
+            let mult = u32::from((iso.t.max_packet >> 11) & 3) + 1;
+            for p in 0..7u32 {
+                let page = page0 + p * PAGE as u32;
+                w(
+                    9 + p as usize,
+                    page | match p {
+                        0 => u32::from(iso.t.endpoint & 0xF) << 8 | u32::from(iso.t.address & 0x7F),
+                        1 => u32::from(iso.t.max_packet & 0x7FF),
+                        2 => mult,
+                        _ => 0,
+                    },
+                );
+            }
+            LINK_TYPE_ITD
+        };
+        // In front of the frame's entry (other descriptors, then the anchor).
+        let frame = iso.tail;
+        iso.tail = (iso.tail + iso.frame_step) & 0x3FF;
+        let entry = unsafe { c.frames.add(usize::from(frame)) };
+        w(0, unsafe { core::ptr::read_volatile(entry) });
+        sync_to(c, d.cast(), ISO_SLOT);
+        wmb();
+        unsafe { core::ptr::write_volatile(entry, pool.slot_bus(slot) | link_type) };
+        sync_to(c, entry.cast(), 4);
+        iso.frame[i] = frame;
+        iso.packets[i] = chunk.len() as u8;
+        iso.in_flight += chunk.len();
+    }
+    0
+}
+
+/// The descriptors done (inactive) or whose frame has passed (missed:
+/// gone too), every one when `all`: out of the frame list, their packets
+/// added to `iso.done`.
+pub fn iso_reap(c: &Controller, iso: &mut Iso, all: bool) {
+    let now = frame_now(c);
+    let pool = c.iso_pool.lock();
+    let Some(pool) = pool.as_ref() else {
+        return;
+    };
+    for i in 0..iso.ring {
+        let frame = iso.frame[i];
+        if frame == u16::MAX {
+            continue;
+        }
+        let slot = iso.slots[i];
+        let d = pool.slot_va(slot);
+        sync_from(c, d.cast(), ISO_SLOT);
+        let r = |k: usize| unsafe { core::ptr::read_volatile(d.add(k)) };
+        let active = if iso.split() {
+            r(3) & SITD_ACTIVE != 0
+        } else {
+            (0..8).any(|u| r(1 + u) & ITD_ACTIVE != 0)
+        };
+        let passed = now != frame && now.wrapping_sub(frame) & 0x3FF < 512;
+        if active && !passed && !all {
+            continue;
+        }
+        unlink_iso(c, pool, frame, pool.slot_bus(slot), r(0));
+        iso.frame[i] = u16::MAX;
+        iso.in_flight -= usize::from(iso.packets[i]);
+        iso.done += u32::from(iso.packets[i]);
+    }
+}
+
+/// Take descriptor `bus` (whose link is `next`) out of frame `frame`'s
+/// chain: the entry, or the descriptor before it (another endpoint's).
+fn unlink_iso(c: &Controller, pool: &IsoPool, frame: u16, bus: u32, next: u32) {
+    let entry = unsafe { c.frames.add(usize::from(frame)) };
+    let mut link = unsafe { core::ptr::read_volatile(entry) };
+    if link & !0x1F == bus {
+        unsafe { core::ptr::write_volatile(entry, next) };
+        sync_to(c, entry.cast(), 4);
+        return;
+    }
+    for _ in 0..ISO_SLOTS {
+        if link & LINK_TERMINATE != 0 || !matches!(link & LINK_TYPE_MASK, LINK_TYPE_ITD | LINK_TYPE_SITD) {
+            return;
+        }
+        let Some(prev) = pool.va_of(link) else {
+            return;
+        };
+        link = unsafe { core::ptr::read_volatile(prev) };
+        if link & !0x1F == bus {
+            unsafe { core::ptr::write_volatile(prev, next) };
+            sync_to(c, prev.cast(), 4);
+            return;
+        }
+    }
+}
+
+/// The endpoint goes: what is still queued stops (inactive), out of the
+/// frame list once the controller is past it; its slots and data free.
+pub fn iso_free(c: &Controller, mut iso: Iso) {
+    {
+        let pool = c.iso_pool.lock();
+        if let Some(pool) = pool.as_ref() {
+            for i in 0..iso.ring {
+                if iso.frame[i] == u16::MAX {
+                    continue;
+                }
+                let d = pool.slot_va(iso.slots[i]);
+                if iso.split() {
+                    unsafe { core::ptr::write_volatile(d.add(3), 0) };
+                } else {
+                    for u in 0..8 {
+                        unsafe { core::ptr::write_volatile(d.add(1 + u), 0) };
+                    }
+                }
+                sync_to(c, d.cast(), ISO_SLOT);
+            }
+        }
+    }
+    // A frame for the controller to finish the one it is in.
+    sleep_ms(2);
+    iso_reap(c, &mut iso, true);
+    sleep_ms(2);
+    if let Some(pool) = c.iso_pool.lock().as_mut() {
+        for &s in &iso.slots[..iso.ring] {
+            pool.used[usize::from(s) / 64] &= !(1 << (s % 64));
+        }
+    }
+    for k in 0..iso.data_pages {
+        free_page(c.dma, iso.data_bus + (k * PAGE) as u64, unsafe { iso.data.add(k * PAGE) });
+    }
 }
