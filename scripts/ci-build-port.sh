@@ -3,8 +3,10 @@
 # build the ones the registry does not have), the optional sysroot, build
 # the port, push it to GHCR.
 # Args: PORT SCRIPT [NEEDS_SYSROOT] [DEPS]
-# PORT names the registry package (a port's name); DEPS is the space-separated
-# PORT_DEPS of its descriptor.
+# PORT names the registry package (a port's name, or `<name>:<arch>` for an
+# arch of a port built an arch at a time: the script builds that arch,
+# MYOS_<NAME>_ARCHES); DEPS is the space-separated PORT_DEPS of its
+# descriptor.
 set -euo pipefail
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true
 
@@ -30,6 +32,10 @@ if [[ "$NEEDS_SYSROOT" == "1" ]]; then
     export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
   fi
   ./toolchain/std/fetch-sysroot.sh
+fi
+if [[ "$PORT" == *:* ]]; then
+  name="$(printf '%s' "${PORT%%:*}" | tr '[:lower:]-' '[:upper:]_')"
+  export "MYOS_${name}_ARCHES=${PORT#*:}"
 fi
 # matrix.script is a shell command string (path or path+args)
 bash -c "$SCRIPT"

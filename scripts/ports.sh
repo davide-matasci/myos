@@ -58,6 +58,7 @@ myos_port_load() {
   local want="$1" role name dir
   PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES="" PORT_TEST_FILES=""
   PORT_READY="" PORT_BIN="" PORT_WATCH="" PORT_PREPARE="" PORT_TEST="" PORT_HOST=""
+  PORT_ARCH_JOBS=0 PORT_TIMEOUT=45
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
       PORT_NAME="$name" PORT_DIR="$dir" PORT_ROLE="$role"
@@ -98,20 +99,27 @@ myos_port_build_script() {
 }
 
 # The version stamp of the loaded port (target/...): what its build script
-# writes when done, `.myos-<name>-version` unless PORT_STAMP says otherwise.
+# writes when done, `.myos-<name>-version` unless PORT_STAMP says otherwise;
+# one per arch for a port built an arch at a time (PORT_ARCH_JOBS,
+# `.myos-<name>-{arch}-version`), for the ARCHes given (default: all).
 myos_port_stamp() {
-  echo "target/${PORT_STAMP:-.myos-$PORT_NAME-version}"
+  local stamp="${PORT_STAMP:-.myos-$PORT_NAME-version}" arch
+  [[ "$PORT_ARCH_JOBS" == 1 && -z "$PORT_STAMP" ]] && stamp=".myos-$PORT_NAME-{arch}-version"
+  for arch in "${@:-${MYOS_ARCHES[@]}}"; do
+    echo "target/$(myos_port_expand "$stamp" "$arch")"
+  done | sort -u
 }
 
 # Everything the registry caches for NAME: the stamp and PORT_OUTPUTS for
-# every arch (files or directories under target/).
+# every arch, or for ARCH alone (files or directories under target/).
 myos_port_outputs() {
   myos_port_load "$1" || return 1
   [[ -n "$PORT_BUILD" ]] || return 0
-  myos_port_stamp
-  local o arch path
+  local arches=("${MYOS_ARCHES[@]}") o arch path
+  [[ -n "${2:-}" ]] && arches=("$2")
+  myos_port_stamp "${arches[@]}"
   for o in $PORT_OUTPUTS; do
-    for arch in "${MYOS_ARCHES[@]}"; do
+    for arch in "${arches[@]}"; do
       path="target/$(myos_port_expand "$o" "$arch")"
       if [[ "$path" == *\** ]]; then
         # A glob (sbase-*-{none}): only what exists, never a `-src` tree.
@@ -204,15 +212,33 @@ myos_port_build_order() {
   done
 }
 
+# The CI jobs (and registry pieces) of NAME: NAME, or `NAME:<arch>` per
+# arch for a port built an arch at a time (PORT_ARCH_JOBS=1: its build
+# script builds the arches MYOS_<NAME>_ARCHES lists).
+myos_port_jobs() {
+  local arch
+  myos_port_load "$1" || return 1
+  if [[ "$PORT_ARCH_JOBS" == 1 ]]; then
+    for arch in "${MYOS_ARCHES[@]}"; do
+      echo "$1:$arch"
+    done
+  else
+    echo "$1"
+  fi
+}
+
 # The ci-ports.yml matrix: every port with a build script (image and package
 # ports: packages are built and cached the same way), with its dependencies
 # (`deps`: ci-build-port.sh builds a dependency the registry does not have),
 # plus the optional Linux layer (linux-compat/, not a port: its files are in
 # the image only with `--features linux_compat`), built and cached like one.
 # The toolchains have their own jobs (sysroot, newlib) and are not in it:
-# `needs_sysroot` says which ports wait for the sysroot artifact.
+# `needs_sysroot` says which ports wait for the sysroot artifact. A port
+# built an arch at a time (PORT_ARCH_JOBS) has a job per arch, named
+# `<name>:<arch>` (the registry caches each arch apart); `timeout` is the
+# job's limit in minutes (PORT_TIMEOUT).
 myos_ports_matrix() {
-  local name dep deps needs_sysroot
+  local name dep deps needs_sysroot job
   printf '['
   for name in $(myos_port_build_order all); do
     myos_port_load "$name"
@@ -225,10 +251,12 @@ myos_ports_matrix() {
         *) deps="${deps:+$deps }$dep" ;;
       esac
     done
-    printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s"},' \
-      "$name" "$(myos_port_build_script)" "$needs_sysroot" "$deps"
+    for job in $(myos_port_jobs "$name"); do
+      printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s","timeout":%s},' \
+        "$job" "$(myos_port_build_script)" "$needs_sysroot" "$deps" "$PORT_TIMEOUT"
+    done
   done
-  printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":""}]\n'
+  printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":"","timeout":45}]\n'
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

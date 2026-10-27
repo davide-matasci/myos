@@ -13,6 +13,8 @@
 # --list`: its stamp and PORT_OUTPUTS are cached, keyed by its
 # myos_<name>_version_hash), or one of the pieces cached the same way:
 # sysroot newlib linux-compat kernels. "all" does sysroot + newlib first.
+# A port built an arch at a time (PORT_ARCH_JOBS, docs/ports.md) is cached
+# as a piece per arch, `<name>:<arch>`; the port's name means all three.
 #
 # Env:
 #   GITHUB_TOKEN              required for private GHCR; pull is anonymous only when unset
@@ -63,9 +65,27 @@ port_fn() {
   echo "$fn"
 }
 
+# The pieces PORT stands for: itself, or `PORT:<arch>` per arch for a port
+# built an arch at a time (a piece stands for itself).
+port_pieces() {
+  case "$1" in
+    *:*|sysroot|newlib|linux-compat|kernels) echo "$1" ;;
+    *) myos_port_jobs "$1" ;;
+  esac
+}
+
+# A piece's port and arch: `NAME:ARCH` sets MYOS_<NAME>_ARCHES=ARCH for the
+# port's functions (its build script and is_current read it).
+piece_env() {
+  local name="${1%%:*}"
+  name="$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')"
+  printf 'MYOS_%s_ARCHES=%s' "$name" "${1#*:}"
+}
+
 port_hash() {
   local fn
   case "$1" in
+    *:*) port_hash "${1%%:*}" ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '
 ' ;;
     *) fn="$(port_fn "$1" version_hash)" || return 2; "$fn" ;;
@@ -75,6 +95,7 @@ port_hash() {
 port_is_current() {
   local fn
   case "$1" in
+    *:*) (export "$(piece_env "$1")"; port_is_current "${1%%:*}") ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --is-current ;;
     *) fn="$(port_fn "$1" is_current)" || return 2; "$fn" ;;
   esac
@@ -101,6 +122,7 @@ port_members() {
     kernels)
       "$ROOT/scripts/ci-build-kernels.sh" --print-members
       ;;
+    *:*) myos_port_outputs "${port%%:*}" "${port#*:}" ;;
     *) myos_port_outputs "$port" ;;
   esac
 }
@@ -118,14 +140,15 @@ repo_lower() {
 registry_ref() {
   local port="$1" hash="$2"
   # GHCR repository names must be lowercase; stamp hashes may contain hex.
-  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "$(lower "$port")" "$hash"
+  # A piece's `:` is a `-` (ci-webkitgtk-x86_64).
+  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "$(lower "${port//:/-}")" "$hash"
 }
 
 package_name() {
   local port="$1"
   local repo
   repo="$(repo_lower)"
-  printf '%s/ci-%s' "${repo#*/}" "$(lower "$port")"
+  printf '%s/ci-%s' "${repo#*/}" "$(lower "${port//:/-}")"
 }
 
 ensure_oras() {
@@ -439,11 +462,21 @@ cmd_push() {
   echo "registry push ${port} ${hash}"
 }
 
+# CMD (pull, push, exists) for each piece of PORT: exists fails when a
+# piece is missing.
+run_pieces() {
+  local cmd="$1" port="$2" piece status=0
+  for piece in $(port_pieces "$port"); do
+    "cmd_${cmd}" "$piece" || status=1
+  done
+  return $status
+}
+
 run_many() {
   local cmd="$1"
   local port
   for port in "${ALL_PORTS[@]+"${ALL_PORTS[@]}"}"; do
-    "cmd_${cmd}" "$port"
+    run_pieces "$cmd" "$port"
   done
 }
 
@@ -457,7 +490,7 @@ case "$CMD" in
     ;;
   exists)
     [[ -n "$PORT" ]] || usage
-    cmd_exists "$PORT"
+    run_pieces exists "$PORT"
     ;;
   login)
     cmd_login
@@ -468,7 +501,7 @@ case "$CMD" in
       run_many "$CMD"
     else
       port_hash "$PORT" >/dev/null
-      "cmd_${CMD}" "$PORT"
+      run_pieces "$CMD" "$PORT"
     fi
     ;;
   *) usage ;;
