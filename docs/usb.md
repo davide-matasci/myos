@@ -1,9 +1,9 @@
 # USB
 
-Nine modules give myos a USB bus: `usb`, the core, owns the devices and
-publishes the bus; `xhci`, `ehci`, `uhci` and `dwc2` drive the host
-controllers (PCI xHCI, USB 2.0's EHCI and its USB 1.1 companion UHCI;
-the Raspberry Pi 3's) and register them with the core; `usb_hub` makes the devices behind hubs reachable,
+Ten modules give myos a USB bus: `usb`, the core, owns the devices and
+publishes the bus; `xhci`, `ehci`, `uhci`, `ohci` and `dwc2` drive the
+host controllers (PCI xHCI, USB 2.0's EHCI and its USB 1.1 companions,
+UHCI and OHCI; the Raspberry Pi 3's) and register them with the core; `usb_hub` makes the devices behind hubs reachable,
 `usb_hid` feeds mice and tablets to the console's pointer
 (`/dev/console/mouse`, `docs/tty.md`) and keyboards to its keyboard
 input, and
@@ -18,9 +18,10 @@ the wifi daemon, `docs/wifi.md`). A device plugged
 in after boot is enumerated, a device pulled out is gone
 from `/dev`; `/proc/usb` lists what is there. Every CI boot carries an
 xHCI with a hub, a mouse, two sticks (one plugged in by a test), a
-serial adapter and a speaker, and a test plugs in a keyboard; and an
-ICH9 EHCI with its UHCI companions, an MTP device and a hub with a
-speaker behind it.
+serial adapter and a speaker, and a test plugs in a keyboard; an ICH9
+EHCI with its UHCI companions, an MTP device and a hub with a speaker
+behind it; and a second EHCI with OHCI companions, a hub with a speaker
+behind it and a smartcard reader.
 
 | Module | What |
 |--------|------|
@@ -28,6 +29,7 @@ speaker behind it.
 | `modules/xhci` | The xHCI controller driver (PCI class `0C/03`, interface `30`): rings, interrupter, device slots and contexts, the transfers; registered with the core as a `UsbHcdOps` |
 | `modules/ehci` | The EHCI controller driver (PCI `0C/03`, interface `20`): the asynchronous schedule (a QH per control and bulk endpoint) and the periodic one (the interrupt endpoints' QHs), qTD chains, split transaction fields for devices behind a high-speed hub; hands full- and low-speed devices on its ports to its companion controllers |
 | `modules/uhci` | The UHCI controller driver (PCI `0C/03`, interface `00`; registers in I/O space): a frame list and a QH per endpoint, a TD per packet, isochronous OUT packets in the frame list; an EHCI's companion or a controller of its own |
+| `modules/ohci` | The OHCI controller driver (PCI `0C/03`, interface `10`; registers in memory, BAR 0): the control, bulk and periodic lists of EDs (one per endpoint), general TDs, isochronous TDs of up to eight packets; an EHCI's companion or a controller of its own |
 | `modules/dwc2` | The DWC2 controller driver (the Raspberry Pi 3's, from the device tree): host channels, the port, split transactions; the same `UsbHcdOps` (`docs/raspberry-pi.md`) |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
@@ -195,7 +197,7 @@ completion); a missed interval counts as completed, its packet gone. The
 endpoint context of an isochronous endpoint has no error count, and its
 interval is the full-speed frame count's exponent (`bInterval - 1`, in
 microframes: + 3). The DWC2 drives no isochronous transfers yet
-(issue #608); UHCI's are below, EHCI's issue #622.
+(issue #608); UHCI's and OHCI's are below, EHCI's issue #622.
 
 `usb_audio` claims the audio control interface (class 1, subclass 1:
 nothing to drive) and the streaming one (subclass 2), finds its first
@@ -213,14 +215,16 @@ microphone's isochronous IN) is issue #610.
 ## EHCI and its companions
 
 A USB 2.0 port of a PC is usually two controllers: an EHCI for its
-high-speed devices and a companion (UHCI on Intel and VIA chipsets, OHCI
-elsewhere: issue #623) for the full- and low-speed ones. `ehci` sets the
+high-speed devices and companions (UHCI on Intel's and VIA's chipsets,
+OHCI on AMD's, NVIDIA's, SiS's and ALi's, and on many SoCs) for the full-
+and low-speed ones. `ehci` sets the
 EHCI's CONFIGFLAG, which routes every port to it, and looks at what is
 attached: a low-speed device (the line in the K state) goes back to the
 companion at once (the port owner bit), and a full-speed one after its
 reset, which leaves the port disabled; the reset fails, the core lets
 the port be, and the companion sees the device arrive. `ehci` is loaded
-before `uhci`, so the routing is settled when the companions look. A
+before `uhci` and `ohci`, so the routing is settled when the companions
+look. A
 full- or low-speed device behind a high-speed hub stays on the EHCI,
 reached through the hub's transaction translator: its QHs name the hub
 and port, an interrupt endpoint's with its start- and complete-split
@@ -249,6 +253,29 @@ frame it goes out in, queued from two frames ahead of the controller
 counted (`isoch_reap`). EHCI drives no isochronous transfers
 (issue #622): a full-speed speaker on its root port plays through the
 companion.
+
+OHCI's registers are memory-mapped (BAR 0) and its schedule is lists of
+endpoint descriptors (EDs), each with a queue of transfer descriptors
+(TDs): control and bulk EDs in two lists of their own, interrupt and
+isochronous ones reached from every entry of the interrupt table in the
+HCCA (the block the controller shares with the module), so an interrupt
+endpoint is asked every frame too. Every list starts at a skipped anchor
+ED, after which an endpoint's ED is linked in. An ED's queue ends in a
+dummy TD: a transfer fills the dummy and the slots after it (a ring in
+the ED's page) and moves the tail to a new dummy; the controller retires
+the TDs, moving the head along, and halts the ED on an error. A bulk or
+interrupt endpoint's data toggle is its ED's, a bulk transfer is one TD
+(up to two pages of the bounce buffer), and a short IN packet ends a TD
+without an error. An ED goes from a periodic list a frame before its
+page is reused; from the control or bulk list with that list stopped for
+a frame, the controller's current ED moved past it. Isochronous OUT
+packets go in isochronous TDs of up to eight frames (their packets in a
+region of a page) on the endpoint's ED, from two frames ahead of the
+controller (`HcFmNumber`); a TD is counted once the head passed it, sent
+or expired. Before taking the controller `ohci` asks SMM for it (the
+OwnershipChangeRequest, while InterruptRouting is set) or resumes what a
+BIOS driver left suspended; a root port change raises its interrupt, so
+it needs no thread of its own.
 
 ## Hot-plug and unplug
 
@@ -368,15 +395,23 @@ the second companion. `kernel.sh`'s `usb_ehci` checks that the MTP
 device is on the EHCI at high speed (512-byte bulk packets), reads its
 device descriptor through `ep0` and opens an MTP session over its bulk
 endpoints; `usb_uhci` that the hub and the speaker are on a UHCI and
-nothing full-speed stayed on the EHCI; `sound_usb` plays through both
-speakers, and the launcher finds the tone in the UHCI speaker's WAV
-file too. The boot markers `[ OK ] usb`, `xhci`, `ehci`, `uhci`,
+nothing full-speed stayed on the EHCI; `sound_usb` plays through every
+speaker, and the launcher finds the tone in the UHCI and OHCI speakers'
+WAV files too. A second ICH9 EHCI (`ich9-usb-ehci2`) has two `pci-ohci`
+companions of three ports each, as AMD's chipsets pair them; a test boot
+puts the same hub and speaker on its port 1 (the first OHCI's) and
+QEMU's smartcard reader (`usb-ccid`, usbdev's) on its port 4 (the
+second's). `usb_ohci` checks that all three are on an OHCI, reads the
+reader's device descriptor through `ep0` and has it answer a CCID
+GetSlotStatus over its bulk endpoints. The boot markers `[ OK ] usb`,
+`xhci`, `ehci`, `uhci`, `ohci`,
 `usb_hub`, `usb_storage`, `usb_hid`, `usb_audio`, `usbdev` cover the
 modules' init.
 
 ## Limits
 
-- Eight controllers (two xHCI ones, four EHCI ones, eight UHCI ones), 32
+- Twelve controllers (two xHCI ones, four EHCI ones, eight UHCI ones,
+  eight OHCI ones), 32
   devices each, hubs five deep, 8
   hubs, 8 disks and 8 HID devices, pointers and keyboards together (the
   class modules' tables); four interrupt transfers queued per device.
@@ -390,9 +425,9 @@ modules' init.
   interrupt endpoint's report, a bulk IN endpoint's page) holding one
   for as long as it is queued; its split transactions are untested (QEMU
   has no high-speed hub).
-- Isochronous transfers: OUT only, on the xHCI and UHCI (issues #610,
-  #608, #622), two endpoints per device (xHCI), eight endpoints in all
-  (UHCI); 4 USB speakers. No OHCI companion (issue #623). No streams, no MSI
+- Isochronous transfers: OUT only, on the xHCI, UHCI and OHCI (issues
+  #610, #608, #622), two endpoints per device (xHCI), eight endpoints in
+  all (UHCI, OHCI); 4 USB speakers. No streams, no MSI
   for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at

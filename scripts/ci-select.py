@@ -144,6 +144,7 @@ MODULE_TAGS = {
     "xhci": {"usb"},
     "ehci": {"usb"},
     "uhci": {"usb", "sound"},
+    "ohci": {"usb", "sound"},
     "dwc2": {"usb"},
     "usb_hub": {"usb"},
     "usb_storage": {"usb"},

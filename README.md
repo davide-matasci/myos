@@ -14,7 +14,7 @@ This is a starting point to grow into a real OS, not a feature dump.
 - **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
 - **Security** — no superuser: every process runs for a user in a domain, every file has a label its path gives it, and `/etc/policy` says what each domain may do to each label (deny by default, SELinux-like); per-process namespaces narrow what a program can name, Plan 9 style (`sec ns`); passwords are checked by the kernel (`docs/security.md`)
 - **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI, EHCI and UHCI USB with hubs, sticks, mice, keyboards and speakers, virtio-sound, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
+- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI, EHCI, UHCI and OHCI USB with hubs, sticks, mice, keyboards and speakers, virtio-sound, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
 - **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16/FAT32, ext2
 - **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`)
 - **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
@@ -130,7 +130,7 @@ Boot (Limine)
             ├─ Scheduler (round-robin kernel threads + user tasks)
             ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
             ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, rpi_firmware, virtio_blk, virtio_scsi, nvme, sdmmc, sound, virtio_sound, usb, xhci, ehci, uhci, dwc2, usb_hub, usb_storage, usb_hid, usb_audio, usbdev, virtio_net, tap, netfs, fat, ext2
+            │     acpi, rpi_firmware, virtio_blk, virtio_scsi, nvme, sdmmc, sound, virtio_sound, usb, xhci, ehci, uhci, ohci, dwc2, usb_hub, usb_storage, usb_hid, usb_audio, usbdev, virtio_net, tap, netfs, fat, ext2
             │     (pcidev and pl061 ship for `insmod`, not loaded at boot)
             └─ Userspace (ELF processes)
                  ├─ /ok smoke (always-on alloc/user/fat/proc markers)
@@ -190,6 +190,7 @@ Serial + Limine framebuffer (the `console` module; boot output before it loads i
 | `modules/xhci` | xHCI USB host controller driver: rings, slots, contexts and the transfers of its controllers, for the core |
 | `modules/ehci` | EHCI (USB 2.0) host controller driver: its schedules and the transfers of its high-speed devices, the full- and low-speed ones handed to its companions, for the core (`docs/usb.md`) |
 | `modules/uhci` | UHCI (USB 1.1) host controller driver, an EHCI's companion: its frame list, the transfers, isochronous OUT, for the core (`docs/usb.md`) |
+| `modules/ohci` | OHCI (USB 1.1) host controller driver, the companion of non-Intel EHCIs: its ED lists, the transfers, isochronous OUT, for the core (`docs/usb.md`) |
 | `modules/dwc2` | DWC2 USB host controller driver, the Raspberry Pi 3's: host channels, split transactions, for the core (`docs/raspberry-pi.md`) |
 | `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
 | `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |

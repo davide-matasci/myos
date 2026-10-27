@@ -6,9 +6,9 @@
 //! their enumeration: this module does the controller's part through the
 //! [`UsbHcdOps`] it hands the core. An EHCI talks to high-speed devices
 //! only: a full- or low-speed device on one of its ports is handed to the
-//! port's companion controller (UHCI or OHCI, the `uhci` module), and one
-//! behind a high-speed hub is reached through the hub's transaction
-//! translator (split transactions, the QH's hub and port). Isochronous
+//! port's companion controller (UHCI or OHCI: the `uhci` and `ohci`
+//! modules), and one behind a high-speed hub is reached through the hub's
+//! transaction translator (split transactions, the QH's hub and port). Isochronous
 //! transfers are not driven (issue #622).
 
 #![no_std]

@@ -285,6 +285,9 @@ HELLO_OK_ELFS=(
   target/uhci-x86_64-unknown-none
   target/uhci-aarch64-unknown-none-softfloat
   target/uhci-riscv64imac-unknown-none-elf
+  target/ohci-x86_64-unknown-none
+  target/ohci-aarch64-unknown-none-softfloat
+  target/ohci-riscv64imac-unknown-none-elf
   target/dwc2-x86_64-unknown-none
   target/dwc2-aarch64-unknown-none-softfloat
   target/dwc2-riscv64imac-unknown-none-elf
