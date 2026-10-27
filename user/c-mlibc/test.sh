@@ -45,6 +45,7 @@ t -t smoke,mlibc,libc mlibc_libc $MLIBC/libc_smoke
 t -t fs,mlibc,at mlibc_at $MLIBC/at_smoke
 t -t fs,smoke,mlibc,fileio mlibc_fileio $MLIBC/fileio_smoke
 t -t mm,mlibc,mmap mlibc_mmap $MLIBC/mmap_smoke
+t -t mm,exec,mlibc,bigimage mlibc_bigimage mlibc_run bigimage_run
 t -t mm,fs,mlibc,shm mlibc_shm $MLIBC/shm_smoke
 t -t mm,mlibc,fault mlibc_fault $MLIBC/fault_smoke
 t -t mm,sched,mlibc,jit mlibc_jit $MLIBC/jit_smoke

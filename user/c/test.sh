@@ -215,6 +215,18 @@ t -t fs,smoke fileio $SMOKES/fileio_smoke
 # and a fault maps the cached pages after it (mmap_smoke.c; on ext2 in
 # mkfs.ext2's test).
 t -t mm mmap $SMOKES/mmap_smoke
+# A program too large to read whole (a 20 MiB .bss) is mapped from its
+# file and relocated in place: its relocated tables, data, .bss and heap,
+# a forked child's writes its own, an exec of itself; from the image and
+# from /tmp (bigimage_smoke.c).
+bigimage_run() {
+	$SMOKES/bigimage_smoke || return 1
+	cp $SMOKES/bigimage_smoke /tmp/bigimage_smoke && /tmp/bigimage_smoke
+	rc=$?
+	rm -f /tmp/bigimage_smoke
+	return $rc
+}
+t -t mm,exec bigimage bigimage_run
 # Shared memory: shm_open segments shared by name with a forked child and
 # living past shm_unlink for their holders, a memfd shared with a forked
 # and an exec'd child, anonymous MAP_SHARED mappings shared with a forked

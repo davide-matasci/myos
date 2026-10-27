@@ -45,6 +45,7 @@ pub const BOOT_MODULES: &[&str] = &[
     "xhci",
     "ehci",
     "uhci",
+    "ohci",
     "dwc2",
     "usb_hub",
     "usb_storage",

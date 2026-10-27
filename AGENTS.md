@@ -122,7 +122,7 @@ first `cargo build` ~4 min, a `test-mini` boot ~95 s on 4 cores). In order:
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make meson ninja-build cmake git \
-  libc6-dev rsync patch curl zstd e2fsprogs dosfstools mtools
+  libc6-dev rsync patch curl zstd e2fsprogs dosfstools mtools openssh-client python3
 export GITHUB_REPOSITORY=davide-matasci/myos
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
 # 24.04's QEMU 8.2 boots riscv64 without its IOMMU (QEMU 9.2 and later have

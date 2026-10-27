@@ -647,9 +647,9 @@ t -t fat fat_space fat_space
 # drivers, the stick's line naming its disk; the volume mounts and reads.
 export USB_DISK=sda
 grep -q ' virtio_scsi ' /dev/sda/info 2>/dev/null && USB_DISK=sdb
-# /proc/usb's device lines of the controllers whose line names `$1`
-# (`ehci`, `uhci`: their modules' describe), or of every other one with
-# `-v` first.
+# /proc/usb's device lines of the controllers whose line names `$1`, or
+# one of its words (`ehci`, `uhci`, `ohci`: their modules' describe), or
+# of every other one with `-v` first.
 usb_devs() {
 	inv=
 	[ "$1" = -v ] && { inv=1; shift; }
@@ -657,7 +657,10 @@ usb_devs() {
 	while read -r l; do
 		case "$l" in
 		controller*)
-			case "$l" in *" $1 "*) on=1 ;; *) on= ;; esac
+			on=
+			for k in $1; do
+				case "$l" in *" $k "*) on=1 ;; esac
+			done
 			[ -z "$inv" ] || { [ -n "$on" ] && on= || on=1; }
 			continue
 			;;
@@ -764,6 +767,41 @@ usb_uhci() {
 	rm -f /tmp/uhci.devs
 }
 t -t usb,uhci usb_uhci usb_uhci
+
+# The second EHCI's OHCI companions (docs/usb.md, ohci): the full-speed
+# hub on the EHCI's port 1 is handed to the first one, where usb_hub
+# takes it (an interrupt transfer) and usb_audio the speaker behind it
+# (sound_usb plays through it: isochronous packets); the smartcard reader
+# on port 4 (QEMU's usb-ccid) to the second one, which usbdev lists. Its
+# descriptor through ep0, then a CCID GetSlotStatus (0x65, sequence 7) on
+# the bulk OUT endpoint, answered by a SlotStatus (0x81) of the same
+# sequence on the bulk IN one.
+usb_ohci() {
+	wait_for 30 usb_has ohci ':usb_audio' || { cat /proc/usb; return 1; }
+	wait_for 30 usb_has ohci ' 08e6:4433 ' || { cat /proc/usb; return 1; }
+	usb_devs ohci > /tmp/ohci.devs
+	grep -q ' full .*:usb_hub.* hub ' /tmp/ohci.devs && grep -q ' full 46f4:0002 .*:usb_audio' /tmp/ohci.devs \
+		&& grep -q ' full 08e6:4433 .*:usbdev' /tmp/ohci.devs || { cat /proc/usb; return 1; }
+	d=$(grep -l '^id 08e6:4433$' /dev/usb/*/info) && d=${d%/info}
+	grep -q '^ep82 bulk in 64$' $d/info && grep -q '^ep03 bulk out 64$' $d/info || { cat $d/info; return 1; }
+	exec 4<$d/ctl || return 1
+	printf '\200\006\000\001\000\000\022\000' > $d/ep0 || { echo "control failed"; exec 4<&-; return 1; }
+	/bin/sbase/dd if=$d/ep0 of=/tmp/ohci.desc bs=64 count=1 2>/dev/null
+	printf '\346\010\063\104' > /tmp/ohci.id
+	{ [ "$(wc -c < /tmp/ohci.desc)" -eq 18 ] \
+		&& /bin/sbase/dd if=/tmp/ohci.desc bs=1 skip=8 count=4 2>/dev/null | cmp -s - /tmp/ohci.id; } \
+		|| { echo "not its descriptor"; exec 4<&-; return 1; }
+	printf '\145\000\000\000\000\000\007\000\000\000' > $d/ep03 || { echo "bulk out failed"; exec 4<&-; return 1; }
+	/bin/sbase/dd if=$d/ep82 of=/tmp/ohci.resp bs=64 count=1 2>/dev/null
+	exec 4<&-
+	printf '\201\000\000\000\000\000\007' > /tmp/ohci.ok
+	/bin/sbase/dd if=/tmp/ohci.resp bs=1 count=7 2>/dev/null | cmp -s - /tmp/ohci.ok \
+		|| { echo "no SlotStatus: $(wc -c < /tmp/ohci.resp) bytes"; return 1; }
+	# Nothing full-speed left on the EHCIs.
+	! usb_has ehci ' full ' || { cat /proc/usb; return 1; }
+	rm -f /tmp/ohci.devs /tmp/ohci.desc /tmp/ohci.id /tmp/ohci.resp /tmp/ohci.ok
+}
+t -t usb,ohci usb_ohci usb_ohci
 
 # Every disk says what it is in /dev/<disk>/info: its name, its size and
 # its driver's description (where it is, model, serial). The launcher's
@@ -873,10 +911,10 @@ usb_hub_replug() {
 	echo "HOST tests hub-unplug" >&3
 	# The stick goes first (a detach takes the children first), the hub after.
 	wait_for 30 sh -c '! test -e /dev/$USB_DISK/data' || { cat /proc/usb; return 1; }
-	# (The UHCI's hub, usb_uhci's, stays.)
-	wait_for 30 eval '! usb_has -v uhci " hub "' || { cat /proc/usb; return 1; }
+	# (The companions' hubs, usb_uhci's and usb_ohci's, stay.)
+	wait_for 30 eval '! usb_has -v "uhci ohci" " hub "' || { cat /proc/usb; return 1; }
 	echo "HOST tests hub-plug" >&3
-	wait_for 30 usb_has -v uhci ' hub ' || { cat /proc/usb; return 1; }
+	wait_for 30 usb_has -v 'uhci ohci' ' hub ' || { cat /proc/usb; return 1; }
 	sleep 2
 	echo "HOST tests hub-disk" >&3
 	wait_for 30 test -e /dev/$USB_DISK/data || { cat /proc/usb; return 1; }

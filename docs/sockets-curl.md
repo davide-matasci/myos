@@ -213,7 +213,15 @@ SYN and keeps the half-open connection to itself (up to 64 of them, every
 listener together; past that a SYN is answered with a reset, as Linux
 drops a SYN when its queue is full), hands it to the listener's user once
 the peer's ACK arrives, and aborts it after 15 seconds without one (Linux
-gives up after about a minute). A SYN whose ACK never comes is the
+gives up after about a minute). Two of a listener's connections wait for
+its user's accept at a time; a further completed one waits with the
+half-open ones (32 per listener at most, past which it is reset, so that a
+server that stopped accepting leaves the other ports their handshakes),
+and one waiting for its accept stays even when its peer has closed it:
+accept returns it and its user reads what came and the end, as on Linux.
+netd used to drop those and reset the ones past two, and a server behind
+lost them, requests and all: the listen test's last connection (issue
+#630). A SYN whose ACK never comes is the
 internet's background noise, a scanner or a flood with forged sources on
 any public port, and a connection reset during the handshake is a
 scanner's connect-and-close; netd used to hand both out at the SYN, so
@@ -246,7 +254,8 @@ sent ones netd has not yet put in the socket, `rxroom N` what netfs can
 take, `local a.b.c.d!p` its local address, `sendq N` in the socket and not
 yet acknowledged, `recvq N` received and not yet handed to netfs), then a
 line per handshake in progress (`- tcp SynReceived peer a.b.c.d!p port P
-handshake Ns`: not a conversation yet, no index) and per connection
+handshake Ns`: not a conversation yet, no index; `Established` or
+`CloseWait` for a completed one waiting for its listener's accept) and per connection
 closing after its process closed it (`- tcp STATE peer a.b.c.d!p closing
 Ns tx N sendq N`, no index either), refreshed once a second. It shows
 what the status files cannot: the connections still closing after their

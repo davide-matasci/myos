@@ -8,7 +8,10 @@
  * lines (far more than netd buffers: the writes wait for room) and closes.
  * The host checks every byte and connects again to report "good" (or "bad
  * <bytes>"). Then it connects MUTE_PROBES times without a word and closes,
- * its FIN a varying moment after the handshake: each accept must end in a
+ * its FIN a varying moment after the handshake: accept must return every
+ * one, ended by its peer or not (netd dropped those its user had not taken
+ * yet, and reset those past two waiting: a smoke behind lost the "done"
+ * and waited forever, issue #630), and each must end in a
  * hangup within a few seconds (netd used to keep a connection it had not
  * seen established, the FIN with the handshake's last ACK, open for its
  * holder forever: an nginx on a VPS waited on dozens of those until netd
@@ -194,6 +197,10 @@ int main(void) {
     close(c);
     int mutes = mute_probes(l);
     if (mutes < 0) {
+        return 1;
+    }
+    if (mutes != MUTE_PROBES) {
+        printf("[ FAIL ] listen: %d of %d mute connections accepted\n", mutes, MUTE_PROBES);
         return 1;
     }
     close(l);

@@ -1,9 +1,9 @@
 # Sound (docs/sound.md): the test boots' virtio-sound cards and USB
-# speaker, through the sound core's /dev/sound and the sound server, sndd.
+# speakers, through the sound core's /dev/sound and the sound server, sndd.
 # The first card plays into a WAV file the launcher reads once QEMU is gone
 # (src/sound.rs): it must carry what sound_play and sound_mix played. The
-# second records QEMU's silent input. The speaker plays into a WAV file of
-# its own, which must carry sound_usb's tone.
+# second records QEMU's silent input. Each speaker plays into a WAV file
+# of its own, which must carry sound_usb's tone.
 
 # The server answers once it announced its socket (init starts it).
 sound_wait() {
@@ -85,9 +85,9 @@ sound_rec() {
 }
 t -t sound sound_rec sound_rec
 
-# The USB speakers (usb_audio, docs/usb.md): the xHCI's and the one behind
-# the hub on the ICH9 EHCI's UHCI companion (isochronous packets on each
-# controller), 880 Hz for a second and a half through the server on each
+# The USB speakers (usb_audio, docs/usb.md): the xHCI's and the ones
+# behind the hubs on the EHCIs' UHCI and OHCI companions (isochronous
+# packets on each controller), 880 Hz for a second and a half through the server on each
 # speaker's stream, which the launcher looks for in their WAV files.
 sound_usb() {
 	sound_wait || return 1
