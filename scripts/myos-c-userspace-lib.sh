@@ -80,6 +80,7 @@ MYOS_GLIB_VERSION="$MYOS_ROOT/target/.myos-glib-version"
 MYOS_IMAGE_LIBS_VERSION="$MYOS_ROOT/target/.myos-image-libs-version"
 MYOS_CAIRO_PANGO_VERSION="$MYOS_ROOT/target/.myos-cairo-pango-version"
 MYOS_GTK3_VERSION="$MYOS_ROOT/target/.myos-gtk3-version"
+MYOS_LIBSOUP_VERSION="$MYOS_ROOT/target/.myos-libsoup-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -987,7 +988,8 @@ EOC
 # myos_mlibc_meson_cross ARCH DIR PKGCONFIG-DIR...: a meson cross build's
 # files for an mlibc port in DIR: the cross compilers (DIR/cc, DIR/c++),
 # x11-xft's mlibc stage's pkg-config files with /lib/x11, where an X
-# package sees it, rewritten to the stage (DIR/x11-pc), and DIR/cross.txt,
+# package sees it, rewritten to the stage (DIR/x11-pc; empty for a build
+# over no X stage, packages/libsoup's), and DIR/cross.txt,
 # whose pkg-config path is the PKGCONFIG-DIRs, then DIR/x11-pc. GLib's
 # tools run on the build host (packages/glib's host build): the machine
 # file's binaries come first where meson's gnome module looks for them,
@@ -1000,6 +1002,7 @@ myos_mlibc_meson_cross() {
   PORT_LIBC=mlibc myos_write_cross_cc "$arch" "$dir/cc" -O2
   myos_write_cross_cxx "$arch" "$dir/c++" -O2
   for f in "$x11"/lib/pkgconfig/*.pc "$x11"/share/pkgconfig/*.pc; do
+    [[ -f "$f" ]] || continue
     sed "s#/lib/x11#$x11#g" "$f" >"$dir/x11-pc/${f##*/}"
   done
   for f in "$@" "$dir/x11-pc"; do
@@ -1633,6 +1636,38 @@ myos_gtk3_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/gtk3-mlibc-${arch}/lib/libgtk-3.a" ]] || return 1
     [[ -f "$MYOS_ROOT/target/gtk3-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# The network libraries (packages/libsoup), against mlibc: their pins,
+# patch and scripts, and what they build over: mlibc, GLib, LibreSSL,
+# SQLite, the cross compilers and the meson helpers.
+myos_libsoup_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      myos_libcxx_version_hash
+      myos_glib_version_hash
+      myos_libressl_version_hash
+      myos_sqlite_version_hash
+      find "$(myos_port_dir libsoup)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_libsoup_is_current() {
+  local arch
+  [[ -f "$MYOS_LIBSOUP_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LIBSOUP_VERSION")" == "$(myos_libsoup_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/libsoup-mlibc-${arch}/lib/libsoup-3.0.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/libsoup-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 

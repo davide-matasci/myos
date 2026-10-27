@@ -75,6 +75,11 @@ under its own license.
 | libepoxy (package `cairo-pango`, against mlibc) | `LIBEPOXY_VERSION` in `packages/cairo-pango/versions.env` | MIT (`COPYING` in the upstream source; its generated GL dispatch from the Khronos registry, Apache-2.0) | https://github.com/anholt/libepoxy |
 | ATK (package `gtk3`, against mlibc) | `ATK_VERSION` in `packages/gtk3/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/atk |
 | GTK 3 (package `gtk3`, against mlibc, patched: `packages/gtk3/*.myos.patch`) | `GTK_VERSION` in `packages/gtk3/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/gtk |
+| libxml2 (package `libsoup`, against mlibc, patched: `packages/libsoup/libxml2-*.myos.patch`) | `LIBXML2_VERSION` in `packages/libsoup/versions.env` | MIT (`Copyright` in the upstream source) | https://gitlab.gnome.org/GNOME/libxml2 |
+| libpsl (package `libsoup`, against mlibc), with the Public Suffix List built in (`list/public_suffix_list.dat` of the same release) | `LIBPSL_VERSION` in `packages/libsoup/versions.env` | MIT; the list **MPL-2.0** (`licenses/MPL-2.0.txt`) | https://github.com/rockdaboot/libpsl |
+| nghttp2 (package `libsoup`, its library, against mlibc) | `NGHTTP2_VERSION` in `packages/libsoup/versions.env` | MIT (`COPYING` in the upstream source) | https://nghttp2.org/ |
+| libsoup 3 (package `libsoup`, against mlibc) | `LIBSOUP_VERSION` in `packages/libsoup/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/libsoup |
+| glib-networking (package `libsoup`, its OpenSSL backend over LibreSSL, against mlibc, patched: `packages/libsoup/*.myos.patch`) | `GLIB_NETWORKING_VERSION` in `packages/libsoup/versions.env` | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) with its OpenSSL linking exception (`LICENSE_EXCEPTION` in the upstream source), which covers linking LibreSSL; the myos patches extend it to the files they change | https://gitlab.gnome.org/GNOME/glib-networking |
 | GLib: GLib, GObject, GIO, GModule (package `glib`, built against mlibc and linked statically into its `gio` and `glib-smoke`; the myos patch `packages/glib/*.myos.patch` under the same license) | `GLIB_VERSION` in `packages/glib/versions.env` | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`; a few files under other permissive licenses, `LICENSES/` in the upstream source) | https://gitlab.gnome.org/GNOME/glib |
 | libffi (in the glib package, GObject's generic marshaller) | `LIBFFI_VERSION` in `packages/glib/versions.env` | MIT | https://github.com/libffi/libffi |
 | GNU libiconv (in the glib package: the library, GLib's iconv, mlibc having none) | `LIBICONV_VERSION` in `packages/glib/versions.env` | **LGPL-2.1-or-later** (the library; `licenses/LGPL-2.1.txt`) | https://www.gnu.org/software/libiconv/ |
@@ -133,7 +138,8 @@ GNU Make, TinyCC, TinyX (`Xfbdev`), acme.sh, the Mozilla CA bundle, and
 `option-ext` in the bottom package, `certifi` (pip's, its CA bundle) in the python package,
 GLib, GNU libiconv and proxy-libintl in the glib package, fribidi,
 cairo, pango and gdk-pixbuf in the cairo-pango package, ATK and GTK in
-the gtk3 package.** (The glib, cairo-pango and gtk3 packages' programs link those LGPL libraries statically: the programs'
+the gtk3 package, libsoup, glib-networking and libpsl's Public Suffix
+List in the libsoup package.** (The glib, cairo-pango, gtk3 and libsoup packages' programs link those LGPL libraries statically: the programs'
 sources and every build script are in this repository too, so they can
 be relinked against a modified library.) (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry
