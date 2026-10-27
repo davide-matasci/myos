@@ -107,3 +107,27 @@ sound_usb() {
 	done
 }
 t -t sound,usb sound_usb sound_usb
+
+# Programs that come together (issue #639): a play on every playback
+# stream at once, the highest stream first, five times over, each short,
+# all of which must play to their end. The server used to serve a
+# newcomer before looking at what it had polled the others for: a stream
+# before theirs moved them, and it read one of them as closed, whose play
+# lost the server ("the server went away").
+sound_together() {
+	sound_wait || return 1
+	streams=$(grep ' playback ' /tmp/sound.list | cut -d' ' -f1 | sort -rn)
+	[ "$(echo $streams | wc -w)" -ge 2 ] || { cat /tmp/sound.list; return 1; }
+	: > /tmp/sound.err
+	for i in 1 2 3 4 5; do
+		pids=
+		for n in $streams; do
+			/bin/etc/play -D $n -t 880 -d 0.3 2>> /tmp/sound.err &
+			pids="$pids $!"
+		done
+		for p in $pids; do
+			wait $p || { echo "round $i"; cat /tmp/sound.err; return 1; }
+		done
+	done
+}
+t -t sound,usb sound_together sound_together
