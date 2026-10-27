@@ -988,7 +988,8 @@ EOC
 # myos_mlibc_meson_cross ARCH DIR PKGCONFIG-DIR...: a meson cross build's
 # files for an mlibc port in DIR: the cross compilers (DIR/cc, DIR/c++),
 # x11-xft's mlibc stage's pkg-config files with /lib/x11, where an X
-# package sees it, rewritten to the stage (DIR/x11-pc), and DIR/cross.txt,
+# package sees it, rewritten to the stage (DIR/x11-pc; empty for a build
+# over no X stage, packages/libsoup's), and DIR/cross.txt,
 # whose pkg-config path is the PKGCONFIG-DIRs, then DIR/x11-pc. GLib's
 # tools run on the build host (packages/glib's host build): the machine
 # file's binaries come first where meson's gnome module looks for them,
@@ -1001,6 +1002,7 @@ myos_mlibc_meson_cross() {
   PORT_LIBC=mlibc myos_write_cross_cc "$arch" "$dir/cc" -O2
   myos_write_cross_cxx "$arch" "$dir/c++" -O2
   for f in "$x11"/lib/pkgconfig/*.pc "$x11"/share/pkgconfig/*.pc; do
+    [[ -f "$f" ]] || continue
     sed "s#/lib/x11#$x11#g" "$f" >"$dir/x11-pc/${f##*/}"
   done
   for f in "$@" "$dir/x11-pc"; do
