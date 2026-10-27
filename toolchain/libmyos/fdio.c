@@ -51,6 +51,11 @@ int myos_socket_write_failed(int fd) { (void)fd; return 0; }
 int myos_socket_record_too_big(int fd, size_t cnt) __attribute__((weak));
 int myos_socket_record_too_big(int fd, size_t cnt) { (void)fd; (void)cnt; return 0; }
 
+/* Whether `fd` is a unix record socket (socket.c), where a write is one
+ * record: writev must not split one. */
+int myos_socket_is_record(int fd) __attribute__((weak));
+int myos_socket_is_record(int fd) { (void)fd; return 0; }
+
 /* A datagram socket's read(2) / write(2), whole (socket.c): its datagrams
  * and errors are the library's. -2 = not a datagram socket. */
 ssize_t myos_socket_dgram_read(int fd, void *buf, size_t cnt) __attribute__((weak));

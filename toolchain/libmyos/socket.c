@@ -670,11 +670,13 @@ int myos_socket_write_failed(int fd) {
  * socket takes (UN_RECORD_MAX): a socket of the table (a write is no
  * socket call that adopts one). */
 int myos_socket_record_too_big(int fd, size_t cnt) {
-    struct myos_sock *s;
-    if (cnt <= UN_RECORD_MAX) {
-        return 0;
-    }
-    s = sock_by_fd(fd);
+    return cnt > UN_RECORD_MAX && myos_socket_is_record(fd);
+}
+
+/* Looked up as a socket call would, so an fd this process inherited or
+ * received is known as the record socket it is from its first write. */
+int myos_socket_is_record(int fd) {
+    struct myos_sock *s = sock_lookup(fd);
     return s != NULL && s->type == SOCK_SEQPACKET;
 }
 
@@ -2052,6 +2054,15 @@ static int received_rights(struct myos_sock *s, int *fds, int cap) {
 
 /* Whether the last read of record socket `s` dropped the rest of a record:
  * its conversation's ctl says "seqpacket cut". */
+/* The bytes `iov`'s `n` buffers hold. */
+static size_t iov_bytes(const struct iovec *iov, size_t n) {
+    size_t total = 0, i;
+    for (i = 0; i < n; i++) {
+        total += iov[i].iov_len;
+    }
+    return total;
+}
+
 static int un_record_cut(struct myos_sock *s) {
     char path[64];
     char buf[32];
@@ -2109,8 +2120,10 @@ ssize_t __myos_recvmsg(int sockfd, struct msghdr *msg, int flags) {
     if (r > 0 && s != NULL && s->family == AF_UNIX) {
         n = received_rights(s, fds, 253);
     }
-    /* A record that filled the buffers may have been longer. */
-    if (r > 0 && s != NULL && s->type == SOCK_SEQPACKET && un_record_cut(s)) {
+    /* A record that filled the buffers may have been longer: only then is
+     * ctl asked. */
+    if (r > 0 && s != NULL && s->type == SOCK_SEQPACKET && (size_t)r == iov_bytes(msg->msg_iov, msg->msg_iovlen)
+        && un_record_cut(s)) {
         msg->msg_flags |= MSG_TRUNC;
     }
     kept = 0;
