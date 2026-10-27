@@ -1287,8 +1287,16 @@ fn exec_path_depth(
     drop(interp);
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     task::set_current_name(path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes());
+    // Past the point of no return: a failure is the exit status 127 and a
+    // line on the console, saying why the program never ran.
     if let Some(m) = &mapped {
-        if !m.map(aspace, program_at) || !m.relocate(aspace, program_at) {
+        let why = if !m.map(aspace, program_at) {
+            Some(alloc::string::String::from("its segments cannot be mapped"))
+        } else {
+            m.relocate(aspace, program_at).err().map(|e| alloc::format!("relocation: {e}"))
+        };
+        if let Some(why) = why {
+            crate::console::status_fail(&alloc::format!("exec {path}: {why}"));
             task::user_exit(127);
         }
     }
@@ -2353,29 +2361,25 @@ impl MappedProgram {
 
     /// Relocate a native program mapped with its lowest page at `at`
     /// (after [`Self::map`]): its relocations are read from its file, and
-    /// the words they name written in the current address space. A Linux
+    /// the words they name written in the current address space (a word
+    /// in a read-only page cannot be: a text relocation). A Linux
     /// program's dynamic linker relocates it.
-    fn relocate(&self, aspace: u64, at: u64) -> bool {
+    fn relocate(&self, aspace: u64, at: u64) -> Result<(), elf::LoadError> {
         if self.interp.is_some() {
-            return true;
+            return Ok(());
         }
-        let Ok(span) = elf::image_span(&self.head) else {
-            return false;
-        };
+        let span = elf::image_span(&self.head)?;
         // The image's offsets are from its lowest page, at `at`.
-        let Some(bias) = at.checked_sub(span.min_vaddr) else {
-            return false;
-        };
-        let ok = elf::relocate(&NodeSrc(&self.node), bias, &mut |off, f| {
+        let bias = at.checked_sub(span.min_vaddr).ok_or(elf::LoadError::Unsupported)?;
+        let done = elf::relocate(&NodeSrc(&self.node), bias, &mut |off, f| {
             let va = at as usize + off;
             let Some(w) = read_user_usize(aspace, va) else {
                 return false;
             };
             write_user_usize(aspace, va, f(w as u64) as usize)
-        })
-        .is_ok();
+        });
         flush_user_tlb();
-        ok
+        done
     }
 
     /// Its entry point when its lowest page is mapped at `at`.
