@@ -982,6 +982,74 @@ EOC
   chmod +x "$out"
 }
 
+# myos_mlibc_meson_cross ARCH DIR PKGCONFIG-DIR...: a meson cross build's
+# files for an mlibc port in DIR: the cross compilers (DIR/cc, DIR/c++),
+# x11-xft's mlibc stage's pkg-config files with /lib/x11, where an X
+# package sees it, rewritten to the stage (DIR/x11-pc), and DIR/cross.txt,
+# whose pkg-config path is the PKGCONFIG-DIRs, then DIR/x11-pc. GLib's
+# tools run on the build host (packages/glib's host build): the machine
+# file's binaries come first where meson's gnome module looks for them,
+# before any GLib the build host has.
+myos_mlibc_meson_cross() {
+  local arch="$1" dir="$2" cpu="$1" f pc=""
+  local x11="$MYOS_ROOT/target/x11-xft-mlibc-${arch}/lib/x11" host="$MYOS_ROOT/target/glib-host/bin"
+  shift 2
+  mkdir -p "$dir/x11-pc"
+  PORT_LIBC=mlibc myos_write_cross_cc "$arch" "$dir/cc" -O2
+  myos_write_cross_cxx "$arch" "$dir/c++" -O2
+  for f in "$x11"/lib/pkgconfig/*.pc "$x11"/share/pkgconfig/*.pc; do
+    sed "s#/lib/x11#$x11#g" "$f" >"$dir/x11-pc/${f##*/}"
+  done
+  for f in "$@" "$dir/x11-pc"; do
+    pc="${pc:+$pc:}$f"
+  done
+  case "$arch" in aarch64) cpu=armv8-a ;; riscv64) cpu=rv64gc ;; esac
+  cat >"$dir/cross.txt" <<EOC
+[binaries]
+c = '$dir/cc'
+cpp = '$dir/c++'
+ar = '${arch}-unknown-myos-ar'
+strip = '${arch}-unknown-myos-strip'
+pkg-config = 'pkg-config'
+glib-compile-resources = '$host/glib-compile-resources'
+glib-mkenums = '$host/glib-mkenums'
+glib-genmarshal = '$host/glib-genmarshal'
+glib-compile-schemas = '$host/glib-compile-schemas'
+gdbus-codegen = '$host/gdbus-codegen'
+
+[built-in options]
+c_args = ['-D_GNU_SOURCE']
+cpp_args = ['-D_GNU_SOURCE']
+pkg_config_path = ''
+
+[properties]
+needs_exe_wrapper = true
+pkg_config_libdir = '$pc'
+
+[host_machine]
+system = 'myos'
+cpu_family = '$arch'
+cpu = '$cpu'
+endian = 'little'
+EOC
+}
+
+# myos_mlibc_meson_build DIR SRC PREFIX [OPTION...]: SRC built with meson
+# over DIR/cross.txt (myos_mlibc_meson_cross) in DIR/<SRC's name>, static
+# (prefer_static: pkg-config --static, so a check links what a static
+# library needs), and installed into PREFIX.
+myos_mlibc_meson_build() {
+  local dir="$1" src="$2" prefix="$3" name="${2##*/}"
+  shift 3
+  meson setup "$dir/$name" "$src" --cross-file "$dir/cross.txt" \
+    --prefix "$prefix" --libdir lib --includedir include --buildtype release \
+    -Ddefault_library=static -Dprefer_static=true --wrap-mode=nofallback "$@" \
+    >"$dir/$name-setup.log" 2>&1 || { tail -40 "$dir/$name-setup.log" >&2; return 1; }
+  ninja -C "$dir/$name" install >"$dir/$name-ninja.log" 2>&1 \
+    || { grep -n "error" "$dir/$name-ninja.log" | head -20 >&2; tail -20 "$dir/$name-ninja.log" >&2; return 1; }
+  echo "$name -> $prefix"
+}
+
 myos_x11_libs_version_hash() {
   local h
   h="$(
@@ -1475,7 +1543,8 @@ myos_glib_is_current() {
     [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
   done
   [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ]] \
-    && [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ]]
+    && [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ]] \
+    && [[ -x "$MYOS_ROOT/target/glib-host/bin/gdbus-codegen" ]]
 }
 
 # The image libraries (packages/image-libs), against mlibc: their pins and
@@ -1522,7 +1591,7 @@ myos_cairo_pango_version_hash() {
       find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver
+        _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"

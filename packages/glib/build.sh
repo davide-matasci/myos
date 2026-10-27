@@ -7,8 +7,9 @@
 # with the archives and their pkg-config files, include/), what a program
 # over GLib (WebKitGTK's stack, issue #616) compiles and links against.
 # And GLib's tools that run on the build host, built natively from the
-# same pins into target/glib-host (bin/glib-compile-resources): the
-# libraries over GLib compile their resources with it.
+# same pins into target/glib-host (bin/glib-compile-resources and the
+# others): the libraries over GLib compile their resources, schemas and
+# D-Bus interfaces with them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -165,9 +166,9 @@ EOC
 
 # GLib for the build host, with the host's compiler, over host builds of
 # libffi, PCRE2 and zlib from the same pins: its glib-compile-resources
-# into target/glib-host/bin (the cross build's runs on myos only), with
-# its Python generators, glib-mkenums and glib-genmarshal, configured for
-# the host.
+# and glib-compile-schemas into target/glib-host/bin (the cross build's
+# run on myos only), with its Python generators, glib-mkenums,
+# glib-genmarshal and gdbus-codegen, configured for the host.
 build_host() {
   local build="$T/glib-host-build" out="$T/glib-host"
   echo "==> glib (build host)"
@@ -188,10 +189,15 @@ build_host() {
     -Dxattr=false -Dsysprof=disabled -Ddtrace=disabled -Dsystemtap=disabled \
     -Dman-pages=disabled -Ddocumentation=false -Dlibelf=disabled -Dglib_debug=disabled \
     --wrap-mode=nofallback >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
-  ninja -C "$build/glib" gio/glib-compile-resources >"$build/ninja.log" 2>&1 \
+  ninja -C "$build/glib" gio/glib-compile-resources gio/glib-compile-schemas >"$build/ninja.log" 2>&1 \
     || { grep -n "error" "$build/ninja.log" | head -20 >&2; exit 1; }
-  cp "$build/glib/gio/glib-compile-resources" "$build/glib/gobject/glib-mkenums" \
-    "$build/glib/gobject/glib-genmarshal" "$out/bin/"
+  cp "$build/glib/gio/glib-compile-resources" "$build/glib/gio/glib-compile-schemas" \
+    "$build/glib/gobject/glib-mkenums" "$build/glib/gobject/glib-genmarshal" \
+    "$build/glib/gio/gdbus-2.0/codegen/gdbus-codegen" "$out/bin/"
+  # gdbus-codegen finds its modules in ../share/glib-2.0/codegen.
+  mkdir -p "$out/share/glib-2.0/codegen"
+  cp "$T"/glib-src/gio/gdbus-2.0/codegen/*.py "$build/glib/gio/gdbus-2.0/codegen/config.py" \
+    "$out/share/glib-2.0/codegen/"
   rm -rf "$build"
   echo "glib (build host) -> $out/bin"
 }

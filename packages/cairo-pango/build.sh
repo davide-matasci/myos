@@ -44,71 +44,24 @@ done
 T="$ROOT/target"
 SRC="$T/cairo-pango-src"
 
-# meson_build NAME [OPTION...]: target/cairo-pango-src/NAME, cross, static
-# (prefer_static: pkg-config --static, so a check links what a static
-# library needs),
-# installed into $out.
+# meson_build NAME [OPTION...]: target/cairo-pango-src/NAME, cross
+# (myos_mlibc_meson_build), into $out.
 meson_build() {
   local name="$1"
   shift
-  meson setup "$build/$name" "$SRC/$name" --cross-file "$build/cross.txt" \
-    --prefix "$out" --libdir lib --includedir include --buildtype release \
-    -Ddefault_library=static -Dprefer_static=true --wrap-mode=nofallback "$@" \
-    >"$build/$name-setup.log" 2>&1 || { tail -40 "$build/$name-setup.log" >&2; exit 1; }
-  ninja -C "$build/$name" install >"$build/$name-ninja.log" 2>&1 \
-    || { grep -n "error" "$build/$name-ninja.log" | head -20 >&2; tail -20 "$build/$name-ninja.log" >&2; exit 1; }
-  echo "$name ($arch) -> $out"
+  myos_mlibc_meson_build "$build" "$SRC/$name" "$out" "$@" || exit 1
 }
 
 build_arch() {
   local arch="$1"
   local build="$T/cairo-pango-build-$arch"
   local out="$T/cairo-pango-mlibc-${arch}"
-  local x11="$T/x11-xft-mlibc-${arch}/lib/x11"
-  local cpu="$arch" pc f
   echo "==> cairo-pango ($arch, mlibc)"
   rm -rf "$build" "$out"
-  mkdir -p "$build/x11-pc" "$out/lib/pkgconfig" "$out/include"
-  myos_write_cross_cc "$arch" "$build/cc" -O2
-  myos_write_cross_cxx "$arch" "$build/c++" -O2
-  case "$arch" in aarch64) cpu=armv8-a ;; riscv64) cpu=rv64gc ;; esac
-
-  # The X stage's pkg-config files name /lib/x11, where an X package sees
-  # it; here it is the stage itself.
-  for f in "$x11"/lib/pkgconfig/*.pc "$x11"/share/pkgconfig/*.pc; do
-    sed "s#/lib/x11#$x11#g" "$f" >"$build/x11-pc/${f##*/}"
-  done
-  pc="$out/lib/pkgconfig:$T/glib-mlibc-$arch/lib/pkgconfig:$T/image-libs-mlibc-$arch/lib/pkgconfig:$build/x11-pc"
-
-  # GLib's tools run on the build host (packages/glib's host build): the
-  # machine file's binaries come first where meson's gnome module looks
-  # for them, before any GLib the build host has.
-  cat >"$build/cross.txt" <<EOC
-[binaries]
-c = '$build/cc'
-cpp = '$build/c++'
-ar = '${arch}-unknown-myos-ar'
-strip = '${arch}-unknown-myos-strip'
-pkg-config = 'pkg-config'
-glib-compile-resources = '$T/glib-host/bin/glib-compile-resources'
-glib-mkenums = '$T/glib-host/bin/glib-mkenums'
-glib-genmarshal = '$T/glib-host/bin/glib-genmarshal'
-
-[built-in options]
-c_args = ['-D_GNU_SOURCE']
-cpp_args = ['-D_GNU_SOURCE']
-pkg_config_path = ''
-
-[properties]
-needs_exe_wrapper = true
-pkg_config_libdir = '$pc'
-
-[host_machine]
-system = 'myos'
-cpu_family = '$arch'
-cpu = '$cpu'
-endian = 'little'
-EOC
+  mkdir -p "$out/lib/pkgconfig" "$out/include"
+  local pc="$out/lib/pkgconfig:$T/glib-mlibc-$arch/lib/pkgconfig:$T/image-libs-mlibc-$arch/lib/pkgconfig:$build/x11-pc"
+  myos_mlibc_meson_cross "$arch" "$build" "$out/lib/pkgconfig" "$T/glib-mlibc-$arch/lib/pkgconfig" \
+    "$T/image-libs-mlibc-$arch/lib/pkgconfig"
 
   meson_build "fribidi-$FRIBIDI_VERSION" -Ddocs=false -Dbin=false -Dtests=false
   # Shaping over FreeType and GLib's Unicode tables; no hb-cairo (cairo is
