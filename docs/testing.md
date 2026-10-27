@@ -50,7 +50,14 @@ A quick run (`heavy` and `net` skipped) has a budget of 6 minutes (7 with
 the Linux layer; half as much again on riscv64, the slowest under TCG, as
 in CI) and a stall limit of 3; any other 50 and 10
 (`--budget MINUTES` sets the budget). The runner prints what it skipped
-(`TESTS SKIPPED <n>`) after `TESTS DONE`.
+(`TESTS SKIPPED <n>`) after `TESTS DONE`. A test still running after 2
+minutes (5 when `heavy` is not skipped: inside either stall limit) gets a
+`HUNG <name>` line on the console, then every thread's
+`/proc/<pid>/task/<tid>/status` line (`docs/proc.md`: its state, and in
+`wait` the key it is blocked on, `kernel/src/task/sched.rs` lists their
+ranges: a pipe, a pty, a child, ...) and every process's command line,
+once: a test that hangs shows what waits on what before the host gives
+up (CI #2295's lynx test stalled with every CPU idle and nothing more).
 
 ## In the guest
 
