@@ -79,6 +79,7 @@ MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
 MYOS_GLIB_VERSION="$MYOS_ROOT/target/.myos-glib-version"
 MYOS_IMAGE_LIBS_VERSION="$MYOS_ROOT/target/.myos-image-libs-version"
 MYOS_CAIRO_PANGO_VERSION="$MYOS_ROOT/target/.myos-cairo-pango-version"
+MYOS_GTK3_VERSION="$MYOS_ROOT/target/.myos-gtk3-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -1605,6 +1606,32 @@ myos_cairo_pango_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/cairo-pango-mlibc-${arch}/lib/libpangocairo-1.0.a" ]] || return 1
     [[ -f "$MYOS_ROOT/target/cairo-pango-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# GTK 3 and ATK (packages/gtk3), against mlibc: their pins, patch and
+# scripts, and the text and drawing libraries they build over (with all
+# that those hash).
+myos_gtk3_version_hash() {
+  local h
+  h="$(
+    {
+      myos_cairo_pango_version_hash
+      find "$(myos_port_dir gtk3)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_gtk3_is_current() {
+  local arch
+  [[ -f "$MYOS_GTK3_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GTK3_VERSION")" == "$(myos_gtk3_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/gtk3-mlibc-${arch}/lib/libgtk-3.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/gtk3-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 

@@ -73,6 +73,8 @@ under its own license.
 | pango (package `cairo-pango`, against mlibc) | `PANGO_VERSION` in `packages/cairo-pango/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/pango |
 | gdk-pixbuf (package `cairo-pango`, against mlibc, its loaders built in) | `GDK_PIXBUF_VERSION` in `packages/cairo-pango/versions.env` | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/gdk-pixbuf |
 | libepoxy (package `cairo-pango`, against mlibc) | `LIBEPOXY_VERSION` in `packages/cairo-pango/versions.env` | MIT (`COPYING` in the upstream source; its generated GL dispatch from the Khronos registry, Apache-2.0) | https://github.com/anholt/libepoxy |
+| ATK (package `gtk3`, against mlibc) | `ATK_VERSION` in `packages/gtk3/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/atk |
+| GTK 3 (package `gtk3`, against mlibc, patched: `packages/gtk3/*.myos.patch`) | `GTK_VERSION` in `packages/gtk3/versions.env` | **LGPL-2.0-or-later** (taken as LGPL-2.1, `licenses/LGPL-2.1.txt`) | https://gitlab.gnome.org/GNOME/gtk |
 | GLib: GLib, GObject, GIO, GModule (package `glib`, built against mlibc and linked statically into its `gio` and `glib-smoke`; the myos patch `packages/glib/*.myos.patch` under the same license) | `GLIB_VERSION` in `packages/glib/versions.env` | **LGPL-2.1-or-later** (`licenses/LGPL-2.1.txt`; a few files under other permissive licenses, `LICENSES/` in the upstream source) | https://gitlab.gnome.org/GNOME/glib |
 | libffi (in the glib package, GObject's generic marshaller) | `LIBFFI_VERSION` in `packages/glib/versions.env` | MIT | https://github.com/libffi/libffi |
 | GNU libiconv (in the glib package: the library, GLib's iconv, mlibc having none) | `LIBICONV_VERSION` in `packages/glib/versions.env` | **LGPL-2.1-or-later** (the library; `licenses/LGPL-2.1.txt`) | https://www.gnu.org/software/libiconv/ |
@@ -130,8 +132,8 @@ The following programs in the image are under copyleft licenses
 GNU Make, TinyCC, TinyX (`Xfbdev`), acme.sh, the Mozilla CA bundle, and
 `option-ext` in the bottom package, `certifi` (pip's, its CA bundle) in the python package,
 GLib, GNU libiconv and proxy-libintl in the glib package, fribidi,
-cairo, pango and gdk-pixbuf in the cairo-pango package.** (The glib
-and cairo-pango packages' programs link those LGPL libraries statically: the programs'
+cairo, pango and gdk-pixbuf in the cairo-pango package, ATK and GTK in
+the gtk3 package.** (The glib, cairo-pango and gtk3 packages' programs link those LGPL libraries statically: the programs'
 sources and every build script are in this repository too, so they can
 be relinked against a modified library.) (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry
