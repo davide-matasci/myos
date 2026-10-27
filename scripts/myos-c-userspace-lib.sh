@@ -78,6 +78,7 @@ MYOS_SQLITE_VERSION="$MYOS_ROOT/target/.myos-sqlite-version"
 MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
 MYOS_GLIB_VERSION="$MYOS_ROOT/target/.myos-glib-version"
 MYOS_IMAGE_LIBS_VERSION="$MYOS_ROOT/target/.myos-image-libs-version"
+MYOS_CAIRO_PANGO_VERSION="$MYOS_ROOT/target/.myos-cairo-pango-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -889,13 +890,26 @@ myos_mlibc_link() {
 # host's gcc on some triples and versions. The libc is newlib (with libgloss), or mlibc when
 # PORT_LIBC is `mlibc`: the port's build script sources its port.env.
 myos_write_cross_cc() {
-  local arch="$1" out="$2"
-  shift 2
+  _myos_write_cross_driver c "$@"
+}
+
+# myos_write_cross_cxx ARCH OUT [CXXFLAG...]: the same for C++ against
+# mlibc and libc++ (toolchain/libcxx): clang++ with myos_libcxx_cxxflags,
+# and a link with libc++, libc++abi and libunwind as myos_libcxx_link's
+# (a meson port's C++ compiler: harfbuzz).
+myos_write_cross_cxx() {
+  PORT_LIBC=mlibc _myos_write_cross_driver c++ "$@"
+}
+
+_myos_write_cross_driver() {
+  local lang="$1" arch="$2" out="$3"
+  shift 3
   local elf="${arch}-unknown-none"
   local libc="${PORT_LIBC:-newlib}"
   local sysroot="$MYOS_ROOT/target/newlib-${arch}/${arch}-unknown-myos"
   local libs="--start-group -lc -lgloss -lg --end-group"
-  local clanginc incs extra="" flags="" f
+  local compiler=clang clanginc incs extra="" flags="" f
+  local base="--target=$elf $(myos_arch_cflags "$arch")-ffreestanding -fPIC -nostdinc"
   clanginc="$(clang -print-resource-dir)/include"
   incs="-isystem $clanginc -isystem $sysroot/include"
   for f in "$@"; do
@@ -919,9 +933,16 @@ myos_write_cross_cc() {
       [[ "$arch" == riscv64 ]] && flags="$flags -mno-relax" ;;
     *) echo "error: PORT_LIBC=$libc: newlib or mlibc" >&2; return 1 ;;
   esac
+  if [[ "$lang" == c++ ]]; then
+    # Hosted (libc++ takes a freestanding compile for a freestanding
+    # library), over libc++'s headers.
+    compiler=clang++ base="" incs="$(myos_libcxx_cxxflags "$arch")"
+    libs="--eh-frame-hdr -L$MYOS_ROOT/target/libcxx-${arch}/lib --start-group -lc++ -lunwind --end-group $libs"
+  fi
   cat > "$out" <<EOC
 #!/usr/bin/env bash
-cflags=(--target=$elf $(myos_arch_cflags "$arch")-ffreestanding -fPIC -nostdinc $incs$flags)
+compiler=$compiler
+cflags=($base $incs$flags)
 sysroot=$sysroot
 extra="$extra"
 libs="$libs"
@@ -929,10 +950,10 @@ EOC
   cat >> "$out" <<'EOC'
 # Compiling, and the compiler's own queries (meson's --version).
 for a in "$@"; do
-  case "$a" in -c|-E|-S|-M|-MM|--version|-dumpversion|-dumpmachine) exec clang "${cflags[@]}" "$@" ;; esac
+  case "$a" in -c|-E|-S|-M|-MM|--version|-dumpversion|-dumpmachine) exec "$compiler" "${cflags[@]}" "$@" ;; esac
 done
-# Linking: compile what is C here, then ld.lld, keeping the order of the
-# objects, -L and -l.
+# Linking: compile what is source here, then ld.lld, keeping the order of
+# the objects, -L and -l.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 out=a.out
@@ -941,7 +962,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift ;;
     -include|-isystem|-I|-D|-U|-x|-MF|-MT|-MQ) flags+=("$1" "$2"); shift ;;
-    *.c) srcs+=("$1"); inputs+=("$tmp/${#srcs[@]}.o") ;;
+    *.c|*.cc|*.cpp|*.cxx) srcs+=("$1"); inputs+=("$tmp/${#srcs[@]}.o") ;;
     -Wl,*) IFS=, read -ra w <<< "${1#-Wl,}"; inputs+=("${w[@]}") ;;
     -Xlinker) inputs+=("$2"); shift ;;
     -L*|-l*) inputs+=("$1") ;;
@@ -952,7 +973,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 for i in "${!srcs[@]}"; do
-  clang "${cflags[@]}" "${flags[@]}" -c "${srcs[$i]}" -o "$tmp/$((i + 1)).o" || exit 1
+  "$compiler" "${cflags[@]}" "${flags[@]}" -c "${srcs[$i]}" -o "$tmp/$((i + 1)).o" || exit 1
 done
 exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
   "$sysroot/lib/crt0.o" "${inputs[@]}" $extra \
@@ -1437,7 +1458,7 @@ myos_glib_version_hash() {
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags and the cc the build takes.
-      declare -f myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc
+      declare -f myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -1453,6 +1474,8 @@ myos_glib_is_current() {
     [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
   done
+  [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ]] \
+    && [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ]]
 }
 
 # The image libraries (packages/image-libs), against mlibc: their pins and
@@ -1467,7 +1490,7 @@ myos_image_libs_version_hash() {
       myos_x11_libs_version_hash
       find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_write_cross_cc
+      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -1481,6 +1504,38 @@ myos_image_libs_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/image-libs-mlibc-${arch}/lib/libpixman-1.a" ]] || return 1
     [[ -f "$MYOS_ROOT/target/image-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# The text and drawing libraries (packages/cairo-pango), against mlibc:
+# their pins and scripts, and what they build over: mlibc, libc++, GLib,
+# the image libraries, the X libraries and font stack, the compiler flags.
+myos_cairo_pango_version_hash() {
+  local h
+  h="$(
+    {
+      myos_mlibc_version_hash
+      myos_libcxx_version_hash
+      myos_glib_version_hash
+      myos_image_libs_version_hash
+      myos_x11_xft_version_hash
+      find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_cairo_pango_is_current() {
+  local arch
+  [[ -f "$MYOS_CAIRO_PANGO_VERSION" ]] \
+    && [[ "$(cat "$MYOS_CAIRO_PANGO_VERSION")" == "$(myos_cairo_pango_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/cairo-pango-mlibc-${arch}/lib/libpangocairo-1.0.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/cairo-pango-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 

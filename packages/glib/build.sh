@@ -6,6 +6,9 @@
 # (packages/pcre2). One prefix per arch, target/glib-mlibc-<arch> (lib/
 # with the archives and their pkg-config files, include/), what a program
 # over GLib (WebKitGTK's stack, issue #616) compiles and links against.
+# And GLib's tools that run on the build host, built natively from the
+# same pins into target/glib-host (bin/glib-compile-resources): the
+# libraries over GLib compile their resources with it.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -160,6 +163,40 @@ EOC
   echo "glib ($arch) -> $out"
 }
 
+# GLib for the build host, with the host's compiler, over host builds of
+# libffi, PCRE2 and zlib from the same pins: its glib-compile-resources
+# into target/glib-host/bin (the cross build's runs on myos only), with
+# its Python generators, glib-mkenums and glib-genmarshal, configured for
+# the host.
+build_host() {
+  local build="$T/glib-host-build" out="$T/glib-host"
+  echo "==> glib (build host)"
+  rm -rf "$build" "$out"
+  mkdir -p "$build"/{libffi,pcre2,zlib} "$out/bin"
+  (cd "$build/libffi" && "$T/libffi-src/configure" --prefix="$build/prefix" --disable-shared \
+      --disable-docs --disable-multi-os-directory >configure.log 2>&1 && make -j"$(nproc)" install \
+      >make.log 2>&1) || { tail -20 "$build/libffi/make.log" "$build/libffi/configure.log" >&2; exit 1; }
+  (cd "$build/pcre2" && "$T/pcre2-src/configure" --prefix="$build/prefix" --disable-shared \
+      >configure.log 2>&1 && make -j"$(nproc)" install >make.log 2>&1) \
+    || { tail -20 "$build/pcre2/make.log" "$build/pcre2/configure.log" >&2; exit 1; }
+  cp -a "$T/zlib-src/." "$build/zlib/"
+  (cd "$build/zlib" && ./configure --prefix="$build/prefix" --static >configure.log 2>&1 \
+      && make -j"$(nproc)" install >make.log 2>&1) || { tail -20 "$build/zlib/make.log" >&2; exit 1; }
+  PKG_CONFIG_PATH="$build/prefix/lib/pkgconfig" meson setup "$build/glib" "$T/glib-src" \
+    --buildtype release -Ddefault_library=static -Dtests=false -Dinstalled_tests=false \
+    -Dintrospection=disabled -Dnls=disabled -Dlibmount=disabled -Dselinux=disabled \
+    -Dxattr=false -Dsysprof=disabled -Ddtrace=disabled -Dsystemtap=disabled \
+    -Dman-pages=disabled -Ddocumentation=false -Dlibelf=disabled -Dglib_debug=disabled \
+    --wrap-mode=nofallback >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
+  ninja -C "$build/glib" gio/glib-compile-resources >"$build/ninja.log" 2>&1 \
+    || { grep -n "error" "$build/ninja.log" | head -20 >&2; exit 1; }
+  cp "$build/glib/gio/glib-compile-resources" "$build/glib/gobject/glib-mkenums" \
+    "$build/glib/gobject/glib-genmarshal" "$out/bin/"
+  rm -rf "$build"
+  echo "glib (build host) -> $out/bin"
+}
+
+build_host
 for arch in ${MYOS_GLIB_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"
 done
