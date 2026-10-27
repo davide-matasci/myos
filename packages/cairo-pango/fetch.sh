@@ -47,4 +47,17 @@ fetch cairo "$CAIRO_VERSION" "$CAIRO_SHA256" "$CAIRO_URL"
 fetch pango "$PANGO_VERSION" "$PANGO_SHA256" "$PANGO_URL"
 fetch gdk-pixbuf "$GDK_PIXBUF_VERSION" "$GDK_PIXBUF_SHA256" "$GDK_PIXBUF_URL"
 fetch libepoxy "$LIBEPOXY_VERSION" "$LIBEPOXY_SHA256" "$LIBEPOXY_URL"
+
+# The EGL headers, file by file, into SRC/egl-registry-<commit>/{EGL,KHR}.
+egl="$SRC/egl-registry-$EGL_REGISTRY_COMMIT"
+if [[ ! -d "$egl" ]]; then
+  rm -rf "$egl.partial"
+  for h in $EGL_HEADERS; do
+    mkdir -p "$egl.partial/$(dirname "${h%%:*}")"
+    curl -L --fail --connect-timeout 20 --retry 5 --retry-delay 10 --retry-all-errors \
+      -o "$egl.partial/${h%%:*}" "$EGL_REGISTRY_URL/${h%%:*}"
+    echo "${h##*:}  $egl.partial/${h%%:*}" | sha256sum -c --quiet -
+  done
+  mv "$egl.partial" "$egl"
+fi
 echo "text and drawing libraries -> $SRC"
