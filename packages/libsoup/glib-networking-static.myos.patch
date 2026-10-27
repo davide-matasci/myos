@@ -1,0 +1,35 @@
+--- a/tls/openssl/meson.build
++++ b/tls/openssl/meson.build
+@@ -35,6 +35,11 @@
+ 
+ giomodules += 'gioopenssl'
+ 
++# myos: the shared module only for a shared build (a static one has no
++# loader to dlopen it, and the program registers the backend itself:
++# g_io_openssl_load (NULL)); the static library from the sources, with
++# tlsbase's objects in it.
++if build_shared
+ module = shared_module(
+   'gioopenssl',
+   sources: sources,
+@@ -46,15 +51,18 @@
+   install: build_shared,
+   install_dir: gio_module_dir,
+ )
++endif
+ 
+ if build_static
+   gioopenssl_lib = static_library('gioopenssl',
+-    objects: module.extract_all_objects(recursive: true),
++    sources,
++    include_directories: incs,
+     dependencies: deps,
++    link_whole: tlsbase,
+     install: true,
+     install_dir: gio_module_dir,
+   )
+-  pkg.generate(module)
++  pkg.generate(gioopenssl_lib)
+ 
+   gioopenssl_dep = declare_dependency(link_with: gioopenssl_lib)
+   meson.override_dependency('gioopenssl', gioopenssl_dep)

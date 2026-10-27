@@ -149,8 +149,8 @@ lacks: GNU libiconv for `iconv`, proxy-libintl for `gettext`), the X
 client libraries and the font stack (`packages/x11-libs` and `x11-xft`,
 built for both libcs), zlib (`ports/zlib`, both), the image libraries
 (`packages/image-libs`) and the text and drawing libraries
-(`packages/cairo-pango`, HarfBuzz in C++ over libc++) and GTK 3
-(`packages/gtk3`); tcc's own
+(`packages/cairo-pango`, HarfBuzz in C++ over libc++), GTK 3
+(`packages/gtk3`) and the network libraries (`packages/libsoup`); tcc's own
 sysroot is newlib's. A fork
 while another thread holds one of mlibc's own locks (the allocator's,
 stdio's) hangs the child in its first `malloc` or `fprintf`: mlibc's fork
