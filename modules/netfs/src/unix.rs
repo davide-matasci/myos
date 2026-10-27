@@ -74,6 +74,10 @@ const RIGHTS_MAX: usize = 253;
 /// The largest record: what the kernel hands a file in one write
 /// (`FILE_IO_TMP`; issue #645).
 const RECORD_MAX: usize = 8 * 1024;
+/// The most records one end holds for its reader: each costs a `writers`
+/// entry outside `BUF_CAP`, so small ones are bounded by count (as Linux
+/// charges each its overhead).
+const RECORDS_CAP: usize = 512;
 /// What reading a record conversation's `ctl` says, and after a read that
 /// dropped the rest of a record.
 const SEQPACKET: &[u8] = b"seqpacket\n";
@@ -319,6 +323,12 @@ pub fn stat(node: Node) -> Option<(u32, u32, u32)> {
     })
 }
 
+/// The records `c` holds for its reader: its `writers` entries but the
+/// one a read already took (kept until the next read).
+fn records_held(c: &Conv) -> usize {
+    c.writers.len() - usize::from(c.writers.front().is_some_and(|&(at, _)| at < c.rx_base))
+}
+
 /// The bytes a read of `data` could take: all that is buffered, or a
 /// record conversation's next record.
 fn waiting(c: &Conv) -> usize {
@@ -372,12 +382,14 @@ pub fn poll(node: Node, changes: *mut u64) -> u32 {
         let Some(c) = get_own(convs, id) else {
             return MYOS_POLLERR | MYOS_POLLHUP;
         };
-        let (readable, state, peer, want) = (!c.rx.is_empty() || c.queued != 0, c.state, c.peer, c.want.max(1));
+        let (readable, state, peer, want, records) =
+            (!c.rx.is_empty() || c.queued != 0, c.state, c.peer, c.want.max(1), c.records);
         let mut bits = if readable { MYOS_POLLIN } else { 0 };
         if state == State::Hangup {
             bits |= MYOS_POLLIN | MYOS_POLLHUP;
         }
-        if state == State::Connected && peer.is_some_and(|p| BUF_CAP - convs[p as usize].rx.len() >= want) {
+        let room = |p: &Conv| BUF_CAP - p.rx.len() >= want && (!records || records_held(p) < RECORDS_CAP);
+        if state == State::Connected && peer.is_some_and(|p| room(&convs[p as usize])) {
             bits |= MYOS_POLLOUT;
         }
         bits
@@ -536,7 +548,7 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             if records && src.len() > RECORD_MAX {
                 return -1;
             }
-            if records && src.len() > room {
+            if records && (src.len() > room || records_held(p) >= RECORDS_CAP) {
                 convs[id as usize].want = src.len();
                 return -1;
             }
