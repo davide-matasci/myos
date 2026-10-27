@@ -1077,16 +1077,16 @@ fn exec_path_depth(
     // symlinks to one file).
     task::set_exec_name(virt.rsplit('/').next().unwrap_or(virt).as_bytes());
     // A dynamically linked Linux program is mapped from its file, like the
-    // shared objects its dynamic linker maps: that linker is the image.
+    // shared objects its dynamic linker maps: that linker is the image. So
+    // is a native program too large to read whole, over an empty image.
     let mapped = mapped_program(&path);
     // Static lookup for rootfs (`/bin/tcc/tcc`); VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
     // by the image limit (`MAX_ELF_PAGES`). A successful exec never
     // returns, so the copy is freed explicitly before the new image runs.
-    const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
     let mut owned: Option<Vec<u8>> = None;
     let bytes: &[u8] = if let Some(m) = &mapped {
-        &m.interp
+        m.image()
     } else if let Some(b) = fs::lookup(&path) {
         b
     } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
@@ -1248,17 +1248,23 @@ fn exec_path_depth(
         None => None,
     };
     // A mapped program goes at the start of the mmap window; the dynamic
-    // linker, the image, starts and finds it through AT_PHDR / AT_ENTRY.
+    // linker, the image, starts and finds it through AT_PHDR / AT_ENTRY. A
+    // native one starts there itself.
     let program_at = mmap_base_va(base, off);
     // The SysV auxv a libc startup reads.
-    let aux = match &mapped {
+    let (aux, entry) = match &mapped {
         Some(m) => match m.entry_at(program_at) {
-            Some(program_entry) => exec_auxv(&m.head, program_at, program_entry, Some(base as usize)),
+            Some(program_entry) if m.interp.is_some() => {
+                (exec_auxv(&m.head, program_at, program_entry, Some(base as usize)), entry)
+            }
+            Some(program_entry) => (exec_auxv(&m.head, program_at, program_entry, None), program_entry),
             None => return SYSERR,
         },
-        None => exec_auxv(bytes, base, entry, interp_map.as_ref().map(|m| m.0)),
+        None => (
+            exec_auxv(bytes, base, entry, interp_map.as_ref().map(|m| m.0)),
+            interp_map.as_ref().map_or(entry, |m| m.1),
+        ),
     };
-    let entry = interp_map.as_ref().map_or(entry, |m| m.1);
     let Some((rsp, argv)) =
         build_argv_stack(aspace, base, off, arg_refs, env_refs, aux.entries())
     else {
@@ -1282,7 +1288,7 @@ fn exec_path_depth(
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     task::set_current_name(path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes());
     if let Some(m) = &mapped {
-        if !m.map(aspace, program_at) {
+        if !m.map(aspace, program_at) || !m.relocate(aspace, program_at) {
             task::user_exit(127);
         }
     }
@@ -2261,25 +2267,43 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
 /// linker its own load address through `AT_BASE`, and a native program's
 /// `getauxval` (mlibc's) its answers here (GLib's setuid check reads
 /// `AT_SECURE`).
-/// A dynamically linked, position-independent Linux program that `exec`
-/// maps from its file instead of reading it whole: only its headers and its
-/// interpreter (the dynamic linker, loaded as the image) are read. Its
-/// segments are paged in on first touch, so its size is bounded only by the
-/// mmap window (Alpine's cargo spans 34 MiB).
+/// A position-independent program that `exec` maps from its file instead
+/// of reading it whole: a dynamically linked Linux program, or a native
+/// one too large to read whole (over [`EXEC_FILE_MAX`] or
+/// [`MAX_ELF_PAGES`]: GTK's, statically linked). Only its headers are read,
+/// and a Linux program's interpreter (the dynamic linker, loaded as the
+/// image); a native program's image is an empty one, and the kernel
+/// relocates the program in place, as it relocates a native image it reads
+/// (the pages it writes are the process's own copies). Its segments are
+/// paged in on first touch, so its size is bounded only by the mmap window
+/// (Alpine's cargo spans 34 MiB).
 struct MappedProgram {
     node: fs::Vnode,
     /// The start of the file: the ELF and program headers.
     head: Vec<u8>,
-    interp: alloc::borrow::Cow<'static, [u8]>,
+    /// A Linux program's dynamic linker; `None` for a native program.
+    interp: Option<alloc::borrow::Cow<'static, [u8]>>,
 }
 
 /// The headers of a program: what `exec` reads of a mapped one.
 const PROGRAM_HEAD_MAX: usize = 64 * 1024;
 
+/// The largest native program `exec` reads whole into the kernel heap; a
+/// larger position-independent one is a [`MappedProgram`].
+const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
+
 /// `path` as a [`MappedProgram`], or `None` for any other exec (a native
-/// one, a static or non-PIE program: read whole as before).
+/// one that fits, a static or non-PIE program: read whole as before).
 fn mapped_program(path: &str) -> Option<MappedProgram> {
-    if !crate::personality::pending() {
+    let linux = crate::personality::pending();
+    // Whether a native program is too large to read whole.
+    let large = |size: usize, head: &[u8]| {
+        size > EXEC_FILE_MAX
+            || elf::image_span(head).is_ok_and(|s| s.span.div_ceil(PAGE) > MAX_ELF_PAGES)
+    };
+    // The image file system's programs are in memory already: their size
+    // is seen there.
+    if !linux && fs::lookup(path).is_some_and(|b| !large(b.len(), b)) {
         return None;
     }
     let node = fs::open(path, 0)?;
@@ -2293,8 +2317,15 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
         }
         got += n;
     }
-    if !elf::is_pie(&head) || elf::image_span(&head).is_err() {
+    if !elf::is_pie(&head) {
         return None;
+    }
+    elf::image_span(&head).ok()?;
+    if !linux {
+        if !large(size, &head) || elf::interp_range(&head).is_some() {
+            return None;
+        }
+        return Some(MappedProgram { node, head, interp: None });
     }
     let (off, len) = elf::interp_range(&head)?;
     let mut name = alloc::vec![0u8; len.min(MAX_PATH)];
@@ -2311,10 +2342,42 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
         Some(b) => alloc::borrow::Cow::Borrowed(b),
         None => alloc::borrow::Cow::Owned(fs::read_all(&interp_path, 16 << 20)?),
     };
-    Some(MappedProgram { node, head, interp })
+    Some(MappedProgram { node, head, interp: Some(interp) })
 }
 
 impl MappedProgram {
+    /// What `exec` loads as the image: the dynamic linker, or an empty one.
+    fn image(&self) -> &[u8] {
+        self.interp.as_deref().unwrap_or(&elf::EMPTY_IMAGE)
+    }
+
+    /// Relocate a native program mapped with its lowest page at `at`
+    /// (after [`Self::map`]): its relocations are read from its file, and
+    /// the words they name written in the current address space. A Linux
+    /// program's dynamic linker relocates it.
+    fn relocate(&self, aspace: u64, at: u64) -> bool {
+        if self.interp.is_some() {
+            return true;
+        }
+        let Ok(span) = elf::image_span(&self.head) else {
+            return false;
+        };
+        // The image's offsets are from its lowest page, at `at`.
+        let Some(bias) = at.checked_sub(span.min_vaddr) else {
+            return false;
+        };
+        let ok = elf::relocate(&NodeSrc(&self.node), bias, &mut |off, f| {
+            let va = at as usize + off;
+            let Some(w) = read_user_usize(aspace, va) else {
+                return false;
+            };
+            write_user_usize(aspace, va, f(w as u64) as usize)
+        })
+        .is_ok();
+        flush_user_tlb();
+        ok
+    }
+
     /// Its entry point when its lowest page is mapped at `at`.
     fn entry_at(&self, at: u64) -> Option<usize> {
         let span = elf::image_span(&self.head).ok()?;
@@ -2365,6 +2428,24 @@ impl MappedProgram {
         });
         flush_user_tlb();
         ok
+    }
+}
+
+/// A program's file, read piecewise for [`elf::relocate`].
+struct NodeSrc<'a>(&'a fs::Vnode);
+
+impl elf::FileSrc for NodeSrc<'_> {
+    fn at(&self, off: usize, len: usize) -> Result<alloc::borrow::Cow<'_, [u8]>, elf::LoadError> {
+        let mut v = crate::heap::try_zeroed(len).ok_or(elf::LoadError::Alloc)?;
+        let mut got = 0;
+        while got < len {
+            let n = fs::read(self.0, off + got, &mut v[got..]);
+            if n == 0 {
+                return Err(elf::LoadError::Truncated);
+            }
+            got += n;
+        }
+        Ok(alloc::borrow::Cow::Owned(v))
     }
 }
 

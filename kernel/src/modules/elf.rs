@@ -10,6 +10,7 @@
 //! `module_init`.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+use alloc::borrow::Cow;
 use myos_abi::{ModuleExit, ModuleInit, ModuleRescan};
 
 const ELFMAG: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -286,6 +287,41 @@ pub fn interp_range(bytes: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
+/// The image of a native program `exec` maps from its file instead of
+/// reading it whole (one too large to be): a position-independent ELF of
+/// one empty page. The program's segments are in the mmap window, as a
+/// mapped Linux program's are; the image only places the heap and stack.
+pub static EMPTY_IMAGE: [u8; 120] = empty_image();
+
+const fn empty_image() -> [u8; 120] {
+    let mut b = [0u8; 120];
+    b = put_le(b, 0, u32::from_le_bytes(ELFMAG) as u64, 4);
+    b = put_le(b, 4, (ELFCLASS64 as u64) | (ELFDATA2LSB as u64) << 8 | 1 << 16, 3);
+    b = put_le(b, 16, ET_DYN as u64, 2);
+    b = put_le(b, 18, EXPECT_MACHINE as u64, 2);
+    b = put_le(b, 20, 1, 4); // e_version
+    b = put_le(b, 32, 64, 8); // e_phoff
+    b = put_le(b, 52, 64, 2); // e_ehsize
+    b = put_le(b, 54, 56, 2); // e_phentsize
+    b = put_le(b, 56, 1, 2); // e_phnum
+    b = put_le(b, 58, 64, 2); // e_shentsize
+    b = put_le(b, 64, PT_LOAD as u64, 4);
+    b = put_le(b, 68, PF_R as u64, 4);
+    b = put_le(b, 96, 120, 8); // p_filesz: the headers
+    b = put_le(b, 104, 4096, 8); // p_memsz
+    put_le(b, 112, 4096, 8) // p_align
+}
+
+/// `b` with the `n` low bytes of `v` at `at`, little-endian.
+const fn put_le(mut b: [u8; 120], at: usize, v: u64, n: usize) -> [u8; 120] {
+    let mut i = 0;
+    while i < n {
+        b[at + i] = (v >> (8 * i)) as u8;
+        i += 1;
+    }
+    b
+}
+
 /// Whether `bytes` starts a position-independent ELF (`ET_DYN`).
 pub fn is_pie(bytes: &[u8]) -> bool {
     parse_ehdr(bytes).map_or(false, |h| h.e_type == ET_DYN)
@@ -330,15 +366,22 @@ fn realize_into(
         unsafe { d.copy_from_nonoverlapping(src.as_ptr(), filesz) };
     }
     if relocate {
+        let img = dest;
+        let span = info.span;
         apply_relocs(
-            bytes,
+            &bytes,
             hdr.e_shoff,
             hdr.e_shentsize,
             hdr.e_shnum,
-            dest,
-            info.span,
+            span,
             info.min_vaddr,
             load_bias,
+            &mut |off, f| {
+                // In the image: apply_relocs checked `off + 8 <= span`.
+                let loc = unsafe { img.add(off) } as *mut u64;
+                unsafe { loc.write_unaligned(f(loc.read_unaligned())) };
+                true
+            },
         )?;
     }
     sync_icache(dest, info.span);
@@ -374,96 +417,117 @@ pub fn load(bytes: &[u8]) -> Result<Loaded, LoadError> {
     })
 }
 
+/// An ELF file as [`relocate`] reads it: `len` bytes at `off`, borrowed
+/// from the whole file in memory or read from a file piecewise (a program
+/// `exec` maps instead of reading it whole).
+pub trait FileSrc {
+    fn at(&self, off: usize, len: usize) -> Result<Cow<'_, [u8]>, LoadError>;
+}
+
+impl FileSrc for &[u8] {
+    fn at(&self, off: usize, len: usize) -> Result<Cow<'_, [u8]>, LoadError> {
+        let end = off.checked_add(len).ok_or(LoadError::Truncated)?;
+        self.get(off..end).map(Cow::Borrowed).ok_or(LoadError::Truncated)
+    }
+}
+
+/// Relocations read per [`FileSrc::at`] call.
+const RELOCS_PER_READ: usize = 4096;
+
+/// Apply the relocations of the image `src` holds the file of, loaded with
+/// `load_bias`: `store(off, f)` replaces the word `off` bytes into the
+/// image (from `min_v`) by `f` of it, false if it cannot.
+pub fn relocate(
+    src: &dyn FileSrc,
+    load_bias: u64,
+    store: &mut dyn FnMut(usize, &dyn Fn(u64) -> u64) -> bool,
+) -> Result<(), LoadError> {
+    let hdr = {
+        let head = src.at(0, 64)?;
+        parse_ehdr(&head)?
+    };
+    let info = {
+        let phdrs = src.at(0, hdr.e_phoff.saturating_add(hdr.e_phnum.saturating_mul(hdr.e_phentsize)))?;
+        span_from(&hdr, &phdrs)?
+    };
+    apply_relocs(src, hdr.e_shoff, hdr.e_shentsize, hdr.e_shnum, info.span, info.min_vaddr, load_bias, store)
+}
+
 fn apply_relocs(
-    bytes: &[u8],
+    src: &dyn FileSrc,
     shoff: usize,
     shentsize: usize,
     shnum: usize,
-    dest: *mut u8,
     span: usize,
     min_v: u64,
     load_bias: u64,
+    store: &mut dyn FnMut(usize, &dyn Fn(u64) -> u64) -> bool,
 ) -> Result<(), LoadError> {
-    let img_lo = dest as u64;
-    let img_hi = img_lo + span as u64;
+    let shdrs = src.at(shoff, shnum.checked_mul(shentsize).ok_or(LoadError::Truncated)?)?;
     for i in 0..shnum {
-        let sh = shoff
-            .checked_add(i.checked_mul(shentsize).ok_or(LoadError::Truncated)?)
-            .ok_or(LoadError::Truncated)?;
-        let sh_type = u32_at(bytes, sh + 4)?;
+        let sh = i * shentsize;
+        let sh_type = u32_at(&shdrs, sh + 4)?;
         let rela = match sh_type {
             SHT_RELA => true,
             SHT_REL => false,
             _ => continue,
         };
-        let sh_flags = u64_at(bytes, sh + 8)?;
-        let sh_link = u32_at(bytes, sh + 40)? as usize;
+        let sh_flags = u64_at(&shdrs, sh + 8)?;
+        let sh_link = u32_at(&shdrs, sh + 40)? as usize;
         // .rela.dyn is often non-ALLOC. Skipping it left GOT entries at
         // link addresses, so user/ok MSG_BUF failed user_range_ok (#97/#98).
         // Still skip debug relocs (non-ALLOC, linked to SHT_SYMTAB).
         if sh_flags & 0x2 == 0 {
-            let dynsym = sh_link < shnum
-                && u32_at(bytes, shoff + sh_link * shentsize + 4)? == SHT_DYNSYM;
+            let dynsym = sh_link < shnum && u32_at(&shdrs, sh_link * shentsize + 4)? == SHT_DYNSYM;
             if !dynsym {
                 continue;
             }
         }
-        let sh_offset = u64_at(bytes, sh + 24)? as usize;
-        let sh_size = u64_at(bytes, sh + 32)? as usize;
-        let sh_entsize = u64_at(bytes, sh + 56)? as usize;
+        let sh_offset = u64_at(&shdrs, sh + 24)? as usize;
+        let sh_size = u64_at(&shdrs, sh + 32)? as usize;
+        let sh_entsize = u64_at(&shdrs, sh + 56)? as usize;
         if sh_entsize == 0 || sh_size == 0 {
             continue;
         }
         let n = sh_size / sh_entsize;
-        let symtab_sh = if sh_link < shnum {
-            Some(shoff + sh_link * shentsize)
-        } else {
-            None
-        };
-        for j in 0..n {
-            let r = sh_offset
-                .checked_add(j.checked_mul(shentsize_or(sh_entsize)?).ok_or(LoadError::Truncated)?)
+        let symtab_sh = (sh_link < shnum).then(|| sh_link * shentsize);
+        let mut j = 0;
+        while j < n {
+            let k = (n - j).min(RELOCS_PER_READ);
+            let at = j
+                .checked_mul(shentsize_or(sh_entsize)?)
+                .and_then(|o| sh_offset.checked_add(o))
                 .ok_or(LoadError::Truncated)?;
-            let r_offset = u64_at(bytes, r)?;
-            let r_info = u64_at(bytes, r + 8)?;
-            let r_type = (r_info & 0xffff_ffff) as u32;
-            let r_sym = (r_info >> 32) as usize;
-            let addend = if rela {
-                u64_at(bytes, r + 16)? as i64
-            } else {
-                0
-            };
-            let loc_addr = img_lo.wrapping_add(r_offset.wrapping_sub(min_v));
-            if loc_addr < img_lo || loc_addr.saturating_add(8) > img_hi {
-                return Err(LoadError::BadReloc(r_type));
-            }
-            let loc = loc_addr as *mut u64;
-            match r_type {
-                R_NONE => {}
-                R_RELATIVE => {
-                    let a = if rela {
-                        addend as u64
-                    } else {
-                        unsafe { loc.read_unaligned() }
-                    };
-                    unsafe { loc.write_unaligned(load_bias.wrapping_add(a)) };
+            let relocs = src.at(at, k * sh_entsize)?;
+            for r in (0..k).map(|i| i * sh_entsize) {
+                let r_offset = u64_at(&relocs, r)?;
+                let r_info = u64_at(&relocs, r + 8)?;
+                let r_type = (r_info & 0xffff_ffff) as u32;
+                let r_sym = (r_info >> 32) as usize;
+                let addend = if rela { Some(u64_at(&relocs, r + 16)?) } else { None };
+                // The addend: the RELA entry's, or the word itself (REL).
+                let off = r_offset.wrapping_sub(min_v) as usize;
+                if r_offset < min_v || off.saturating_add(8) > span {
+                    return Err(LoadError::BadReloc(r_type));
                 }
-                R_ABS64 | R_GLOB_DAT | R_JUMP_SLOT => {
-                    let s = symbol_value(bytes, symtab_sh, shoff, shentsize, r_sym, load_bias)?;
-                    let val = if r_type == R_ABS64 {
-                        let a = if rela {
-                            addend as u64
+                let ok = match r_type {
+                    R_NONE => true,
+                    R_RELATIVE => store(off, &|w| load_bias.wrapping_add(addend.unwrap_or(w))),
+                    R_ABS64 | R_GLOB_DAT | R_JUMP_SLOT => {
+                        let s = symbol_value(src, &shdrs, symtab_sh, r_sym, load_bias)?;
+                        if r_type == R_ABS64 {
+                            store(off, &|w| s.wrapping_add(addend.unwrap_or(w)))
                         } else {
-                            unsafe { loc.read_unaligned() }
-                        };
-                        s.wrapping_add(a)
-                    } else {
-                        s
-                    };
-                    unsafe { loc.write_unaligned(val) };
+                            store(off, &|_| s)
+                        }
+                    }
+                    other => return Err(LoadError::BadReloc(other)),
+                };
+                if !ok {
+                    return Err(LoadError::BadReloc(r_type));
                 }
-                other => return Err(LoadError::BadReloc(other)),
             }
+            j += k;
         }
     }
     Ok(())
@@ -478,30 +542,29 @@ fn shentsize_or(n: usize) -> Result<usize, LoadError> {
 }
 
 fn symbol_value(
-    bytes: &[u8],
+    src: &dyn FileSrc,
+    shdrs: &[u8],
     symtab_sh: Option<usize>,
-    shoff: usize,
-    shentsize: usize,
     index: usize,
     load_bias: u64,
 ) -> Result<u64, LoadError> {
     let Some(sh) = symtab_sh else {
         return Err(LoadError::BadReloc(0));
     };
-    let sh_offset = u64_at(bytes, sh + 24)? as usize;
-    let sh_entsize = u64_at(bytes, sh + 56)? as usize;
+    let sh_offset = u64_at(shdrs, sh + 24)? as usize;
+    let sh_entsize = u64_at(shdrs, sh + 56)? as usize;
     if sh_entsize < 24 {
         return Err(LoadError::Unsupported);
     }
     let s = sh_offset
         .checked_add(index.checked_mul(sh_entsize).ok_or(LoadError::Truncated)?)
         .ok_or(LoadError::Truncated)?;
-    let st_shndx = u16_at(bytes, s + 6)?;
-    let st_value = u64_at(bytes, s + 8)?;
+    let sym = src.at(s, 24)?;
+    let st_shndx = u16_at(&sym, 6)?;
+    let st_value = u64_at(&sym, 8)?;
     if st_shndx == SHN_UNDEF {
         return Err(LoadError::BadReloc(0));
     }
-    let _ = (shoff, shentsize);
     Ok(load_bias.wrapping_add(st_value))
 }
 
