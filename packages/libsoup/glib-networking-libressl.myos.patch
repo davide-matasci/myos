@@ -1,0 +1,44 @@
+--- a/tls/openssl/gtlsclientconnection-openssl.c
++++ b/tls/openssl/gtlsclientconnection-openssl.c
+@@ -420,7 +420,11 @@
+   if (!signature_algorithm_list)
+     return;
+ 
++  /* myos: LibreSSL cannot set the signature algorithms; the
++   * environment's list is ignored. */
++#ifndef LIBRESSL_VERSION_NUMBER
+   SSL_CTX_set1_sigalgs_list (client->ssl_ctx, signature_algorithm_list);
++#endif
+ }
+ 
+ static void
+--- a/tls/openssl/gtlsconnection-openssl.c
++++ b/tls/openssl/gtlsconnection-openssl.c
+@@ -165,11 +165,13 @@
+    * seems to be a bug in a specific version of openssl, so let's handle it
+    * gracefully
+    */
++#ifdef SSL_R_SHUTDOWN_WHILE_IN_INIT /* myos: LibreSSL has no such reason */
+   if (reason == SSL_R_SHUTDOWN_WHILE_IN_INIT)
+     {
+       status = G_TLS_CONNECTION_BASE_OK;
+       goto out;
+     }
++#endif
+ 
+   if (reason == SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE || reason == SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED)
+     {
+--- a/tls/openssl/gtlsserverconnection-openssl.c
++++ b/tls/openssl/gtlsserverconnection-openssl.c
+@@ -336,7 +336,11 @@
+   if (!signature_algorithm_list)
+     return;
+ 
++  /* myos: LibreSSL cannot set the signature algorithms; the
++   * environment's list is ignored. */
++#ifndef LIBRESSL_VERSION_NUMBER
+   SSL_CTX_set1_sigalgs_list (server->ssl_ctx, signature_algorithm_list);
++#endif
+ }
+ 
+ static void
