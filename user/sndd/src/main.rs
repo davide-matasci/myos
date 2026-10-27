@@ -532,11 +532,6 @@ fn main() -> ! {
         // long enough); with none the server sleeps until a program comes.
         let busy = streams.iter().any(|s| s.open.is_some());
         poll(&mut fds, if busy { 100 } else { -1 });
-        if revents(&fds, 0) & POLLIN != 0 {
-            while let Some(conv) = listener.accept() {
-                serve(&mut streams, conv);
-            }
-        }
         let mut at = 1;
         let now = monotonic_ns();
         for s in streams.iter_mut() {
@@ -612,6 +607,17 @@ fn main() -> ! {
                 } else {
                     o.idle_since = None;
                 }
+            }
+        }
+        // The programs that came, once what `fds` was polled for is done:
+        // serving one adds its player, opens its stream and rescans the
+        // streams, which moved every entry after it. Served first, a
+        // player read what another fd's poll said, and a read of its
+        // empty socket (0 bytes) ended it: one of two plays started at
+        // once lost the server (issue #639).
+        if revents(&fds, 0) & POLLIN != 0 {
+            while let Some(conv) = listener.accept() {
+                serve(&mut streams, conv);
             }
         }
     }
