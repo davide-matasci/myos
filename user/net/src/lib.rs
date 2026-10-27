@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+
 use myos_user::{close, open, open_flags, read, write_fd, O_RDWR};
 use smoltcp::iface::{Config, Interface};
 use smoltcp::phy::{
@@ -15,8 +17,9 @@ use smoltcp::phy::{
 };
 use smoltcp::time::Instant;
 use smoltcp::wire::{
-    EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, HardwareAddress, Icmpv6Packet,
-    Icmpv6Repr, IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr, NdiscRepr, RawHardwareAddress,
+    EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, HardwareAddress, Icmpv4Packet,
+    Icmpv6Packet, Icmpv6Repr, IpAddress, IpProtocol, Ipv4Address, Ipv4Packet, Ipv6Address,
+    Ipv6Packet, Ipv6Repr, NdiscRepr, RawHardwareAddress,
 };
 
 /// Re-export so `/ping` (and later netd) can use smoltcp 0.12 types without a
@@ -92,6 +95,25 @@ pub struct Net0Device {
     ///
     /// [`take_router_advert`]: Self::take_router_advert
     router_advert: Option<RouterAdvert>,
+    /// The TCP segments an ICMP or ICMPv6 "destination unreachable" came
+    /// back for since the last [`take_unreachable`] (smoltcp hands ICMP
+    /// errors to no socket), at most [`UNREACHABLE_MAX`].
+    ///
+    /// [`take_unreachable`]: Self::take_unreachable
+    unreachable: Vec<Unreachable>,
+}
+
+/// The "destination unreachable" errors a NIC keeps between two looks.
+const UNREACHABLE_MAX: usize = 16;
+
+/// A TCP segment an ICMP or ICMPv6 "destination unreachable" (RFC 792, RFC
+/// 4443) quotes: where it was from and to, as it was sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unreachable {
+    pub src: IpAddress,
+    pub src_port: u16,
+    pub dst: IpAddress,
+    pub dst_port: u16,
 }
 
 /// What a router advertisement (RFC 4861) says: the router, how long it is
@@ -156,12 +178,19 @@ impl Net0Device {
             mac,
             rx_irq,
             router_advert: None,
+            unreachable: Vec::new(),
         })
     }
 
     /// The router advertisement received since the last call, if any.
     pub fn take_router_advert(&mut self) -> Option<RouterAdvert> {
         self.router_advert.take()
+    }
+
+    /// The "destination unreachable" errors received for TCP segments
+    /// since the last call.
+    pub fn take_unreachable(&mut self) -> Vec<Unreachable> {
+        core::mem::take(&mut self.unreachable)
     }
 
     /// Ask the routers of the link to advertise (RFC 4861 router
@@ -384,6 +413,66 @@ fn router_advert(frame: &[u8]) -> Option<RouterAdvert> {
     Some(ra)
 }
 
+/// The TCP segment the ICMP or ICMPv6 "destination unreachable" Ethernet
+/// frame `frame` carries quotes (its IP header, then at least the 8 bytes
+/// after it: the ports), if it is one with a valid checksum. Any code: a
+/// connect it answers fails, as on Linux (QEMU's user network sends one to
+/// a SYN it could not connect on, "no route" from a host without IPv6).
+fn tcp_unreachable(frame: &[u8]) -> Option<Unreachable> {
+    match frame.get(12..14)? {
+        [0x08, 0x00] => {
+            let ip = Ipv4Packet::new_checked(frame.get(14..)?).ok()?;
+            if ip.next_header() != IpProtocol::Icmp {
+                return None;
+            }
+            let icmp = Icmpv4Packet::new_checked(ip.payload()).ok()?;
+            // Type 3: destination unreachable.
+            if u8::from(icmp.msg_type()) != 3 || !icmp.verify_checksum() {
+                return None;
+            }
+            let orig = ip.payload().get(8..)?;
+            let ihl = (*orig.first()? as usize & 0xf) * 4;
+            if orig.get(9) != Some(&6) {
+                return None;
+            }
+            let (src, dst) = (orig.get(12..16)?, orig.get(16..20)?);
+            let tcp = orig.get(ihl..ihl + 4)?;
+            Some(Unreachable {
+                src: IpAddress::Ipv4(Ipv4Address::new(src[0], src[1], src[2], src[3])),
+                src_port: u16::from_be_bytes([tcp[0], tcp[1]]),
+                dst: IpAddress::Ipv4(Ipv4Address::new(dst[0], dst[1], dst[2], dst[3])),
+                dst_port: u16::from_be_bytes([tcp[2], tcp[3]]),
+            })
+        }
+        [0x86, 0xdd] => {
+            let ip = Ipv6Packet::new_checked(frame.get(14..)?).ok()?;
+            if ip.next_header() != IpProtocol::Icmpv6 {
+                return None;
+            }
+            let icmp = Icmpv6Packet::new_checked(ip.payload()).ok()?;
+            // Type 1: destination unreachable.
+            if u8::from(icmp.msg_type()) != 1 || !icmp.verify_checksum(&ip.src_addr(), &ip.dst_addr()) {
+                return None;
+            }
+            // The quoted packet as sent: no extension headers before TCP.
+            let orig = ip.payload().get(8..)?;
+            if orig.get(6) != Some(&6) {
+                return None;
+            }
+            let src = <[u8; 16]>::try_from(orig.get(8..24)?).ok()?;
+            let dst = <[u8; 16]>::try_from(orig.get(24..40)?).ok()?;
+            let tcp = orig.get(40..44)?;
+            Some(Unreachable {
+                src: IpAddress::Ipv6(Ipv6Address::from(src)),
+                src_port: u16::from_be_bytes([tcp[0], tcp[1]]),
+                dst: IpAddress::Ipv6(Ipv6Address::from(dst)),
+                dst_port: u16::from_be_bytes([tcp[2], tcp[3]]),
+            })
+        }
+        _ => None,
+    }
+}
+
 pub struct Net0RxToken<'a> {
     buf: &'a [u8],
 }
@@ -406,6 +495,11 @@ impl Device for Net0Device {
         self.rx_frames += 1;
         if let Some(ra) = router_advert(&self.rx[..self.rx_len]) {
             self.router_advert = Some(ra);
+        }
+        if let Some(u) = tcp_unreachable(&self.rx[..self.rx_len]) {
+            if self.unreachable.len() < UNREACHABLE_MAX {
+                self.unreachable.push(u);
+            }
         }
         Some((
             Net0RxToken {

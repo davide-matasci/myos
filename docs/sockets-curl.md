@@ -63,7 +63,13 @@ myos has **no `socket()` syscall** and no kernel socket table. Networking is:
    `lo` carries ::1 and every NIC's IPv6 addresses too. A connection to
    a link-local address leaves through the preferred NIC (scope ids are
    not looked at); one to an address in a NIC's prefix through that NIC,
-   any other through the preferred NIC's router. Not there: duplicate
+   any other through the preferred NIC's router. A connect an ICMP or
+   ICMPv6 "destination unreachable" answers fails at once, as on Linux
+   (the NIC's device picks those out of the frames too; smoltcp hands ICMP
+   errors to no socket and would send the SYN again until the caller gave
+   up): QEMU's user network answers so every SYN to an IPv6 address on a
+   host without IPv6, CI's, where c-ares (Alpine's curl) lists the IPv6
+   addresses first. Not there: duplicate
    address detection, temporary (privacy) addresses, DHCPv6, more than one
    prefix per NIC, the advertisement's MTU and hop limit, and fragments
    (an IPv6 packet that comes in pieces is dropped; issue #611).
