@@ -27,14 +27,14 @@ behind it and a smartcard reader.
 |--------|------|
 | `modules/usb` | The core: the device table, enumeration (descriptors, configuration), the class drivers and the interfaces offered to them, hubs' children and their route strings, root-port hot-plug on its own kernel thread, the `UsbHostOps` service, `/proc/usb`; the host controllers' `UsbCoreOps` service |
 | `modules/xhci` | The xHCI controller driver (PCI class `0C/03`, interface `30`): rings, interrupter, device slots and contexts, the transfers; registered with the core as a `UsbHcdOps` |
-| `modules/ehci` | The EHCI controller driver (PCI `0C/03`, interface `20`): the asynchronous schedule (a QH per control and bulk endpoint) and the periodic one (the interrupt endpoints' QHs), qTD chains, split transaction fields for devices behind a high-speed hub; hands full- and low-speed devices on its ports to its companion controllers |
+| `modules/ehci` | The EHCI controller driver (PCI `0C/03`, interface `20`): the asynchronous schedule (a QH per control and bulk endpoint) and the periodic one (the interrupt endpoints' QHs), qTD chains, split transaction fields for devices behind a high-speed hub, isochronous OUT packets in iTDs (high speed) and split siTDs (full speed behind a hub); hands full- and low-speed devices on its ports to its companion controllers |
 | `modules/uhci` | The UHCI controller driver (PCI `0C/03`, interface `00`; registers in I/O space): a frame list and a QH per endpoint, a TD per packet, isochronous OUT packets in the frame list; an EHCI's companion or a controller of its own |
 | `modules/ohci` | The OHCI controller driver (PCI `0C/03`, interface `10`; registers in memory, BAR 0): the control, bulk and periodic lists of EDs (one per endpoint), general TDs, isochronous TDs of up to eight packets; an EHCI's companion or a controller of its own |
 | `modules/dwc2` | The DWC2 controller driver (the Raspberry Pi 3's, from the device tree): host channels, the port, split transactions; the same `UsbHcdOps` (`docs/raspberry-pi.md`) |
 | `modules/usb_hub` | Hub class (9): hub descriptor, port power and reset, the status-change interrupt endpoint; children through `hub_attach` / `hub_detach` |
 | `modules/usb_storage` | Mass storage class (8/6/0x50, bulk-only SCSI): `blk_register` as `sd?` (the kernel hands out the letter, shared with the virtio-scsi disks); `blk_unregister` on unplug |
 | `modules/usb_hid` | HID class (3) pointers: the report descriptor's X and Y axes, wheel and buttons (or the boot mouse report), its interrupt endpoint's reports into the console's `pointer` service; boot keyboards (3/1/1): the boot report's keys into the console's `keyboard` service, its Caps Lock LED from the console |
-| `modules/usb_audio` | Audio class (1) speakers, UAC1: the streaming interface's alternate setting with an isochronous OUT endpoint and 16-bit PCM, a playback stream of the sound core fed one packet a millisecond |
+| `modules/usb_audio` | Audio class (1) playback, UAC1 and UAC2: the streaming interface's alternate setting with an isochronous OUT endpoint and PCM in 16, 24 or 32-bit slots, a playback stream of the sound core fed one packet a service interval |
 | `modules/usbdev` | Every interface the others leave: `/dev/usb/<id>/`, its control, bulk and interrupt transfers as files for a driver that runs as a program |
 
 ## How the modules reach each other
@@ -197,20 +197,34 @@ completion); a missed interval counts as completed, its packet gone. The
 endpoint context of an isochronous endpoint has no error count, and its
 interval is the full-speed frame count's exponent (`bInterval - 1`, in
 microframes: + 3). The DWC2 drives no isochronous transfers yet
-(issue #608); UHCI's and OHCI's are below, EHCI's issue #622.
+(issue #608); UHCI's, OHCI's and EHCI's are below.
 
 `usb_audio` claims the audio control interface (class 1, subclass 1:
-nothing to drive) and the streaming one (subclass 2), finds its first
-alternate setting with an isochronous OUT endpoint and a type I format of
-16-bit PCM (`bSubframeSize` 2), and registers a card `usb-audio
-VVVV:PPPP` with one playback stream: the format's channels and those of
-its sampling frequencies the core knows. Starting the stream selects the
-setting, sets the endpoint's sampling frequency (`SET_CUR`, a speaker with
-one rate may refuse) and queues 24 packets of a millisecond each, 8 at a
-time, from the core's buffer (silence for what it lacks; 44.1 kHz carries
-44 or 45 frames a packet); each completion queues more. Stopping it goes
-back to setting 0, which gives the bus its bandwidth back. Capture (a
-microphone's isochronous IN) is issue #610.
+nothing to drive) and the streaming one (subclass 2), finds its
+alternate setting with an isochronous OUT endpoint and a type I PCM
+format in 16, 24 or 32-bit slots (a 16-bit one first), and registers a
+card `usb-audio VVVV:PPPP` with one playback stream: the format's
+channels and those of its sampling frequencies the core knows. A UAC1
+interface (protocol 0) lists the frequencies in its format; a UAC2 one
+(protocol 0x20, high-speed DACs and interfaces, and full-speed ones)
+names the channels in its general descriptor and a terminal of the
+control interface, whose clock source answers a RANGE request with the
+frequencies (through a clock selector's current input or a
+multiplier's source). Starting the stream selects the setting, sets the
+sampling frequency (UAC1: the endpoint's `SET_CUR`, a speaker with one
+rate may refuse; UAC2: the clock source's CUR) and keeps about 24 ms of
+packets queued, a third at a time, one per service interval of the
+endpoint: a millisecond at full speed (`bInterval` 1: 24 packets, 8 at a
+time), 2^(`bInterval` - 1) microframes at high speed (48 packets at
+most, `USB_ISOCH_MAX` allowing: 6 ms at every microframe), from the
+core's buffer (silence for what it lacks; 44.1 kHz carries 44 or 45
+frames a millisecond), the core's 16-bit samples in the top bytes of a
+wider slot; each completion queues more. Stopping it goes back to
+setting 0, which gives the bus its bandwidth back. An asynchronous
+endpoint's explicit feedback (an isochronous IN endpoint) is not read,
+so its packets carry the nominal rate; capture (a microphone's
+isochronous IN) is issue #610. No QEMU device speaks UAC2 or plays at
+high speed: those paths are untested.
 
 ## EHCI and its companions
 
@@ -250,9 +264,22 @@ Their structures are below 4 GiB (32-bit pointers,
 A UHCI isochronous OUT packet is a TD in the frame list entry of the
 frame it goes out in, queued from two frames ahead of the controller
 (`FRNUM`) on, one a frame; once its frame passed it is taken out and
-counted (`isoch_reap`). EHCI drives no isochronous transfers
-(issue #622): a full-speed speaker on its root port plays through the
-companion.
+counted (`isoch_reap`).
+
+An EHCI's isochronous OUT packets go in the frame list too, in front of
+the anchor QH, in descriptors from a pool of the controller's (8 pages of
+128-byte slots, made with its first isochronous endpoint): a high-speed
+endpoint's in iTDs, one a frame with a packet in each microframe of its
+service interval (up to eight; `Mult`, from `wMaxPacketSize` bits 12:11,
+lets a packet take up to three transactions), and a full-speed one
+behind a high-speed hub's transaction translator in split siTDs, one a
+packet, its start-splits of 188 bytes each in the frame's first
+microframes and none to complete an OUT. They go in from the
+controller's isochronous scheduling threshold ahead (HCCPARAMS) on, and
+out once inactive or once their frame has passed. A full-speed speaker
+on an EHCI's root port plays through the companion. QEMU's EHCI skips
+siTDs and QEMU has no high-speed isochronous device, so neither runs in
+the test boots.
 
 OHCI's registers are memory-mapped (BAR 0) and its schedule is lists of
 endpoint descriptors (EDs), each with a queue of transfer descriptors
@@ -425,9 +452,10 @@ modules' init.
   interrupt endpoint's report, a bulk IN endpoint's page) holding one
   for as long as it is queued; its split transactions are untested (QEMU
   has no high-speed hub).
-- Isochronous transfers: OUT only, on the xHCI, UHCI and OHCI (issues
-  #610, #608, #622), two endpoints per device (xHCI), eight endpoints in
-  all (UHCI, OHCI); 4 USB speakers. No streams, no MSI
+- Isochronous transfers: OUT only, on the xHCI, EHCI, UHCI and OHCI
+  (issues #610, #608), two endpoints per device (xHCI), eight endpoints
+  in all (EHCI, UHCI, OHCI), an EHCI's service intervals 4 frames apart
+  at most; 4 USB speakers. No streams, no MSI
   for the devices: on
   aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at

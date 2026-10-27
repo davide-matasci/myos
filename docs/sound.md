@@ -12,7 +12,7 @@ talk to the server over a local socket, never to `/dev/sound` (a stream's
 |-------|------|
 | `modules/sound` | The core: the cards and their streams, `/dev/sound/N/{ctl,data}`, each stream's buffer, the `sound` service (`SoundOps`) the card drivers register with |
 | `modules/virtio_sound` | virtio-sound cards (virtio 1.2, device 25; PCI or MMIO): every playback and capture stream they have |
-| `modules/usb_audio` | USB Audio Class 1 speakers: one playback stream over the streaming interface's isochronous OUT endpoint (`docs/usb.md`) |
+| `modules/usb_audio` | USB Audio Class 1 and 2 playback (speakers, DACs, audio interfaces): one playback stream over the streaming interface's isochronous OUT endpoint, 16-bit PCM widened to the device's slot (`docs/usb.md`) |
 | `user/sndd` | The sound server: the `sndd` socket, mixing, rate, channel and format conversion |
 | `user/c/play.c` | `play` (a tone or a WAV file) and `rec` (into a WAV file), the server's clients |
 
