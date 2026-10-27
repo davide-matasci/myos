@@ -218,12 +218,14 @@ t -t mm mmap $SMOKES/mmap_smoke
 # A program too large to read whole (a 20 MiB .bss) is mapped from its
 # file and relocated in place: its relocated tables, data, .bss and heap,
 # a forked child's writes its own, an exec of itself; from the image and
-# from /tmp (bigimage_smoke.c).
+# from /tmp, and a copy cut before its section headers exits 127 (its
+# relocations unreadable after the exec went through; bigimage_smoke.c).
 bigimage_run() {
 	$SMOKES/bigimage_smoke || return 1
-	cp $SMOKES/bigimage_smoke /tmp/bigimage_smoke && /tmp/bigimage_smoke
+	cp $SMOKES/bigimage_smoke /tmp/bigimage_smoke && /tmp/bigimage_smoke \
+		&& /tmp/bigimage_smoke cut /tmp/bigimage_cut
 	rc=$?
-	rm -f /tmp/bigimage_smoke
+	rm -f /tmp/bigimage_smoke /tmp/bigimage_cut
 	return $rc
 }
 t -t mm,exec bigimage bigimage_run

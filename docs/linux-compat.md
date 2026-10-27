@@ -628,7 +628,10 @@ three, the kernel crate itself an hour. Known gaps:
     native position-independent program past either limit (GTK's,
     statically linked) is mapped from its file the same way, over an empty
     one-page image, and the kernel relocates it in place: the pages its
-    relocations write become the process's own copies;
+    relocations write become the process's own copies. That happens after
+    the old image is gone, so a program it cannot map or relocate (a text
+    relocation, into a read-only page) exits with status 127 and a
+    `[ FAIL ] exec PATH: ...` console line naming why;
   - a per-process `mmap` window of 64 GiB (every arch: above the image,
     its stack and heap, from 1 GiB for a position-independent program) with at
     most 4096 mappings; adjacent mappings with the same
