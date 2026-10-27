@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fetch the pinned network library sources into target/<name>-src,
-# glib-networking with its patch (glib-networking-*.myos.patch) applied.
+# libxml2 and glib-networking with their patches (*.myos.patch) applied.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -41,7 +41,7 @@ fetch() {
   echo "$want" >"$stamp"
 }
 
-fetch libxml2 "$LIBXML2_VERSION" "$LIBXML2_URL" "$LIBXML2_SHA256" J
+fetch libxml2 "$LIBXML2_VERSION" "$LIBXML2_URL" "$LIBXML2_SHA256" J "$HERE"/libxml2-*.myos.patch
 fetch libpsl "$LIBPSL_VERSION" "$LIBPSL_URL" "$LIBPSL_SHA256" z
 fetch nghttp2 "$NGHTTP2_VERSION" "$NGHTTP2_URL" "$NGHTTP2_SHA256" J
 fetch libsoup "$LIBSOUP_VERSION" "$LIBSOUP_URL" "$LIBSOUP_SHA256" J

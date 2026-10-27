@@ -6,7 +6,7 @@ the archives and their pkg-config files, `include/`):
 
 | Library | Notes |
 |---------|-------|
-| [libxml2](https://gitlab.gnome.org/GNOME/libxml2) | no iconv (mlibc has none: its own UTF-8, UTF-16 and Latin-1), zlib, ICU or HTTP client |
+| [libxml2](https://gitlab.gnome.org/GNOME/libxml2) | its test module left out of the build (`libxml2-testdso.myos.patch`: a shared one); no iconv (mlibc has none: its own UTF-8, UTF-16 and Latin-1), zlib, ICU or HTTP client |
 | [libpsl](https://github.com/rockdaboot/libpsl) | the Public Suffix List of its release built in, for cookies' domains; no IDNA library |
 | [nghttp2](https://nghttp2.org/) | HTTP/2, the library alone |
 | [libsoup 3](https://gitlab.gnome.org/GNOME/libsoup) | the HTTP client of the `webkit2gtk-4.1` API; no GSSAPI, NTLM, brotli or zstd |
