@@ -314,6 +314,7 @@ MYOS_C_SMOKES=(
   "at-smoke user/c/at_smoke.c"
   "fileio-smoke user/c/fileio_smoke.c"
   "mmap-smoke user/c/mmap_smoke.c"
+  "bigimage-smoke user/c/bigimage_smoke.c"
   "shm-smoke user/c/shm_smoke.c"
   "fault-smoke user/c/fault_smoke.c"
   "jit-smoke user/c/jit_smoke.c"
