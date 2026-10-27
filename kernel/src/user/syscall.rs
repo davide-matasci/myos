@@ -1079,14 +1079,14 @@ fn exec_path_depth(
     // A dynamically linked Linux program is mapped from its file, like the
     // shared objects its dynamic linker maps: that linker is the image. So
     // is a native program too large to read whole, over an empty image.
-    let mapped = mapped_program(&path);
+    let mut mapped = mapped_program(&path);
     // Static lookup for rootfs (`/bin/tcc/tcc`); VFS read for tmpfs `tcc -o` output.
     // The file is read into the kernel heap; what gets mapped is still capped
     // by the image limit (`MAX_ELF_PAGES`). A successful exec never
     // returns, so the copy is freed explicitly before the new image runs.
     let mut owned: Option<Vec<u8>> = None;
-    let bytes: &[u8] = if let Some(m) = &mapped {
-        m.image()
+    let file: &[u8] = if mapped.is_some() {
+        &[]
     } else if let Some(b) = fs::lookup(&path) {
         b
     } else if let Some(v) = fs::read_all(&path, EXEC_FILE_MAX) {
@@ -1118,6 +1118,15 @@ fn exec_path_depth(
             pos += n;
         }
         owned.insert(v)
+    };
+    // A native program read whole whose image is too large to load from it
+    // is mapped too.
+    if mapped.is_none() && !crate::personality::pending() {
+        mapped = native_mapped(&path, file);
+    }
+    let bytes: &[u8] = match &mapped {
+        Some(m) => m.image(),
+        None => file,
     };
     if let Some(line) = bytes.strip_prefix(b"#!") {
         // Only the line is kept (the script's file freed): the interpreter's
@@ -1287,8 +1296,16 @@ fn exec_path_depth(
     drop(interp);
     task::replace_user(aspace, entry, rsp, base, span, off, argc, argv);
     task::set_current_name(path.rsplit('/').next().unwrap_or(path.as_str()).as_bytes());
+    // Past the point of no return: a failure is the exit status 127 and a
+    // line on the console, saying why the program never ran.
     if let Some(m) = &mapped {
-        if !m.map(aspace, program_at) || !m.relocate(aspace, program_at) {
+        let why = if !m.map(aspace, program_at) {
+            Some(alloc::string::String::from("its segments cannot be mapped"))
+        } else {
+            m.relocate(aspace, program_at).err().map(|e| alloc::format!("relocation: {e}"))
+        };
+        if let Some(why) = why {
+            crate::console::status_fail(&alloc::format!("exec {path}: {why}"));
             task::user_exit(127);
         }
     }
@@ -2292,22 +2309,25 @@ const PROGRAM_HEAD_MAX: usize = 64 * 1024;
 /// larger position-independent one is a [`MappedProgram`].
 const EXEC_FILE_MAX: usize = 16 * 1024 * 1024;
 
-/// `path` as a [`MappedProgram`], or `None` for any other exec (a native
-/// one that fits, a static or non-PIE program: read whole as before).
+/// `path` as a [`MappedProgram`], or `None` for any other exec (a static
+/// or non-PIE program, a native one that fits: read whole as before). A
+/// native file small enough to read whole is judged after that read, by
+/// [`native_mapped`]: its image may still be too large to load from it.
 fn mapped_program(path: &str) -> Option<MappedProgram> {
     let linux = crate::personality::pending();
-    // Whether a native program is too large to read whole.
-    let large = |size: usize, head: &[u8]| {
-        size > EXEC_FILE_MAX
-            || elf::image_span(head).is_ok_and(|s| s.span.div_ceil(PAGE) > MAX_ELF_PAGES)
-    };
-    // The image file system's programs are in memory already: their size
-    // is seen there.
-    if !linux && fs::lookup(path).is_some_and(|b| !large(b.len(), b)) {
-        return None;
+    // The image file system's programs are in memory already, and a native
+    // file `exec` can read whole is judged from what it reads
+    // ([`native_mapped`]): only a larger one's headers are read here.
+    if !linux {
+        if let Some(b) = fs::lookup(path) {
+            return native_mapped(path, b);
+        }
     }
     let node = fs::open(path, 0)?;
     let size = fs::size_of(&node)?;
+    if !linux && size <= EXEC_FILE_MAX {
+        return None;
+    }
     let mut head = alloc::vec![0u8; size.min(PROGRAM_HEAD_MAX)];
     let mut got = 0;
     while got < head.len() {
@@ -2322,10 +2342,7 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
     }
     elf::image_span(&head).ok()?;
     if !linux {
-        if !large(size, &head) || elf::interp_range(&head).is_some() {
-            return None;
-        }
-        return Some(MappedProgram { node, head, interp: None });
+        return elf::interp_range(&head).is_none().then_some(MappedProgram { node, head, interp: None });
     }
     let (off, len) = elf::interp_range(&head)?;
     let mut name = alloc::vec![0u8; len.min(MAX_PATH)];
@@ -2345,6 +2362,22 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
     Some(MappedProgram { node, head, interp: Some(interp) })
 }
 
+/// The native program at `path`, whose file is `bytes`, as a
+/// [`MappedProgram`] when its image is too large to read whole (over
+/// [`MAX_ELF_PAGES`], or its file over [`EXEC_FILE_MAX`]: one in the image
+/// file system) and it is position-independent and static; `None` for one
+/// `exec` loads from `bytes` as before.
+fn native_mapped(path: &str, bytes: &[u8]) -> Option<MappedProgram> {
+    let large = bytes.len() > EXEC_FILE_MAX
+        || elf::image_span(bytes).is_ok_and(|s| s.span.div_ceil(PAGE) > MAX_ELF_PAGES);
+    if !large || !elf::is_pie(bytes) || elf::interp_range(bytes).is_some() {
+        return None;
+    }
+    let node = fs::open(path, 0)?;
+    let head = bytes[..bytes.len().min(PROGRAM_HEAD_MAX)].to_vec();
+    Some(MappedProgram { node, head, interp: None })
+}
+
 impl MappedProgram {
     /// What `exec` loads as the image: the dynamic linker, or an empty one.
     fn image(&self) -> &[u8] {
@@ -2353,29 +2386,25 @@ impl MappedProgram {
 
     /// Relocate a native program mapped with its lowest page at `at`
     /// (after [`Self::map`]): its relocations are read from its file, and
-    /// the words they name written in the current address space. A Linux
+    /// the words they name written in the current address space (a word
+    /// in a read-only page cannot be: a text relocation). A Linux
     /// program's dynamic linker relocates it.
-    fn relocate(&self, aspace: u64, at: u64) -> bool {
+    fn relocate(&self, aspace: u64, at: u64) -> Result<(), elf::LoadError> {
         if self.interp.is_some() {
-            return true;
+            return Ok(());
         }
-        let Ok(span) = elf::image_span(&self.head) else {
-            return false;
-        };
+        let span = elf::image_span(&self.head)?;
         // The image's offsets are from its lowest page, at `at`.
-        let Some(bias) = at.checked_sub(span.min_vaddr) else {
-            return false;
-        };
-        let ok = elf::relocate(&NodeSrc(&self.node), bias, &mut |off, f| {
+        let bias = at.checked_sub(span.min_vaddr).ok_or(elf::LoadError::Unsupported)?;
+        let done = elf::relocate(&NodeSrc(&self.node), bias, &mut |off, f| {
             let va = at as usize + off;
             let Some(w) = read_user_usize(aspace, va) else {
                 return false;
             };
             write_user_usize(aspace, va, f(w as u64) as usize)
-        })
-        .is_ok();
+        });
         flush_user_tlb();
-        ok
+        done
     }
 
     /// Its entry point when its lowest page is mapped at `at`.

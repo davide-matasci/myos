@@ -73,6 +73,25 @@ capture() {
 	"$@" > "$f" 2>&1
 }
 
+# hung_watch NAME (in the background, beside test NAME): once the test has
+# run HUNG seconds, its system as it is, on the console: a `HUNG` line, then
+# each thread's /proc line (docs/proc.md: its state and the key it waits
+# on) and each process's command line. A test that hangs is shown before
+# the host's stall watchdog ends the boot (180 s of silence in a quick run,
+# 600 s in one with the `heavy` tests, which may take minutes): CI #2295's
+# lynx test stalled with every CPU idle, and nothing told what waited.
+hung_watch() {
+	HUNG=300
+	has "$SKIP" heavy && HUNG=120
+	trap 'kill $hw_sleep 2> /dev/null; exit 0' TERM
+	sleep $HUNG &
+	hw_sleep=$!
+	wait $hw_sleep
+	echo "HUNG $1: still running after ${HUNG}s; its threads (tid pid name state cpu wait time start pending blocked), then the processes:"
+	for hw_f in /proc/[0-9]*/task/*/status; do cat "$hw_f"; done 2> /dev/null
+	for hw_d in /proc/[0-9]*; do echo "$hw_d $(tr '\0' ' ' < $hw_d/cmdline 2> /dev/null)"; done
+}
+
 # has LIST ITEM: the comma list has the item.
 has() {
 	case ",$1," in
@@ -118,8 +137,12 @@ t() {
 	total=$((total + 1))
 	# The test runs in this shell (a function sets what later ones read):
 	# the runner's own variables are named so that none clobbers them.
+	hung_watch $t_name >&3 2>&1 &
+	t_hung=$!
 	capture $OUT/$t_name.out "$@"
 	t_rc=$?
+	kill $t_hung 2> /dev/null
+	wait $t_hung 2> /dev/null
 	if [ $t_rc -eq 0 ]; then
 		passed=$((passed + 1))
 		echo "TEST $t_name PASS"
