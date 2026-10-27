@@ -19,7 +19,7 @@ pkg-config files written for LibreSSL and SQLite, which install none).
 
 GIO loads its TLS backend as a module, with `dlopen`, which myos lacks:
 glib-networking's static library (`gioopenssl`, its own static build;
-`glib-networking-static.myos.patch` leaves out the shared module) is linked
+`glib-networking-static.myos.patch` leaves out the shared module and the module cache it would update) is linked
 into the program, which registers it before its first TLS connection with
 `g_io_openssl_load (NULL)`. The default certificates are LibreSSL's
 default file, the image's CA bundle (`/lib/cacert.pem`).
