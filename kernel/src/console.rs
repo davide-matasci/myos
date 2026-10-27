@@ -267,18 +267,25 @@ pub fn keymap_path() -> Option<String> {
     KEYMAP_PATH.lock().clone()
 }
 
-pub fn write_byte(byte: u8) {
-    let _guard = OUT.lock();
-    write_byte_unlocked(byte);
-}
-
-fn write_byte_unlocked(byte: u8) {
-    SerialPort::new().write_byte(byte);
-    screen_write(CONSOLE_TEXT, &[byte]);
-}
-
 pub fn write_str(s: &str) {
     let _ = Console.write_str(s);
+}
+
+/// `s` (UTF-8 or not) to serial and the screen in one hold of `OUT`: what
+/// a module writes ([`crate::modules`]'s `write_str`) cannot be split by
+/// another writer. A byte at a time, a module's status line and a getty's
+/// prompt on another CPU came out mixed (`[P OK ] asswolinuxrd`, issue
+/// #632).
+pub fn write_bytes(s: &[u8]) {
+    if s.is_empty() {
+        return;
+    }
+    let _guard = OUT.lock();
+    let mut serial = SerialPort::new();
+    for &b in s {
+        serial.write_byte(b);
+    }
+    screen_write(CONSOLE_TEXT, s);
 }
 
 /// Banner line (e.g. `Hello from myos`) in accent color on the screen.

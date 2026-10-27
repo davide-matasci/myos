@@ -15,12 +15,10 @@ char *getpass(const char *prompt) {
     static char buf[128];
     size_t i = 0;
 
+    /* The prompt in one write: a byte at a time, a kernel line on another
+     * CPU (a module's status) landed between its letters (issue #632). */
     if (prompt != NULL) {
-        const char *p = prompt;
-        while (*p) {
-            write(2, p, 1);
-            p++;
-        }
+        write(2, prompt, strlen(prompt));
     }
     for (;;) {
         char c = 0;

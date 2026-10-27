@@ -2820,30 +2820,71 @@ impl SoundOps {
 
 /// Emit `[ OK ] label\n` via `KernelApi::write_str` (same spacing as `console::status_ok`).
 pub fn status_ok(api: &KernelApi, label: &str) {
-    api.write_str("[ OK ] ");
-    api.write_str(label);
-    api.write_str("\n");
+    status_line(api, "[ OK ] ", label);
 }
 
 /// Emit `[ FAIL ] label\n` via `KernelApi::write_str`.
 pub fn status_fail(api: &KernelApi, label: &str) {
-    api.write_str("[ FAIL ] ");
-    api.write_str(label);
-    api.write_str("\n");
+    status_line(api, "[ FAIL ] ", label);
 }
 
 /// Emit `[ INFO ] label\n` via `KernelApi::write_str`.
 pub fn status_info(api: &KernelApi, label: &str) {
-    api.write_str("[ INFO ] ");
-    api.write_str(label);
-    api.write_str("\n");
+    status_line(api, "[ INFO ] ", label);
 }
 
 /// Emit `[ WARN ] label\n` via `KernelApi::write_str`.
 pub fn status_warn(api: &KernelApi, label: &str) {
-    api.write_str("[ WARN ] ");
-    api.write_str(label);
-    api.write_str("\n");
+    status_line(api, "[ WARN ] ", label);
+}
+
+/// `tag`, `label` and the newline in one write, which the kernel keeps
+/// whole on the console: in three, another CPU's output (a getty's
+/// prompt) could land between them, and the boot test's harness, which
+/// skips a status line wherever it starts, could not find the prompt
+/// (issue #632). A label too long for the line goes in pieces.
+fn status_line(api: &KernelApi, tag: &str, label: &str) {
+    let mut line = [0u8; 160];
+    match status_text(&mut line, tag, label) {
+        Some(len) => api.write_bytes(&line[..len]),
+        None => {
+            api.write_str(tag);
+            api.write_str(label);
+            api.write_str("\n");
+        }
+    }
+}
+
+/// `tag`, `label` and a newline into `line`: their length, or `None` when
+/// they do not fit.
+fn status_text(line: &mut [u8], tag: &str, label: &str) -> Option<usize> {
+    let len = tag.len() + label.len() + 1;
+    let line = line.get_mut(..len)?;
+    line[..tag.len()].copy_from_slice(tag.as_bytes());
+    line[tag.len()..len - 1].copy_from_slice(label.as_bytes());
+    line[len - 1] = b'\n';
+    Some(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_text;
+
+    #[test]
+    fn status_text_is_the_whole_line() {
+        let mut line = [0u8; 160];
+        let n = status_text(&mut line, "[ OK ] ", "linux").unwrap();
+        assert_eq!(&line[..n], b"[ OK ] linux\n");
+        let n = status_text(&mut line, "[ WARN ] ", "").unwrap();
+        assert_eq!(&line[..n], b"[ WARN ] \n");
+    }
+
+    #[test]
+    fn status_text_refuses_what_does_not_fit() {
+        let mut line = [0u8; 13];
+        assert_eq!(status_text(&mut line, "[ OK ] ", "linux"), Some(13));
+        assert_eq!(status_text(&mut line, "[ OK ] ", "linux!"), None);
+    }
 }
 
 /// `module_init` — required. Return 0 on success.
