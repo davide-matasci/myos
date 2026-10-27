@@ -419,11 +419,15 @@ fn new_unix(ty: usize) -> R {
 
 /// readv / writev / sendmsg / recvmsg on a record socket: one record,
 /// gathered from or scattered over the `iovec`s (a write per piece would
-/// make each its own record). `None` for any other fd.
-pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool) -> Option<R> {
+/// make each its own record); a read waits for one unless `dontwait` (or
+/// the socket is non-blocking). `None` for any other fd.
+pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool, dontwait: bool) -> Option<R> {
     let (conv, s) = sock(fd).ok()?;
     if !s.records {
         return None;
+    }
+    if cnt > 1024 {
+        return Some(Err(EINVAL));
     }
     let mut pieces = Vec::new();
     let mut total = 0usize;
@@ -450,7 +454,7 @@ pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool) -> Option<R> {
         return Some(send(fd, || fs::write(&data, 0, &rec).ok_or(EAGAIN)));
     }
     let mut rec = alloc::vec![0u8; total.min(RECORD_MAX)];
-    Some(recv(fd, false, || {
+    Some(recv(fd, dontwait, || {
         let n = fs::read(&data, 0, &mut rec).unwrap_or(0);
         let mut left = &rec[..n];
         for &(base, len) in &pieces {
@@ -880,7 +884,12 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
         put(msg + 48, &0u32.to_le_bytes())?;
         return Ok(n);
     }
-    let n = recv(fd, flags & MSG_DONTWAIT != 0, || super::sys::rw_vec(fd, iov, iovlen, false))?;
+    // A record socket's read waits (or not) once, in record_rw.
+    let dontwait = flags & MSG_DONTWAIT != 0;
+    let n = match record_rw(fd, iov, iovlen, false, dontwait) {
+        Some(r) => r?,
+        None => recv(fd, dontwait, || super::sys::rw_vec(fd, iov, iovlen, false))?,
+    };
     let mut room = 0usize;
     for i in 0..iovlen.min(1024) {
         room = room.saturating_add(get_u64(iov + i * 16 + 8)? as usize);

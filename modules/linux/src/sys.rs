@@ -210,7 +210,7 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
         return Err(EINVAL);
     }
     // A record socket's `iovec`s make one record.
-    if let Some(r) = super::net::record_rw(fd, iov, cnt, write) {
+    if let Some(r) = super::net::record_rw(fd, iov, cnt, write, false) {
         return r;
     }
     let io = || {
