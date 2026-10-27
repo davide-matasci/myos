@@ -50,9 +50,10 @@
  * socket per client). */
 #define MYOS_MAX_SOCKS MYOS_OPEN_MAX
 #define UN_NAME_CAP ((int)sizeof(((struct sockaddr_un *)0)->sun_path))
-/* The largest SOCK_SEQPACKET record: what one end of a /net/unix
- * conversation buffers (netfs's BUF_CAP). A larger one is EMSGSIZE. */
-#define UN_RECORD_MAX (64 * 1024)
+/* The largest SOCK_SEQPACKET record: what the kernel hands a file in one
+ * write (a larger write reaches /net/unix in pieces, each a record of its
+ * own; netfs's RECORD_MAX). A larger one is EMSGSIZE. */
+#define UN_RECORD_MAX (8 * 1024)
 #define CONNECT_TIMEOUT_MS 30000
 /* A UDP datagram's header to and from netd, and the most one netfs
  * message carries behind it. */
@@ -630,19 +631,18 @@ int myos_socket_empty_read(int fd) {
 }
 
 /*
- * Called from _write when the kernel refused a write of `cnt` bytes on a
- * tracked socket fd. A stream refuses a write when it has no room: a unix
- * peer's buffer is full, or netd has a TCP conversation's 8 KiB of sends
- * still queued; a unix record socket when the whole record does not fit.
+ * Called from _write when the kernel refused a write on a tracked socket fd.
+ * A stream refuses a write when it has no room: a unix peer's buffer is
+ * full, or netd has a TCP conversation's 8 KiB of sends still queued; a
+ * unix record socket when the whole record does not fit.
  *   0 = not handled (keep the generic error)
  *   1 = no room + nonblocking -> EAGAIN
  *   2 = peer gone -> EPIPE
  *   3 = waited for room: retry the write
  *   4 = not connected -> ENOTCONN
  *   5 = the wait was interrupted -> EINTR
- *   6 = a record larger than a socket buffer -> EMSGSIZE
  */
-int myos_socket_write_failed(int fd, size_t cnt) {
+int myos_socket_write_failed(int fd) {
     struct myos_sock *s = sock_by_fd(fd);
     struct pollfd p = {fd, POLLOUT, 0};
     if (s == NULL || (s->type != SOCK_STREAM && s->type != SOCK_SEQPACKET)) {
@@ -651,10 +651,7 @@ int myos_socket_write_failed(int fd, size_t cnt) {
     if (s->state != SOCK_CONNECTED) {
         return 4;
     }
-    /* A record that can never fit (the kernel refuses it whole). */
-    if (s->type == SOCK_SEQPACKET && cnt > UN_RECORD_MAX) {
-        return 6;
-    }
+
     if (status_is_hangup(s)) {
         return 2;
     }
@@ -667,6 +664,18 @@ int myos_socket_write_failed(int fd, size_t cnt) {
         return 5;
     }
     return p.revents & (POLLHUP | POLLERR | POLLNVAL) ? 2 : 3;
+}
+
+/* Whether a write of `cnt` bytes to `fd` is a record larger than a record
+ * socket takes (UN_RECORD_MAX): a socket of the table (a write is no
+ * socket call that adopts one). */
+int myos_socket_record_too_big(int fd, size_t cnt) {
+    struct myos_sock *s;
+    if (cnt <= UN_RECORD_MAX) {
+        return 0;
+    }
+    s = sock_by_fd(fd);
+    return s != NULL && s->type == SOCK_SEQPACKET;
 }
 
 /* Whether a short write on `fd` should go on with the rest: a blocking

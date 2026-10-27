@@ -587,7 +587,7 @@ three, the kernel crate itself an hour. Known gaps:
   through one). A `SOCK_SEQPACKET` socket's conversation keeps records
   (`docs/sockets-unix.md`): a write, a `writev` or a `sendmsg` is one
   record, a read returns one (`MSG_TRUNC` when it was longer), and one
-  past 64 KiB is `EMSGSIZE`. No `SOCK_DGRAM`.
+  past 8 KiB is `EMSGSIZE`. No `SOCK_DGRAM`.
 - File locks are the native ones (`README.md`, "File locks"): `flock`,
   `fcntl`'s record locks (`F_SETLK`, `F_SETLKW`, `F_GETLK`) and the open
   file description's (`F_OFD_SETLK`, ...), so cargo, SQLite and git

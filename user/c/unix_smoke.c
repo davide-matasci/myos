@@ -351,16 +351,16 @@ static int seqchild(const char *arg) {
 /* Record sockets (SOCK_SEQPACKET, the conversation's `seqpacket` mode):
  * each write is a record read whole by one read, sendmsg's pieces one
  * record; a record a buffer has no room for is cut short (MSG_TRUNC) and
- * the next read starts at the next one; a record no socket buffer holds
- * is EMSGSIZE; one that does not fit the peer's free room is refused
- * whole (EAGAIN) until it does; fds come with their record; a named
+ * the next read starts at the next one; a record over 8 KiB is EMSGSIZE;
+ * one that does not fit the peer's free room (64 KiB, eight full records)
+ * is refused whole (EAGAIN) until it does; fds come with their record; a named
  * listener takes record clients only; a record socket passed in an
  * SCM_RIGHTS message or inherited by exec is still one. NULL, or what
  * failed. */
 static const char *seqpacket(const char *self) {
-    static char big[70000];
+    static char big[9000];
     char buf[64];
-    int sv[2], q[2], fds[4], n, flags;
+    int sv[2], q[2], fds[4], n, flags, i;
     if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) != 0 || !is_seqpacket(sv[0]) || !is_seqpacket(sv[1])) {
         return "socketpair";
     }
@@ -381,16 +381,25 @@ static const char *seqpacket(const char *self) {
     }
     errno = 0;
     if (write(sv[0], big, sizeof big) != -1 || errno != EMSGSIZE) {
-        return "a record larger than a socket buffer: EMSGSIZE";
+        return "a record over 8 KiB: EMSGSIZE";
     }
     fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    for (i = 0; i < 8; i++) {
+        if (write(sv[0], big, 8192) != 8192) {
+            return "eight records of 8 KiB fill the peer's buffer";
+        }
+    }
     errno = 0;
-    if (write(sv[0], big, 40000) != 40000 || write(sv[0], big, 40000) != -1 || errno != EAGAIN) {
+    if (write(sv[0], big, 8192) != -1 || errno != EAGAIN) {
         return "a record the peer has no room for is refused whole";
     }
-    if (read(sv[1], big, sizeof big) != 40000 || write(sv[0], big, 40000) != 40000
-        || read(sv[1], big, sizeof big) != 40000) {
-        return "the record fits once the reader read";
+    if (read(sv[1], big, sizeof big) != 8192 || write(sv[0], big, 8192) != 8192) {
+        return "the record fits once the reader read one";
+    }
+    for (i = 0; i < 8; i++) {
+        if (read(sv[1], big, sizeof big) != 8192) {
+            return "each 8 KiB record read whole";
+        }
     }
     fcntl(sv[0], F_SETFL, 0);
     /* A record socket in an SCM_RIGHTS message is one: its record of three

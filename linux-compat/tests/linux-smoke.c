@@ -557,12 +557,12 @@ static const char *pass_fds(void) {
 }
 
 /* Record sockets (SOCK_SEQPACKET): each write a record read whole, writev's
- * pieces one record, a record cut short says MSG_TRUNC, one larger than a
- * socket buffer is EMSGSIZE, a record socket received in SCM_RIGHTS is
+ * pieces one record, a record cut short says MSG_TRUNC, one over 8 KiB is
+ * EMSGSIZE, a record socket received in SCM_RIGHTS is
  * still one, and a stream client of a record listener is refused. NULL, or
  * what failed. */
 static const char *seqpacket(void) {
-    static char big[70000];
+    static char big[9000];
     char buf[64];
     int sv[2], q[2], fds[4], n, flags, type = 0;
     socklen_t len = sizeof type;

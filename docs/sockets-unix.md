@@ -35,9 +35,12 @@ The files are those of `/net/tcp`, plus `listen`, `rights` and `from`:
 - `seqpacket`, before `announce`, `connect` or `pair`, makes the
   conversation keep records: each write is one record, taken whole or
   refused (no partial write), and a read returns at most one record,
-  dropping what of it the reader had no room for. A record larger than the
-  64 KiB buffer can never be written; one that does not fit the room left
-  is refused until it does, and `poll` says `POLLOUT` only once it would.
+  dropping what of it the reader had no room for. A record is at most
+  8 KiB: the kernel hands a file a larger write in pieces, each of which
+  would be a record of its own, so the libraries refuse it (`EMSGSIZE`)
+  before it is written (issue #645). One that does not fit the room left
+  in the 64 KiB buffer is refused until it does, and `poll` says
+  `POLLOUT` only once it would.
   `pair`'s other end and the server's end of a `connect` keep records too;
   `connect` to a record listener from a stream conversation (or the other
   way round) is refused.
@@ -90,7 +93,7 @@ lock, so the unix conversations have their own spinlock.
 | `write` / `send` | `data`; a full peer buffer waits in `poll` for room (blocking) or says `EAGAIN`; a closed peer `EPIPE` (no `SIGPIPE`) |
 | `poll` / `select` | netfs's `poll` hook: `POLLIN` for bytes, a queued connection or the peer gone, `POLLOUT` while the peer's buffer has room |
 | `getsockname` / `getpeername` | the bound or connected name; accepted sockets have the listener's name and an unnamed peer |
-| `sendmsg` | `rights` with an `SCM_RIGHTS` message, then the data gathered into one write (`norights` when it fails): one record on a record socket, `EMSGSIZE` past 64 KiB |
+| `sendmsg` | `rights` with an `SCM_RIGHTS` message, then the data gathered into one write (`norights` when it fails): one record on a record socket, `EMSGSIZE` past 8 KiB (`write` too) |
 | `recvmsg` | one read of `data`, then `rights` for the fds that came with it as an `SCM_RIGHTS` message; those `msg_control` has no room for are closed (`MSG_CTRUNC`); `MSG_CMSG_CLOEXEC`; on a record socket whose read filled the buffers, `ctl` says whether the record was longer (`MSG_TRUNC`) |
 | a socket fd inherited by `exec` or received in `SCM_RIGHTS` | known by its `/proc/self/fd` link (`/net/unix/N/data`) at its first socket call: a stream or a record socket as `ctl` says, connected or listening as `status` says |
 

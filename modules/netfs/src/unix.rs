@@ -15,9 +15,11 @@
 //! - `hangup`: close the connection both ways (`shutdown`);
 //! - `seqpacket`: before it is announced, connected or paired, make the
 //!   conversation keep records (`SOCK_SEQPACKET`): each write is one,
-//!   taken whole or refused (a record larger than [`BUF_CAP`] can never
-//!   be), and a read returns at most one, the rest of a record it has no
-//!   room for dropped. `pair`'s other end and the server's end of a
+//!   taken whole or refused (a record larger than [`RECORD_MAX`] is
+//!   refused: the kernel hands a file a larger write in pieces, which
+//!   would be records of their own, so the libraries say `EMSGSIZE`
+//!   first), and a read returns at most one, the rest of a record it has
+//!   no room for dropped. `pair`'s other end and the server's end of a
 //!   `connect` keep records too, and only a record client connects to a
 //!   record listener. Reading `ctl` says `seqpacket` for such a
 //!   conversation (nothing for a stream), `seqpacket cut` when the last
@@ -69,6 +71,9 @@ const NAME_CAP: usize = 108;
 const BACKLOG: usize = 8;
 /// Fds one write carries at most (Linux's `SCM_MAX_FD`).
 const RIGHTS_MAX: usize = 253;
+/// The largest record: what the kernel hands a file in one write
+/// (`FILE_IO_TMP`; issue #645).
+const RECORD_MAX: usize = 8 * 1024;
 /// What reading a record conversation's `ctl` says, and after a read that
 /// dropped the rest of a record.
 const SEQPACKET: &[u8] = b"seqpacket\n";
@@ -526,12 +531,13 @@ pub fn write(node: Node, src: &[u8]) -> i32 {
             let p = &mut convs[peer as usize];
             let room = BUF_CAP - p.rx.len();
             // A record is taken whole or not at all; an empty one is none.
+            // One that never fits (`EMSGSIZE`, the library's) waits for
+            // nothing.
+            if records && src.len() > RECORD_MAX {
+                return -1;
+            }
             if records && src.len() > room {
-                // One that never fits (`EMSGSIZE`, the library's) waits
-                // for nothing.
-                if src.len() <= BUF_CAP {
-                    convs[id as usize].want = src.len();
-                }
+                convs[id as usize].want = src.len();
                 return -1;
             }
             if records && src.is_empty() {

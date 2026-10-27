@@ -394,8 +394,9 @@ fn conv_id(file: &str) -> Result<String, usize> {
 /// A new unix socket's state.
 const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, inet6: false, peer: None, unix: Some(UNNAMED), passcred: false, records: false };
 
-/// The largest record: what one end of a `/net/unix` conversation buffers.
-const RECORD_MAX: usize = 64 << 10;
+/// The largest record: what the kernel hands a file in one write (a larger
+/// `write` would reach `/net/unix` in pieces, each a record).
+const RECORD_MAX: usize = 8 << 10;
 
 /// A new unix socket of type `ty` (with its flags): a stream, or a record
 /// socket whose conversation keeps records from the start (`seqpacket`).

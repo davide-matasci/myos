@@ -270,7 +270,8 @@ ssize_t myos_sigfd_expand(void *buf, ssize_t n);
 void myos_evfd_on_close(int fd);
 int myos_socket_empty_read(int fd);
 int myos_socket_fcntl(int fd, int cmd, int arg);
-int myos_socket_write_failed(int fd, size_t cnt);
+int myos_socket_write_failed(int fd);
+int myos_socket_record_too_big(int fd, size_t cnt);
 int myos_socket_write_all(int fd);
 /* poll() around the kernel call (pollselect.c): before it, a tracked socket
  * sets what is ready already (*now) and what the kernel should wait for
