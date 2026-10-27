@@ -321,10 +321,7 @@ unsafe extern "C" fn api_write_str(ptr: *const u8, len: usize) {
     if ptr.is_null() || len == 0 {
         return;
     }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    for &b in bytes {
-        console::write_byte(b);
-    }
+    console::write_bytes(unsafe { core::slice::from_raw_parts(ptr, len) });
 }
 
 unsafe extern "C" fn api_alloc(size: usize, align: usize) -> *mut u8 {
