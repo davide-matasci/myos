@@ -104,17 +104,21 @@ build_libs() {
   # Linux cross builds, so its own generator writes it, from what the
   # compiler lays out, into a copy of the source, where its header
   # generator looks (syscfg/, the host's OS: "none").
-  # It reads the mutex's size with llvm-objdump (every arch's objects),
-  # from clang's own directory when it is not on PATH (Ubuntu's versioned
-  # LLVM, CI's image), and says nothing when it cannot: an empty size is
-  # refused here.
-  local objdump lock="$build/libgpg-error-src/src/syscfg/lock-obj-pub.none.h"
-  objdump="$(command -v llvm-objdump || echo "$(dirname "$(readlink -f "$(command -v clang)")")/llvm-objdump")"
+  # It reads the mutex's size from `objdump -t`, and says nothing when it
+  # cannot: the line it reads comes from readelf, which reads every arch's
+  # objects (CI's image has no llvm-objdump), and an empty size is refused.
+  local lock="$build/libgpg-error-src/src/syscfg/lock-obj-pub.none.h"
+  cat >"$build/objdump-t" <<'EOF'
+#!/bin/sh
+# objdump -t FILE, as gen-lock-obj.sh reads it: each symbol's size, then its name.
+readelf -sW "$2" | awk '$8 != "" { printf "0 g O .data %x %s\n", $3, $8 }'
+EOF
+  chmod +x "$build/objdump-t"
   cp -r "$T/libgpg-error-src" "$build/libgpg-error-src"
   LOCK_ABI_VERSION=1 host="${arch}-unknown-none" host_alias="${arch}-unknown-none" \
-    CC="$build/cc" OBJDUMP="$objdump" ac_ext=c ac_objext=o AWK=awk \
+    CC="$build/cc" OBJDUMP="$build/objdump-t" ac_ext=c ac_objext=o AWK=awk \
     sh "$build/libgpg-error-src/src/gen-lock-obj.sh" >"$lock"
-  grep -q '_priv\[[1-9]' "$lock" || { echo "error: libgpg-error's lock type ($objdump)" >&2; exit 1; }
+  grep -q '_priv\[[1-9]' "$lock" || { echo "error: libgpg-error's lock type" >&2; exit 1; }
   # mlibc has getdents64 but no struct dirent64: the generic way to find
   # the open fds a spawn closes.
   autotools "$build/libgpg-error" "$build/libgpg-error-src" "${arch}-unknown-none" --disable-doc \
