@@ -1865,13 +1865,18 @@ fi
 hung_watch_fast() {
 	n=0
 	while [ $n -lt 40 ]; do
-		s=$(date +%s)
+		read -r _ t0 < /proc/cpu
 		hung_watch_start hwf
 		p=$!
+		read -r _ t1 < /proc/cpu
 		hung_watch_done hwf
+		read -r _ t2 < /proc/cpu
 		wait $p
-		e=$(date +%s)
-		[ $((e - s)) -lt 3 ] || { echo "round $n took $((e - s)) s"; return 1; }
+		read -r _ t3 < /proc/cpu
+		[ $((t3 - t0)) -lt 2000 ] || {
+			echo "round $n took $((t3 - t0)) ms: start $((t1 - t0)), done $((t2 - t1)), wait $((t3 - t2))"
+			return 1
+		}
 		n=$((n + 1))
 	done
 }

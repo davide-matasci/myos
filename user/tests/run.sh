@@ -100,7 +100,7 @@ hung_watch() {
 		kill $hw_sleep 2> /dev/null
 		return 0
 	fi
-	wait $hw_sleep
+	wait $hw_sleep 2> /dev/null
 	: > $OUT/hw-$1.pid
 	[ -s $OUT/hw-$1.done ] && return 0
 	echo "HUNG $1: still running after ${HUNG}s; its threads (tid pid name state cpu wait time start pending blocked), then the processes:"
