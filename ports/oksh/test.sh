@@ -60,7 +60,7 @@ sh_kill_fresh() {
 		kill $p
 		wait $p 2> /dev/null
 		e=$(date +%s)
-		[ $((e - s)) -lt 2 ] || { echo "round $n: the killed sleep lived $((e - s)) s"; return 1; }
+		[ $((e - s)) -lt 2 ] || { trap - TERM; echo "round $n: the killed sleep lived $((e - s)) s"; return 1; }
 		n=$((n + 1))
 	done
 	trap - TERM
