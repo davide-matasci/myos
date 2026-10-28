@@ -90,6 +90,10 @@ pub struct Net0Device {
     mac: [u8; 6],
     /// `irq on` in `ctl`: a `poll` on `data` wakes when a frame arrives.
     rx_irq: bool,
+    /// `program` of `ctl` when the NIC was opened (a virtual NIC's count of
+    /// programs so far, `docs/wifi.md`; 0 for a wired one): what
+    /// [`nic_ctl`]'s compares.
+    program: u64,
     /// The last router advertisement received ([`take_router_advert`]),
     /// which smoltcp leaves alone.
     ///
@@ -169,14 +173,15 @@ impl Net0Device {
         let data = join(&mut data, dir, b"/data")?;
         let ctl = join(&mut ctl, dir, b"/ctl")?;
         let fd = open_flags(data, O_RDWR)?;
-        let (mac, rx_irq) = read_ctl(ctl).unwrap_or(([0; 6], false));
+        let ctl = read_ctl(ctl).unwrap_or_default();
         Some(Self {
             fd,
             rx: [0; FRAME_BUF],
             rx_len: 0,
             rx_frames: 0,
-            mac,
-            rx_irq,
+            mac: ctl.mac,
+            rx_irq: ctl.irq,
+            program: ctl.program,
             router_advert: None,
             unreachable: Vec::new(),
         })
@@ -240,10 +245,10 @@ impl Net0Device {
         self.rx_irq
     }
 
-    /// The `mac` line of `ctl` as read when the NIC was opened (zero when
-    /// it named none): what [`ctl_mac`] compares.
-    pub fn mac_bytes(&self) -> [u8; 6] {
-        self.mac
+    /// The `program` line of `ctl` as read when the NIC was opened (0 when
+    /// it had none): the program that held a virtual NIC then.
+    pub fn program(&self) -> u64 {
+        self.program
     }
 
     /// Hardware MAC from `ctl`; [`QEMU_DEFAULT_MAC`] when it named none or
@@ -268,33 +273,29 @@ fn join<'a>(out: &'a mut [u8; 64], a: &[u8], b: &[u8]) -> Option<&'a [u8]> {
     Some(&out[..n])
 }
 
-/// Whether the NIC whose directory is `dir` is there and its link up: its
-/// `ctl` reads, and says no `link down` (a virtio NIC's says nothing of
-/// the link; a virtual NIC's, `/dev/tap`, does).
-pub fn link_up(dir: &[u8]) -> bool {
-    let mut ctl = [0u8; 64];
-    let Some(ctl) = join(&mut ctl, dir, b"/ctl") else {
-        return false;
-    };
-    let Some(fd) = open(ctl) else {
-        return false;
-    };
-    let mut text = [0u8; 128];
-    let n = read(fd, &mut text);
-    close(fd);
-    n != usize::MAX && !text[..n].split(|&b| b == b'\n').any(|l| l == b"link down")
+/// What a NIC's `ctl` says (`/dev/netN/ctl`, `/dev/tap/N/ctl`:
+/// `docs/wifi.md`).
+#[derive(Clone, Copy, Default)]
+pub struct Ctl {
+    /// `mac`, zero when it named none.
+    pub mac: [u8; 6],
+    /// `irq on`.
+    pub irq: bool,
+    /// No `link down` line.
+    pub up: bool,
+    /// `program`, a virtual NIC's count of programs so far; 0 without one.
+    pub program: u64,
 }
 
-/// The `mac` line of the `ctl` of the NIC whose directory is `dir` (zero
-/// when it names none); `None` when there is no such NIC.
-pub fn ctl_mac(dir: &[u8]) -> Option<[u8; 6]> {
+/// The `ctl` of the NIC whose directory is `dir`; `None` when there is no
+/// such NIC.
+pub fn nic_ctl(dir: &[u8]) -> Option<Ctl> {
     let mut ctl = [0u8; 64];
     let ctl = join(&mut ctl, dir, b"/ctl")?;
-    read_ctl(ctl).map(|(mac, _)| mac)
+    read_ctl(ctl)
 }
 
-/// The `mac` and `irq` lines of a NIC's `ctl`.
-fn read_ctl(path: &[u8]) -> Option<([u8; 6], bool)> {
+fn read_ctl(path: &[u8]) -> Option<Ctl> {
     let fd = open(path)?;
     let mut text = [0u8; 128];
     let n = read(fd, &mut text);
@@ -302,16 +303,19 @@ fn read_ctl(path: &[u8]) -> Option<([u8; 6], bool)> {
     if n == usize::MAX {
         return None;
     }
-    let mut mac = [0u8; 6];
-    let mut irq = false;
+    let mut ctl = Ctl { up: true, ..Ctl::default() };
     for line in text[..n].split(|&b| b == b'\n') {
         if let Some(addr) = line.strip_prefix(b"mac ") {
-            mac = parse_mac(addr)?;
+            ctl.mac = parse_mac(addr)?;
         } else if let Some(state) = line.strip_prefix(b"irq ") {
-            irq = state == b"on";
+            ctl.irq = state == b"on";
+        } else if line == b"link down" {
+            ctl.up = false;
+        } else if let Some(count) = line.strip_prefix(b"program ") {
+            ctl.program = core::str::from_utf8(count).ok()?.parse().ok()?;
         }
     }
-    Some((mac, irq))
+    Some(ctl)
 }
 
 /// `52:54:00:12:34:56` as bytes.

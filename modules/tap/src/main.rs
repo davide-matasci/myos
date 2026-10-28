@@ -12,10 +12,13 @@
 //! - `data`: the NIC's end, as `/dev/netN/data` is: a write sends a frame,
 //!   a read takes one (0 bytes when none waits: it never waits), `poll`
 //!   says one is there.
-//! - `ctl`: `mac aa:bb:cc:dd:ee:ff`, `irq on` (its `poll` works) and `link
-//!   up` or `link down`, as lines. The program writes `mac ADDR` (the NIC's
-//!   address), `up` and `down` (the link: a Wi-Fi association); a frame
-//!   netd sends while the link is down is dropped.
+//! - `ctl`: `mac aa:bb:cc:dd:ee:ff`, `irq on` (its `poll` works), `link
+//!   up` or `link down`, and `program N` (the count of programs that have
+//!   held `prog` so far, this one included: netd tells a NIC another
+//!   program took over since its last look by it, issue #649), as lines.
+//!   The program writes `mac ADDR` (the NIC's address), `up` and `down`
+//!   (the link: a Wi-Fi association); a frame netd sends while the link is
+//!   down is dropped.
 //!
 //! Each direction queues up to [`QUEUE`] frames; past that the newest is
 //! dropped, as a full NIC drops.
@@ -68,6 +71,9 @@ static HEAP: KernelHeap = KernelHeap;
 struct Tap {
     mac: [u8; 6],
     up: bool,
+    /// The count of programs that have held `prog` so far, this one
+    /// included (`ctl`'s `program` line).
+    program: u64,
     /// From the program to netd, and back.
     to_nic: VecDeque<Vec<u8>>,
     to_prog: VecDeque<Vec<u8>>,
@@ -77,6 +83,8 @@ static TAPS: Lock<[Option<Tap>; MAX_TAP]> = Lock::new([const { None }; MAX_TAP])
 /// Per NIC, `poll`'s change counts of each end.
 static NIC_CHANGES: [AtomicU64; MAX_TAP] = [const { AtomicU64::new(0) }; MAX_TAP];
 static PROG_CHANGES: [AtomicU64; MAX_TAP] = [const { AtomicU64::new(0) }; MAX_TAP];
+/// Per NIC, the programs that have held its `prog` so far.
+static PROGRAMS: [AtomicU64; MAX_TAP] = [const { AtomicU64::new(0) }; MAX_TAP];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum File {
@@ -132,6 +140,20 @@ fn ctl_text(t: &Tap) -> Vec<u8> {
     }
     out.extend_from_slice(b"\nirq on\nlink ");
     out.extend_from_slice(if t.up { b"up\n" } else { b"down\n" });
+    out.extend_from_slice(b"program ");
+    let mut digits = [0u8; 20];
+    let mut n = t.program;
+    let mut i = digits.len();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&digits[i..]);
+    out.push(b'\n');
     out
 }
 
@@ -203,7 +225,14 @@ unsafe extern "C" fn tap_open(path: *const u8, len: usize, _out: *mut u8, _out_c
             if taps[i].is_some() || api().current_uid() != 0 {
                 return -1;
             }
-            taps[i] = Some(Tap { mac: [0x02, 0, 0, 0x7a, 0x70, i as u8], up: false, to_nic: VecDeque::new(), to_prog: VecDeque::new() });
+            let program = PROGRAMS[i].fetch_add(1, Ordering::Relaxed) + 1;
+            taps[i] = Some(Tap {
+                mac: [0x02, 0, 0, 0x7a, 0x70, i as u8],
+                up: false,
+                program,
+                to_nic: VecDeque::new(),
+                to_prog: VecDeque::new(),
+            });
             0
         }
         _ if taps[i].is_none() => -1,
