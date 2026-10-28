@@ -1,0 +1,21 @@
+--- exec.c
++++ exec.c
+@@ -378,6 +378,18 @@
+ 		s = t->args[0];
+ 		ap = makenv();
+ 		restoresigs();
++		/* myos: a signal the shell dies of by catching it (SIGTERM,
++		 * SIGINT, SIGHUP: trapsig, TF_DFL_INTR or TF_FATAL) that came
++		 * since the fork only set a flag nothing looks at before the
++		 * exec, and was lost: `sleep 300 & kill $!` slept on when the
++		 * kill fell in the child's few milliseconds as a shell. The
++		 * dispositions are the program's now: take it again, as the
++		 * program would have.
++		 */
++		for (i = 1; i < NSIG; i++)
++			if (sigtraps[i].set && !sigtraps[i].trap &&
++			    (sigtraps[i].flags & (TF_DFL_INTR|TF_FATAL)))
++				kill(getpid(), i);
+ 		cleanup_proc_env();
+ 		execve(t->str, t->args, ap);
+ 		if (errno == ENOEXEC)

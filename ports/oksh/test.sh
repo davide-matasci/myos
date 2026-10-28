@@ -38,3 +38,24 @@ t -t smoke shell_pipe sh_pipe
 t -t smoke shell_redirect sh_redirect
 t -t smoke shell_which sh_which
 t -t smoke shell_path sh_path
+
+# A background command killed right after it was started dies at once: the
+# kill mostly lands while the child is still the shell (its few
+# milliseconds between the fork and the exec), whose handler for a fatal
+# signal only set a flag; the exec dropped it, and `sleep 3 & kill $!`
+# slept on (exec.myos.patch; the test runner's hung watch waited out a
+# whole sleep that way, CI #2315). Twenty rounds, none over a second.
+sh_kill_fresh() {
+	n=0
+	while [ $n -lt 20 ]; do
+		s=$(date +%s)
+		sleep 3 &
+		p=$!
+		kill $p
+		wait $p 2> /dev/null
+		e=$(date +%s)
+		[ $((e - s)) -lt 2 ] || { echo "round $n: the killed sleep lived $((e - s)) s"; return 1; }
+		n=$((n + 1))
+	done
+}
+t -t smoke,signal shell_kill_fresh sh_kill_fresh

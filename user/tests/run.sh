@@ -90,6 +90,8 @@ capture() {
 # 300 s (CI #2315). `hung_watch_done` marks $OUT/hw-NAME.done and ends the
 # sleep whose pid the watch leaves in $OUT/hw-NAME.pid; the watch writes the
 # pid before it looks at the mark, so one side or the other sees the other's.
+# (The sleep's own kill was lost too when it fell in the child's moment as
+# a shell before the exec, to the handler there: ports/oksh/exec.myos.patch.)
 hung_watch() {
 	HUNG=300
 	has "$SKIP" heavy && HUNG=120
