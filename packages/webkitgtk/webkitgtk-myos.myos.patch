@@ -1,3 +1,17 @@
+--- a/Source/JavaScriptCore/runtime/Options.cpp
++++ b/Source/JavaScriptCore/runtime/Options.cpp
+@@ -1039,6 +1039,11 @@
+     if (!Options::useMachForExceptions() || Options::useJITCage())
+         Options::allowNonSPTagging() = true;
+ 
++#if !HAVE(MACHINE_CONTEXT)
++    // No registers from a signal handler (myos): WebAssembly's memory is
++    // bounds-checked, not caught faulting.
++    Options::useWasmFaultSignalHandler() = false;
++#endif
+     if (!Options::useWasmFaultSignalHandler())
+         Options::useWasmFastMemory() = false;
+ 
 --- a/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
 +++ b/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
 @@ -98,7 +98,9 @@
@@ -11,6 +25,36 @@
      return static_cast<uint32_t>(syscall(__NR_gettid));
  #elif OS(DARWIN)
      // Ideally we would like to use pthread_threadid_np. But this is 64bit, while required one is 32bit.
+--- a/Source/JavaScriptCore/wasm/WasmFaultSignalHandler.cpp
++++ b/Source/JavaScriptCore/wasm/WasmFaultSignalHandler.cpp
+@@ -60,6 +60,7 @@
+ }
+ }
+ 
++#if HAVE(MACHINE_CONTEXT)
+ static SignalAction trapHandler(Signal signal, SigInfo& sigInfo, PlatformRegisters& context)
+ {
+     RELEASE_ASSERT(signal == Signal::AccessFault);
+@@ -129,6 +130,7 @@
+     }
+     return SignalAction::NotHandled;
+ }
++#endif
+ 
+ void activateSignalingMemory()
+ {
+@@ -157,9 +159,11 @@
+ #if CPU(ARM64E) && HAVE(HARDENED_MACH_EXCEPTIONS)
+         presignedTrampoline = g_wtfConfig.signalHandlers.presignReturnPCForHandler(LLInt::getCodePtr<NoPtrTag>(wasm_throw_from_fault_handler_trampoline_reg_instance));
+ #endif
++#if HAVE(MACHINE_CONTEXT)
+         addSignalHandler(Signal::AccessFault, [] (Signal signal, SigInfo& sigInfo, PlatformRegisters& ucontext) {
+             return trapHandler(signal, sigInfo, ucontext);
+         });
++#endif
+     });
+ }
+ 
 --- a/Source/PlatformGTK.cmake
 +++ b/Source/PlatformGTK.cmake
 @@ -1,6 +1,9 @@

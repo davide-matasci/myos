@@ -53,8 +53,9 @@ Linux-shaped. What myos lacks is taken away:
   WebAssembly interpreter has no RISC-V code), and a JIT would need every
   hart's instruction cache flushed (issue #652);
 - no machine context: a signal handler is given no ucontext (issue
-  #651), so a suspended thread's stack pointer is approximated and there
-  is no sampling profiler;
+  #651), so a suspended thread's stack pointer is approximated,
+  WebAssembly's memory is bounds-checked instead of caught faulting, and
+  there is no sampling profiler;
 - no translations (GLib has none), and none of the media stack
   (GStreamer), WebGL, the GPU process, the sandbox, WebDriver, spell
   checking, speech, gamepads, introspection, the optional image and font
