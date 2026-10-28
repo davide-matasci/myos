@@ -2,7 +2,7 @@
 //! interrupts, enabled for the boot hart's S-mode context. The IPIs are
 //! the SBI's (supervisor software interrupts), sent here as well.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::irqchip::{DtNode, Driver, IrqChip, Ipi, Target};
 use crate::platform::Intc;
@@ -113,17 +113,46 @@ impl IrqChip for Plic {
         w(CONTEXT + ctx() * CONTEXT_STRIDE + 4, src);
     }
 
-    fn send_ipi(&self, to: Target, _ipi: Ipi) {
-        send_ipi(to);
+    fn send_ipi(&self, to: Target, ipi: Ipi) {
+        send_ipi(to, ipi);
     }
 }
 
+/// Which IPIs each hart was sent and has not taken yet (an [`IPI_TLB`] /
+/// [`IPI_RESCHED`] bit each): the SBI's software interrupt carries no
+/// vector. The sender sets the bit before it sends, the receiver takes
+/// its hart's word whole ([`take_ipis`]). One word per hart: with one for
+/// all, a shootdown's clean-up after its acks wiped the reschedule bit a
+/// kick had just set for another hart, whose interrupt then did nothing.
+static IPI_PENDING: [AtomicU32; crate::smp::MAX_CPUS] = [const { AtomicU32::new(0) }; crate::smp::MAX_CPUS];
+pub const IPI_TLB: u32 = 1;
+pub const IPI_RESCHED: u32 = 2;
+
+fn ipi_bit(ipi: Ipi) -> u32 {
+    match ipi {
+        Ipi::Tlb => IPI_TLB,
+        Ipi::Resched => IPI_RESCHED,
+    }
+}
+
+/// The IPIs sent to this hart, taken (its software interrupt's handler).
+pub fn take_ipis() -> u32 {
+    IPI_PENDING[crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1)].swap(0, Ordering::SeqCst)
+}
+
 /// A supervisor software interrupt through the SBI; which IPI it is
-/// travels in `smp`'s mailbox (`smp::ipi_mark_tlb`, ...). The AIA's too.
-pub(super) fn send_ipi(to: Target) {
+/// travels in the target's mailbox ([`IPI_PENDING`]). The AIA's too.
+pub(super) fn send_ipi(to: Target, ipi: Ipi) {
+    let bit = ipi_bit(ipi);
     match to {
-        Target::Cpu(cpu) => sbi_send_ipi(1, crate::smp::cpu_hw_id(cpu)),
-        Target::Others => ipi_others(),
+        Target::Cpu(cpu) => {
+            if cpu >= crate::smp::MAX_CPUS {
+                return;
+            }
+            IPI_PENDING[cpu].fetch_or(bit, Ordering::SeqCst);
+            sbi_send_ipi(1, crate::smp::cpu_hw_id(cpu));
+        }
+        Target::Others => ipi_others(bit),
     }
 }
 
@@ -145,8 +174,9 @@ fn sbi_send_ipi(hart_mask: u64, hart_mask_base: u64) {
     }
 }
 
-/// Send a software IPI to every online hart except self (logical indices).
-fn ipi_others() {
+/// Send a software IPI (`bit`, [`IPI_PENDING`]) to every online hart
+/// except self (logical indices).
+fn ipi_others(bit: u32) {
     let self_id = crate::smp::cpu_id();
     let mut mask = 0u64;
     let mut base = u64::MAX;
@@ -154,6 +184,7 @@ fn ipi_others() {
         if i == self_id || !crate::smp::cpu_online(i) {
             continue;
         }
+        IPI_PENDING[i].fetch_or(bit, Ordering::SeqCst);
         let hart = crate::smp::cpu_hw_id(i);
         if base == u64::MAX {
             base = hart;

@@ -401,14 +401,15 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             unsafe {
                 asm!("csrc sip, {}", in(reg) 1 << 1, options(nostack));
             }
-            // Bit0 of SSCRATCH-less mailbox: generation in smp; always flush + schedule.
-            if crate::smp::ipi_is_tlb() {
+            // Which IPIs: this hart's mailbox (`plic::send_ipi`).
+            let ipis = super::plic::take_ipis();
+            if ipis & super::plic::IPI_TLB != 0 {
                 unsafe {
                     asm!("sfence.vma zero, zero", options(nostack));
                 }
                 crate::smp::tlb_ipi_ack();
             }
-            if crate::smp::ipi_is_resched() {
+            if ipis & super::plic::IPI_RESCHED != 0 {
                 crate::task::schedule();
                 preempted(frame);
             }

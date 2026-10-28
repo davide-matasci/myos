@@ -224,8 +224,8 @@ impl IrqChip for Aia {
         }
     }
 
-    fn send_ipi(&self, to: Target, _ipi: Ipi) {
-        super::plic::send_ipi(to);
+    fn send_ipi(&self, to: Target, ipi: Ipi) {
+        super::plic::send_ipi(to, ipi);
     }
 }
 

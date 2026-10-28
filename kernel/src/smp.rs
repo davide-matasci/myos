@@ -41,10 +41,6 @@ static TLB_EPOCH: AtomicU64 = AtomicU64::new(0);
 static TLB_SEEN: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static TLB_LOCK: Mutex<()> = Mutex::new(());
 
-/// Soft IPI reason bits (riscv software interrupt carries no vector).
-pub const IPI_BIT_TLB: u64 = 1;
-pub const IPI_BIT_RESCHED: u64 = 2;
-static IPI_BITS: AtomicU64 = AtomicU64::new(0);
 
 /// The hardware id of this CPU: from the arch where it can read one, else
 /// the id Limine reported for the logical index in the CPU id register.
@@ -123,33 +119,6 @@ pub fn note_schedule() {
     }
 }
 
-
-#[allow(dead_code)]
-pub fn ipi_mark_tlb() {
-    IPI_BITS.fetch_or(IPI_BIT_TLB, Ordering::SeqCst);
-}
-
-#[allow(dead_code)]
-pub fn ipi_mark_resched() {
-    IPI_BITS.fetch_or(IPI_BIT_RESCHED, Ordering::SeqCst);
-}
-
-#[allow(dead_code)]
-pub fn ipi_is_tlb() -> bool {
-    IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_TLB != 0
-}
-
-#[allow(dead_code)]
-pub fn ipi_is_resched() -> bool {
-    IPI_BITS.load(Ordering::SeqCst) & IPI_BIT_RESCHED != 0
-}
-
-#[allow(dead_code)]
-fn ipi_clear_handled() {
-    // Clear both; senders re-set before each blast. Slightly coarse but safe.
-    IPI_BITS.store(0, Ordering::SeqCst);
-}
-
 fn flush_tlb_local() {
     arch::flush_tlb_local();
 }
@@ -174,7 +143,6 @@ pub fn tlb_service() {
             Some(epoch)
         }
     });
-    IPI_BITS.fetch_and(!IPI_BIT_TLB, Ordering::SeqCst);
 }
 
 /// IPI handler entry: same as soft service (idempotent on epoch).
@@ -267,7 +235,6 @@ pub fn tlb_shootdown() {
     if !awake {
         return;
     }
-    ipi_mark_tlb();
     crate::irqchip::root().send_ipi(Target::Others, Ipi::Tlb);
     let mut spins = 0u32;
     while !tlb_all_seen(epoch) && spins < 2_000_000 {
@@ -276,7 +243,6 @@ pub fn tlb_shootdown() {
         core::hint::spin_loop();
         spins += 1;
     }
-    ipi_clear_handled();
 }
 
 /// Wake one halted CPU (reschedule IPI) so it notices a newly-ready task.
@@ -284,7 +250,6 @@ pub fn kick_cpu(cpu: usize) {
     if cpu >= MAX_CPUS || !ONLINE[cpu].load(Ordering::SeqCst) || cpu == cpu_id() {
         return;
     }
-    ipi_mark_resched();
     crate::irqchip::root().send_ipi(Target::Cpu(cpu), Ipi::Resched);
 }
 
@@ -293,7 +258,6 @@ pub fn kick_cpus() {
     if online_count() <= 1 {
         return;
     }
-    ipi_mark_resched();
     crate::irqchip::root().send_ipi(Target::Others, Ipi::Resched);
 }
 
