@@ -101,24 +101,31 @@ build_libs() {
   cp "$out/share/icu/$ICU_VERSION"/icudt*l.dat "$out/share/icu-data/"
 
   # libgpg-error's lock type for the target: configure makes it only for
-  # Linux cross builds, so its own generator writes it, from what the
-  # compiler lays out, into a copy of the source, where its header
-  # generator looks (syscfg/, the host's OS: "none").
-  # It reads the mutex's size from `objdump -t`, and says nothing when it
-  # cannot: the line it reads comes from readelf, which reads every arch's
-  # objects (CI's image has no llvm-objdump), and an empty size is refused.
-  local lock="$build/libgpg-error-src/src/syscfg/lock-obj-pub.none.h"
-  cat >"$build/objdump-t" <<'EOF'
-#!/bin/sh
-# objdump -t FILE, as gen-lock-obj.sh reads it: each symbol's size, then its name.
-readelf -sW "$2" | awk '$8 != "" { printf "0 g O .data %x %s\n", $3, $8 }'
-EOF
-  chmod +x "$build/objdump-t"
+  # Linux cross builds, and its generator (gen-lock-obj.sh) wants objdump
+  # and an awk that reads hex, which CI's image lacks. Written here as it
+  # writes it, the mutex's size from readelf (every arch's objects), into
+  # a copy of the source, where its header generator looks (syscfg/, the
+  # host's OS: "none").
+  local size lock="$build/libgpg-error-src/src/syscfg/lock-obj-pub.none.h"
   cp -r "$T/libgpg-error-src" "$build/libgpg-error-src"
-  LOCK_ABI_VERSION=1 host="${arch}-unknown-none" host_alias="${arch}-unknown-none" \
-    CC="$build/cc" OBJDUMP="$build/objdump-t" ac_ext=c ac_objext=o AWK=awk \
-    sh "$build/libgpg-error-src/src/gen-lock-obj.sh" >"$lock"
-  grep -q '_priv\[[1-9]' "$lock" || { echo "error: libgpg-error's lock type" >&2; exit 1; }
+  printf '#include <pthread.h>\npthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;\n' >"$build/mtx.c"
+  "$build/cc" -c "$build/mtx.c" -o "$build/mtx.o"
+  size="$(readelf -sW "$build/mtx.o" | awk '$8 == "mtx" { print $3 }')"
+  [[ "$size" =~ ^[1-9][0-9]*$ ]] || { echo "error: pthread_mutex_t's size: \"$size\"" >&2; exit 1; }
+  cat >"$lock" <<EOF
+## lock-obj-pub.${arch}-unknown-none.h, as gen-lock-obj.sh writes it
+typedef struct
+{
+  long _vers;
+  union {
+    volatile char _priv[$size];
+    long _x_align;
+    long *_xp_align;
+  } u;
+} gpgrt_lock_t;
+
+#define GPGRT_LOCK_INITIALIZER {1,{{$(printf '0,%.0s' $(seq 2 "$size"))0}}}
+EOF
   # mlibc has getdents64 but no struct dirent64: the generic way to find
   # the open fds a spawn closes.
   autotools "$build/libgpg-error" "$build/libgpg-error-src" "${arch}-unknown-none" --disable-doc \
