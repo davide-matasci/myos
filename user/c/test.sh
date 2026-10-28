@@ -318,7 +318,14 @@ kbd_burst() {
 	# #650): the counts of each kind, and each line equal to the one
 	# before it with its position.
 	echo "$(grep -c '^d ' /tmp/kb.out) down, $(grep -c '^u ' /tmp/kb.out) up"
-	awk 'prev == $0 { print NR ": " $0 " (again)" } { prev = $0 }' /tmp/kb.out
+	n=0
+	prev=
+	while read -r line; do
+		n=$((n + 1))
+		[ "$line" != "$prev" ] || echo "$n: $line (again)"
+		prev=$line
+	done < /tmp/kb.out
+	grep -e ' keyboard$' -e ' virtio-input$' /proc/interrupts
 	return 1
 }
 t -t console kbd_burst kbd_burst
