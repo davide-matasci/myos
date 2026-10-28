@@ -9,8 +9,10 @@
  * when the program happened to call the kernel, and CI #2315 spent 300 s
  * on a `sleep` whose TERM had arrived a moment too early.
  *
- * A child spins on a flag without a syscall; its parent, once told the
- * child is spinning, sends it the caught signal (`usr1`), or the child's
+ * A child spins on a flag without a syscall; its parent, once the child
+ * has burnt CPU time in its loop (`/proc/<pid>/status`: it is spinning,
+ * not still leaving its last syscall), sends it the caught signal
+ * (`usr1`), or the child's
  * own interval timer does (`alarm`), or a signal at its default ends it
  * (`term`). Each must act within a second; the child checks that values it
  * held in registers across the handler are intact. Prints [ OK ] sigspin.
@@ -27,8 +29,12 @@
 
 /* The most a signal may take to act on the spinning child. */
 #define LIMIT_MS 1000
-/* The parent's margin for the child to reach its loop once it said so. */
-#define SETTLE_MS 20
+/* How much CPU time the child must have burnt since it said it spins
+ * before the parent sends: it is in its loop then, not still on its way
+ * out of the write (where the signal would act at the syscall's exit, not
+ * from an interrupt), and how long the parent waits for that at most. */
+#define SPIN_MS 5
+#define SPIN_WAIT_MS 5000
 
 static volatile sig_atomic_t got;
 
@@ -40,6 +46,53 @@ static long now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+/* The CPU time of `pid` so far, from its status line (`docs/proc.md`: pid
+ * name state ppid pgid sid threads size cpu ...); -1 when it cannot be read. */
+static long cpu_ms(pid_t pid) {
+    char path[64], line[256];
+    FILE *f;
+    long cpu = -1;
+    snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
+    f = fopen(path, "r");
+    if (!f) {
+        return -1;
+    }
+    if (fgets(line, sizeof line, f)) {
+        char *p = line;
+        int field;
+        for (field = 0; field < 8 && p; field++) {
+            p = strchr(p, ' ');
+            if (p) {
+                p++;
+            }
+        }
+        if (p) {
+            cpu = strtol(p, NULL, 10);
+        }
+    }
+    fclose(f);
+    return cpu;
+}
+
+/* Wait until `pid` has burnt SPIN_MS of CPU since now: it spins. */
+static int wait_spinning(pid_t pid) {
+    long start = cpu_ms(pid), t0 = now_ms();
+    if (start < 0) {
+        return -1;
+    }
+    while (now_ms() - t0 < SPIN_WAIT_MS) {
+        long cpu = cpu_ms(pid);
+        if (cpu < 0) {
+            return -1;
+        }
+        if (cpu - start >= SPIN_MS) {
+            return 0;
+        }
+        usleep(1000);
+    }
+    return -1;
 }
 
 /* Spin until a handler for `sig` (none when 0) sets `got`, after telling the
@@ -112,7 +165,13 @@ static int run(const char *name, int sig, int alarm_ms, int send) {
     close(fds[0]);
     t0 = now_ms();
     if (send) {
-        usleep(SETTLE_MS * 1000);
+        if (wait_spinning(pid) != 0) {
+            printf("[ FAIL ] sigspin %s: the child burnt no %d ms of CPU in %d ms: not spinning\n", name, SPIN_MS,
+                   SPIN_WAIT_MS);
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            return 1;
+        }
         t0 = now_ms();
         kill(pid, send);
     }
