@@ -240,6 +240,12 @@ impl Net0Device {
         self.rx_irq
     }
 
+    /// The `mac` line of `ctl` as read when the NIC was opened (zero when
+    /// it named none): what [`ctl_mac`] compares.
+    pub fn mac_bytes(&self) -> [u8; 6] {
+        self.mac
+    }
+
     /// Hardware MAC from `ctl`; [`QEMU_DEFAULT_MAC`] when it named none or
     /// an unusable address (all-zero / multicast).
     pub fn mac(&self) -> EthernetAddress {
@@ -277,6 +283,14 @@ pub fn link_up(dir: &[u8]) -> bool {
     let n = read(fd, &mut text);
     close(fd);
     n != usize::MAX && !text[..n].split(|&b| b == b'\n').any(|l| l == b"link down")
+}
+
+/// The `mac` line of the `ctl` of the NIC whose directory is `dir` (zero
+/// when it names none); `None` when there is no such NIC.
+pub fn ctl_mac(dir: &[u8]) -> Option<[u8; 6]> {
+    let mut ctl = [0u8; 64];
+    let ctl = join(&mut ctl, dir, b"/ctl")?;
+    read_ctl(ctl).map(|(mac, _)| mac)
 }
 
 /// The `mac` and `irq` lines of a NIC's `ctl`.

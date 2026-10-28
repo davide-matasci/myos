@@ -25,7 +25,7 @@ use myos_net::smoltcp::iface::{Context, Interface, SocketHandle, SocketSet};
 use myos_net::smoltcp::socket::{dhcpv4, tcp, Socket};
 use myos_net::smoltcp::time::{Duration, Instant};
 use myos_net::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr};
-use myos_net::{build_interface, in_prefix, link_local, link_up, Net0Device, RouterAdvert, Unreachable};
+use myos_net::{build_interface, ctl_mac, in_prefix, link_local, link_up, Net0Device, RouterAdvert, Unreachable};
 use myos_user::{close, PollFd, POLLIN};
 
 use crate::{reply, REP_IFADDRS, REP_NDB};
@@ -447,7 +447,10 @@ impl Nics {
 
     /// Once a [`RESCAN`]: take the wired NIC once it is there, and the
     /// virtual NICs that came up; let go of the virtual ones that went
-    /// (their program gone, their link down).
+    /// (their program gone, their link down), and of one another program
+    /// took over since the last look (its address is that program's: the
+    /// NIC is taken again, as the new one it is, with a lease of its own,
+    /// not kept with the old program's address and DHCP state).
     pub fn rescan(&mut self, now: Instant, sockets: &mut SocketSet<'_>, lo: &mut Interface, chan: usize) {
         if now - self.scanned_at < RESCAN {
             return;
@@ -456,7 +459,7 @@ impl Nics {
         let before = self.list.len();
         let mut gone = false;
         self.list.retain(|n| {
-            if n.wired || link_up(&n.dir) {
+            if n.wired || (link_up(&n.dir) && ctl_mac(&n.dir) == Some(n.dev.mac_bytes())) {
                 return true;
             }
             sockets.remove(n.dhcp);
