@@ -136,6 +136,21 @@ static int dhcp_type(const unsigned char *b, size_t n) {
     return 0;
 }
 
+/* What the wire answered, for the report when the checks fail. */
+static int n_arp, n_discover, n_request, n_echo, n_ping;
+
+/* Print `path` under a heading. */
+static void show(const char *path) {
+    char text[1024] = {0};
+    int fd = open(path, O_RDONLY);
+    ssize_t got = fd < 0 ? -1 : read(fd, text, sizeof text - 1);
+    if (fd >= 0)
+        close(fd);
+    printf("--- %s (%zd bytes)\n%s", path, got, got > 0 ? text : "");
+    if (got > 0 && text[got - 1] != '\n')
+        printf("\n");
+}
+
 /* Answer a frame netd sent, when it asks for an answer. */
 static void answer(int prog, const unsigned char *f, size_t n) {
     unsigned char out[600];
@@ -143,6 +158,7 @@ static void answer(int prog, const unsigned char *f, size_t n) {
     unsigned type = n >= 14 ? (f[12] << 8) | f[13] : 0;
     if (type == 0x0806 && n >= 42 && f[21] == 1 && !memcmp(f + 38, PEER_IP, 4)) {
         /* ARP who-has 10.0.9.1. */
+        n_arp++;
         memcpy(out, f + 6, 6);
         memcpy(out + 6, PEER_MAC, 6);
         memcpy(out + 12, f + 12, 8);
@@ -163,13 +179,19 @@ static void answer(int prog, const unsigned char *f, size_t n) {
             int t = dhcp_type(payload, plen);
             if (t == 1 || t == 3) /* discover, request */
                 len = dhcp_reply(out, payload, t == 1 ? 2 : 5);
+            if (t == 1)
+                n_discover++;
+            else if (t == 3)
+                n_request++;
         } else if (dport == 7 && !memcmp(f + 30, PEER_IP, 4) && plen <= 500) {
+            n_echo++;
             memcpy(out + 42, payload, plen);
             len = udp_frame(out, f + 6, f + 26, 7, (udp[0] << 8) | udp[1], plen);
         }
     } else if (type == 0x0800 && n >= 42 && n <= sizeof out && f[14] == 0x45 && f[23] == 1 && f[34] == 8 &&
                !memcmp(f + 30, PEER_IP, 4)) {
         /* An echo request to 10.0.9.1: the same packet back, as a reply. */
+        n_ping++;
         memcpy(out, f + 6, 6);
         memcpy(out + 6, PEER_MAC, 6);
         memcpy(out + 12, f + 12, n - 12);
@@ -265,8 +287,16 @@ int main(void) {
         if (waitpid(child, &status, WNOHANG) == child)
             break;
     }
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        /* What the wire saw and what netd shows, for issue #649's "no
+         * lease": which exchange stopped, and where. */
+        printf("wire: %d arp, %d discover, %d request, %d echo, %d ping answered\n", n_arp, n_discover, n_request,
+               n_echo, n_ping);
+        show("/net/ifaddrs");
+        show("/net/ndb");
+        show(path);
         return 1;
+    }
 
     close(ctl);
     close(prog);

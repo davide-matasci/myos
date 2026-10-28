@@ -308,7 +308,13 @@ kbd_burst() {
 	lines=$(wc -l < /tmp/kb.out)
 	dups=$(uniq -d /tmp/kb.out | wc -l)
 	echo "$lines events, $dups repeated"
-	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ]
+	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ] && return 0
+	# Which events are missing or doubled, and where in the burst (issue
+	# #650): the counts of each kind, and each line equal to the one
+	# before it with its position.
+	echo "$(grep -c '^d ' /tmp/kb.out) down, $(grep -c '^u ' /tmp/kb.out) up"
+	awk 'prev == $0 { print NR ": " $0 " (again)" } { prev = $0 }' /tmp/kb.out
+	return 1
 }
 t -t console kbd_burst kbd_burst
 # /dev/console/mouse: held by one program at a time; the host moves the
