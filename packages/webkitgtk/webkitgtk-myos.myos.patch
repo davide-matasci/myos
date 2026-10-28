@@ -1,0 +1,384 @@
+--- a/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
++++ b/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
+@@ -98,7 +98,9 @@
+ 
+ uint32_t ProfilerSupport::getCurrentThreadID()
+ {
+-#if OS(LINUX)
++#if defined(WEBKIT_MYOS)
++    return static_cast<uint32_t>(gettid());
++#elif OS(LINUX)
+     return static_cast<uint32_t>(syscall(__NR_gettid));
+ #elif OS(DARWIN)
+     // Ideally we would like to use pthread_threadid_np. But this is 64bit, while required one is 32bit.
+--- a/Source/PlatformGTK.cmake
++++ b/Source/PlatformGTK.cmake
+@@ -1,6 +1,9 @@
+ include(WebKitDist)
+ 
+-add_subdirectory(${WEBCORE_DIR}/platform/gtk/po)
++# myos: no translations (GLib is built without them).
++if (NOT DEFINED WEBKIT_MYOS)
++    add_subdirectory(${WEBCORE_DIR}/platform/gtk/po)
++endif ()
+ 
+ add_custom_target(check
+     COMMAND ${TOOLS_DIR}/Scripts/run-gtk-tests
+--- a/Source/ThirdParty/xdgmime/CMakeLists.txt
++++ b/Source/ThirdParty/xdgmime/CMakeLists.txt
+@@ -18,6 +18,11 @@
+ 
+ include_directories("${XDGMIME_INCLUDE_DIRECTORIES}")
+ add_definitions(-DXDG_PREFIX=_wk_xdg)
++if (DEFINED WEBKIT_MYOS)
++    # myos links GIO statically into the same program, with its own
++    # xdgmime: these two globals XDG_PREFIX leaves alone would clash.
++    add_definitions(-D_caches=_wk_xdg_caches -D_xdg_binary_or_text_fallback=_wk_xdg_binary_or_text_fallback)
++endif ()
+ add_library(xdgmime STATIC ${XDGMIME_SOURCES})
+ 
+ if (CMAKE_CXX_BYTE_ORDER STREQUAL "LITTLE_ENDIAN")
+--- a/Source/WTF/wtf/PlatformEnable.h
++++ b/Source/WTF/wtf/PlatformEnable.h
+@@ -730,9 +730,15 @@
+ #define ENABLE_JIT 0
+ #endif
+ 
+-#if CPU(RISCV64)
++/* myos: not on RISC-V, as CMake's option says: the in-place interpreter's
++   shared code calls nextIPIntInstruction, which only its ARM64 and X86_64
++   half (InPlaceInterpreter64.asm) defines. */
++#if CPU(RISCV64) && !defined(WEBKIT_MYOS)
+ #undef ENABLE_WEBASSEMBLY
+ #define ENABLE_WEBASSEMBLY 1
++#endif
++
++#if CPU(RISCV64)
+ #undef ENABLE_WEBASSEMBLY_OMGJIT
+ #define ENABLE_WEBASSEMBLY_OMGJIT 0
+ #undef ENABLE_WEBASSEMBLY_BBQJIT
+--- a/Source/WTF/wtf/PlatformHave.h
++++ b/Source/WTF/wtf/PlatformHave.h
+@@ -237,7 +237,9 @@
+ #define HAVE_MACH_MEMORY_ENTRY 1
+ #endif
+ 
+-#if OS(DARWIN) || OS(FUCHSIA) || ((OS(FREEBSD) || OS(HAIKU) || OS(NETBSD) || OS(OPENBSD) || OS(LINUX) || OS(HURD) || OS(QNX)) && (CPU(X86_64) || CPU(ARM) || CPU(ARM64) || CPU(RISCV64)))
++/* myos: a signal handler is given no ucontext, so no registers from it
++   (a suspended thread's stack pointer is approximated instead). */
++#if (OS(DARWIN) || OS(FUCHSIA) || ((OS(FREEBSD) || OS(HAIKU) || OS(NETBSD) || OS(OPENBSD) || OS(LINUX) || OS(HURD) || OS(QNX)) && (CPU(X86_64) || CPU(ARM) || CPU(ARM64) || CPU(RISCV64)))) && !defined(WEBKIT_MYOS)
+ #define HAVE_MACHINE_CONTEXT 1
+ #endif
+ 
+--- a/Source/WTF/wtf/StackBounds.cpp
++++ b/Source/WTF/wtf/StackBounds.cpp
+@@ -146,7 +146,11 @@
+     // on musl, it will return the currently reserved size - since the stack bounds are expected to
+     // be constant (and they are for every thread except main, which is allowed to grow), check
+     // resource limits and use that as the boundary instead (and prevent stack overflows in JSC)
++#if defined(WEBKIT_MYOS)
++    if (getpid() == gettid()) {
++#else
+     if (getpid() == static_cast<pid_t>(syscall(SYS_gettid))) {
++#endif
+         void* origin = ret.origin();
+         rlimit limit;
+         getrlimit(RLIMIT_STACK, &limit);
+--- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
++++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+@@ -241,7 +241,11 @@
+ #if OS(LINUX)
+ ThreadIdentifier Thread::currentID()
+ {
++#if defined(WEBKIT_MYOS)
++    return static_cast<ThreadIdentifier>(gettid());
++#else
+     return static_cast<ThreadIdentifier>(syscall(SYS_gettid));
++#endif
+ }
+ #endif
+ 
+--- a/Source/WTF/wtf/simdutf/simdutf_impl.h
++++ b/Source/WTF/wtf/simdutf/simdutf_impl.h
+@@ -1028,7 +1028,8 @@
+ 
+ 
+ // RISC-V ISA detection utilities
+-#if SIMDUTF_IS_RISCV64 && defined(__linux__)
++// myos: Linux's riscv_hwprobe is no myos system call; the defaults stand.
++#if SIMDUTF_IS_RISCV64 && defined(__linux__) && !defined(WEBKIT_MYOS)
+   #include <unistd.h> // for syscall
+ // We define these ourselves, for backwards compatibility
+ struct simdutf_riscv_hwprobe {
+@@ -1092,7 +1093,7 @@
+   #if SIMDUTF_IS_ZVBB
+   host_isa |= instruction_set::ZVBB;
+   #endif
+-  #if defined(__linux__)
++  #if defined(__linux__) && !defined(WEBKIT_MYOS)
+   simdutf_riscv_hwprobe probes[] = {{SIMDUTF_RISCV_HWPROBE_KEY_IMA_EXT_0, 0}};
+   long ret = simdutf_riscv_hwprobe(&probes, sizeof probes / sizeof *probes, 0,
+                                    nullptr, 0);
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -1491,6 +1491,26 @@
+ WEBKIT_EXECUTABLE(NetworkProcess)
+ WEBKIT_REUSE_PREFIX_HEADER(NetworkProcess WebKit WebKitPrefix.h PREFIX_LANGUAGES CXX)
+ 
++if (DEFINED WEBKIT_MYOS_PROGRAM)
++    # myos: the program (the C sources WEBKIT_MYOS_PROGRAM, their main
++    # renamed) and WebKit's processes in one static binary, with the
++    # object libraries a shared libwebkit2gtk would hold (WTF, bmalloc,
++    # WebCore) and WEBKIT_MYOS_PROGRAM_LIBRARIES (what static archives
++    # need besides: libsoup's dependencies, GIO's TLS backend). GTK's
++    # injected bundle is in it too: the web process calls it instead of
++    # loading it (InjectedBundleGlib.cpp).
++    set(MyosProgram_SOURCES myos/MultiCall.cpp ${WEBKIT_MYOS_PROGRAM}
++        ${WEBKIT_DIR}/WebProcess/InjectedBundle/API/glib/WebKitInjectedBundleMain.cpp
++        $<TARGET_OBJECTS:WTF> $<TARGET_OBJECTS:bmalloc> $<TARGET_OBJECTS:WebCore>)
++    set_source_files_properties(${WEBKIT_MYOS_PROGRAM} PROPERTIES COMPILE_DEFINITIONS main=webkit_myos_program_main)
++    set(MyosProgram_LIBRARIES WebKit ${WEBKIT_MYOS_PROGRAM_LIBRARIES})
++    set(MyosProgram_OUTPUT_NAME ${WEBKIT_MYOS_PROGRAM_NAME})
++    list(APPEND MyosProgram_PRIVATE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:WebKit,INCLUDE_DIRECTORIES>
++        ${WebKitGTK_FRAMEWORK_HEADERS_DIR} ${WEBKIT_DIR}/NetworkProcess ${WEBKIT_DIR}/WebProcess)
++    WEBKIT_EXECUTABLE_DECLARE(MyosProgram)
++    WEBKIT_EXECUTABLE(MyosProgram)
++endif ()
++
+ if (ENABLE_GPU_PROCESS)
+     list(APPEND GPUProcess_PRIVATE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:WebKit,INCLUDE_DIRECTORIES>)
+     WEBKIT_EXECUTABLE(GPUProcess)
+--- a/Source/WebKit/UIProcess/API/glib/WebKitProtocolHandler.cpp
++++ b/Source/WebKit/UIProcess/API/glib/WebKitProtocolHandler.cpp
+@@ -757,7 +757,7 @@
+         if (hasEGLContext)
+             addEGLInfo(hardwareAccelerationObject);
+     } else {
+-#if PLATFORM(GTK)
++#if PLATFORM(GTK) && USE(LIBDRM)
+         addTableRow(hardwareAccelerationObject, "Buffer format"_s, renderBufferDescription(request));
+ #endif
+     }
+--- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+@@ -190,6 +190,13 @@
+ 
+     realExecutablePath = FileSystem::fileSystemRepresentation(executablePath);
+     unsigned nargs = 4; // size of the argv array for g_spawn_async()
++#if defined(WEBKIT_MYOS)
++    // myos: the program is also WebKit's processes (one static binary): it
++    // runs itself, with the process's name (WebKitWebProcess, ...) first.
++    CString processName = FileSystem::fileSystemRepresentation(FileSystem::pathFileName(executablePath));
++    realExecutablePath = FileSystem::currentExecutablePath();
++    nargs++;
++#endif
+ 
+ #if ENABLE(DEVELOPER_MODE)
+     Vector<CString> prefixArgs;
+@@ -214,6 +221,9 @@
+         argv[i++] = const_cast<char*>(arg.data());
+ #endif
+     argv[i++] = const_cast<char*>(realExecutablePath.data());
++#if defined(WEBKIT_MYOS)
++    argv[i++] = const_cast<char*>(processName.data());
++#endif
+     argv[i++] = processIdentifier.get();
+     argv[i++] = webkitSocket.get();
+ #if ENABLE(DEVELOPER_MODE)
+--- a/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp
++++ b/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp
+@@ -87,6 +87,13 @@
+         if (disableDMABuf && g_strcmp0(disableDMABuf, "0"))
+             return;
+ 
++#if defined(WEBKIT_MYOS)
++        // myos has no EGL to ask: the web process draws on the CPU into
++        // shared memory.
++        mode.add(RendererBufferTransportMode::SharedMemory);
++        return;
++#endif
++
+         const char* platformExtensions = eglQueryString(nullptr, EGL_EXTENSIONS);
+         if (!GLContext::isExtensionSupported(platformExtensions, "EGL_KHR_platform_gbm")
+             && !GLContext::isExtensionSupported(platformExtensions, "EGL_MESA_platform_surfaceless")) {
+@@ -138,6 +145,9 @@
+ 
+ bool AcceleratedBackingStore::canUseHardwareAcceleration()
+ {
++#if defined(WEBKIT_MYOS)
++    return false;
++#endif
+     if (!rendererBufferTransportMode().isEmpty())
+         return gtkCanUseHardwareAcceleration();
+     return false;
+@@ -395,6 +405,7 @@
+ 
+ RefPtr<AcceleratedBackingStore::Buffer> AcceleratedBackingStore::BufferEGLImage::create(WebPageProxy& webPage, uint64_t id, uint64_t surfaceID, const IntSize& size, RendererBufferFormat::Usage usage, DMABufBufferAttributes&& dmaBufAttributes)
+ {
++#if USE(GBM)
+     auto* glDisplay = Display::singleton().glDisplay();
+     if (!glDisplay)
+         return nullptr;
+@@ -406,6 +417,16 @@
+     }
+ 
+     return adoptRef(*new BufferEGLImage(webPage, id, surfaceID, size, usage, WTF::move(dmaBufAttributes), image));
++#else
++    // DMABufBuffer::createEGLImage is built with GBM only.
++    UNUSED_PARAM(webPage);
++    UNUSED_PARAM(id);
++    UNUSED_PARAM(surfaceID);
++    UNUSED_PARAM(size);
++    UNUSED_PARAM(usage);
++    UNUSED_PARAM(dmaBufAttributes);
++    return nullptr;
++#endif
+ }
+ 
+ AcceleratedBackingStore::BufferEGLImage::BufferEGLImage(WebPageProxy& webPage, uint64_t id, uint64_t surfaceID, const IntSize& size, RendererBufferFormat::Usage usage, DMABufBufferAttributes&& dmaBufAttributes, EGLImage image)
+--- a/Source/WebKit/UIProcess/gtk/Display.cpp
++++ b/Source/WebKit/UIProcess/gtk/Display.cpp
+@@ -83,6 +83,10 @@
+     m_glInitialized = true;
+     if (!m_gdkDisplay)
+         return nullptr;
++#if defined(WEBKIT_MYOS)
++    // No EGL to load (no dlopen, no GL driver).
++    return nullptr;
++#endif
+ 
+ #if PLATFORM(X11)
+     if (initializeGLDisplayX11())
+--- a/Source/WebKit/UIProcess/linux/MemoryPressureMonitor.cpp
++++ b/Source/WebKit/UIProcess/linux/MemoryPressureMonitor.cpp
+@@ -392,12 +392,17 @@
+ 
+ bool MemoryPressureMonitor::disabled()
+ {
++#if defined(WEBKIT_MYOS)
++    // myos's /proc/meminfo is not Linux's.
++    return true;
++#else
+     static std::once_flag flag;
+     std::call_once(flag, []() {
+         auto envvar = getenv("WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR");
+         s_disabled = envvar && !strcmp(envvar, "1");
+     });
+     return s_disabled;
++#endif
+ }
+ 
+ void CGroupMemoryController::setMemoryControllerPath(CString memoryControllerPath)
+--- a/Source/WebKit/WebProcess/InjectedBundle/glib/InjectedBundleGlib.cpp
++++ b/Source/WebKit/WebProcess/InjectedBundle/glib/InjectedBundleGlib.cpp
+@@ -32,10 +32,19 @@
+ #include <wtf/FileSystem.h>
+ #include <wtf/text/CString.h>
+ 
++#if defined(WEBKIT_MYOS)
++extern "C" void WKBundleInitialize(WKBundleRef, WKTypeRef);
++#endif
++
+ namespace WebKit {
+ 
+ bool InjectedBundle::initialize(const WebProcessCreationParameters&, RefPtr<API::Object>&& initializationUserData)
+ {
++#if defined(WEBKIT_MYOS)
++    // myos: the program is one static binary, the bundle linked in.
++    WKBundleInitialize(toAPI(this), toAPI(initializationUserData.get()));
++    return true;
++#else
+     m_platformBundle = g_module_open(FileSystem::fileSystemRepresentation(m_path).data(), G_MODULE_BIND_LOCAL);
+     if (!m_platformBundle) {
+         g_warning("Error loading the injected bundle (%s): %s", m_path.utf8().data(), g_module_error());
+@@ -50,6 +59,7 @@
+ 
+     initializeFunction(toAPI(this), toAPI(initializationUserData.get()));
+     return true;
++#endif
+ }
+ 
+ void InjectedBundle::setBundleParameter(WTF::String const&, std::span<const uint8_t>)
+--- a/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
++++ b/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
+@@ -216,6 +216,9 @@
+     IGNORE_CLANG_WARNINGS_BEGIN("unsafe-buffer-usage-in-libc-call")
+     if (enableCPURendering && strcmp(enableCPURendering, "0"))
+         ProcessCapabilities::setCanUseAcceleratedBuffers(false);
++#if defined(WEBKIT_MYOS)
++    ProcessCapabilities::setCanUseAcceleratedBuffers(false);
++#endif
+     IGNORE_CLANG_WARNINGS_END
+ 
+ #if ENABLE(MEDIA_STREAM)
+--- a/Source/cmake/OptionsGTK.cmake
++++ b/Source/cmake/OptionsGTK.cmake
+@@ -495,7 +495,15 @@
+     set(WebKitGTKWebProcessExtension_PKGCONFIG_FILE ${CMAKE_BINARY_DIR}/Source/WebKit/webkit2gtk-web-extension-${WEBKITGTK_API_VERSION}.pc)
+ endif ()
+ 
+-set(JavaScriptCore_LIBRARY_TYPE SHARED)
++if (DEFINED WEBKIT_MYOS)
++    # myos (-DWEBKIT_MYOS=ON): no shared libraries, the program links WebKit
++    # and JavaScriptCore statically and is also WebKit's processes; no EGL.
++    add_definitions(-DWEBKIT_MYOS=1)
++    set(JavaScriptCore_LIBRARY_TYPE STATIC)
++    set(WebKit_LIBRARY_TYPE STATIC)
++else ()
++    set(JavaScriptCore_LIBRARY_TYPE SHARED)
++endif ()
+ set(SHOULD_INSTALL_JS_SHELL ON)
+ 
+ # Add a typelib file to the list of all typelib dependencies. This makes it easy to
+--- /dev/null
++++ b/Source/WebKit/myos/MultiCall.cpp
+@@ -0,0 +1,49 @@
++/*
++ * myos: a program and WebKit's processes in one static binary (myos has
++ * no shared libraries). The UI process runs the program again with the
++ * process's name first (ProcessLauncherGLib.cpp); anything else is the
++ * program, whose main is webkit_myos_program_main. GIO's TLS backend
++ * (glib-networking's OpenSSL one, a module GIO would load) is registered
++ * first: a static program has no modules to load.
++ *
++ * Copyright (C) 2026 the myos authors
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "NetworkProcessMain.h"
++#include "WebProcessMain.h"
++#include <gio/gio.h>
++#include <string.h>
++
++extern "C" int webkit_myos_program_main(int argc, char** argv);
++extern "C" void g_io_openssl_load(GIOModule*);
++
++int main(int argc, char** argv)
++{
++    g_io_openssl_load(nullptr);
++    if (argc > 1 && !strcmp(argv[1], "WebKitWebProcess"))
++        return WebKit::WebProcessMain(argc - 1, argv + 1);
++    if (argc > 1 && !strcmp(argv[1], "WebKitNetworkProcess"))
++        return WebKit::NetworkProcessMain(argc - 1, argv + 1);
++    return webkit_myos_program_main(argc, argv);
++}
