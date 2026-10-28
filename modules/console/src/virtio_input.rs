@@ -97,9 +97,10 @@ const MAX_POINTERS: usize = 2;
 const EVENT_SIZE: u32 = 8;
 /// Event buffers posted to a device: QEMU's queue holds 64 events, and
 /// drops a key event (with the `SYN_REPORT` after it) when the guest has
-/// none posted. Eight gave a burst of keys four events of slack: a reader
-/// stalled 400 ms under TCG lost one (issue #650). One page, a buffer per
-/// cache line, so that a sync of one never touches another's data.
+/// none posted. Eight gave a burst of keys four events of slack, 40 ms at
+/// QEMU's `sendkey` pace (a press and a release 10 ms apart): a reader
+/// woken that late under TCG lost one (issue #650). One page, a buffer
+/// per cache line, so that a sync of one never touches another's data.
 const NUM_BUFS: u16 = 64;
 /// A buffer's stride in the events page: a cache line.
 const EVENT_STRIDE: usize = 64;
