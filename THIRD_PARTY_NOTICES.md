@@ -97,6 +97,7 @@ under its own license.
 | dwm (package `dwm`; the window manager) | `DWM_VERSION` in `packages/dwm/versions.env` | MIT/X Consortium | https://dwm.suckless.org/ |
 | st (package `st`; the terminal), and the `st` / `st-256color` entries of `/lib/termcap` (`ports/termcap/termcap`, converted from its `st.info`, notice kept in the file) | `ST_VERSION` in `packages/st/versions.env` | MIT/X Consortium | https://st.suckless.org/ |
 | dmenu (package `dmenu`; the menu, with `stest`, `dmenu_run`, `dmenu_path`) | `DMENU_VERSION` in `packages/dmenu/versions.env` | MIT/X Consortium | https://tools.suckless.org/dmenu/ |
+| surf (package `surf`, against mlibc, patched: `packages/surf/surf.myos.patch`, under surf's license) | `SURF_REV` in `packages/surf/versions.env` (git) | MIT/X Consortium | https://surf.suckless.org/ |
 | xev, xprop (package `x11-apps`) | see `packages/x11-apps/versions.env` | MIT/X Consortium | https://www.x.org/releases/individual/ |
 | Xft font stack (package `x11-xft`, built against newlib and against mlibc): expat, FreeType, fontconfig, libXft | see `packages/x11-xft/versions.env` | expat, libXft: MIT; fontconfig: MIT-style (HPND); FreeType: the FreeType License (FTL, used instead of its GPL-2.0 alternative; credit below) | https://libexpat.github.io/ https://freetype.org/ https://www.freedesktop.org/wiki/Software/fontconfig/ https://www.x.org/releases/individual/lib/ |
 | DejaVu Sans Mono and DejaVu Sans (package `x11-fonts`, `/lib/fonts`) | `DEJAVU_VERSION` in `packages/x11-fonts/versions.env` | Bitstream Vera Fonts license and Arev Fonts license (DejaVu's changes public domain); the text ships as `/lib/fonts/LICENSE.DejaVu` | https://dejavu-fonts.github.io/ |
@@ -146,7 +147,7 @@ GLib, GNU libiconv and proxy-libintl in the glib package, fribidi,
 cairo, pango and gdk-pixbuf in the cairo-pango package, ATK and GTK in
 the gtk3 package, libsoup, glib-networking and libpsl's Public Suffix
 List in the libsoup package, libgpg-error, libgcrypt, libtasn1 and
-WebKitGTK in the webkitgtk package.** (The glib, cairo-pango, gtk3, libsoup and webkitgtk packages' programs link those LGPL libraries statically: the programs'
+WebKitGTK in the webkitgtk package.** (The glib, cairo-pango, gtk3, libsoup, webkitgtk and surf packages' programs link those LGPL libraries statically: the programs'
 sources and every build script are in this repository too, so they can
 be relinked against a modified library.) (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry

@@ -1,0 +1,85 @@
+diff --git a/surf.c b/surf.c
+index 7a0f624..69e836a 100644
+--- a/surf.c
++++ b/surf.c
+@@ -25,7 +25,6 @@
+ #include <glib/gstdio.h>
+ #include <gtk/gtk.h>
+ #include <gtk/gtkx.h>
+-#include <gcr/gcr.h>
+ #include <JavaScriptCore/JavaScript.h>
+ #include <webkit2/webkit2.h>
+ #include <X11/X.h>
+@@ -1806,23 +1805,23 @@ void
+ showcert(Client *c, const Arg *a)
+ {
+ 	GTlsCertificate *cert = c->failedcert ? c->failedcert : c->cert;
+-	GcrCertificate *gcrt;
+-	GByteArray *crt;
+-	GtkWidget *win;
+-	GcrCertificateWidget *wcert;
++	GtkWidget *win, *view;
++	gchar *pem;
+ 
+ 	if (!cert)
+ 		return;
+ 
+-	g_object_get(cert, "certificate", &crt, NULL);
+-	gcrt = gcr_simple_certificate_new(crt->data, crt->len);
+-	g_byte_array_unref(crt);
+-
++	/* myos: no gcr; the certificate as its PEM text. */
++	g_object_get(cert, "certificate-pem", &pem, NULL);
+ 	win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+-	wcert = gcr_certificate_widget_new(gcrt);
+-	g_object_unref(gcrt);
++	view = gtk_text_view_new();
++	gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
++	gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
++	gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)),
++	                         pem, -1);
++	g_free(pem);
+ 
+-	gtk_container_add(GTK_CONTAINER(win), GTK_WIDGET(wcert));
++	gtk_container_add(GTK_CONTAINER(win), view);
+ 	gtk_widget_show_all(win);
+ }
+ 
+@@ -1855,25 +1854,22 @@ zoom(Client *c, const Arg *a)
+ 	curconfig[ZoomLevel].val.f = webkit_web_view_get_zoom_level(c->view);
+ }
+ 
++/* myos: no web extension (the web process loads none: no dlopen); the
++ * page scrolls as webext-surf.c scrolls it, through JavaScript. */
+ static void
+ msgext(Client *c, char type, const Arg *a)
+ {
+-	static unsigned char msg[MSGBUFSZ];
+-	int ret;
+-
+-	if (spair[0] < 0)
+-		return;
++	gchar *js;
+ 
+-	ret = snprintf(msg, sizeof(msg), "%c%c%c",
+-	               (unsigned char)c->pageid, type, (signed char)a->i);
+-	if (ret >= sizeof(msg)) {
+-		fprintf(stderr, "surf: message too long: %d\n", ret);
+-		return;
+-	}
+-
+-	if (send(spair[0], msg, ret, 0) != ret)
+-		fprintf(stderr, "surf: error sending: %hhu/%c/%d (%d)\n",
+-		        (unsigned char)c->pageid, type, a->i, ret);
++	if (type == 'h')
++		js = g_strdup_printf("window.scrollBy(window.innerWidth/100*%d,0);",
++		                     a->i);
++	else
++		js = g_strdup_printf("window.scrollBy(0,window.innerHeight/100*%d);",
++		                     a->i);
++	webkit_web_view_evaluate_javascript(c->view, js, -1, NULL, NULL, NULL,
++	                                    NULL, NULL);
++	g_free(js);
+ }
+ 
+ void
