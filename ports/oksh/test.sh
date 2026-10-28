@@ -69,7 +69,13 @@ sh_kill_fresh() {
 	kill -INT $p
 	sleep 1
 	kill -0 $p 2> /dev/null || { echo "a background job died of SIGINT"; return 1; }
+	s=$(date +%s)
 	kill $p
 	wait $p 2> /dev/null
+	st=$?
+	e=$(date +%s)
+	# The job, a second old, is the sleep itself: its TERM ends it at once.
+	[ $((e - s)) -lt 2 ] && [ $st -eq 143 ] || { echo "the job killed after a second: status $st after $((e - s)) s"; return 1; }
+	return 0
 }
 t -t smoke,signal shell_kill_fresh sh_kill_fresh
