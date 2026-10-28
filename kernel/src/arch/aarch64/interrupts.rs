@@ -100,6 +100,7 @@ irq_save_done:
     stp x0, x1, [sp, #16 * 16]
     str x2, [sp, #16 * 17]
     mov x0, x1 // spsr: the interrupted mode
+    mov x1, sp // the frame: a signal may redirect it
     bl aarch64_irq_handler
     ldp x0, x1, [sp, #16 * 16]
     ldr x2, [sp, #16 * 17]
@@ -465,8 +466,10 @@ fn rearm_timers() {
     }
 }
 
+/// An interrupt, with the mode it came from (`spsr`) and the registers
+/// `irq_el1h` stacked (`frame`: the `lower_sync` layout).
 #[unsafe(no_mangle)]
-extern "C" fn aarch64_irq_handler(spsr: u64) {
+extern "C" fn aarch64_irq_handler(spsr: u64, frame: *mut u64) {
     let chip = crate::irqchip::root();
     let Some(id) = chip.claim() else {
         return;
@@ -497,9 +500,10 @@ extern "C" fn aarch64_irq_handler(spsr: u64) {
     chip.complete(id);
     if timer || resched {
         crate::task::schedule();
-        // SPSR.M = EL0t: the interrupt came from user mode.
+        // SPSR.M = EL0t: the interrupt came from user mode, and the task's
+        // signals act on the way back.
         if spsr & 0xf == 0 {
-            crate::signal::on_user_preempted();
+            crate::signal::on_user_interrupt(&mut crate::user::SyscallRegs::from_ptr(frame));
         }
     }
 }

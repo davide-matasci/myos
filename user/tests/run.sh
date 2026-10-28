@@ -85,9 +85,9 @@ capture() {
 # sent to the subshell while it was still setting up was lost (oksh reads a
 # signal's old disposition by setting SIG_IGN first, and a TERM in between
 # is dropped) or taken only once its `wait` had looked at the traps and
-# before it slept (the kernel runs a handler at the task's next syscall
-# exit, issue #647), and `t` waited out the whole sleep: a trivial test took
-# 300 s (CI #2315). `hung_watch_done` marks $OUT/hw-NAME.done and ends the
+# before it slept (the kernel then ran a handler at the task's next syscall
+# exit, issue #647; now at once), and `t` waited out the whole sleep: a
+# trivial test took 300 s (CI #2315). `hung_watch_done` marks $OUT/hw-NAME.done and ends the
 # sleep whose pid the watch leaves in $OUT/hw-NAME.pid; the watch writes the
 # pid before it looks at the mark, so one side or the other sees the other's.
 # (The sleep's own kill was lost too when it fell in the child's moment as

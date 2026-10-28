@@ -213,9 +213,13 @@ pub fn init() {
                 .set_handler_fn(double_fault)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt[TIMER_VECTOR].set_handler_fn(timer);
+        // The timer and the reschedule IPI from ring 3 save the user
+        // registers too: the signals a reschedule delivers need them.
+        unsafe {
+            idt[TIMER_VECTOR].set_handler_addr(addr(trap_timer));
+            idt[IPI_RESCHED_VECTOR].set_handler_addr(addr(trap_ipi_resched));
+        }
         idt[IPI_TLB_VECTOR].set_handler_fn(ipi_tlb);
-        idt[IPI_RESCHED_VECTOR].set_handler_fn(ipi_resched);
         idt[SPURIOUS_VECTOR].set_handler_fn(spurious);
         // Device vectors (MSI-X messages, I/O APIC pins): one IDT stub per
         // vector, all funnelled into `irq::dispatch`.
@@ -641,6 +645,11 @@ trap_stub!(trap_page_fault, 14, page_fault, code);
 trap_stub!(trap_x87_fp, 16, x87_fp);
 trap_stub!(trap_alignment_check, 17, alignment_check, code);
 trap_stub!(trap_simd_fp, 19, simd_fp);
+// The interrupts that preempt a task (`x86_user_trap` runs their handler
+// and then the task's signals, `signal::on_user_interrupt`).
+trap_stub!(trap_timer, 32, timer);
+trap_stub!(trap_ipi_resched, 34, ipi_resched);
+const _: () = assert!(TIMER_VECTOR == 32 && IPI_RESCHED_VECTOR == 34);
 
 // A fault from ring 3. The stack holds the vector, the error code, then the
 // CPU's frame (rip, cs, rflags, rsp, ss); below them goes the block of user
@@ -700,9 +709,20 @@ x86_user_trap_common:
 /// A fault from ring 3 (vector `vector`, error code `code`), the user
 /// registers in `block`: page in a page not touched yet; otherwise raise
 /// the fault's signal, and end the task if the program does not catch it.
+/// The timer and the reschedule IPI from ring 3 come here too: after their
+/// handler the preempted task's pending signals act, from the block.
 extern "C" fn x86_user_trap(vector: u64, code: u64, block: *mut u64) {
     use crate::signal::{code::*, *};
     let mut regs = crate::user::SyscallRegs::from_ptr(block);
+    if vector == u64::from(TIMER_VECTOR) || vector == u64::from(IPI_RESCHED_VECTOR) {
+        if vector == u64::from(TIMER_VECTOR) {
+            timer_interrupt();
+        } else {
+            resched_interrupt();
+        }
+        on_user_interrupt(&mut regs);
+        return;
+    }
     let (rip, rsp) = (regs.pc() as u64, regs.sp() as u64);
     let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize });
     match vector {
@@ -915,15 +935,24 @@ extern "x86-interrupt" fn ipi_tlb(_frame: InterruptStackFrame) {
     lapic_w(EOI, 0);
 }
 
-extern "x86-interrupt" fn ipi_resched(frame: InterruptStackFrame) {
-    lapic_w(EOI, 0);
-    crate::task::schedule();
-    if frame.code_segment.0 & 3 == 3 {
-        crate::signal::on_user_preempted();
-    }
+/// The reschedule IPI: from the kernel here, from ring 3 through
+/// `trap_ipi_resched` (`x86_user_trap`).
+extern "x86-interrupt" fn ipi_resched(_frame: InterruptStackFrame) {
+    resched_interrupt();
 }
 
-extern "x86-interrupt" fn timer(frame: InterruptStackFrame) {
+fn resched_interrupt() {
+    lapic_w(EOI, 0);
+    crate::task::schedule();
+}
+
+/// The timer: from the kernel here, from ring 3 through `trap_timer`
+/// (`x86_user_trap`).
+extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
+    timer_interrupt();
+}
+
+fn timer_interrupt() {
     TIMER_FIRED.store(true, Ordering::SeqCst);
     crate::time::note_tick();
     crate::rng::stir_tick();
@@ -935,7 +964,4 @@ extern "x86-interrupt" fn timer(frame: InterruptStackFrame) {
     rearm_period();
     lapic_w(EOI, 0);
     crate::task::schedule();
-    if frame.code_segment.0 & 3 == 3 {
-        crate::signal::on_user_preempted();
-    }
 }

@@ -556,6 +556,10 @@ static NEED_RESCHED: [AtomicBool; crate::smp::MAX_CPUS] =
 /// Per CPU: halted (or about to halt) in an idle loop / `block_until`.
 static CPU_IDLE: [AtomicBool; crate::smp::MAX_CPUS] =
     [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+/// Per CPU: the task it runs got a signal that acts; `kick` IPIs it whether
+/// idle or not (`kick_running_locked`).
+static SIGNAL_KICK: [AtomicBool; crate::smp::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
 
 /// Whether `cpu` is in the idle loop: between picks, or halted. Said before
 /// a task is picked (`CPU_IDLE` is cleared under `TASKS` before the switch),
@@ -746,15 +750,21 @@ fn wake_locked(tasks: &mut TaskTable, slot: usize, kicks: &mut u64) {
     kick_for(tasks, slot, affinity, false, kicks);
 }
 
-/// IPI the CPUs in `kicks` that are halted (never ourselves: the caller
-/// returns to its own scheduler soon enough).
+/// IPI the CPUs in `kicks` that are halted, or whose running task a signal
+/// is for (never ourselves: the caller returns to its own scheduler soon
+/// enough).
 fn kick(kicks: u64) {
     if kicks == 0 || crate::smp::online_count() <= 1 {
         return;
     }
     let me = crate::smp::cpu_id();
     for c in 0..crate::smp::MAX_CPUS {
-        if kicks & (1 << c) != 0 && c != me && CPU_IDLE[c].load(Ordering::SeqCst) {
+        if kicks & (1 << c) == 0 || c == me {
+            continue;
+        }
+        // Both looked at: a busy CPU's flag must be cleared.
+        let signal = SIGNAL_KICK[c].swap(false, Ordering::SeqCst);
+        if CPU_IDLE[c].load(Ordering::SeqCst) || signal {
             crate::smp::kick_cpu(c);
         }
     }
@@ -840,14 +850,36 @@ pub fn wake_any() {
     wake(WAIT_ANY);
 }
 
-/// Wake one task whatever it waits for (a signal arrived). Caller holds TASKS.
+/// Wake one task whatever it waits for (a signal arrived): if it is
+/// blocked, it is made runnable; if it runs on another CPU, that CPU is
+/// kicked, so that it returns to the task through its interrupt path, where
+/// the signal acts (`signal::on_user_interrupt`), instead of at the task's
+/// next syscall or tick. Caller holds TASKS.
 pub(super) fn wake_task_locked(tasks: &mut TaskTable, slot: usize) -> u64 {
     let mut kicks = 0u64;
     if slot < MAX_TASKS {
         WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
         wake_locked(tasks, slot, &mut kicks);
+        kick_running_locked(tasks, slot, &mut kicks);
     }
     kicks
+}
+
+/// Note a kick for the CPU running `slot`, if another than ours (our own
+/// returns to it through the syscall or interrupt that is sending). The
+/// kick is sent whether that CPU is idle or not. Caller holds TASKS.
+fn kick_running_locked(tasks: &TaskTable, slot: usize, kicks: &mut u64) {
+    if tasks[slot].state != State::Running {
+        return;
+    }
+    let Some(c) = CURRENT.iter().position(|cur| cur.load(Ordering::SeqCst) == slot) else {
+        return;
+    };
+    if c == crate::smp::cpu_id() {
+        return;
+    }
+    SIGNAL_KICK[c].store(true, Ordering::SeqCst);
+    *kicks |= 1 << c;
 }
 
 /// Deliver pending kicks computed under the lock, after it was dropped.

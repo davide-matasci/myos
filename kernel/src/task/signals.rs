@@ -160,7 +160,8 @@ fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usiz
     }
     tasks[id].sig_pending |= bit;
     tasks[id].sig_changes += 1;
-    // A signal that acts ends any blocking wait (EINTR / termination).
+    // A signal that acts ends any blocking wait (EINTR / termination), and
+    // reaches a task running on another CPU through an IPI.
     if !blocked {
         return wake_task_locked(tasks, id);
     }
@@ -183,24 +184,6 @@ pub fn signal_wakeable(id: usize) -> bool {
         let set = deliverable(&tasks[id]);
         (1..32u32).any(|sig| {
             set & (1 << sig) != 0 && !matches!(disposition(tasks, tabs, id, sig), Disposition::Ignore)
-        })
-    })
-}
-
-/// The pending signal that would terminate `id` with its default action:
-/// `SIGKILL` (it acts even when blocked), else the lowest unblocked one
-/// that is neither caught nor ignored.
-pub fn signal_terminating(id: usize) -> Option<u32> {
-    if id >= MAX_TASKS {
-        return None;
-    }
-    with_sig(|tasks, tabs| {
-        let set = deliverable(&tasks[id]);
-        if set & KILL_BIT != 0 {
-            return Some(signal::SIGKILL);
-        }
-        (1..32u32).find(|&sig| {
-            set & (1 << sig) != 0 && matches!(disposition(tasks, tabs, id, sig), Disposition::Terminate)
         })
     })
 }

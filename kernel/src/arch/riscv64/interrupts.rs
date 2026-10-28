@@ -376,11 +376,11 @@ fn raise(frame: *mut u64, sig: u32, code: u32, addr: u64) -> bool {
     crate::signal::on_fault(&mut crate::user::SyscallRegs::from_ptr(frame), info)
 }
 
-/// After an interrupt's reschedule: act on a `SIGKILL` if it came from
-/// user mode.
+/// After an interrupt's reschedule: the task's signals act if it came from
+/// user mode, from the trap frame.
 fn preempted(frame: *mut u64) {
     if from_user(frame) {
-        crate::signal::on_user_preempted();
+        crate::signal::on_user_interrupt(&mut crate::user::SyscallRegs::from_ptr(frame));
     }
 }
 

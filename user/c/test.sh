@@ -246,6 +246,11 @@ t -t mm,fs shm $SMOKES/shm_smoke
 # handlers leave with siglongjmp or return to the faulting store, which
 # resumes with its registers (fault_smoke.c).
 t -t mm fault $SMOKES/fault_smoke
+# A signal reaches a process that makes no syscalls, when an interrupt
+# preempts it: a caught one's handler runs from the interrupt's frame (sent
+# by a kill, by the process's own interval timer), one at its default ends
+# the process, each within a second (sigspin_smoke.c).
+t -t signal sigspin $SMOKES/sigspin_smoke
 # A JIT's pattern from two threads: one makes a range of pages not touched
 # yet executable with mprotect while the other reads them, then code
 # written into every page runs. A page the reader faulted in while mprotect

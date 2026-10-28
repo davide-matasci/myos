@@ -74,9 +74,10 @@ at `entry(arg)` on its own stack, a Linux `clone` thread like a forked child
   address space).
 - `exit` (and a fatal signal, or a fault) ends the whole process: the first
   one sets the exit status, the other threads get `SIGKILL`, and the leader
-  exits the process once they are gone. A `SIGKILL` also acts when an
-  interrupt preempts a thread in user mode (`signal::on_user_preempted`), so
-  a thread spinning without syscalls cannot keep its process alive.
+  exits the process once they are gone. A signal also acts when an
+  interrupt preempts a thread in user mode (`signal::on_user_interrupt`), so
+  a thread spinning without syscalls cannot keep its process alive, and a
+  handler reaches it there.
 - `exec` first ends the process's other threads. Only the leader may exec
   while there are others (Linux lets any thread, which then takes over the
   pid; not supported).
