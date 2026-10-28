@@ -340,7 +340,8 @@ fn setup(base: usize, phys: u64) -> Option<Dev> {
     if max == 0 {
         return None;
     }
-    let num = (max.min(128) as u16).max(NUM_BUFS);
+    // The device's queue, up to the buffers there are (QEMU's is 64).
+    let num = NUM_BUFS.min(max.min(128) as u16);
     w32(base, REG_QUEUE_NUM, u32::from(num));
 
     let (desc_phys, desc_va) = dma_page(dma)?;
@@ -388,7 +389,7 @@ fn setup(base: usize, phys: u64) -> Option<Dev> {
         irq: false,
     };
 
-    for id in 0..NUM_BUFS {
+    for id in 0..num {
         unsafe { post_buf(&mut dev, id) };
     }
 
