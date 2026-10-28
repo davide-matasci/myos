@@ -103,6 +103,8 @@ struct MyosSysdepTags :
 	GetItimer,
 	Times,
 	GetRusage,
+	GetRlimit,
+	GetCurrentStackInfo,
 	Fork,
 	Execve,
 	Fexecve,

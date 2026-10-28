@@ -487,6 +487,16 @@ pub fn exe_path() -> Option<alloc::string::String> {
     with_process_opt(|p| p.map(|p| p.exe.clone()).filter(|e| !e.is_empty()))
 }
 
+/// The main thread's stack, `(lowest address, end)`: the process's, whichever
+/// of its threads asks (`/proc/self/stack`). `None` for a kernel thread.
+pub fn main_stack() -> Option<(usize, usize)> {
+    with_process_opt(|p| {
+        let p = p.filter(|p| p.user_base != 0)?;
+        let lo = (p.user_base + p.stack_off) as usize;
+        Some((lo, lo + crate::user::USER_STACK_PAGES * crate::user::PAGE))
+    })
+}
+
 pub fn exec_name(out: &mut [u8]) -> usize {
     with_process_mut(|t| {
         let n = t.exec_name_len as usize;

@@ -89,7 +89,7 @@ int __myos_chroot(const char *path);
 int __myos_execve(const char *path, char *const argv[], char *const envp[]);
 int __myos_fexecve(int fd, char *const argv[], char *const envp[]);
 
-/* ---- proc.c: the fd table, sessions, the host, the interval timer ------ */
+/* ---- proc.c: the fd table, sessions, the host, the limits, the timer ---- */
 int __myos_dup2(int oldfd, int newfd);
 int __myos_fcntl(int fd, int cmd, long wide);
 int __myos_pipe(int fildes[2]);
@@ -112,6 +112,8 @@ pid_t __myos_getppid(void);
 int __myos_gethostname(char *name, size_t len);
 int __myos_sethostname(const char *name, size_t len);
 int __myos_uname(struct utsname *buf);
+int __myos_rlimit(int resource, uint64_t *cur, uint64_t *max);
+int __myos_main_stack(void **lo, size_t *size);
 int __myos_setitimer(int which, const struct itimerval *value, struct itimerval *old);
 int __myos_getitimer(int which, struct itimerval *value);
 int __myos_ttyname_r(int fd, char *buf, size_t len);

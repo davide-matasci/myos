@@ -79,7 +79,10 @@ answers of it (`getrandom`, `getifaddrs`, `mount`, the mount table,
 `memfd_create`, the device number macros) is in the shared C, with the
 headers in `sysdeps/myos/include`. `times` and `setpriority` are `ENOSYS`
 (no CPU accounting, no priorities: libgloss says the same), `getpriority`
-is 0. Signal numbers are the kernel's (newlib's BSD layout) in both libcs;
+is 0. `getrlimit` reads `/proc/self/limits` (the main thread's stack and
+the fd table have a limit, nothing else: `setrlimit` is `ENOSYS`), and
+`pthread_attr_get_np` of the main thread (WebKit's question) its stack from `/proc/self/stack`
+(a thread mlibc started knows its own; `docs/proc.md`). Signal numbers are the kernel's (newlib's BSD layout) in both libcs;
 `errno` values and `struct stat` layouts are each libc's own, the shared
 C being compiled against each libc's headers. mlibc's resolver is its
 own: `/etc/hosts` for `localhost` (libgloss knows the name itself), then

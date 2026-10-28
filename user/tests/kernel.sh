@@ -422,6 +422,23 @@ proc_exe() {
 }
 t -t proc proc_exe proc_exe
 
+# /proc/self/limits, Linux's table (the main thread's stack and the fd
+# table have a limit, nothing else), and /proc/self/stack, that stack's
+# range (lowest address and end, in hex): what mlibc's getrlimit and
+# pthread_attr_get_np read (libc_smoke.c).
+proc_limits() {
+	limits=$(cat /proc/self/limits) || return 1
+	range=$(cat /proc/self/stack) || return 1
+	stack=$(echo "$limits" | sed -n 's/^Max stack size  *\([0-9]*\)  *\([0-9]*\)  *bytes$/\1 \2/p')
+	size=$((0x${range#*-} - 0x${range%-*}))
+	echo "stack: $range ($size bytes), limits: $stack"
+	echo "$limits" | head -n 1 | grep -q '^Limit  *Soft Limit  *Hard Limit  *Units$' || return 1
+	[ "$stack" = "$size $size" ] || return 1
+	echo "$limits" | grep -q '^Max open files  *[0-9][0-9]*  *[0-9][0-9]*  *files$' || return 1
+	echo "$limits" | grep -q '^Max cpu time  *unlimited  *unlimited  *seconds$'
+}
+t -t proc proc_limits proc_limits
+
 # /proc/self/fd listed while a file is open (here fd 7): its entry's path
 # takes the mount table's lock, which the listing held, and the system froze
 # (`find /`, its directories open, under the bind of /proc that

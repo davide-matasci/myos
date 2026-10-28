@@ -564,6 +564,23 @@ int Sysdeps<GetRusage>::operator()(int, struct rusage *usage) {
 	return 0;
 }
 
+// /proc/self/limits: the main thread's stack and the fd table have a
+// limit, nothing else.
+int Sysdeps<GetRlimit>::operator()(int resource, struct rlimit *limit) {
+	uint64_t cur, max;
+	if (__myos_rlimit(resource, &cur, &max) < 0)
+		return errno;
+	limit->rlim_cur = cur == UINT64_MAX ? RLIM_INFINITY : cur;
+	limit->rlim_max = max == UINT64_MAX ? RLIM_INFINITY : max;
+	return 0;
+}
+
+// The main thread's stack (pthread_attr_get_np asks for no other: a thread
+// mlibc started knows its own), from /proc/self/stack.
+int Sysdeps<GetCurrentStackInfo>::operator()(void **stack_base, size_t *stack_size) {
+	return err(__myos_main_stack(stack_base, stack_size));
+}
+
 // ---- processes ----------------------------------------------------------
 
 int Sysdeps<Fork>::operator()(pid_t *child) {
