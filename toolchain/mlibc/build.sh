@@ -105,13 +105,16 @@ EOC
 # lib/libbuiltins.a: the compiler-rt builtins (fetch.sh) a link against
 # this libc.a needs, every one the compiler may call beside them: the IEEE
 # binary128 `long double` of aarch64 and riscv64 (printf, strtod, libm),
-# the complex multiplications of libm and the 128-bit integer divisions
-# (`__int128` arithmetic: CPython's libmpdec) on every arch. Linked after libc.a
-# (-lbuiltins).
+# the complex multiplications of libm, and the 128-bit integer divisions
+# and conversions to and from floating point (`__int128` arithmetic:
+# CPython's libmpdec, JavaScriptCore's Temporal) on every arch. Linked
+# after libc.a (-lbuiltins).
 build_builtins() {
   local arch="$1" prefix="$2"
   local obj="$ROOT/target/mlibc-build-$arch/builtins"
-  local files=(muldc3.c mulsc3.c udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c)
+  local files=(muldc3.c mulsc3.c udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
+    fixdfti.c fixsfti.c fixunsdfti.c fixunssfti.c floattidf.c floattisf.c floatuntidf.c
+    floatuntisf.c)
   case "$arch" in
     aarch64|riscv64)
       files+=(addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c
