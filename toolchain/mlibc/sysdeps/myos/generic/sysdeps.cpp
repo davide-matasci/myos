@@ -113,9 +113,8 @@ int Sysdeps<Msync>::operator()(void *addr, size_t length, int flags) {
 	return err(__myos_msync(addr, length, flags));
 }
 
-// No paging advice to give: every page is resident.
-int Sysdeps<Madvise>::operator()(void *, size_t, int) {
-	return 0;
+int Sysdeps<Madvise>::operator()(void *addr, size_t length, int advice) {
+	return err(__myos_madvise(addr, length, advice));
 }
 
 int Sysdeps<PosixMadvise>::operator()(void *, size_t, int) {
@@ -563,6 +562,23 @@ int Sysdeps<Times>::operator()(struct tms *, clock_t *) {
 int Sysdeps<GetRusage>::operator()(int, struct rusage *usage) {
 	memset(usage, 0, sizeof *usage);
 	return 0;
+}
+
+// /proc/self/limits: the main thread's stack and the fd table have a
+// limit, nothing else.
+int Sysdeps<GetRlimit>::operator()(int resource, struct rlimit *limit) {
+	uint64_t cur, max;
+	if (__myos_rlimit(resource, &cur, &max) < 0)
+		return errno;
+	limit->rlim_cur = cur == UINT64_MAX ? RLIM_INFINITY : cur;
+	limit->rlim_max = max == UINT64_MAX ? RLIM_INFINITY : max;
+	return 0;
+}
+
+// The main thread's stack (pthread_attr_get_np asks for no other: a thread
+// mlibc started knows its own), from /proc/self/stack.
+int Sysdeps<GetCurrentStackInfo>::operator()(void **stack_base, size_t *stack_size) {
+	return err(__myos_main_stack(stack_base, stack_size));
 }
 
 // ---- processes ----------------------------------------------------------

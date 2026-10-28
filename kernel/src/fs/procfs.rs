@@ -393,6 +393,40 @@ fn pid_ino(name: &str) -> u32 {
     0x1000_0000 + (id as u32) * 8 + kind
 }
 
+/// `self/limits`, Linux's table: a row per resource, in the order of
+/// their `RLIMIT_*` numbers. The stack is the main thread's, and the fds
+/// are the table's; nothing else has a limit.
+fn limits_text() -> alloc::string::String {
+    let stack = alloc::format!("{}", crate::user::USER_STACK_PAGES * crate::user::PAGE);
+    let fds = alloc::format!("{}", crate::task::MAX_FDS);
+    let rows: [(&str, &str, &str); 16] = [
+        ("Max cpu time", "unlimited", "seconds"),
+        ("Max file size", "unlimited", "bytes"),
+        ("Max data size", "unlimited", "bytes"),
+        ("Max stack size", &stack, "bytes"),
+        ("Max core file size", "unlimited", "bytes"),
+        ("Max resident set", "unlimited", "bytes"),
+        ("Max processes", "unlimited", "processes"),
+        ("Max open files", &fds, "files"),
+        ("Max locked memory", "unlimited", "bytes"),
+        ("Max address space", "unlimited", "bytes"),
+        ("Max file locks", "unlimited", "locks"),
+        ("Max pending signals", "unlimited", "signals"),
+        ("Max msgqueue size", "unlimited", "bytes"),
+        ("Max nice priority", "unlimited", ""),
+        ("Max realtime priority", "unlimited", ""),
+        ("Max realtime timeout", "unlimited", "us"),
+    ];
+    let mut out = alloc::string::String::new();
+    let header = ("Limit", "Soft Limit", "Hard Limit", "Units");
+    let rows = rows.iter().map(|&(name, limit, units)| (name, limit, limit, units));
+    for (name, soft, hard, units) in core::iter::once(header).chain(rows) {
+        out.push_str(alloc::format!("{name:<26}{soft:<21}{hard:<21}{units}").trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 fn ids_text(ids: &[usize]) -> alloc::string::String {
     let mut out = alloc::string::String::new();
     for id in ids {
@@ -406,6 +440,8 @@ fn ids_text(ids: &[usize]) -> alloc::string::String {
 fn generated(name: &str) -> Option<alloc::string::String> {
     match name {
         "self/ctx" => Some(crate::sec::ctx_text()),
+        "self/limits" => Some(limits_text()),
+        "self/stack" => crate::task::main_stack().map(|(lo, end)| alloc::format!("{lo:x}-{end:x}\n")),
         "sys/security/users" => Some(crate::sec::users_text()),
         "cpu" => Some(cpu_text()),
         // The IOMMU's units, domains and refused DMAs (`docs/pci-acpi-smp.md`).
@@ -456,6 +492,10 @@ fn list_self(name: &str, buf: &mut [u8]) -> usize {
         Some(SelfNode::Dir) => {
             push(b"fd");
             push(b"ctx");
+            push(b"limits");
+            if crate::task::main_stack().is_some() {
+                push(b"stack");
+            }
             if crate::tty::ctty_dir().is_some() {
                 push(b"tty");
             }
@@ -654,6 +694,8 @@ pub fn stat(name: &str) -> Option<StatInfo> {
             size: text.len() as u64,
             ino: match name {
                 "self/ctx" => 94,
+                "self/limits" => 88,
+                "self/stack" => 89,
                 "sys/security/users" => 95,
                 "cpu" => 96,
                 "iommu" => 80,

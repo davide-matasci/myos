@@ -89,7 +89,15 @@ build_arch() {
     -Dintrospection=disabled -Dman=false -Ddocumentation=false -Dtests=false \
     -Dinstalled_tests=false -Dthumbnailer=disabled
   # GTK 3 links libepoxy; no GL library is there to load at run time.
-  meson_build "libepoxy-$LIBEPOXY_VERSION" -Dglx=yes -Degl=no -Dx11=true -Dtests=false -Ddocs=false
+  # Its EGL dispatch is built over the Khronos headers, installed beside
+  # it for WebKitGTK, which compiles against them and never calls EGL
+  # (packages/webkitgtk). Their native window types are the opaque ones
+  # (EGL_NO_PLATFORM_SPECIFIC_TYPES): myos is none of the platforms the
+  # headers know, and WebKit's build says the same.
+  cp -r "$SRC/egl-registry-$EGL_REGISTRY_COMMIT/EGL" "$SRC/egl-registry-$EGL_REGISTRY_COMMIT/KHR" \
+    "$out/include/"
+  meson_build "libepoxy-$LIBEPOXY_VERSION" -Dglx=yes -Degl=yes -Dx11=true -Dtests=false -Ddocs=false \
+    -Dc_args="-D_GNU_SOURCE -DEGL_NO_PLATFORM_SPECIFIC_TYPES -I$out/include"
 
   # The smoke: pango and cairo, gdk-pixbuf, and cairo's Xlib surface; C,
   # linked as C++ (harfbuzz is).

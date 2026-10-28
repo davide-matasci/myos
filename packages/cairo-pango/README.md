@@ -11,7 +11,7 @@ against mlibc, in one prefix per arch, `target/cairo-pango-mlibc-<arch>`
 | [cairo](https://cairographics.org/) | image surfaces, Xlib with RENDER (GTK 3's X backend), PNG, FreeType and fontconfig; no xcb (`packages/x11-libs` builds libxcb's core alone); taken under the LGPL-2.1 |
 | [pango](https://gitlab.gnome.org/GNOME/pango) | 1.56, the last series over fontconfig 2.15 (`packages/x11-xft`'s); its cairo and FreeType backends, no Xft backend |
 | [gdk-pixbuf](https://gitlab.gnome.org/GNOME/gdk-pixbuf) | its loaders built in (myos has no `dlopen`): PNG, JPEG, GIF and the others but TIFF; formats told by the loaders' signatures (no shared-mime-info database) |
-| [libepoxy](https://github.com/anholt/libepoxy) | GTK 3 links it; with no GL library to load, `epoxy_has_glx` says no |
+| [libepoxy](https://github.com/anholt/libepoxy) | GTK 3 links it; with no GL library to load, `epoxy_has_glx` says no. Its EGL dispatch is built over the Khronos EGL headers (EGL-Registry, pinned file by file in `versions.env`), installed in the prefix for WebKitGTK, which compiles against them and never calls EGL (`packages/webkitgtk`); their native types are the opaque ones (`EGL_NO_PLATFORM_SPECIFIC_TYPES`) |
 
 `build.sh` builds each with meson, cross, through the cross compilers of
 `myos_write_cross_cc` and `myos_write_cross_cxx`, over the mlibc builds of

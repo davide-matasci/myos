@@ -1,9 +1,10 @@
 /* The process, fd-table and host calls over the kernel's: dup, fcntl (its
  * record locks), pipe, the sessions and process groups, the host name,
- * the interval timer, the terminal's name; and the calls myos answers
- * without a kernel feature behind them: the mode and owner bits (every
- * process is root and the VFS keeps no modes), hard links (none:
- * docs/security.md), truncation. fcntl, link, pipe, chmod, creat and
+ * the resource limits and the main thread's stack, the interval timer,
+ * the terminal's name; and the calls myos answers without a kernel
+ * feature behind them: the mode and owner bits (every process is root and
+ * the VFS keeps no modes), hard links (none: docs/security.md),
+ * truncation. fcntl, link, pipe, chmod, creat and
  * umask have no alias: newlib's libc defines them over the hooks of
  * libgloss/myos/hooks.c. */
 
@@ -444,6 +445,88 @@ int __myos_uname(struct utsname *buf) {
     strncpy(buf->release, "0.1", sizeof(buf->release));
     strncpy(buf->version, "myos", sizeof(buf->version));
     strncpy(buf->machine, "myos", sizeof(buf->machine));
+    return 0;
+}
+
+/* ---- the limits and the main thread's stack ------------------------------ */
+
+/* The whole of a small /proc file into buf, NUL-terminated; -1 when it
+ * cannot be read. */
+static int myos_read_small(const char *path, char *buf, size_t size) {
+    int fd = open(path, O_RDONLY);
+    size_t n = 0;
+    ssize_t r;
+    if (fd < 0) {
+        return -1;
+    }
+    while (n + 1 < size && (r = read(fd, buf + n, size - 1 - n)) > 0) {
+        n += (size_t)r;
+    }
+    close(fd);
+    buf[n] = '\0';
+    return 0;
+}
+
+/* One limit of /proc/self/limits' row: its number, or "unlimited"
+ * (UINT64_MAX); *s moves past it and the spaces after. */
+static uint64_t myos_limit_field(const char **s) {
+    uint64_t v = UINT64_MAX;
+    if (strncmp(*s, "unlimited", 9) == 0) {
+        *s += 9;
+    } else {
+        char *end;
+        v = strtoull(*s, &end, 10);
+        *s = end;
+    }
+    while (**s == ' ') {
+        (*s)++;
+    }
+    return v;
+}
+
+/* The soft and hard limits of a resource (an RLIMIT_* number: the rows of
+ * /proc/self/limits, below its header, are in their order); -1 (EINVAL)
+ * for a resource it has no row for. A row is the name, two spaces or
+ * more, the soft limit, the hard one and the units. */
+int __myos_rlimit(int resource, uint64_t *cur, uint64_t *max) {
+    char buf[2048];
+    const char *s = buf;
+    if (resource < 0 || myos_read_small("/proc/self/limits", buf, sizeof buf) < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (int line = 0; line <= resource && s != NULL; line++) {
+        s = strchr(s, '\n');
+        s = s != NULL ? s + 1 : NULL;
+    }
+    if (s == NULL || *s == '\0' || (s = strstr(s, "  ")) == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    while (*s == ' ') {
+        s++;
+    }
+    *cur = myos_limit_field(&s);
+    *max = myos_limit_field(&s);
+    return 0;
+}
+
+/* The main thread's stack, from /proc/self/stack ("lo-end" in hex): its
+ * lowest address and its size. */
+int __myos_main_stack(void **lo, size_t *size) {
+    char buf[64], *end;
+    if (myos_read_small("/proc/self/stack", buf, sizeof buf) < 0) {
+        errno = ENOSYS;
+        return -1;
+    }
+    uintptr_t from = (uintptr_t)strtoull(buf, &end, 16);
+    if (*end != '-') {
+        errno = ENOSYS;
+        return -1;
+    }
+    uintptr_t to = (uintptr_t)strtoull(end + 1, NULL, 16);
+    *lo = (void *)from;
+    *size = to - from;
     return 0;
 }
 

@@ -6,7 +6,7 @@
 //! by the test CA the guest's tests trust alone
 //! (`/lib/myos-tests/test-ca.pem`).
 //!
-//! Both serve `/hello.txt`, [`HELLO`].
+//! Both serve `/hello.txt`, [`HELLO`], and `/hello.html`, [`HELLO_HTML`].
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -19,6 +19,13 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 pub const HTTP_PORT: u16 = 8766;
 pub const HTTPS_PORT: u16 = 8767;
 pub const HELLO: &str = "hello from the myos test server\n";
+/// A page for the browser tests (packages/webkitgtk): a title, a blue box
+/// at the top left (200 by 100 pixels) and a script that writes into it.
+pub const HELLO_HTML: &str = "<!DOCTYPE html>\n<html><head><title>myos test page</title>\n\
+<style>body { margin: 0; background: #fff; } #box { width: 200px; height: 100px; background: #00f; }</style>\n\
+</head><body><div id=\"box\"></div><p id=\"js\">no script</p>\n\
+<script>document.getElementById(\"js\").textContent = \"script ran \" + 6 * 7;</script>\n\
+</body></html>\n";
 
 /// Serve both ports in background threads. A port that is taken is
 /// reported and left out: the tests that need it fail then.
@@ -88,16 +95,17 @@ fn serve_one<S: Read + Write>(stream: &mut S) {
     drop(reader);
     let mut words = line.split_whitespace();
     let response = match (words.next(), words.next()) {
-        (Some("GET"), Some("/hello.txt")) => reply("200 OK", HELLO.as_bytes()),
-        _ => reply("404 Not Found", b""),
+        (Some("GET"), Some("/hello.txt")) => reply("200 OK", "text/plain", HELLO.as_bytes()),
+        (Some("GET"), Some("/hello.html")) => reply("200 OK", "text/html", HELLO_HTML.as_bytes()),
+        _ => reply("404 Not Found", "text/plain", b""),
     };
     let _ = stream.write_all(&response);
     let _ = stream.flush();
 }
 
-fn reply(status: &str, body: &[u8]) -> Vec<u8> {
+fn reply(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
     let mut r = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )
     .into_bytes();

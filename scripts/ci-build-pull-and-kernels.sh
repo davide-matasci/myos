@@ -39,7 +39,10 @@ wait
 misses=()
 for p in "${pieces[@]}"; do
   cat "$logs/$p"
-  grep -q "^registry hit " "$logs/$p" || misses+=("$p")
+  # A port of several pieces (an arch each) misses when one does.
+  if ! grep -q "^registry hit " "$logs/$p" || grep -q "^registry miss " "$logs/$p"; then
+    misses+=("$p")
+  fi
 done
 rm -rf "$logs"
 

@@ -8,7 +8,8 @@
  * the default action); the clocks (CLOCK_MONOTONIC and CLOCK_BOOTTIME
  * since boot, not moved by setting the wall clock, clock_getres, an unknown
  * clock refused); on mlibc, getauxval over the kernel's auxiliary vector
- * (the page size, the entry, AT_SECURE 0).
+ * (the page size, the entry, AT_SECURE 0), getrlimit and the main thread's
+ * stack from pthread_attr_get_np.
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
 #define _GNU_SOURCE /* CLOCK_BOOTTIME */
@@ -440,10 +441,51 @@ static int check_auxv(void) {
 }
 #endif
 
+#ifdef __MLIBC_POSIX_OPTION
+#include <pthread.h>
+#include <pthread_np.h>
+#include <sys/resource.h>
+
+/* The limits and the main thread's stack, from /proc/self/limits and
+ * /proc/self/stack (newlib has neither getrlimit nor pthread_attr_get_np):
+ * the stack holds this frame and is as large as RLIMIT_STACK says, the fd
+ * table has a limit, the CPU time none. */
+static int check_limits(void) {
+    struct rlimit stack, files, cpu;
+    if (getrlimit(RLIMIT_STACK, &stack) != 0 || getrlimit(RLIMIT_NOFILE, &files) != 0
+        || getrlimit(RLIMIT_CPU, &cpu) != 0) {
+        return fail("getrlimit");
+    }
+    if (stack.rlim_cur == RLIM_INFINITY || stack.rlim_cur != stack.rlim_max
+        || files.rlim_cur == RLIM_INFINITY || cpu.rlim_cur != RLIM_INFINITY) {
+        return fail("getrlimit: the stack, fds or CPU time");
+    }
+    pthread_attr_t attr;
+    void *lo;
+    size_t size;
+    char here;
+    pthread_attr_init(&attr);
+    if (pthread_attr_get_np(pthread_self(), &attr) != 0 || pthread_attr_getstack(&attr, &lo, &size) != 0) {
+        return fail("pthread_attr_get_np");
+    }
+    pthread_attr_destroy(&attr);
+    if (&here < (char *)lo || &here >= (char *)lo + size || size != stack.rlim_cur) {
+        printf("[ FAIL ] libc main stack %p+%zu, a local at %p, RLIMIT_STACK %llu\n", lo, size,
+               (void *)&here, (unsigned long long)stack.rlim_cur);
+        return 1;
+    }
+    return 0;
+}
+#else
+static int check_limits(void) {
+    return 0;
+}
+#endif
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
         || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()
-        || check_auxv()) {
+        || check_auxv() || check_limits()) {
         return 1;
     }
     printf("[ OK ] libc\n");

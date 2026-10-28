@@ -1,6 +1,7 @@
 /* The memory ABI of myos: mlibc's Linux ABI bits (abis/linux/vm-flags.h in
- * its tree, under mlibc's licence) with memfd_create's flags outside the
- * Linux option, which myos does not build (toolchain/mlibc/README.md). */
+ * its tree, under mlibc's licence) with memfd_create's flags, madvise's
+ * advice and MAP_NORESERVE outside the Linux option, which myos does not
+ * build (toolchain/mlibc/README.md). */
 #ifndef _ABIBITS_VM_FLAGS_H
 #define _ABIBITS_VM_FLAGS_H
 
@@ -25,7 +26,6 @@
 #define MAP_DENYWRITE 0x800
 #define MAP_EXECUTABLE 0x1000
 #define MAP_LOCKED    0x2000
-#define MAP_NORESERVE 0x4000
 #define MAP_POPULATE  0x8000
 #define MAP_NONBLOCK  0x10000
 #define MAP_STACK     0x20000
@@ -34,6 +34,9 @@
 #define MAP_FIXED_NOREPLACE 0x100000
 
 #endif /* __MLIBC_LINUX_OPTION */
+
+/* Taken and ignored: myos reserves no memory for a mapping ahead. */
+#define MAP_NORESERVE 0x4000
 
 #define MS_ASYNC 0x01
 #define MS_INVALIDATE 0x02
@@ -48,8 +51,8 @@
 #define POSIX_MADV_WILLNEED 3
 #define POSIX_MADV_DONTNEED 4
 
-#if __MLIBC_LINUX_OPTION
-
+/* madvise's advice (libmyos/mmap.c: MADV_DONTNEED frees the pages, the
+ * rest is taken and ignored), which myos has without the Linux option. */
 #if defined(_DEFAULT_SOURCE)
 #define MADV_NORMAL 0
 #define MADV_RANDOM 1
@@ -73,8 +76,6 @@
 #define MADV_HWPOISON 100
 #define MADV_SOFT_OFFLINE 101
 #endif /* defined(_DEFAULT_SOURCE) */
-
-#endif /* __MLIBC_LINUX_OPTION */
 
 /* memfd_create's flags (libmyos/shm.c), which myos has without mlibc's
  * Linux option. */

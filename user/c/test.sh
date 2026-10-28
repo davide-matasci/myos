@@ -199,7 +199,8 @@ t -t sched child $SMOKES/child_smoke
 # blocking read cut short, the default action); CLOCK_MONOTONIC and
 # CLOCK_BOOTTIME since boot, going on when the wall clock is set back
 # (issue #317), clock_getres; on mlibc, getauxval over the kernel's
-# auxiliary vector (libc_smoke.c).
+# auxiliary vector, getrlimit and the main thread's stack
+# (pthread_attr_get_np) from /proc/self (libc_smoke.c).
 t -t smoke libc $SMOKES/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir (on mlibc,
@@ -217,8 +218,8 @@ t -t fs,smoke fileio $SMOKES/fileio_smoke
 # second mapping and a forked child share them, read() lands in them,
 # msync, ftruncate, mprotect, a read-only fd; a MAP_PRIVATE mapping is
 # copied at its first store (from userspace, the kernel or a forked child),
-# and a fault maps the cached pages after it (mmap_smoke.c; on ext2 in
-# mkfs.ext2's test).
+# and a fault maps the cached pages after it; madvise(MADV_DONTNEED) drops
+# pages, which read as new (mmap_smoke.c; on ext2 in mkfs.ext2's test).
 t -t mm mmap $SMOKES/mmap_smoke
 # A program too large to read whole (a 20 MiB .bss) is mapped from its
 # file and relocated in place: its relocated tables, data, .bss and heap,

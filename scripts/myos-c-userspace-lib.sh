@@ -1671,6 +1671,38 @@ myos_libsoup_is_current() {
   done
 }
 
+# WebKitGTK (packages/webkitgtk), against mlibc: its pins, patches and
+# scripts, cairo-pango's pins (its HarfBuzz is built again), and what it
+# builds over: GTK 3 (and so the text, image and X libraries), libsoup
+# (LibreSSL and SQLite) and the cross compilers and meson helpers.
+myos_webkitgtk_version_hash() {
+  local h
+  h="$(
+    {
+      myos_gtk3_version_hash
+      myos_libsoup_version_hash
+      find "$(myos_port_dir webkitgtk)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+# Built an arch at a time (PORT_ARCH_JOBS): a stamp per arch, for the
+# arches MYOS_WEBKITGTK_ARCHES lists (all by default).
+myos_webkitgtk_is_current() {
+  local arch h stamp
+  h="$(myos_webkitgtk_version_hash)"
+  for arch in ${MYOS_WEBKITGTK_ARCHES:-x86_64 aarch64 riscv64}; do
+    stamp="$MYOS_ROOT/target/.myos-webkitgtk-${arch}-version"
+    [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/webkitgtk-mlibc-${arch}/lib/libwebkit2gtk-4.1.a" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/webkitgtk-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
 # CPython (packages/python), against mlibc: its sysroot's hash, zlib's pin
 # (the module's zlib is built from that source), the libraries of its other
 # modules (LibreSSL, ncurses, SQLite, libedit) and the port's files.

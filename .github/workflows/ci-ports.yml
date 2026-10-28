@@ -141,7 +141,9 @@ jobs:
     container:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
-    timeout-minutes: 45
+    # The port's own limit (PORT_TIMEOUT, docs/ports.md; WebKit's arches
+    # take hours each).
+    timeout-minutes: ${{ matrix.timeout }}
     needs: [plan, wire-myos, sysroot, newlib]
     if: |
       always() &&

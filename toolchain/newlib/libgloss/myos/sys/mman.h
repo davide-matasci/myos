@@ -38,6 +38,15 @@ int munmap(void *addr, size_t length);
 int mprotect(void *addr, size_t length, int prot);
 int msync(void *addr, size_t length, int flags);
 
+/* madvise: MADV_DONTNEED frees the pages (they read as zero, or as the
+ * file, next time); the other advice is taken and ignored. */
+#define MADV_NORMAL     0
+#define MADV_RANDOM     1
+#define MADV_SEQUENTIAL 2
+#define MADV_WILLNEED   3
+#define MADV_DONTNEED   4
+int madvise(void *addr, size_t length, int advice);
+
 /* POSIX shared memory: files of /dev/shm. */
 int shm_open(const char *name, int oflag, mode_t mode);
 int shm_unlink(const char *name);

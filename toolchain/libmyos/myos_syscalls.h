@@ -158,6 +158,10 @@ struct myos_mmap_args {
 /* msync(addr, len, flags): the shared file mappings in the range are
  * written back to their files (the flags make no difference). */
 #define MYOS_SYS_MSYNC 92
+/* madvise(addr, len, advice): MADV_DONTNEED frees the range's pages in
+ * the mmap window (they read as new next time); other advice is a hint,
+ * ignored. */
+#define MYOS_SYS_MADVISE 95
 /* clock_monotonic(): nanoseconds since boot (clock_gettime's CLOCK_MONOTONIC). */
 #define MYOS_SYS_CLOCK_MONOTONIC 91
 #define MYOS_POWER_OFF 0
