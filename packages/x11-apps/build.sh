@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Cross-build xev for the three arches: libXext and libXrandr (xev asks the
-# server for RandR events), static, then upstream xev, unpatched, each with
-# its own autoconf configure in cross mode, on top of a copy of the font
-# stack's stage (packages/x11-xft: libX11, xcb and libXrender, which
-# libXrandr builds on) in target/x11-apps-<arch>.
+# Cross-build xev and xprop for the three arches: upstream, unpatched,
+# each with its own autoconf configure in cross mode, static, on top of a
+# copy of the font stack's stage (packages/x11-xft: libX11, xcb and
+# libXrender; x11-libs' libXext and libXrandr, which xev asks for RandR
+# events) in target/x11-apps-<arch>.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -72,6 +72,8 @@ build_arch() {
 
   build_one "$arch" "xev-$XEV_VERSION"
   cp "$WORK/$arch/xev-$XEV_VERSION/xev" "$ROOT/target/xev-${arch}-unknown-none"
+  build_one "$arch" "xprop-$XPROP_VERSION"
+  cp "$WORK/$arch/xprop-$XPROP_VERSION/xprop" "$ROOT/target/xprop-${arch}-unknown-none"
 }
 
 for arch in x86_64 aarch64 riscv64; do
@@ -79,4 +81,4 @@ for arch in x86_64 aarch64 riscv64; do
 done
 
 myos_x11_apps_version_hash >"$MYOS_X11_APPS_VERSION"
-echo "x11-apps -> target/xev-<arch>-unknown-none"
+echo "x11-apps -> target/{xev,xprop}-<arch>-unknown-none"

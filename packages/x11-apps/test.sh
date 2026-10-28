@@ -80,3 +80,25 @@ xev_pointer() {
 	xev_events mouse mouse ButtonRelease "MotionNotify event" "ButtonPress event" "button 1,"
 }
 t -t x11,mouse,tinyx xev_pointer xev_pointer
+
+# xprop sets a UTF-8 property on the root window and prints it back, as
+# surf's address bar sets its window's _SURF_GO (packages/surf). The
+# server answers once it holds the screen: the first set is retried.
+xprop_set() {
+	run-myos tinyx:Xfbdev :0 -br > /tmp/xprop-server.log 2>&1 &
+	xpid=$!
+	i=0
+	while [ $i -lt 60 ] && ! DISPLAY=:0 run-myos x11-apps:xprop -root -f _MYOS_TEST 8u \
+		-set _MYOS_TEST "hello myos" > /tmp/xprop.out 2>&1; do
+		sleep 1
+		i=$((i + 1))
+	done
+	DISPLAY=:0 run-myos x11-apps:xprop -root _MYOS_TEST >> /tmp/xprop.out 2>&1
+	grep -qx '_MYOS_TEST(UTF8_STRING) = "hello myos"' /tmp/xprop.out
+	ok=$?
+	kill $xpid 2>/dev/null
+	wait $xpid 2>/dev/null
+	[ $ok = 0 ] || cat /tmp/xprop.out /tmp/xprop-server.log
+	return $ok
+}
+t -t x11,tinyx xprop xprop_set

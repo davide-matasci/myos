@@ -55,4 +55,5 @@ fetch() {
 }
 
 fetch xev "$XEV_VERSION" "$XEV_SHA256" app
+fetch xprop "$XPROP_VERSION" "$XPROP_SHA256" app
 echo "x11-apps sources -> $SRC"
