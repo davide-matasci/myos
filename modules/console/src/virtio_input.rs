@@ -95,7 +95,16 @@ const BTN_LAST: u16 = 0x114;
 const MAX_POINTERS: usize = 2;
 
 const EVENT_SIZE: u32 = 8;
-const NUM_BUFS: u16 = 8;
+/// Event buffers posted to a device: QEMU's queue holds 64 events, and
+/// drops a key event (with the `SYN_REPORT` after it) when the guest has
+/// none posted. Eight gave a burst of keys four events of slack, 40 ms at
+/// QEMU's `sendkey` pace (a press and a release 10 ms apart): a reader
+/// woken that late under TCG lost one (issue #650). One page, a buffer
+/// per cache line, so that a sync of one never touches another's data.
+const NUM_BUFS: u16 = 64;
+/// A buffer's stride in the events page: a cache line.
+const EVENT_STRIDE: usize = 64;
+const _: () = assert!(NUM_BUFS as usize * EVENT_STRIDE <= 4096 && EVENT_SIZE as usize <= EVENT_STRIDE);
 
 struct Dev {
     base: usize,
@@ -331,19 +340,20 @@ fn setup(base: usize, phys: u64) -> Option<Dev> {
     if max == 0 {
         return None;
     }
-    let num = (max.min(128) as u16).max(NUM_BUFS);
+    // The device's queue, up to the buffers there are (QEMU's is 64).
+    let num = NUM_BUFS.min(max.min(128) as u16);
     w32(base, REG_QUEUE_NUM, u32::from(num));
 
     let (desc_phys, desc_va) = dma_page(dma)?;
     let (avail_phys, avail_va) = dma_page(dma)?;
     let (used_phys, used_va) = dma_page(dma)?;
 
+    let (events_phys, events_va) = dma_page(dma)?;
     let mut event_phys = [0u64; NUM_BUFS as usize];
     let mut event_va = [core::ptr::null_mut(); NUM_BUFS as usize];
     for i in 0..NUM_BUFS as usize {
-        let (phys, va) = dma_page(dma)?;
-        event_phys[i] = phys;
-        event_va[i] = va;
+        event_phys[i] = events_phys + (i * EVENT_STRIDE) as u64;
+        event_va[i] = unsafe { events_va.add(i * EVENT_STRIDE) };
     }
 
     w32(base, REG_QUEUE_READY, 0);
@@ -379,7 +389,7 @@ fn setup(base: usize, phys: u64) -> Option<Dev> {
         irq: false,
     };
 
-    for id in 0..NUM_BUFS {
+    for id in 0..num {
         unsafe { post_buf(&mut dev, id) };
     }
 

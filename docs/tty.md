@@ -168,7 +168,11 @@ for the next event, `poll` reports `POLLIN` while one is queued. The queue
 holds 128 events and drops new ones while full. The keyboard interrupts
 on input where the platform can route it (IRQ 1 through the I/O APIC, the
 virtio-input device's interrupt); otherwise it is polled every 10 ms while
-someone waits. The file exists when the
+someone waits. The virtio-input driver keeps 64 event buffers posted (the
+device's whole queue): QEMU drops a key event when the guest has none
+posted, and eight gave a burst of keys 40 ms of slack (QEMU's `sendkey`
+types a press and a release 10 ms apart), which a reader woken that late
+under TCG missed (issue #650). The file exists when the
 console module found a keyboard ([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)),
 or from the first USB keyboard on.
 

@@ -247,6 +247,11 @@ t -t mm,fs shm $SMOKES/shm_smoke
 # handlers leave with siglongjmp or return to the faulting store, which
 # resumes with its registers (fault_smoke.c).
 t -t mm fault $SMOKES/fault_smoke
+# A signal reaches a process that makes no syscalls, when an interrupt
+# preempts it: a caught one's handler runs from the interrupt's frame (sent
+# by a kill, by the process's own interval timer), one at its default ends
+# the process, each within a second (sigspin_smoke.c).
+t -t signal sigspin $SMOKES/sigspin_smoke
 # A JIT's pattern from two threads: one makes a range of pages not touched
 # yet executable with mprotect while the other reads them, then code
 # written into every page runs. A page the reader faulted in while mprotect
@@ -309,7 +314,20 @@ kbd_burst() {
 	lines=$(wc -l < /tmp/kb.out)
 	dups=$(uniq -d /tmp/kb.out | wc -l)
 	echo "$lines events, $dups repeated"
-	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ]
+	[ "$lines" -eq 400 ] && [ "$dups" -eq 0 ] && return 0
+	# Which events are missing or doubled, and where in the burst (issue
+	# #650): the counts of each kind, and each line equal to the one
+	# before it with its position.
+	echo "$(grep -c '^d ' /tmp/kb.out) down, $(grep -c '^u ' /tmp/kb.out) up"
+	n=0
+	prev=
+	while read -r line; do
+		n=$((n + 1))
+		[ "$line" != "$prev" ] || echo "$n: $line (again)"
+		prev=$line
+	done < /tmp/kb.out
+	grep -e ' keyboard$' -e ' virtio-input$' /proc/interrupts
+	return 1
 }
 t -t console kbd_burst kbd_burst
 # /dev/console/mouse: held by one program at a time; the host moves the
@@ -537,6 +555,10 @@ net_listen() {
 	if contains "[ OK ] listen" /tmp/listen.out && ! grep -q "no listener on 2323" /tmp/listen.out; then
 		return 0
 	fi
+	# netd's table: what became of the connections (a mute one lost on
+	# the way to accept, issue #630's class, leaves a handshake or a
+	# conversation nobody took).
+	cat /net/convs
 	# The smoke is gone: its peer on the host stops waiting for it.
 	[ -z "$asked" ] || echo "HOST c-smokes tcp-ping-stop 2323 $pid" >&3
 	return 1

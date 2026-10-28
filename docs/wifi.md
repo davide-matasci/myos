@@ -601,13 +601,16 @@ close takes the NIC away):
 |------|-|
 | `prog` | the program's end: a write is one Ethernet frame for netd, a read one frame netd sent (it waits for one; `poll` says one is there) |
 | `data` | the NIC's end, as `/dev/netN/data` is: a write sends a frame, a read takes one (0 bytes when none waits), `poll` says one is there |
-| `ctl` | `mac ADDR`, `irq on` and `link up` or `link down`, as lines; the program writes `mac ADDR`, `up` and `down` (the association) |
+| `ctl` | `mac ADDR`, `irq on`, `link up` or `link down` and `program N` (the count of programs that have held `prog` so far, this one included), as lines; the program writes `mac ADDR`, `up` and `down` (the association) |
 
 A frame netd sends while the link is down is dropped. Each direction
 queues up to 64 frames; past that the newest is dropped, as a full NIC
 drops. The test is `tap_smoke` (`user/c/test.sh`, tag `tap`).
 
 netd takes a NIC whose link is up, with its own DHCP lease, and lets go
-of it when its link goes down or its program goes; the wired `net0`
+of it when its link goes down or its program goes (or changed since netd
+last looked, within the second between two looks: the `program` count
+says so, and the NIC is taken again as the new one it is, with a lease
+of its own, issue #649); the wired `net0`
 keeps the default route while it has a lease (`docs/sockets-curl.md`,
 `multihome_smoke`).

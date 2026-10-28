@@ -14,7 +14,7 @@ terminates with a `WIFSIGNALED` wait status, and blocking syscalls return
 | `toolchain/libmyos/sigtramp.c` | `__myos_sigtramp` (per arch) and the kernel calls (`__myos_sigaction_k`, `__myos_sigprocmask_k`, ...), shared by both libcs (`docs/mlibc.md`) |
 | `toolchain/newlib/libgloss/myos/signal.c`, `toolchain/mlibc/sysdeps/myos/generic/signal.cpp` | each libc's `sigaction`, `signal`, `sigpending`, `sigsuspend`, `sigwait`, `pthread_sigmask` over them, and its handler dispatch |
 | `toolchain/newlib/patch.sh` (`patch_signal_h`) | newlib `<sys/signal.h>`: `sa_sigaction`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO`, `SA_NOCLDWAIT`, `si_addr` and the fault `si_code`s |
-| `kernel/src/arch/*/interrupts.rs` | the faults a program raises, as signals (x86: the trap stubs that save its registers) |
+| `kernel/src/arch/*/interrupts.rs` | the faults a program raises, as signals, and the signals acting when an interrupt preempts user mode (x86: the trap stubs that save its registers) |
 | `toolchain/newlib/build.sh` | `-DSIGNAL_PROVIDED`: newlib's userspace `signal()`/`raise()` emulation is off; `raise` is `kill(getpid(), sig)` |
 
 Signal numbers are newlib's (BSD layout: `SIGCHLD = 20`, `SIGUSR1 = 30`),
@@ -50,12 +50,18 @@ that terminates ends the whole process.
 
 ## Delivery
 
-Signals act on the way out of a syscall (`signal::on_syscall_exit`), as the
-default actions always did. A process looping in user mode without syscalls
-is also ended when an interrupt preempts it in user mode
-(`signal::on_user_preempted`) by a pending signal whose action is to
-terminate (`SIGKILL`, or `^C`'s `SIGINT` left at its default); a caught
-signal waits for its next syscall.
+Signals act on the way out of a syscall (`signal::on_syscall_exit`), and
+when an interrupt (the timer, a reschedule IPI) preempts the task in user
+mode (`signal::on_user_interrupt`, from the interrupt's trap frame: on x86
+the timer and the IPI from ring 3 enter through stubs that save the user
+registers, as the faults do). A process looping in user mode without
+syscalls is thus ended by a signal whose action is to terminate (`SIGKILL`,
+or `^C`'s `SIGINT` left at its default) and runs a caught one's handler,
+which returns to the interrupted instruction with its registers. The
+sender IPIs the CPU the task runs on (`task::signal_send` →
+`sched::kick_running_locked`), so a signal acts at once rather than at the
+task's next tick; a task blocked in a syscall is woken, and the signal acts
+at that syscall's exit.
 
 For a caught signal the kernel:
 
@@ -172,9 +178,6 @@ previous one. `signal()` installs BSD-style handlers (`SA_RESTART`).
 
 ## Not yet
 
-- Asynchronous delivery of signals other than `SIGKILL` to a process that
-  makes no syscalls (on the interrupt-return path). Faults are delivered
-  at once.
 - `sigaltstack` / `SA_ONSTACK`, `sigqueue` / real-time signals, `ppoll`.
 - `ITIMER_VIRTUAL` and `ITIMER_PROF` (`ENOSYS`): they need CPU time
   accounting.

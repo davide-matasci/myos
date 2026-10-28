@@ -80,16 +80,51 @@ capture() {
 # the host's stall watchdog ends the boot (180 s of silence in a quick run,
 # 600 s in one with the `heavy` tests, which may take minutes): CI #2295's
 # lynx test stalled with every CPU idle, and nothing told what waited.
+#
+# The test's end reaches the watch through two files, not a signal: a TERM
+# sent to the subshell while it was still setting up was lost (oksh reads a
+# signal's old disposition by setting SIG_IGN first, and a TERM in between
+# is dropped) or taken only once its `wait` had looked at the traps and
+# before it slept (the kernel then ran a handler at the task's next syscall
+# exit, issue #647; now at once), and `t` waited out the whole sleep: a
+# trivial test took 300 s (CI #2315). `hung_watch_done` marks $OUT/hw-NAME.done and ends the
+# sleep whose pid the watch leaves in $OUT/hw-NAME.pid; the watch writes the
+# pid before it looks at the mark, so one side or the other sees the other's.
+# (The sleep's own kill was lost too when it fell in the child's moment as
+# a shell before the exec, to the handler there: ports/oksh/trap.myos.patch
+# and exec.myos.patch.)
 hung_watch() {
 	HUNG=300
 	has "$SKIP" heavy && HUNG=120
-	trap 'kill $hw_sleep 2> /dev/null; exit 0' TERM
 	sleep $HUNG &
 	hw_sleep=$!
-	wait $hw_sleep
+	echo $hw_sleep > $OUT/hw-$1.pid
+	if [ -s $OUT/hw-$1.done ]; then
+		kill $hw_sleep 2> /dev/null
+		return 0
+	fi
+	wait $hw_sleep 2> /dev/null
+	: > $OUT/hw-$1.pid
+	[ -s $OUT/hw-$1.done ] && return 0
 	echo "HUNG $1: still running after ${HUNG}s; its threads (tid pid name state cpu wait time start pending blocked), then the processes:"
 	for hw_f in /proc/[0-9]*/task/*/status; do cat "$hw_f"; done 2> /dev/null
 	for hw_d in /proc/[0-9]*; do echo "$hw_d $(tr '\0' ' ' < $hw_d/cmdline 2> /dev/null)"; done
+}
+
+# hung_watch_start NAME / hung_watch_done NAME: around the test, in the
+# runner's shell (`wait` on the watch after `done` returns at once).
+hung_watch_start() {
+	: > $OUT/hw-$1.done
+	: > $OUT/hw-$1.pid
+	hung_watch $1 >&3 2>&1 &
+}
+
+hung_watch_done() {
+	echo 1 > $OUT/hw-$1.done
+	hw_pid=
+	read -r hw_pid < $OUT/hw-$1.pid 2> /dev/null
+	[ -n "$hw_pid" ] && kill $hw_pid 2> /dev/null
+	return 0
 }
 
 # has LIST ITEM: the comma list has the item.
@@ -137,11 +172,11 @@ t() {
 	total=$((total + 1))
 	# The test runs in this shell (a function sets what later ones read):
 	# the runner's own variables are named so that none clobbers them.
-	hung_watch $t_name >&3 2>&1 &
+	hung_watch_start $t_name
 	t_hung=$!
 	capture $OUT/$t_name.out "$@"
 	t_rc=$?
-	kill $t_hung 2> /dev/null
+	hung_watch_done $t_name
 	wait $t_hung 2> /dev/null
 	if [ $t_rc -eq 0 ]; then
 		passed=$((passed + 1))

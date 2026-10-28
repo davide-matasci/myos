@@ -376,11 +376,11 @@ fn raise(frame: *mut u64, sig: u32, code: u32, addr: u64) -> bool {
     crate::signal::on_fault(&mut crate::user::SyscallRegs::from_ptr(frame), info)
 }
 
-/// After an interrupt's reschedule: act on a `SIGKILL` if it came from
-/// user mode.
+/// After an interrupt's reschedule: the task's signals act if it came from
+/// user mode, from the trap frame.
 fn preempted(frame: *mut u64) {
     if from_user(frame) {
-        crate::signal::on_user_preempted();
+        crate::signal::on_user_interrupt(&mut crate::user::SyscallRegs::from_ptr(frame));
     }
 }
 
@@ -401,14 +401,15 @@ extern "C" fn riscv64_trap_handler(frame: *mut u64) {
             unsafe {
                 asm!("csrc sip, {}", in(reg) 1 << 1, options(nostack));
             }
-            // Bit0 of SSCRATCH-less mailbox: generation in smp; always flush + schedule.
-            if crate::smp::ipi_is_tlb() {
+            // Which IPIs: this hart's mailbox (`plic::send_ipi`).
+            let ipis = super::plic::take_ipis();
+            if ipis & super::plic::IPI_TLB != 0 {
                 unsafe {
                     asm!("sfence.vma zero, zero", options(nostack));
                 }
                 crate::smp::tlb_ipi_ack();
             }
-            if crate::smp::ipi_is_resched() {
+            if ipis & super::plic::IPI_RESCHED != 0 {
                 crate::task::schedule();
                 preempted(frame);
             }

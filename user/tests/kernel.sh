@@ -1873,3 +1873,28 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 else
 	t -t linux linux_insmod lx_insmod
 fi
+
+# The runner's own watch (run.sh hung_watch): a test over before the watch
+# beside it had finished setting up must not leave `t` waiting out the
+# watch's sleep (CI #2315: 300 s on a test of a few microseconds, twice a
+# boot). Forty rounds of an empty test, each ended the way `t` ends one,
+# in well under one sleep (the first slow round fails the test).
+hung_watch_fast() {
+	n=0
+	while [ $n -lt 40 ]; do
+		read -r _ t0 < /proc/cpu
+		hung_watch_start hwf
+		p=$!
+		read -r _ t1 < /proc/cpu
+		hung_watch_done hwf
+		read -r _ t2 < /proc/cpu
+		wait $p
+		read -r _ t3 < /proc/cpu
+		[ $((t3 - t0)) -lt 2000 ] || {
+			echo "round $n took $((t3 - t0)) ms: start $((t1 - t0)), done $((t2 - t1)), wait $((t3 - t2))"
+			return 1
+		}
+		n=$((n + 1))
+	done
+}
+t -t smoke hung_watch_fast hung_watch_fast

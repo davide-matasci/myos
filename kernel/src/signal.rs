@@ -22,9 +22,10 @@
 //!   the trap's own registers ([`on_fault`]); the handler returns to the
 //!   faulting instruction.
 //!
-//! A task looping in user mode without making syscalls is terminated by a
-//! signal whose action is to terminate when an interrupt preempts it
-//! ([`on_user_preempted`]); a caught signal waits for its next syscall.
+//! A task looping in user mode without making syscalls gets its signals
+//! when an interrupt preempts it, from the interrupt's trap frame
+//! ([`on_user_interrupt`]); the sender IPIs the CPU running it so that the
+//! interrupt comes at once.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -131,14 +132,31 @@ pub fn leave_input_read() {
     INPUT_READER.store(usize::MAX, Ordering::SeqCst);
 }
 
-/// An interrupt that preempted user mode is about to return there: a
-/// pending signal whose action is to terminate (`SIGKILL`, `^C`'s `SIGINT`
-/// left at its default, ...) ends the task now. A thread spinning in user
-/// mode would never reach a syscall exit, where signals otherwise act; a
-/// caught signal still waits for it (its handler needs the syscall's frame).
-pub fn on_user_preempted() {
-    if let Some(sig) = task::signal_terminating(task::current_id()) {
-        task::user_exit_signal(sig);
+/// An interrupt that preempted user mode is about to return there, to the
+/// registers in its trap frame `regs`: the task's pending signals act now,
+/// as at a syscall's exit. A thread spinning in user mode never reaches
+/// one, and the signal would wait for its next syscall (a `kill` of a
+/// `sleep` still starting up slept its whole 300 s in CI #2315): one whose
+/// action is to terminate ends the task, a caught one runs its handler
+/// from the frame, and the handler's return resumes the interrupted
+/// instruction with its registers, as after a fault ([`on_fault`]). The
+/// sender kicks the CPU the task runs on so that this happens at once
+/// (`task::signal_send`), not at its next tick.
+pub fn on_user_interrupt(regs: &mut SyscallRegs) {
+    let id = task::current_id();
+    match task::signal_next(id) {
+        SigNext::None => {}
+        SigNext::Terminate(sig) => terminate(sig),
+        SigNext::Deliver {
+            sig,
+            act,
+            tramp,
+            old_blocked,
+        } => {
+            let info = Info { sig, code: 0, addr: 0 };
+            let ret = deliver(regs, info, &act, tramp, old_blocked, regs.pc(), regs.ret());
+            regs.set_ret(ret);
+        }
     }
 }
 

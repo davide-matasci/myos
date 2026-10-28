@@ -38,5 +38,7 @@ patch_copy main
 patch_copy jobs
 patch_copy c_sh
 patch_copy lex
+patch_copy exec
+patch_copy trap
 
 echo "oksh myos tree -> $WORK"
