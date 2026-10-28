@@ -1,0 +1,22 @@
+--- trap.c
++++ trap.c
+@@ -279,6 +279,19 @@
+ 	intrsig = 0;
+ 	fatal_trap = 0;
+ 	for (i = NSIG+1, p = sigtraps; --i >= 0; p++) {
++		/* myos: a signal the shell dies of by catching it (SIGTERM,
++		 * SIGINT, SIGHUP: trapsig, TF_DFL_INTR or TF_FATAL, no trap of
++		 * the user's) that the child took since the fork, at its first
++		 * syscall, is not a pending trap to drop: the child dies of it
++		 * now, as the program it was forked for would have (`sleep 3 &
++		 * kill $!` left the sleep alive when the kill came within the
++		 * child's first milliseconds).
++		 */
++		if (p->set && !p->trap && p->signal > 0 && p->signal < NSIG &&
++		    (p->flags & (TF_DFL_INTR|TF_FATAL))) {
++			setsig(p, SIG_DFL, SS_RESTORE_CURR|SS_FORCE);
++			kill(getpid(), p->signal);
++		}
+ 		p->set = 0;
+ 		if ((p->flags & TF_USER_SET) && (p->trap && p->trap[0]))
+ 			settrap(p, NULL);
