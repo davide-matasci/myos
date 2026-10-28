@@ -46,6 +46,7 @@ CRT_FILES=(
   muldc3.c mulsc3.c multc3.c
   udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
   fixdfti.c fixsfti.c fixunsdfti.c fixunssfti.c floattidf.c floattisf.c floatuntidf.c floatuntisf.c
+  clzti2.c
   int_lib.h int_types.h int_util.h int_endianness.h int_math.h int_div_impl.inc
   fp_lib.h fp_mode.h fp_add_impl.inc fp_div_impl.inc fp_mul_impl.inc
   fp_extend.h fp_extend_impl.inc fp_trunc.h fp_trunc_impl.inc

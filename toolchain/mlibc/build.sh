@@ -114,7 +114,7 @@ build_builtins() {
   local obj="$ROOT/target/mlibc-build-$arch/builtins"
   local files=(muldc3.c mulsc3.c udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
     fixdfti.c fixsfti.c fixunsdfti.c fixunssfti.c floattidf.c floattisf.c floatuntidf.c
-    floatuntisf.c)
+    floatuntisf.c clzti2.c)
   case "$arch" in
     aarch64|riscv64)
       files+=(addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c
