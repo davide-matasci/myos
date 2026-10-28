@@ -46,7 +46,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests, each also tagged with its newlib test's name: `docs/mlibc.md`) |
 | `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests by what they build, for a run of one of them alone |
 
-A quick run (`heavy` and `net` skipped) has a budget of 6 minutes (7 with
+A quick run (`heavy` and `net` skipped) has a budget of 8 minutes (9 with
 the Linux layer; half as much again on riscv64, the slowest under TCG, as
 in CI) and a stall limit of 3; any other 50 and 10
 (`--budget MINUTES` sets the budget). The runner prints what it skipped

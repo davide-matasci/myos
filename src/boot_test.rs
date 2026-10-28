@@ -136,16 +136,17 @@ impl Mode {
     /// The whole run's budget. The full list runs the curated os-test set
     /// (1000 tests at a few hundred milliseconds each under TCG) after
     /// installing the packages; a quick list must fail well inside its CI
-    /// job (`scripts/ci-select.py` gives it 8 minutes).
+    /// job (`scripts/ci-select.py` gives a smoke boot 8 minutes, the light
+    /// boot 15). A budget is a guard against a hang, not a target: the
+    /// quick list takes 330 s on x86 and 360 on aarch64 on a 4-core host
+    /// with nothing else running, 6 minutes once ended it there.
     /// riscv64 (`slow`), the slowest under TCG, gets half as much again,
-    /// as in CI: its quick list took 232 s of the 240 it once had on a
-    /// 4-core host with nothing else running, before the C smokes ran a
-    /// second time against mlibc (user/c-mlibc).
+    /// as in CI.
     pub fn budget(&self, linux_compat: bool, slow: bool) -> Duration {
         let scale = |s: u64| Duration::from_secs(if slow { s * 3 / 2 } else { s });
         match self {
             Mode::Tests(sel) if sel.budget.is_some() => sel.budget.unwrap(),
-            Mode::Tests(sel) if sel.quick() => scale(if linux_compat { 420 } else { 360 }),
+            Mode::Tests(sel) if sel.quick() => scale(if linux_compat { 540 } else { 480 }),
             Mode::Tests(_) => Duration::from_secs(3000),
             Mode::Reboot { .. } | Mode::Installed => Duration::from_secs(300),
         }
