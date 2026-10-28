@@ -45,9 +45,15 @@ t -t smoke shell_path sh_path
 # signal only set a flag; the exec dropped it, and `sleep 3 & kill $!`
 # slept on (exec.myos.patch; the test runner's hung watch waited out a
 # whole sleep that way, CI #2315). Twenty rounds, none over a second.
+# Ten more rounds with a trap of the script's own on TERM (the child's
+# handler for it is then the shell's until the exec, and the exec-time
+# check has to put the default back before it takes the signal again).
+# A background job's SIGINT stays ignored, as POSIX has it: one sent right
+# after the start must not end the job.
 sh_kill_fresh() {
 	n=0
-	while [ $n -lt 20 ]; do
+	while [ $n -lt 30 ]; do
+		[ $n -lt 20 ] || trap 'echo trapped' TERM
 		s=$(date +%s)
 		sleep 3 &
 		p=$!
@@ -57,5 +63,13 @@ sh_kill_fresh() {
 		[ $((e - s)) -lt 2 ] || { echo "round $n: the killed sleep lived $((e - s)) s"; return 1; }
 		n=$((n + 1))
 	done
+	trap - TERM
+	sleep 3 &
+	p=$!
+	kill -INT $p
+	sleep 1
+	kill -0 $p 2> /dev/null || { echo "a background job died of SIGINT"; return 1; }
+	kill $p
+	wait $p 2> /dev/null
 }
 t -t smoke,signal shell_kill_fresh sh_kill_fresh
