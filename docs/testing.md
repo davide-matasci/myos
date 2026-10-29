@@ -152,7 +152,8 @@ answers vary from run to run (a rate limit, a 503): plain HTTP on the
 host's port 8766 and HTTPS on 8767, the guest's `10.0.2.2:8766` and
 `10.0.2.2:8767`. HTTPS presents a certificate of the test CA
 (`user/tests/tls`, made by its `make.sh` and committed, like dropbear's
-test key); the tests trust that CA alone (`/lib/myos-tests/test-ca.pem`:
+test key), signed by an intermediate CA it sends along, as a site's is,
+so a client must link the two; the tests trust that CA alone (`/lib/myos-tests/test-ca.pem`:
 curl's `--cacert`, Python's `cafile`), never the
 image's bundle. It serves `/hello.txt`. What needs the real internet
 uses GitHub, which CI cannot run without anyway: `dns` and the Linux

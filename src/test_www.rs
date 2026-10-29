@@ -3,8 +3,8 @@
 //! to run. Plain HTTP on 127.0.0.1:[`HTTP_PORT`] and HTTPS on
 //! 127.0.0.1:[`HTTPS_PORT`], which the guest reaches through QEMU's user
 //! network as 10.0.2.2. HTTPS presents `user/tests/tls/server.pem`, signed
-//! by the test CA the guest's tests trust alone
-//! (`/lib/myos-tests/test-ca.pem`).
+//! by an intermediate CA it sends along, as a site does, under the test CA
+//! the guest's tests trust alone (`/lib/myos-tests/test-ca.pem`).
 //!
 //! Both serve `/hello.txt`, [`HELLO`], and `/hello.html`, [`HELLO_HTML`].
 
