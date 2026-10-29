@@ -220,7 +220,8 @@ it:
 - up to 64 half-open connections in all, past which a SYN gets a reset;
   one without the final ACK is aborted after 15 s;
 - two completed connections per listener wait for accept, and up to 32
-  more queue in netd; past that they are reset;
+  more queue in netd, accepted in the order they completed; past that
+  they are reset;
 - a connection whose peer already closed it is still accepted, with what
   it sent.
 

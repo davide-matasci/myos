@@ -1659,8 +1659,10 @@ fn waiting(handshakes: &[Handshake], sockets: &SocketSet<'_>, l: usize) -> usize
 /// Incoming connections. A listening socket that left the Listen state
 /// took a SYN and is that connection now: it joins the handshakes beside
 /// a fresh listener on the port. A handshake that completed is handed to
-/// a conv (`hand_off`) once its listener's queue has room; one reset by
-/// its peer, timed out, or whose listener closed is forgotten.
+/// a conv (`hand_off`) once its listener's queue has room, in the order
+/// the connections completed (one landing whole on the listener waits
+/// behind those parked); one reset by its peer, timed out, or whose
+/// listener closed is forgotten.
 fn pump_accepts(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
@@ -1668,6 +1670,27 @@ fn pump_accepts(
     chan: usize,
     now: Instant,
 ) {
+    // Stale parks first: a hangup drop emptied a slot but left a queue
+    // pointer, and the room it leaves goes to the connection that has
+    // waited longest, below, not to the one landing on the listener.
+    for i in 0..MAX_CONV {
+        if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
+            continue;
+        }
+        if let Some(n) = convs[i].accepted_pending {
+            let n = n as usize;
+            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
+                convs[i].accepted_pending = None;
+            }
+        }
+        if let Some(n) = convs[i].accepted {
+            let n = n as usize;
+            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
+                let next = convs[i].accepted_pending.take();
+                publish_head(convs, chan, i, next);
+            }
+        }
+    }
     let mut k = 0;
     while k < handshakes.len() {
         let Handshake { handle: h, listener, since } = handshakes[k];
@@ -1705,20 +1728,6 @@ fn pump_accepts(
         if !matches!(convs[i].kind, Kind::Tcp) || convs[i].listen_port == 0 {
             continue;
         }
-        // Stale park: a hangup drop emptied a slot but left a queue pointer.
-        if let Some(n) = convs[i].accepted_pending {
-            let n = n as usize;
-            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
-                convs[i].accepted_pending = None;
-            }
-        }
-        if let Some(n) = convs[i].accepted {
-            let n = n as usize;
-            if n >= MAX_CONV || matches!(convs[n].kind, Kind::Empty) {
-                let next = convs[i].accepted_pending.take();
-                publish_head(convs, chan, i, next);
-            }
-        }
         let Some(h) = convs[i].handle else {
             continue;
         };
@@ -1746,7 +1755,12 @@ fn pump_accepts(
         rearm_listener(convs, sockets, i);
         convs[i].connected = false;
         convs[i].hungup = false;
-        if done && !queue_full(convs, i) {
+        // Straight into the queue only when no completed connection waits
+        // for this listener already: those go first, in the order they
+        // completed. A "done" that landed whole in one poll took the room a
+        // mute connection parked above had waited for, and the listen
+        // smoke's accept got the newer one (CI #2339, riscv64-plic).
+        if done && !queue_full(convs, i) && waiting(handshakes, sockets, i) == 0 {
             if !hand_off(convs, sockets, chan, i, h) {
                 drop_handshake(sockets, h);
             }
