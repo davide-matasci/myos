@@ -1,6 +1,14 @@
 # PCI
 
-## Module / kernel split
+The kernel keeps PCI configuration access, DMA memory and interrupt
+routing; every PCI driver is a kernel module or, through `/dev/pci`, a
+program. This page lists where the pieces live, how a driver reaches a
+function's I/O BARs and DMA memory, and how a program drives a PCI
+function from userspace. Interrupts have their own page
+(`docs/interrupts.md`), and so do the IOMMU (`docs/iommu.md`) and the
+platform description that names the host bridges (`docs/platform.md`).
+
+## Kernel and modules
 
 | Component | Location | Why |
 |-----------|----------|-----|
@@ -12,94 +20,127 @@
 | Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
 | Userspace SDIO drivers → `/dev/sdio` | `modules/sdmmc` | An SDIO card's functions' registers (CMD52, CMD53) and its interrupt for a driver that is a program: the Raspberry Pi's Wi-Fi chip (`docs/raspberry-pi.md` "SDIO") |
 | Userspace PCI drivers → `/dev/pci` | `modules/pcidev` | A function's registers, DMA memory and interrupt for a driver that is a program (below); loaded with `insmod`, not at boot |
-| The IOMMU | `kernel/src/iommu` | What a device's DMA reaches: all of memory for a kernel driver's, its own buffers for a program's (below) |
-| Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists |
-| ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP. On x86_64 the `acpi` crate's AML interpreter: the PCI interrupt routes (`_PRT`) for the kernel and `_S5` ("AML" below) |
+| The IOMMU | `kernel/src/iommu` | What a device's DMA reaches: all of memory for a kernel driver's, its own buffers for a program's (`docs/iommu.md`) |
+| Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists (`docs/platform.md`) |
+| ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP. On x86_64 the `acpi` crate's AML interpreter: the PCI interrupt routes (`_PRT`) for the kernel and `_S5` (`docs/platform.md` "AML") |
 | Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
 | AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
 | Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, per-CPU run queues |
 | Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`, `platform`; dynamic via `proc_register` ABI |
 
-ABI version: **21** (`blk_unregister`, `service_register` / `service_lookup`, `thread_spawn`, `wake` and the USB bus types, `docs/usb.md`; see `README.md` for 15–20; 14: `dt_mmio_find`: a module finds its memory-mapped devices in the device tree; 13: `personality_register`, `personality_exec`, `native_syscall` and the task / fd / VFS / signal / FPU / wait helpers a syscall personality needs: the Linux layer is a module; 12: `blk_register`, `pci_find_class`, `framebuffer_info`, `console_register`: block devices and the console are modules; 11: `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until`, `monotonic_ns` for device interrupts and blocking waits; 10: `proc_set_writer` for `/proc/pci` rescan; earlier: `proc_register`, `acpi_rsdp`, `hhdm_offset`).
+The modules reach the kernel through `KernelApi` (`modules/abi`). Its
+version is `ABI_VERSION`, whose doc comment in `modules/abi/src/lib.rs`
+lists what each version from 19 on changed (`docs/modules.md`).
 
-Boot modules come from the initramfs: `/lib/modules/<name>` for each name in `/lib/modules/boot.list` (`src/limine_image.rs` `BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in load order); `insmod <path>` (`SYS_INSMOD`) loads more at runtime and `/proc/modules` lists them.
+Boot modules come from the initramfs: `/lib/modules/<name>` for each name
+in `/lib/modules/boot.list`. That list is `src/limine_image.rs`
+`BOOT_MODULES` plus the `OPTIONAL_MODULES` whose Cargo feature is on, in
+load order. `insmod <path>` (`SYS_INSMOD`) loads more at runtime, and
+`/proc/modules` lists them.
 
 ## I/O BARs
 
-A module reaches a function's I/O BAR (UHCI's registers) through
-`KernelApi::pci_io_map` (ABI 59), which turns the function's I/O decoding
-on and says where the registers are, and the abi crate's `PciIo`, which
-reads and writes them: on x86_64 they are ports (`in`, `out`) the
-firmware assigned; on aarch64 and riscv64 PCI I/O space is the host
-bridge's I/O window, which the device tree's `ranges` name (space
-`0x01`; QEMU `virt`: 64 KiB at 0x3eff0000 on aarch64, 0x03000000 on
-riscv64), mapped at boot like the MMIO windows, and an I/O BAR the
-firmware left at 0 is assigned in it from 0x1000 up
-(`arch/*/pci.rs`, `io_assign`). `/proc/platform` lists the window
-(`pci io`).
+A module reaches a function's I/O BAR (UHCI's registers, for example)
+through two pieces:
+
+- `KernelApi::pci_io_map` (ABI 59) turns the function's I/O decoding on
+  and says where the registers are;
+- the abi crate's `PciIo` reads and writes them.
+
+Where the registers are depends on the arch:
+
+- **x86_64**: they are I/O ports (`in`, `out`) that the firmware
+  assigned.
+- **aarch64 and riscv64**: PCI I/O space is the host bridge's I/O window,
+  which the device tree's `ranges` name (space `0x01`; QEMU `virt`: 64 KiB
+  at 0x3eff0000 on aarch64, 0x03000000 on riscv64). The kernel maps it at
+  boot like the MMIO windows. An I/O BAR the firmware left at 0 is
+  assigned in it from 0x1000 up (`arch/*/pci.rs`, `io_assign`).
+
+`/proc/platform` lists the window (`pci io`).
 
 ## DMA
 
-A driver attaches each device it drives (`KernelApi::dma_attach`, a PCI
-function or a memory-mapped device by its registers' physical address,
-ABI 47) and gets a handle; `dma_alloc` gives that device zeroed,
-contiguous pages it reaches and the address it uses for them, and
-`dma_sync` hands memory over to it (`DMA_TO_DEVICE`: before it reads what
-the CPU wrote, and before it writes, so that no dirty line is evicted over
-its data later) and back (`DMA_FROM_DEVICE`: before the CPU reads what it
-wrote). `kernel/src/dma.rs` keeps what it knows of each device:
+A driver attaches each device it drives with `KernelApi::dma_attach`
+(ABI 47) and gets a handle. A device is a PCI function, or a
+memory-mapped device named by its registers' physical address. Then:
 
-- **What it reaches**: windows of CPU addresses `[cpu, cpu + size)`,
-  each addressed from `bus` up, from the device tree's `dma-ranges` (a
-  PCI function's from its host bridge's, then the buses' above; a
-  memory-mapped device's from its buses'), one per entry; a device no
-  `dma-ranges` limit reaches all of memory one-to-one. A Raspberry Pi 4's
-  PCIe reaches the low 3 GiB at bus address 0. The pages come from the
-  first window that has them (`mm::alloc_contiguous_pages` takes the
-  range; the bump cursor only moves up, so a device that reaches low
-  memory alone gets it while the cursor is there, at boot). A device of
-  short pointers says so (`DmaDevice::below`, ABI 59: EHCI's, UHCI's and OHCI's
-  32 bits) and its windows are cut below its limit.
-- **Whether it sees the caches**: on aarch64 a device not known to be
-  coherent is taken for not, as every aarch64 driver did before: one the
-  tree does not mark `dma-coherent` (QEMU `virt` marks its devices, the
-  Pi 4's PCIe is not marked), and one no tree describes (an ACPI-only
-  board); `dma_sync` cleans (`dc cvac`) or cleans and invalidates
-  (`dc civac`) the lines then, and `dma_alloc` writes the zeros back.
-  riscv64 (no cache maintenance in riscv64imac) and x86_64 are coherent.
-  Either way `dma_sync` is a barrier.
-- `dma=noncoherent` on the kernel command line takes every device on
-  aarch64 for non-coherent: the maintenance runs on QEMU (which does not
-  model the caches, so it shows the paths work, not that they are
-  needed).
+- `dma_alloc` gives that device zeroed, contiguous pages it reaches, and
+  the address the device uses for them;
+- `dma_sync` hands memory over to the device (`DMA_TO_DEVICE`) and back
+  (`DMA_FROM_DEVICE`):
+  - `DMA_TO_DEVICE` before the device reads what the CPU wrote, and also
+    before it writes, so that no dirty line is evicted over its data
+    later;
+  - `DMA_FROM_DEVICE` before the CPU reads what the device wrote.
 
-`/proc/platform` has a `dma` line per device attached. The virtio modules'
-library (`modules/virtio`) cannot tell `virtio_drivers` calls apart by
-device: its pages are the last-attached device's, and a module's devices
-are taken to share their DMA (QEMU's, coherent).
+`kernel/src/dma.rs` keeps what it knows of each device:
+
+- **What it reaches.** These are windows of CPU addresses `[cpu, cpu +
+  size)`, each addressed from `bus` up, one per entry of the device
+  tree's `dma-ranges`. A PCI function's come from its host bridge's,
+  then the buses' above; a memory-mapped device's from its buses'. A
+  device that no `dma-ranges` limits reaches all of memory one-to-one. A
+  Raspberry Pi 4's PCIe reaches the low 3 GiB at bus address 0.
+  - The pages come from the first window that has them
+    (`mm::alloc_contiguous_pages` takes the range). The bump cursor only
+    moves up, so a device that reaches low memory alone gets it while the
+    cursor is there, at boot.
+  - A device with short pointers says so (`DmaDevice::below`, ABI 59:
+    EHCI's, UHCI's and OHCI's 32 bits), and its windows are cut below its
+    limit.
+- **Whether it sees the caches.**
+  - On aarch64 a device not known to be coherent is taken for
+    non-coherent: one the tree does not mark `dma-coherent` (QEMU `virt`
+    marks its devices; the Pi 4's PCIe is not marked), and one no tree
+    describes (an ACPI-only board). `dma_sync` then cleans (`dc cvac`) or
+    cleans and invalidates (`dc civac`) the lines, and `dma_alloc` writes
+    the zeros back.
+  - riscv64 (no cache maintenance in riscv64imac) and x86_64 are
+    coherent.
+  - Either way `dma_sync` is a barrier.
+  - `dma=noncoherent` on the kernel command line takes every device on
+    aarch64 for non-coherent. On QEMU the maintenance then runs; QEMU does
+    not model the caches, so this shows the paths work, not that they are
+    needed.
+
+`/proc/platform` has a `dma` line per device attached
+(`docs/platform.md`). The virtio modules' library (`modules/virtio`)
+cannot tell `virtio_drivers` calls apart by device: its pages are the
+last-attached device's, and a module's devices are taken to share their
+DMA (QEMU's, coherent).
 
 ## Userspace PCI drivers (`/dev/pci`)
 
-`modules/pcidev` hands a PCI function to a driver that is a program (the
-Wi-Fi driver, issue #495): a directory per endpoint, `/dev/pci/BB:SS.F`.
-The module ships in the image but is not in `boot.list`: root loads it,
-`insmod /lib/modules/pcidev` (from `/data/etc/rc.local` on a machine that
-wants it, `docs/install.md`), because on a board without an IOMMU a program
-that drives a device reaches all of memory through it, as the kernel does
-(issue #501); with one ("The IOMMU" below) the device is confined to the
-program's buffers.
-Its `info` says what it is (`id VVVV:DDDD`, `class CC:SS:PP`) and who
-drives it (`driver nvme`); its `ctl` is the driver's, one at a time and
-root only (the `dev` label too), and while it is held the others are
-there.
+`modules/pcidev` hands a PCI function to a driver that is a program, such
+as the Wi-Fi driver (issue #495). Each endpoint is a directory,
+`/dev/pci/BB:SS.F`.
 
-A PCI function has one owner at a time (`kernel/src/pci.rs`, ABI 46): a
-module that binds to it, its `pci_enable`, `pci_bar_map` or
-`pci_irq_enable` from its `module_init` or `module_rescan`, or a claim
-through `KernelApi::pci_claim` until `pci_release`, which is how
-`/dev/pci` holds a function while a program drives it. Opening the `ctl`
-of a function a kernel driver drives is refused: closing it would turn
-the device off under its driver (`cat` of the boot disk's `ctl` did).
+The module ships in the image but is not in `boot.list`: root loads it
+with `insmod /lib/modules/pcidev`, from `/data/etc/rc.local` on a machine
+that wants it (`docs/install.md`). The reason is that on a board without
+an IOMMU, a program that drives a device reaches all of memory through it,
+as the kernel does (issue #501). With an IOMMU the device is confined to
+the program's buffers (`docs/iommu.md`).
+
+A function's `info` says what it is (`id VVVV:DDDD`, `class CC:SS:PP`)
+and who drives it (`driver nvme`). Its `ctl` is the driver's: one holder
+at a time, root only (the `dev` label too). The function's other files
+(below) are there only while `ctl` is held.
+
+### Ownership
+
+A PCI function has one owner at a time (`kernel/src/pci.rs`, ABI 46):
+
+- a module that binds to it, by its `pci_enable`, `pci_bar_map` or
+  `pci_irq_enable` from its `module_init` or `module_rescan`;
+- or a claim through `KernelApi::pci_claim`, until `pci_release`. This is
+  how `/dev/pci` holds a function while a program drives it.
+
+Opening the `ctl` of a function that a kernel driver drives is refused:
+closing it would turn the device off under its driver.
+
+### Files
 
 | File | What |
 |------|------|
@@ -109,20 +150,47 @@ the device off under its driver (`cat` of the boot disk's `ctl` did).
 | `irq` | a read waits for the interrupt and returns the count since the last one (8 bytes, little endian), `poll` says one is pending; an INTx line stays masked (the command register's interrupt disable) from its interrupt until a write to `irq` (a byte at least: the kernel passes an empty write to no file), once the driver quietened its device |
 | `dmaN` | the buffer, for `mmap(MAP_SHARED)`: ordinary memory, cached, or non-cacheable for a device whose DMA does not see the caches (`dma noncoherent` in `ctl`, "DMA" above; the module's `mmap` hook says so, `MYOS_MMAP_NOCACHE`, ABI 52: x86 PCD\|PWT, aarch64 Normal non-cacheable, MAIR Attr3), so the program needs no cache maintenance; the module writes the zeros of a reused buffer back for such a device |
 
-Closing `ctl` (the driver's exit too) turns bus mastering and memory
-decoding off, so the device stops reaching memory and raising messages,
-and keeps the DMA buffers for the next driver, zeroed: they are never
-freed, since a mapping of one may outlive its fd. With an IOMMU the
-device reaches those buffers and nothing else; without one the program
-reaches all of memory through the device's DMA, as the kernel does
-(issue #501). The test (`pcidev_smoke`,
-tag `pcidev`, which loads the module first) drives QEMU's `edu` device, which every test boot gets
-(`edu,dma_mask=...`: its own mask is 28 bits): a kernel driver's
-function its `ctl` refused, the id, liveness and
-factorial registers, an interrupt it raises, a DMA copy through a buffer
-and back with the interrupt at its end, and, where `ctl` names an IOMMU
-domain, a copy to the page after the buffer that the IOMMU refuses
-(`/proc/iommu` counts it, the buffer stays untouched). It takes MSI (`edu` has no
-MSI-X) on every board with an MSI controller (`pcidev_msi`: x86_64's
-local APIC, the aarch64 GICs', the riscv64 AIA's IMSIC), and a shared
-INTx line on the riscv64 PLIC board.
+Closing `ctl` (the driver's exit too):
+
+- turns bus mastering and memory decoding off, so the device stops
+  reaching memory and raising messages;
+- keeps the DMA buffers for the next driver, zeroed. They are never
+  freed, since a mapping of one may outlive its fd.
+
+With an IOMMU the device reaches those buffers and nothing else. Without
+one the program reaches all of memory through the device's DMA, as the
+kernel does (issue #501).
+
+### The test
+
+The test (`pcidev_smoke`, tag `pcidev`, which loads the module first)
+drives QEMU's `edu` device. Every test boot gets one, as `edu,dma_mask=...`,
+since its own mask is 28 bits. The test checks:
+
+- that the `ctl` of a kernel driver's function is refused;
+- the id, liveness and factorial registers;
+- an interrupt the device raises;
+- a DMA copy through a buffer and back, with the interrupt at its end;
+- where `ctl` names an IOMMU domain, a copy to the page after the buffer,
+  which the IOMMU refuses: `/proc/iommu` counts it and the buffer stays
+  untouched.
+
+It takes MSI (`edu` has no MSI-X) on every board with an MSI controller
+(`pcidev_msi`: x86_64's local APIC, the aarch64 GICs', the riscv64 AIA's
+IMSIC), and a shared INTx line on the riscv64 PLIC board.
+
+## History
+
+- Opening a kernel-driven function's `ctl` is refused because a `cat` of
+  the boot disk's `ctl` once turned the disk off under its driver.
+- Early module ABI versions, before the list in `ABI_VERSION`'s doc
+  comment begins: 10 added `proc_set_writer` (the `/proc/pci` rescan); 11
+  `pci_irq_enable`, `wake_any`, `wait_seq`, `block_until` and
+  `monotonic_ns` (device interrupts and blocking waits); 12
+  `blk_register`, `pci_find_class`, `framebuffer_info` and
+  `console_register` (block devices and the console became modules); 13
+  `personality_register`, `personality_exec`, `native_syscall` and the
+  task / fd / VFS / signal / FPU / wait helpers a syscall personality
+  needs (the Linux layer became a module); 14 `dt_mmio_find` (a module
+  finds its memory-mapped devices in the device tree). Earlier versions
+  had `proc_register`, `acpi_rsdp` and `hhdm_offset`.
