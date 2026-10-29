@@ -10,7 +10,7 @@ the archives and their pkg-config files, `include/`):
 | [libpsl](https://github.com/rockdaboot/libpsl) | the Public Suffix List of its release built in, for cookies' domains; no IDNA library |
 | [nghttp2](https://nghttp2.org/) | HTTP/2, the library alone |
 | [libsoup 3](https://gitlab.gnome.org/GNOME/libsoup) | the HTTP client of the `webkit2gtk-4.1` API; no GSSAPI, NTLM, brotli or zstd |
-| [glib-networking](https://gitlab.gnome.org/GNOME/glib-networking) | GIO's TLS: its OpenSSL backend over LibreSSL's mlibc build (`ports/libressl`; `glib-networking-libressl.myos.patch` skips the two calls LibreSSL lacks: a shutdown error code of one OpenSSL release and the environment's signature algorithm list); no proxy modules |
+| [glib-networking](https://gitlab.gnome.org/GNOME/glib-networking) | GIO's TLS: its OpenSSL backend over LibreSSL's mlibc build (`ports/libressl`; `glib-networking-libressl.myos.patch` skips the two calls LibreSSL lacks: a shutdown error code of one OpenSSL release and the environment's signature algorithm list, and takes LibreSSL's error for an issuer that is not a trust anchor, `X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, as OpenSSL's: without it no certificate is linked to the intermediate CA a server sends, and every such chain fails as signed by an unknown CA); no proxy modules |
 
 `build.sh` builds them with meson, cross (`myos_mlibc_meson_cross` and
 `myos_mlibc_meson_build`, as `packages/cairo-pango`), nghttp2 with its
