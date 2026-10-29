@@ -174,11 +174,5 @@ in the image (`docs/ports.md`); most land in `/bin/custom`.
 | `toolchain/libcxx/` | LLVM's C++ runtimes against mlibc: libc++, libc++abi, libunwind (`docs/mlibc.md`, "C++") |
 | `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts (the `sysroot` port) |
 | `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, curl, dropbear, limine, ...), one `port.env` descriptor each (`docs/ports.md`) |
-| `packages/` | Ports CI builds and publishes but the image does not carry (see below); `get-myos NAME` installs them (`docs/packages.md`). Moving a directory here (or back to `ports/`) is the whole change |
+| `packages/` | Ports CI builds and publishes but the image does not carry (the directory is the list); `get-myos NAME` installs them (`docs/packages.md`). Moving a directory here (or back to `ports/`) is the whole change |
 | `linux-compat/` | Userspace of the Linux layer: the `linux` launcher (every image), musl tests (feature `linux_compat`); `get-alpine` is a package (`packages/get-alpine`) |
-
-The packages: coreutils, vim, git, lynx, lua, make, os-test, x11-libs,
-tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear,
-get-alpine, nginx, openssl, acme, python, rust, tcc, ncurses, pcre2,
-sqlite, libedit, glib, image-libs, cairo-pango, gtk3, libsoup, webkitgtk,
-surf.

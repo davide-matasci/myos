@@ -363,42 +363,11 @@ binaries. The tag names the commit they were built from, whose
 `versions.env` pins and `*.myos.patch` files are the corresponding source
 (`THIRD_PARTY_NOTICES.md`, "License compliance" in `AGENTS.md`).
 
-## What is a package today
+## Which programs are packages
 
 Everything a boot needs stays in `ports/`, with zlib and LibreSSL, which
-get-myos and curl link. The ISO (`cargo run -- iso`) carries the image
-only. The full test list installs the packages its tests run. It installs
-none of the build dependencies, which carry no files.
-
-`packages/` holds:
-
-| package | what |
-|---|---|
-| git, lua, lynx, make, vim | the programs |
-| coreutils | uutils coreutils, one multicall ELF under `bin/coreutils` |
-| os-test | the POSIX conformance tests |
-| x11-libs | the X client libraries for the X packages, with libX11's error database and their test |
-| tinyx | the X server, `Xfbdev` |
-| x11-xft | FreeType, fontconfig and Xft for the X clients |
-| x11-fonts | DejaVu Sans Mono, and DejaVu Sans for what it lacks |
-| dwm | the window manager |
-| st | the terminal |
-| dmenu | the menu |
-| x11-apps | xev, xprop |
-| bottom | `btm`, the system monitor |
-| clear | ncurses' terminal-clearing program |
-| get-alpine | the Linux layer's Alpine package installer (`docs/linux-compat.md`) |
-| nginx | the web server (`packages/nginx/README.md`) |
-| openssl | LibreSSL's command (`packages/openssl/README.md`) |
-| acme | acme.sh, the ACME client: Let's Encrypt certificates for nginx (`packages/acme/README.md`) |
-| python | CPython 3.13 against mlibc (`packages/python/README.md`) |
-| glib | GLib and GIO against mlibc for WebKitGTK's stack: the `gio` command and the library's smoke (`packages/glib/README.md`) |
-| image-libs | libpng, libjpeg-turbo, libwebp and pixman against mlibc for the same stack: their smoke (`packages/image-libs/README.md`) |
-| cairo-pango | fribidi, HarfBuzz, cairo, pango, gdk-pixbuf and libepoxy against mlibc for the same stack: their smoke (`packages/cairo-pango/README.md`) |
-| gtk3 | GTK 3 and ATK against mlibc, the toolkit of WebKitGTK and surf: its smoke window (`packages/gtk3/README.md`) |
-| libsoup | libxml2, libpsl, nghttp2, libsoup 3 and glib-networking over LibreSSL against mlibc, the HTTP client of the same stack: its smoke (`packages/libsoup/README.md`) |
-| webkitgtk | WebKitGTK, with ICU, libgcrypt and libtasn1, against mlibc, the web engine of surf: its smoke, a web view that loads a page (`packages/webkitgtk/README.md`) |
-| surf | suckless's web browser on WebKitGTK: `run-myos surf URL` in an X session (`packages/surf/README.md`) |
-| rust | `rust setup` and cargo for myos programs, in myos: the pinned nightly under the Linux layer (`packages/rust/README.md`) |
-| tcc | TinyCC with newlib's headers and libraries: compiling C on the running system, `run-myos tcc` |
-| ncurses, pcre2, sqlite, libedit | build dependencies, nothing in the image: ncurses of vim, lynx, clear, python and libedit; pcre2 of nginx, ripgrep and glib; sqlite of python, libsoup, webkitgtk and surf; libedit of python |
+get-myos and curl link. Everything else is a package: the directories
+under `packages/` are the list, each with its `port.env` and most with a
+`README.md`. On a running system, `get-myos -l` lists what a mirror has.
+Packages that only other packages build against (ncurses, pcre2, sqlite,
+libedit) carry no files of their own.
