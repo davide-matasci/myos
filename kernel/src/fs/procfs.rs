@@ -444,7 +444,7 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         "self/stack" => crate::task::main_stack().map(|(lo, end)| alloc::format!("{lo:x}-{end:x}\n")),
         "sys/security/users" => Some(crate::sec::users_text()),
         "cpu" => Some(cpu_text()),
-        // The IOMMU's units, domains and refused DMAs (`docs/pci-acpi-smp.md`).
+        // The IOMMU's units, domains and refused DMAs (`docs/iommu.md`).
         "iommu" => Some(crate::iommu::text()),
         // What limine.conf's `cmdline:` gave this boot (`slot=a`: the boot
         // slot it came from, docs/install.md), and a newline.

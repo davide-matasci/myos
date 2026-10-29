@@ -1,36 +1,21 @@
 # Loadable keyboard keymaps
 
-myos does **not** ship a compiled-in US/CH ASCII table for live typing. The
-PS/2 (x86) and virtio-input (aarch64/riscv64) drivers decode hardware events
-to **stable keycodes** (PS/2 set-1 make codes / Linux `KEY_*` for the same
-positions). Characters come from a keymap loaded at runtime.
+The keyboard drivers decode hardware events to stable keycodes; the
+characters come from a keymap loaded at runtime. myos has no compiled-in
+ASCII table, so until a map is loaded the keyboard produces no console
+input. Serial input (`ttyS0`, `docs/tty.md`) does not depend on it.
 
-## Boot behaviour
+## The map at boot
 
-- Kernel keymap slot is **empty** after boot.
-- Until a map is loaded, keyboard hardware produces **no** console ASCII.
-- **Serial input is unchanged** (CI and serial consoles keep working: the
-  serial port is `ttyS0`, `docs/tty.md`).
-- `user/init` loads the default map early (before getty):
+`user/init` loads `/lib/kbd/ch.map` before getty (`DEFAULT_KEYMAP` in
+`user/init/src/main.rs`; point it at `/lib/kbd/us.map` to make US the
+default). It prints `[ OK ] keymap ch`, or `[ FAIL ] keymap {ctl|load} ch`
+and falls back to `us.map`, so the keyboard is never left without a map.
+The maps are in `modules/console/keymaps/` and ship under `/lib/kbd/`.
 
-```rust
-const DEFAULT_KEYMAP: &[u8] = b"/lib/kbd/ch.map";
-```
+## Loading a map
 
-Switch the default to US by pointing that constant at `/lib/kbd/us.map`.
-
-Both maps (`modules/console/keymaps/` in the repo) ship in the initramfs
-under `/lib/kbd/`.
-
-`user/init` loads CH first; when the console's control file cannot be opened
-or refuses the line it prints a distinct `[ FAIL ] keymap {ctl|load} ch` and
-falls back to `us.map` so the PS/2 keyboard is never left without a map.
-Success prints `[ OK ] keymap ch` or `[ OK ] keymap us`.
-
-## Loading a map: the console's control file
-
-The console is a directory (`docs/tty.md`); its state is the text of
-`/dev/console/ctl`, and the keyboard map is one of its lines:
+The map is a line of the console's control file (`docs/tty.md`):
 
 ```
 $ grep keymap /dev/console/ctl
@@ -38,111 +23,60 @@ keymap /lib/kbd/ch.map
 $ echo 'keymap /lib/kbd/us.map' > /dev/console/ctl
 ```
 
-`keymap PATH` makes the kernel read the map **text** in that file (at most
-8 KiB, in the writer's view of the tree) and the console module install it in
-place of the loaded one. Reading the ctl gives the file the loaded map came
-from, or `keymap none` before any was loaded. A file that cannot be read, is
-too long or does not parse fails the write with the previous map untouched,
-and the console module prints `[ FAIL ] keymap: <reason>` for a parse error.
-A pty's ctl refuses the line: the map is the console's.
+- The kernel reads the map text from that path, in the writer's view of
+  the tree, at most 8 KiB.
+- Reading gives the loaded map's path, or `keymap none`.
+- A file that cannot be read, is too long or does not parse fails the
+  write and leaves the loaded map in place.
+- A pty's ctl refuses the line: the map is the console's.
 
-## Map file format (text)
-
-Lines are:
+## Map file format
 
 ```
 keycode <N> = <base> <Shift> <AltGr> <Shift+AltGr>
 ```
 
-- `<N>` is decimal or `0xNN` (keycode = PS/2 set-1 make).
-- Each level token is one of:
-  - a single printable byte (`a`, `/`, …)
-  - `none` — empty (no character)
-  - `ENTER` / `\n`, `TAB` / `\t`, `BKSP` / `\b`, `SPACE`
-  - `\xNN` or `0xNN` — explicit byte (Latin-1 for CH letters)
-- `#` starts a comment. Blank lines ignored.
-
-### Example
+- `<N>` is decimal or `0xNN`, a PS/2 set-1 make code.
+- A level is a printable byte, `none`, `ENTER`/`\n`, `TAB`/`\t`,
+  `BKSP`/`\b`, `SPACE`, or an explicit byte `\xNN`/`0xNN`.
+- `#` starts a comment.
 
 ```
 keycode 0x18 = o O none none
 keycode 0x08 = 7 / | none
-keycode 0x35 = - _ none none
 ```
 
-## Swiss German notes
+`ch.map` is ISO Swiss German QWERTZ, with AltGr giving `@ # | \ [ ] { }`.
+Accented letters are Latin-1 bytes (`\xFC` = ü): maps are not UTF-8,
+since the tty path is a single-byte stream.
 
-`ch.map` is ISO Swiss German QWERTZ:
+## Keycodes and modifiers
 
-- Physical `/` is **Shift+7** (fixes the classic US-map `/` vs `_` mismatch).
-- Physical `-`/`_` is the key US labels `/?`.
-- **AltGr** (Right Alt) supplies `@ # | \ [ ] { }` for daily shell use.
-- Accented letters are Latin-1 bytes (`\xFC` = ü, …). v1 is **not UTF-8**;
-  the tty path is still a single-byte stream.
+The PS/2 driver produces set-1 make codes
+(`modules/console/ps2-scancode`); virtio-input on aarch64 and riscv64
+produces Linux `KEY_*` codes, which have the same numbers for the
+alphanumerics. `/dev/console/kbd` reports Linux `KEY_*` numbers on every
+arch (`docs/tty.md`).
 
-## Keycode sources
-
-| Arch    | Hardware     | Keycode space                          |
-|---------|--------------|----------------------------------------|
-| x86_64  | PS/2 8042    | set-1 makes via `modules/console/ps2-scancode`          |
-| aarch64 | virtio-input | Linux `KEY_*` (same numbers for alphanumerics) |
-| riscv64 | virtio-input | same as aarch64                        |
-
-`/dev/console/kbd` reports keys by their Linux `KEY_*` number on every
-arch (the PS/2 driver converts; `docs/tty.md`), with the character this
-keymap gives them.
-
-Modifiers tracked: **Shift**, **AltGr** (Right Alt), **Ctrl** (Left/Right),
-and **Caps Lock**, which flips Shift for the keys whose plain character is a
-letter (`/dev/console/kbd`'s characters too). QEMU's VNC server needs it: an
-uppercase letter typed or pasted without Shift held (a VPS's web console
-pasting text) arrives as Caps Lock pressed around the letter. The keyboard's
+The modifiers are Shift, AltGr (Right Alt), Ctrl and Caps Lock. Caps Lock
+flips Shift for letter keys; QEMU's VNC server needs it, since it sends an
+uppercase letter pasted without Shift as Caps Lock around the letter. The
 Caps Lock light is not driven.
 
-## Reserved keys (not keymap-driven)
+## Reserved keys
 
-A few keys are handled by the kernel before the loadable keymap, so they work
-regardless of which map is loaded and are not bound in `us.map` / `ch.map`:
+`modules/console/src/kbd.rs` handles a few keys before the keymap, so they
+work with any map: Esc (`0x1b`), the arrows (`ESC [ A` to `ESC [ D`) and
+Ctrl+letter (`ch & 0x1f`, so Ctrl+C is `0x03` and reaches `ISIG`).
 
-| Key          | Keycode | Output bytes            |
-|--------------|---------|-------------------------|
-| Esc          | `0x01`  | `0x1b`                  |
-| Up arrow     | `0x48`  | `ESC [ A` (3 bytes)     |
-| Down arrow   | `0x50`  | `ESC [ B`               |
-| Right arrow  | `0x4D`  | `ESC [ C`               |
-| Left arrow   | `0x4B`  | `ESC [ D`               |
+In cooked mode the kernel swallows complete escape sequences, so arrows
+never leak `[` and letters into a canonical command line; a lone Esc is
+dropped. In raw mode (`ICANON` cleared) the bytes pass untouched. The
+shell, oksh, reads its prompt in raw mode with its Emacs line editor,
+which maps the arrows and Home/End to history and cursor movement; the
+tty is back in cooked mode while a foreground child runs, so `^C` still
+reaches it.
 
-**Ctrl + letter** produces the control byte (`ch & 0x1f`), so `Ctrl+C` → `0x03`
-and hits the kernel's `ISIG` ^C path in both cooked and raw mode.
+## Test
 
-In **cooked** (canonical) mode the kernel swallows complete ESC/CSI sequences
-(arrows, function keys) so `[` + letters never leak into a plain, canonical
-command line; a lone Esc is dropped like bash. Cooked mode is what non-editing
-readers see.
-
-In **raw** mode (ICANON cleared) the real ESC bytes are delivered untouched —
-this is how TUIs like `vim` and the shell's line editor get their keys.
-
-## oksh: Emacs line editing on the raw console
-
-The interactive shell (`ports/oksh`) does **not** read cooked canonical lines
-anymore. At the `$` prompt it puts its tty into raw/cbreak mode
-(clears `ICANON`\|`ECHO`, keeps `ISIG` via `tcsetattr` → kernel `TCSETS`) and
-runs its bundled **Emacs** line editor (`emacs.c`) over the raw bytes. The
-kernel delivers the `ESC [ A/B/C/D` bytes the keyboard drivers produce directly
-(no cooked swallowing in raw mode), and oksh maps them naturally:
-
-| Key          | Bytes       | Emacs binding     | Effect        |
-|--------------|-------------|-------------------|---------------|
-| Up arrow     | `ESC [ A`   | `x_prev_com`      | history Up    |
-| Down arrow   | `ESC [ B`   | `x_next_com`      | history Down  |
-| Right arrow  | `ESC [ C`   | `x_mv_forw`       | cursor right  |
-| Left arrow   | `ESC [ D`   | `x_mv_back`       | cursor left   |
-| Home / End   | `ESC [ H/F` | `x_mv_begin/end`  | line start/end |
-
-Because raw mode disables kernel echo, oksh's editor owns echo and redraw
-(`x_zots`/`x_redraw`), so typed characters, cursor movement, and history recall
-all render directly on the console. The editor is active only while the shell
-is editing at the prompt; before/after (e.g. while a foreground child runs) the
-kernel tty is restored to cooked mode, so `^C` (ISIG) still kills the
-foreground child and the shell survives (see the Ctrl+C docs and `trap.c`).
+`keymap` (`user/tests/kernel.sh`, tag `console`).

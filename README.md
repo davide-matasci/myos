@@ -1,54 +1,95 @@
 # myos
 
-**A minimal, readable operating system kernel written in Rust.**
+**A small, readable operating system written in Rust.**
 
-myos boots in QEMU on **x86_64**, **AArch64**, and **RISC-V** through [Limine](https://github.com/limine-bootloader/limine), and reaches a fully interactive shell with login, userspace programs, and a modular VFS — in under 33k lines of Rust and C.
+myos boots through [Limine](https://github.com/limine-bootloader/limine) on
+**x86_64** (BIOS and UEFI), **AArch64** and **RISC-V** (riscv64). It runs
+in QEMU, and its disk image can be written to a USB stick for a real
+machine. It gives you a login, a shell, a
+C and Rust userspace, networking, sound and a graphical desktop with a web
+browser. The kernel is `#![no_std]` Rust; drivers and filesystems are
+loadable modules.
 
-This is a starting point to grow into a real OS, not a feature dump.
+It is meant to be read and grown: the code aims to stay plain, and the
+pages under [`docs/`](docs/) explain each part.
 
----
+## What it has
 
-## Features
-
-- **Multi-arch boot** — x86_64 (BIOS + UEFI), AArch64, RISC-V via Limine protocol revision 6
-- **Interactive shell** — getty → login (`root`, empty password) → [oksh](https://github.com/ibara/oksh) 7.9
-- **Security** — no superuser: every process runs for a user in a domain, every file has a label its path gives it, and `/etc/policy` says what each domain may do to each label (deny by default, SELinux-like); per-process namespaces narrow what a program can name, Plan 9 style (`sec ns`); passwords are checked by the kernel (`docs/security.md`)
-- **Rust kernel** — `#![no_std]`, higher-half link, HHDM memory, preemptive round-robin scheduler
-- **Kernel modules** — one ELF loader; every driver and filesystem is a module (console, virtio-blk, virtio-scsi, NVMe, xHCI, EHCI, UHCI and OHCI USB with hubs, sticks, mice, keyboards and speakers, virtio-sound, virtio-net, netfs, FAT16/FAT32, ext2, …), and so is the Linux syscall layer; listed in `limine.conf` and loadable at runtime with `insmod`
-- **VFS with multiple backends** — rootfs, tmpfs, devfs, procfs, FAT16/FAT32, ext2
-- **Framebuffer** — `/dev/fb/ctl` (geometry, taking the screen from the console) and `/dev/fb/data` (pixels, `mmap(MAP_SHARED)`), served by the console module (`docs/fb.md`); the keyboard's presses and releases at `/dev/console/kbd` (`docs/tty.md`); an X server on both, TinyX's `Xfbdev` with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`), with antialiased TrueType text through Xft (`packages/x11-xft/README.md`) the dwm window manager, the st terminal and the dmenu menu dwm starts (`get-myos tinyx dwm` brings st, dmenu, the Xft stack and the fonts with it, then `run-myos tinyx,dwm:startx`; `packages/dwm/README.md`, `packages/st/README.md`, `packages/dmenu/README.md`); `xev` prints the events a window gets and `xprop` its properties (`get-myos x11-apps`, then `run-myos x11-apps`, `packages/x11-apps/README.md`); the surf web browser, on WebKitGTK (`get-myos surf`, then `run-myos surf URL` in dwm's terminal, `packages/surf/README.md`)
-- **Userspace ELFs** — Rust `#![no_std]` programs + Rust `std` smoke + full newlib/libgloss C toolchain
-- **Ported userspace** — sbase (one multicall ELF), ubase, ripgrep, TinyCC (all fetched at build); uutils coreutils is a package (`get-myos coreutils`, then `run-myos coreutils:ls`)
-- **Networking** — virtio-net kernel module (RX interrupts: MSI-X on every arch, through the GICv3 ITS or a GICv2m frame on aarch64 and the AIA's IMSIC on riscv64; INTx on a board without one) + smoltcp in userspace, IPv4 (DHCP) and IPv6 (SLAAC; `AF_INET6` sockets, dual-stack as on Linux; `docs/sockets-curl.md`); `/ping` works on all arches; Wi-Fi under way (`wifi daemon`, `wifi scan`, `wifi connect` to an open or WPA2-PSK network carrying netd's traffic, over the test boots' simulated radio, Intel's AX201 or AX200 through `/dev/pci` (a port of OpenBSD's iwx), a MediaTek MT7601U or MT7612U USB adapter through `/dev/usb` (ports of OpenBSD's mtw and Linux's mt76x2u) or the Raspberry Pi's Broadcom CYW43455 or CYW43438 through `/dev/sdio` (a port of OpenBSD's bwfm, the firmware doing the 802.11 work), untried on the hardware, `docs/wifi.md`, issues #495 and #547); an IOMMU (Intel VT-d or AMD-Vi, Arm SMMUv3, the RISC-V IOMMU) confines a userspace driver's device to its buffers, and on x86_64 its interrupts to its own vector (interrupt remapping; `docs/pci-acpi-smp.md`)
-- **Sound** — `/dev/sound`, one `ctl` and `data` per PCM stream of every card (the `sound` core; cards from virtio-sound and USB Audio speakers), mixed by the sound server `sndd` for every program at once; `play` plays a tone or a WAV file, `rec` records one (`docs/sound.md`)
-- **Userspace BSD sockets** — libgloss shim over Plan 9 `/net` (no socket syscall); trimmed `curl` HTTPS GET; `AF_UNIX` stream sockets over `/net/unix`, kept in the kernel (`docs/sockets-unix.md`)
-- **CI** — GitHub Actions with rust-cache; userspace port outputs are OCI artifacts on GHCR
-- **Power** — `poweroff`, `reboot` and `halt` stop the processes, unmount the disks and power off or reset the board: ACPI S5 and the reset register on a PC, PSCI on AArch64, the SBI on RISC-V (`docs/power.md`)
-- **Optional: Linux syscall compatibility** — the `linux` kernel module (loaded at boot by the kernel with `--features linux_compat`, else by the boot script's default `rc.local` with `insmod /lib/modules/linux`) runs musl binaries (x86_64, aarch64, riscv64) via `linux PROGRAM` (see `docs/linux-compat.md`)
-
----
+- **Three architectures** from one tree, booted by Limine (protocol
+  revision 6), with SMP and preemptive scheduling
+  ([scheduler](docs/scheduler.md), [threads](docs/threads.md)).
+- **A shell**: getty, login (`root` with an empty password), then
+  [oksh](https://github.com/ibara/oksh), with ten text screens on the
+  framebuffer and a serial console ([ttys](docs/tty.md)).
+- **Security without a superuser**: every process runs for a user in a
+  domain, every file has a label, and `/etc/policy` says what each domain
+  may do with each label. Per-process namespaces narrow what a program can
+  see ([security](docs/security.md)).
+- **Kernel modules** for every driver and filesystem, loaded at boot or
+  with `insmod` ([modules](docs/modules.md)): virtio, NVMe, SD cards, USB
+  (xHCI, EHCI, UHCI, OHCI and the Pi's DWC2, with hubs, sticks, mice,
+  keyboards and speakers), FAT and ext2 ([filesystems](docs/fs.md),
+  [USB](docs/usb.md)).
+- **Networking**: virtio-net in the kernel, the TCP/IP stack (smoltcp) in
+  a userspace daemon, IPv4 and IPv6, BSD sockets over Plan 9 style `/net`
+  files, `AF_UNIX` sockets, curl with HTTPS, dropbear SSH
+  ([networking](docs/net.md), [Unix sockets](docs/sockets-unix.md),
+  [HTTPS](docs/https.md), [SSH](docs/ssh.md)). Wi-Fi is in progress
+  ([Wi-Fi](docs/wifi.md)).
+- **Hardware support** through PCI, ACPI and device trees, with MSI and
+  an IOMMU confining userspace drivers ([PCI](docs/pci.md),
+  [interrupts](docs/interrupts.md), [IOMMU](docs/iommu.md),
+  [platform](docs/platform.md)).
+- **Sound**: virtio-sound and USB speakers, mixed by a sound server
+  ([sound](docs/sound.md)).
+- **Graphics**: a framebuffer device, an X server (TinyX), the dwm window
+  manager, the st terminal and the surf web browser on WebKitGTK, all
+  installable packages ([framebuffer](docs/fb.md),
+  [packages](docs/packages.md)).
+- **Userspace**: Rust programs (with a `std` port), C with newlib or
+  mlibc, C++, and ported programs such as sbase, ubase, ripgrep, TinyCC,
+  vim, git and Python ([userspace](docs/userspace.md),
+  [ports](docs/ports.md), [mlibc](docs/mlibc.md)).
+- **Packages**: programs the image does not carry, installed as apps with
+  `get-myos` and run with `run-myos` ([packages](docs/packages.md)).
+- **Linux binaries**: an optional syscall layer runs musl programs and
+  Alpine packages ([Linux layer](docs/linux-compat.md)).
+- **Install and upgrade** on a disk with two boot slots
+  ([install](docs/install.md)), and power off or reboot cleanly
+  ([power](docs/power.md)).
+- **Boot tests** in CI on every architecture and machine variant
+  ([testing](docs/testing.md)).
 
 ## Prerequisites
 
-- [rustup](https://rustup.rs/) — `rust-toolchain.toml` pins **nightly-2026-07-26** and installs components automatically
-- QEMU (`qemu-system-x86`, `qemu-system-arm`, `qemu-system-riscv` for riscv64 (`qemu-system-misc` before Ubuntu 26.04), `qemu-efi-aarch64`, `qemu-efi-riscv64`); CI runs Ubuntu 26.04's QEMU 10.2; the riscv64 boot has its IOMMU only with QEMU 9.2 or later (`-device riscv-iommu-pci`; 24.04's 8.2 boots without it, and the launcher says so once)
-- `clang` + `lld` — cross-compiler and linker for C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23)
-- `make` — newlib build
-- `meson`, `ninja-build` — mlibc build (`toolchain/mlibc`, `docs/mlibc.md`)
-- `cmake` — the C++ runtimes' build (libc++, libc++abi, libunwind against mlibc: `toolchain/libcxx`, `docs/mlibc.md` "C++")
-- `git` — fetching upstream port sources
-- `gh` — GitHub CLI (CI registry pulls)
-- `libc6-dev` — host CRT (`Scrt1.o`) for the Limine host tool
-- `rsync` — preparing oksh/sbase build trees
-- `patch` — applying `.myos.patch` files
-- `curl` — fetching the pinned Limine binary on first build
-- `xorriso` — hybrid ISO output (`cargo run -- iso` only)
-- `zstd` — compressing the boot archives (`src/initramfs.rs`) and unpacking CI's cached ports (`scripts/ci-registry.sh pull`)
-- `e2fsprogs` — the boot test checks the scratch disk's ext2 with `e2fsck`
-- `dosfstools`, `mtools` — `cargo test -p fatvol`, and the boot test's `fsck.fat` of the FAT test disk
-- `openssh-client`, `python3` — the boot test's host side (`host.sh`): SSH sessions into the guest's dropbear, and the TCP and QEMU-monitor peers
+- [rustup](https://rustup.rs/). `rust-toolchain.toml` pins
+  **nightly-2026-07-26** and installs its components automatically.
+- QEMU for the three architectures, with the AArch64 and RISC-V UEFI
+  firmware. CI runs Ubuntu 26.04's QEMU 10.2. The riscv64 boot gets its
+  IOMMU only with QEMU 9.2 or later (`-device riscv-iommu-pci`); with
+  24.04's QEMU 8.2 it boots without one, and the launcher says so once.
+- The tools the build and the boot tests use:
 
-On Ubuntu 26.04 (on 24.04, `qemu-system-misc` instead of `qemu-system-riscv`):
+| Tool | Used for |
+|------|----------|
+| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23) |
+| `make` | building newlib |
+| `meson`, `ninja-build` | building mlibc (`toolchain/mlibc`, [mlibc](docs/mlibc.md)) |
+| `cmake` | building the C++ runtimes against mlibc: libc++, libc++abi, libunwind (`toolchain/libcxx`, [mlibc](docs/mlibc.md) "C++") |
+| `git` | fetching the upstream sources of the ports |
+| `gh` | the GitHub CLI, for pulling CI's cached ports |
+| `libc6-dev` | the host's C runtime (`Scrt1.o`) for the Limine host tool |
+| `rsync` | preparing the oksh and sbase build trees |
+| `patch` | applying the `*.myos.patch` files |
+| `curl` | fetching the pinned Limine binary on the first build |
+| `xorriso` | the hybrid ISO (`cargo run -- iso` only) |
+| `zstd` | compressing the boot archives (`src/initramfs.rs`) and unpacking CI's cached ports (`scripts/ci-registry.sh pull`) |
+| `e2fsprogs` | the boot test checks the scratch disk's ext2 with `e2fsck` |
+| `dosfstools`, `mtools` | `cargo test -p fatvol`, and the boot test's `fsck.fat` of the FAT test disk |
+| `openssh-client`, `python3` | the boot test's host side (`host.sh`): SSH sessions into the guest's dropbear, and the TCP and QEMU-monitor peers |
+
+On Ubuntu 26.04 (on 24.04, use `qemu-system-misc` instead of
+`qemu-system-riscv`):
 
 ```sh
 sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
@@ -57,401 +98,115 @@ sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
   openssh-client python3
 ```
 
-Building every port from source takes hours on the first run. Pulling the
+Building every port from source takes hours the first time. Pulling the
 ones CI already built takes about a minute: see "Fast local setup" in
-`AGENTS.md`, which also covers sandboxes behind a proxy.
+[`AGENTS.md`](AGENTS.md), which also covers sandboxes behind a proxy. For
+macOS, see [running](docs/running.md).
 
-On macOS (Homebrew):
-
-```sh
-brew install qemu llvm lld texinfo coreutils meson ninja
-# Homebrew's llvm is keg-only (no ld.lld on PATH) — the newlib/ports cross
-# wrappers exec ld.lld, so prepend it:
-export PATH="/opt/homebrew/opt/llvm/bin:$PATH"   # /usr/local/opt/llvm/bin on Intel
-```
-
-Notes:
-- `llvm` provides `llvm-strip`/`llvm-ar` used by the cross wrappers; `lld` provides `ld.lld` (the ELF linker — on current Homebrew the `llvm` formula alone no longer includes it); `texinfo` provides `makeinfo` (newlib docs; its `missing` shim only warns, but installing keeps the build log clean); `coreutils` provides `nproc` (also made optional in `toolchain/newlib/build.sh`).
-- macOS's stock `/bin/bash` is 3.2 (2007). `brew install bash` with Homebrew's bin first in `PATH` avoids bash-3.2 parser quirks in build scripts.
-
----
-
-## Quick Start
+## Quick start
 
 ```sh
 cargo run
 ```
 
-Builds x86_64 kernel, wraps in Limine GPT+FAT ESP (BIOS + UEFI), writes `target/fat.img`, starts QEMU. You'll see `Hello from myos`; close window to exit. The first build also cross-builds everything the image carries (every port with a `port.env` under `ports/`, `user/` and `toolchain/`, newlib included; see `docs/ports.md`), so it takes a while; a missing piece is a build error, never a silently smaller image.
+This builds the x86_64 kernel and a boot disk (GPT with a FAT ESP, BIOS
+and UEFI bootable), writes the test disk `target/fat.img` and starts QEMU.
+You see `Hello from myos`, then a login prompt: log in as `root` with an
+empty password. Close the window to stop.
+
+The first build also cross-builds everything the image carries: every
+port with a `port.env` under `ports/`, `user/` and `toolchain/`, newlib
+included ([ports](docs/ports.md)). That takes a while. A missing piece is a
+build error, never a silently smaller image.
 
 ```sh
 cargo run -- uefi        # x86_64 UEFI
-cargo run -- aarch64     # AArch64 (AAVMF)
-cargo run -- riscv64     # RISC-V (Edk2)
+cargo run -- aarch64     # AArch64 (AAVMF firmware; serial only)
+cargo run -- riscv64     # RISC-V (EDK2 firmware)
 cargo run -- iso         # write target/myos-x86_64.iso
-cargo run --release      # release build
+cargo run --release      # a release build
 ```
 
-**Boot tests** — boot headless, log in and run the test list in the guest (`docs/testing.md`):
+On x86 you can type in the QEMU window (PS/2 keyboard) or on the serial
+console; the other architectures use the serial console.
+
+The boot tests boot headless, log in and run the tests inside the guest
+([testing](docs/testing.md)):
 
 ```sh
-cargo run -- test --skip net,pkg,heavy,install,alpine-disk   # the quick tests (`test-mini`)
+cargo run -- test-mini            # the quick tests (no network)
 cargo run -- uefi test-mini
 cargo run -- aarch64 test         # every test: packages, HTTPS, SSH, os-test (needs the network)
 ```
 
-**Interactive use** — type at `$` prompt (PS/2 keyboard in QEMU window on x86; serial on all arches):
+For a Raspberry Pi, an installed disk that keeps its data between boots,
+and running on real hardware, see [running](docs/running.md) and
+[Raspberry Pi](docs/raspberry-pi.md).
 
-```sh
-cargo run          # x86 BIOS — keyboard or serial
-cargo run -- uefi  # x86 UEFI
-cargo run -- aarch64   # serial only for now
-```
-
-`cargo run -- rpi4` writes `target/rpi4.img`, the AArch64 boot disk for a
-Raspberry Pi 4 behind its UEFI firmware (serial console, HDMI and USB,
-untested on hardware; `docs/raspberry-pi.md`). `cargo run -- rpi3` boots a
-Raspberry Pi 3 in QEMU (`raspi3b`: U-Boot, then Limine, a serial shell) and
-leaves the boot files for a real one in `target/rpi3`; it also needs
-`gcc-aarch64-linux-gnu`, `bison`, `flex`, `bc`, `libssl-dev`,
-`libgnutls28-dev` (U-Boot's build) and `device-tree-compiler` (`fdtput`).
-
-The boot test types `root` at `login: ` (the password is empty), then `sh /lib/myos-tests/run.sh mini|full` at `$ `.
-
----
-
-## Architecture Overview
+## How it fits together
 
 ```
-Boot (Limine)
-  └─ Limine HHDM + memmap + framebuffer + modules
-       └─ Kernel (higher-half, #![no_std])
-            ├─ Heap (linked-list allocator, a quarter of RAM: 64 MiB to 1 GiB)
-            ├─ Scheduler (round-robin kernel threads + user tasks)
-            ├─ VFS (mount table → rootfs / tmpfs / devfs / procfs / ext2 / netfs)
-            ├─ Modules (Limine list, in order): console, hello, pci_enum,
-            │     acpi, rpi_firmware, virtio_blk, virtio_scsi, nvme, sdmmc, sound, virtio_sound, usb, xhci, ehci, uhci, ohci, dwc2, usb_hub, usb_storage, usb_hid, usb_audio, usbdev, virtio_net, tap, netfs, fat, ext2
-            │     (pcidev and pl061 ship for `insmod`, not loaded at boot)
-            └─ Userspace (ELF processes)
-                 ├─ /ok smoke (always-on alloc/user/fat/proc markers)
-                 ├─ /netd (smoltcp over /dev/net0/data and /dev/tap; only opener of net0)
-                 ├─ /etc/rc in the background → /data/etc/rc.local (insmod linux, dropbear :2222)
-                 ├─ getty on ttyS0, tty1…ttyN → login → /sh (oksh 7.9 via newlib/libgloss)
-                 └─ CI /heap: std / C / sbase / ripgrep / tcc (+ uutils, git: full mode)
+Limine (BIOS or UEFI firmware)
+  └─ the kernel (higher half, #![no_std]) and the initramfs
+       ├─ memory: the frame allocator, the kernel heap (a quarter of RAM, 64 MiB to 1 GiB)
+       ├─ the scheduler: kernel threads and user processes on every CPU
+       ├─ the VFS: rootfs, tmpfs, devfs, procfs, and FAT, ext2 and /net from modules
+       ├─ the modules from the initramfs, in order: console, PCI, ACPI, disks, sound,
+       │    USB, network, filesystems (pcidev and pl061 load only with insmod)
+       └─ userspace
+            ├─ init: mounts the disks, starts netd (TCP/IP) and sndd (sound)
+            ├─ /etc/rc in the background: /data/etc/rc.local (the Linux layer, dropbear on :2222)
+            └─ a getty on the serial port and on each text screen → login → oksh
 ```
 
-### Boot
-Limine protocol base revision 6 (`limine` crate 0.6.5). Host tool fetches pinned Limine `v12.6.1`, writes the boot disk (GPT, a FAT32 ESP with boot slots `a` and `b`, an ext2 data partition: `docs/install.md`), `limine.conf`, the kernel ELF (its loadable segments only: the debug info and symbols stay in the ELF under `target/`, `boot_kernel` in `src/limine_image.rs`) and the initramfs, which carries the module ELFs (`/lib/modules/<name>`, `src/limine_image.rs` `BOOT_MODULES`): Limine loads those two files and nothing else. On x86, `limine bios-install` makes the image BIOS+UEFI bootable. No `bootloader` crate, no QEMU `-kernel`, no Multiboot.
+[layout](docs/layout.md) lists what is where in the source tree, and
+[running](docs/running.md) describes the boot, the images the build
+writes and the memory layout.
 
-### Memory
-Kernel linked in higher half (`0xffffffff80000000` on x86_64). Limine provides HHDM; usable memory = `phys + HHDM`. Page tables allocated from bump allocator after heap. AArch64 device MMIO (UART, GIC, RTC, PCIe, virtio-mmio) mapped in a window of the higher half (`TTBR1`, `kernel/src/arch/aarch64/paging.rs`); `TTBR0` is user space only.
+## Documentation
 
-### Scheduling
-Round-robin kernel threads + user tasks across all online CPUs, from per-CPU run queues; a user process can run several threads, which share its address space and run on its home CPU, and an idle CPU takes a user task waiting behind a busy one (`docs/threads.md`) (Limine MP bring-up on x86_64, AArch64 and RISC-V; see `docs/pci-acpi-smp.md`). `task::yield_now()` cooperative; timer IRQ calls `task::schedule()` after EOI → preemptive even in user mode. Blocking waits (`read` on a tty/pipe/pty, `wait`, `nanosleep`, `select`/`poll`) put the task in a `Blocked` state and are woken by the producer (`task::wake`), a deadline or a signal; idle CPUs halt (`hlt`/`wfi`) until an interrupt or a targeted reschedule IPI. `/proc/cpuinfo` shows per-CPU schedule, idle-halt and pull counts. x86_64: LAPIC timer (x2APIC when the CPU has one), TSC for the monotonic clock at the rate CPUID states or calibrated against the PIT. AArch64: generic timer (GICv2 or GICv3 PPIs), `CNTVCT`. RISC-V: `stimecmp`, `time` CSR at the device tree's `timebase-frequency`. All three tick at 100 Hz but program the timer for the earliest sleep deadline when it is sooner (x86_64 by cutting the LAPIC timer's current period short), so `nanosleep` / `poll` timeouts are not rounded up to 10 ms.
-
-### Console & Input
-Serial + Limine framebuffer (the `console` module; boot output before it loads is replayed to it). The framebuffer has ten text screens: 0 the console's (the kernel's messages, the boot's), 1–9 the terminals `/dev/tty1`…`tty9`, each keeping its text while another is shown; Alt+N switches. The keyboard (PS/2 on x86 via 8042 probe, virtio-input on the `virt` boards, a USB keyboard on any) types at the shown screen's terminal; the serial port is `/dev/ttyS0` once its getty runs (`docs/tty.md`).
-
----
-
-## Repository Layout
-
-| Path | Role |
-|------|------|
-| `src/main.rs` | Host launcher: QEMU (BIOS/UEFI/AArch64/RISC-V) + second virtio-blk disk |
-| `src/limine_image.rs` | Limine fetch + `limine.conf` + the images; the boot disk in `src/limine_disk.rs` (GPT, FAT32 ESP through `fatvol`, ext2 through `ext2fs`) |
-| `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
-| `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, rootfs, Limine modules, user init |
-| `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
-| `kernel/src/platform.rs` | The board description, filled once at boot from the ACPI static tables (`acpi.rs`: MADT, MCFG, SPCR, GTDT) and the device tree (`dt.rs`, `fdt` crate), shown by `/proc/platform` (`docs/pci-acpi-smp.md`) |
-| `kernel/src/dt.rs` | Device tree (aarch64, riscv64): fills the platform description; PCI INTx `interrupt-map`, `virtio,mmio` nodes |
-| `kernel/src/mm.rs` | Physical frame allocator (after 256 KiB heap; page tables, user pages, virtqueues) |
-| `kernel/src/power.rs` | Power-off, reboot, halt: stop the processes, unmount the disks, then the modules' and the arch's methods in turn (`docs/power.md`) |
-| `kernel/src/sec/` | The security policy (`docs/security.md`): parser, labels, domains, users, the checks the syscalls make, the passwords' SHA-256 |
-| `etc/policy` | The default policy: packed as `/etc/policy`, and the kernel's fallback copy |
-| `kernel/src/blk.rs` | Block-device registry filled by driver modules (`blk_register`); `/dev/<name>` + sector/byte I/O, through the block cache (`blk/cache.rs`) |
-| `kernel/src/arch/` | All per-arch code: boot, UART, interrupts, PCI, user entry/paging (`user`, `upaging`), context switch, FPU, clock, SMP glue |
-| `kernel/src/console.rs` | Serial console + the `console` module's screen/keyboard hooks (early-output replay) |
-| `kernel/src/input.rs` | Stdin line discipline: module keyboard + serial → fd 0 |
-| `kernel/src/heap.rs` | `linked_list_allocator` heap sized from memory, with a free list per size class for small blocks (also holds tmpfs data) |
-| `kernel/src/task/` | Scheduler records (`Task`) + per-process blocks (`process.rs`): yield, preemption, fork/exec/wait |
-| `kernel/src/fs/` | VFS + rootfs/tmpfs/devfs/procfs backends |
-| `kernel/src/modules/` | ELF64 loader, KernelApi wrappers, loaded-module registry |
-| `modules/abi` | Shared `#[repr(C)]` KernelApi (v14: PCI/DMA/`dev_register`/`blk_register`/`console_register`/`personality_register`/`dt_mmio_find`) |
-| `modules/virtio` | What the virtio modules share: the `virtio-drivers` crate's `Hal` over the module ABI, PCI and virtio-mmio probing by device type, interrupt routing |
-| `modules/virtq` | Split virtqueue helpers for the console's virtio-input keyboard and pointers |
-| `modules/console` | Framebuffer text screen and `/dev/fb`, PS/2 + virtio-input keyboards and the `keyboard` service other modules' keyboards type through, the pointer (`/dev/console/mouse`) with the PS/2 and virtio-input mice, loadable keymap (`keymaps/`; scancode decoding in the host-testable `ps2-scancode` crate) |
-| `modules/virtio_blk` | virtio-blk `/dev/vd*` on `virtio-drivers`: virtio-pci (modern) or virtio-mmio |
-| `modules/virtio_scsi` | virtio-scsi: the host's disks as `/dev/sd*` (a VPS's disks), on `virtio-drivers`' virtqueue |
-| `modules/nvme` | NVMe `/dev/nvmeXn1` (PCI class 01/08, polled queues) |
-| `modules/rpi_firmware` | The Raspberry Pi's VideoCore firmware through its mailbox property interface, as a service: power domains, clocks (`docs/raspberry-pi.md`); `/proc/firmware` |
-| `modules/sdmmc` | SD cards `/dev/mmcblkN`: a standard SDHCI controller (PCI class 08/05, the Pi 4's EMMC2) or the Raspberry Pi 3's sdhost, the card layer on the `sdio-host` crate; high speed (50 MHz) when the card takes it, the blocks by ADMA2 on SDHCI, waits sleeping on the controller's interrupt, the Pi's clocks from its firmware. SDIO cards (the Pi's Wi-Fi chip, powered through the firmware) as `/dev/sdio/N` for a driver that is a program, the card layer the host-tested `sdio` crate (`docs/raspberry-pi.md`) |
-| `modules/usb` | The USB core: the devices, their enumeration and hot-plug on its own kernel thread, the class drivers' bus service (`UsbHostOps`), `/proc/usb`; the host controller drivers register their controllers with it (`UsbHcdOps`, `docs/usb.md`) |
-| `modules/xhci` | xHCI USB host controller driver: rings, slots, contexts and the transfers of its controllers, for the core |
-| `modules/ehci` | EHCI (USB 2.0) host controller driver: its schedules and the transfers of its high-speed devices (isochronous OUT too), the full- and low-speed ones handed to its companions, for the core (`docs/usb.md`) |
-| `modules/uhci` | UHCI (USB 1.1) host controller driver, an EHCI's companion: its frame list, the transfers, isochronous OUT, for the core (`docs/usb.md`) |
-| `modules/ohci` | OHCI (USB 1.1) host controller driver, the companion of non-Intel EHCIs: its ED lists, the transfers, isochronous OUT, for the core (`docs/usb.md`) |
-| `modules/dwc2` | DWC2 USB host controller driver, the Raspberry Pi 3's: host channels, split transactions, for the core (`docs/raspberry-pi.md`) |
-| `modules/usb_hub` | USB hub class driver: ports, resets, the devices behind a hub |
-| `modules/usb_storage` | USB mass storage (bulk-only, SCSI): `/dev/sdX/`, gone with the stick |
-| `modules/usb_hid` | USB HID mice and tablets: the console's pointer, `/dev/console/mouse` (`docs/tty.md`) |
-| `modules/usb_audio` | USB Audio Class 1 and 2 playback: a playback stream of the sound core over an isochronous OUT endpoint (`docs/usb.md`, `docs/sound.md`) |
-| `modules/sound` | The sound core: the cards' PCM streams as `/dev/sound/N/{ctl,data}`, their buffers, the `sound` service the card drivers register with (`docs/sound.md`) |
-| `modules/virtio_sound` | virtio-sound cards (PCI or MMIO): their playback and capture streams, for the sound core |
-| `modules/usbdev` | Userspace USB drivers: `/dev/usb`, the interfaces no kernel driver takes, their control, bulk and interrupt transfers as files (`docs/usb.md`) |
-| `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt, confined by the IOMMU where the board has one (`docs/pci-acpi-smp.md`); shipped for `insmod /lib/modules/pcidev`, not loaded at boot |
-| `modules/pl061` | The ARM PL061 GPIO controller's lines as an interrupt domain (`docs/pci-acpi-smp.md`, "Interrupt domains"); shipped for `insmod /lib/modules/pl061`, not loaded at boot |
-| `modules/usb_hid` | USB HID mice and tablets, the console's pointer (`/dev/console/mouse`), and boot keyboards, the console's keyboard (`docs/tty.md`, `docs/usb.md`) |
-| `modules/tap` | Virtual NICs: `/dev/tap/N`, a NIC whose wire is a program (the Wi-Fi daemon's link, `docs/wifi.md`) |
-| `modules/hello` | Sample module (`[ OK ] hello`) |
-| `modules/fat` | Writable FAT16/FAT32: `ModuleVfsOps` over the `fatvol` crate (`modules/fat/fatvol`: fstool's FAT driver, with growing by zeros, rename and file times of its own), host-tested against dosfstools and mtools |
-| `modules/ext2` | Writable ext2: `ModuleVfsOps` over the `ext2fs` crate (`modules/ext2/ext2fs`, also `mkfs.ext2`'s), host-tested against e2fsprogs |
-| `modules/virtio_net` | virtio-net on `virtio-drivers` (virtio-pci or virtio-mmio): `/dev/net0/` (`data` Ethernet frames, `ctl` the MAC and interrupt), RX interrupt wakes `poll` |
-| `modules/netfs` | Plan 9 `/net` + `/dev/netd/data` channel to userspace netd; `/net/unix` local connections |
-| `modules/linux` | Linux syscall compatibility layer: a syscall *personality* (`personality_register`) for musl binaries |
-| `user/init` | PID1: smoke fork/`/ok`, `mount -a`, fork `/netd`, the sound server `sndd` and the boot script `/etc/rc` (`etc/rc`, in the background), a getty on `ttyS0` and each tty `/etc/ttys` names, respawned |
-| `user/sh` | Legacy tiny shell (not `/sh`; kept in-tree) |
-| `user/ok` | Slim always-on boot smoke (alloc/user/fat/proc) |
-| `user/heap` | CI-only heavy smoke (std/C/sbase/ripgrep/tcc/bigalloc; uutils and git in the full mode), in the tests module (`docs/testing.md`) |
-| `user/sndd` | The sound server: mixes what the programs play (the `sndd` local socket) into each playback stream, converts the capture streams for whoever records (`docs/sound.md`) |
-| `user/netd` | Userspace smoltcp over `/dev/net0/data` and the virtual NICs of `/dev/tap` |
-| `user/insmod` | `insmod /lib/modules/<name>`: load a kernel module at runtime (`SYS_INSMOD`) |
-| `user/rmmod` | `rmmod <name>`: unload a kernel module that provides nothing any more (`SYS_RMMOD`) |
-| `user/lib` | Shared `myos_user` syscall wrappers, argv parser, `Heap` allocator |
-| `user/c` | Native C programs (newlib): `hello` and the boot-CI smokes as `/bin/etc/*`, in the tests module (`docs/testing.md`); `sec`, which `/etc/rc` runs, and `play`/`rec` (`docs/sound.md`) in the image |
-| `user/c-mlibc` | The same smokes built against mlibc, `/bin/etc/mlibc/*` in the tests module, and their tests (`docs/mlibc.md`) |
-| `user/echo/cat/ls` | Bootfs demos (`/myos_echo`, `/myos_cat`, `/myos_ls`) |
-| `user/std` | The Rust `std` demo programs (`/bin/std/{hello,cat,echo,bigalloc}`) |
-| `user/get-myos` | `get-myos`: installs packages (ports the image does not carry) from a mirror as apps, each version in a directory of its own, and `run-myos` runs one in a namespace with its files at their image paths; `-d` removes one, `--sync` makes the apps what `ROOT/apps.list` says, every change is a generation that `--rollback` returns to, and `--global` binds an app over the system for every process (its programs on `PATH`), `docs/packages.md`; `--upgrade` and `--install` write the boot disk's slots and Limine, `docs/install.md` |
-| `user/mount` | `mount` prints `/proc/mounts` or issues `SYS_MOUNT` (`mount SRC TARGET FSTYPE`, `bind` for a bind mount); says why a mount failed |
-| `user/umount` | `umount DIR` detaches the disk mounted there (`SYS_UMOUNT`) |
-| `user/power` | `poweroff`, `reboot`, `halt` (one program, the action its name says; `SYS_POWER`, `docs/power.md`) |
-| `ports/` | Userspace ports in the image: source fetched at build (sbase, ubase, oksh, ripgrep, curl, dropbear, limine, ...), one `port.env` descriptor each (`docs/ports.md`) |
-| `packages/` | Ports CI builds and publishes but the image does not carry (vim, git, lynx, lua, make, os-test, x11-libs, tinyx, x11-xft, x11-fonts, dwm, st, dmenu, x11-apps, bottom, clear, get-alpine, nginx, python, rust; `get-myos NAME` installs them, `docs/packages.md`); moving a directory here (or back to `ports/`) is the whole change |
-| `toolchain/newlib/` | newlib 4.4.0 + libgloss/myos syscall adapters |
-| `toolchain/libmyos/` | The C both libcs share: the kernel's interface as libc functions |
-| `toolchain/mlibc/` | mlibc 7.0.0, the second C library (opt-in per port, `docs/mlibc.md`) |
-| `toolchain/std/` | Rust `std` PAL skeleton, sysroot build scripts (the `sysroot` port) |
-| `targets/` | Custom Rust target specs (`x86_64-unknown-myos`, `aarch64-unknown-myos`, `riscv64imac-unknown-myos`) |
-| `scripts/` | Thin wrappers for port builds; `ports.sh` (the descriptors); CI registry (`myos-c-userspace-lib.sh`) |
-| `linux-compat/` | Userspace of the Linux layer: the `linux` launcher (every image), musl tests (feature `linux_compat`); `get-alpine` is a package (`packages/get-alpine`) |
-
----
-
-## Build & Run Detail
-
-```sh
-cargo build
-```
-
-Produces:
-- `target/bios.img` — BIOS+UEFI hybrid disk
-- `target/uefi.img` — UEFI-only ESP
-- `target/fat.img` — 20 MiB FAT16 data disk (second virtio-blk)
-- `target/aarch64.img` — AArch64 ESP
-- `target/rpi4.img` — the same for a Raspberry Pi 4 (`cargo run -- rpi4` only)
-- `target/riscv64.img` — RISC-V ESP
-
-### x86_64 BIOS
-```sh
-qemu-system-x86_64 -m 256 \
-  -drive format=raw,file=target/bios.img \
-  -drive if=none,id=vd0,format=raw,file=target/fat.img \
-  -device virtio-blk-pci,drive=vd0 \
-  -serial stdio
-```
-
-### x86_64 UEFI
-Same with `target/uefi.img`.
-
-### AArch64
-```sh
-qemu-system-aarch64 -m 256 -cpu cortex-a72 -machine virt,gic-version=2 \
-  -drive format=raw,file=target/aarch64.img \
-  -drive if=none,id=vd0,format=raw,file=target/fat.img \
-  -device virtio-blk-device,drive=vd0 \
-  -bios /usr/share/AAVMF/AAVMF_CODE.fd -serial stdio
-```
-The GIC version must match the device tree the launcher packed into the
-image (`MYOS_AARCH64_GIC=3 cargo run -- aarch64` for a GICv3 board, which
-also runs without ACPI tables: add `acpi=off` to `-machine`).
-
-### RISC-V
-```sh
-qemu-system-riscv64 -m 256 -machine virt,aia=aplic-imsic \
-  -drive format=raw,file=target/riscv64.img \
-  -bios /usr/share/qemu/ovmf-bin/Edk2-riscv64.fd -serial stdio
-```
-The interrupt controllers must match the device tree the launcher packed
-into the image: the AIA by default, the PLIC (plain `-machine virt`) after
-`MYOS_RISCV_INTC=plic cargo run -- riscv64`.
-
-### ISO (hybrid)
-```sh
-cargo run -- iso          # writes target/myos-x86_64.iso
-qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
-```
-
-### Second disk (`target/fat.img`)
-Attached as second virtio-blk in all QEMU runs. Holds `/msg` for `[ OK ] fat` / msg markers. Bare metal without it still boots to shell.
-
-### A persistent disk
-
-Every `cargo run` boots a freshly built image and rewrites the test disks, so nothing the guest writes survives. To test over a long time on one disk (QEMU only; interactive runs, not `test`):
-
-```sh
-MYOS_DISK=~/myos-disk.img cargo run          # attach a persistent extra disk (created sparse, 8 GiB, if missing)
-# in the guest: cat /dev/*/info to find it, then
-get-myos --install --local <disk>            # lay the boot disk out on it (docs/install.md)
-# power off, then boot that disk alone from now on:
-MYOS_BOOT_DISK=~/myos-disk.img cargo run     # also: uefi, aarch64, riscv64
-```
-
-An installed disk keeps `/data` (apps, the Alpine root) and upgrades itself with `get-myos --upgrade`; a newer `cargo build` does not touch it. `MYOS_DISK` can stay set while booting `MYOS_BOOT_DISK` from another file to attach a second data disk. QEMU locks images, so the two paths must differ.
-
----
-
-## Real Hardware
-
-Write the disk image to a USB stick or an internal drive (`target/uefi.img`; `target/bios.img` is the same disk, both BIOS and UEFI bootable). It is the installed layout (`docs/install.md`): a 512 MiB FAT32 ESP with two boot slots for upgrades (`boot/a/`, `boot/b/`) and the one `limine.conf` that picks between them, then an ext2 data partition for state that outlives an upgrade. The screen shows the boot, then tty1's login; Alt+1…9 switch between the ttys' text screens, Alt+0 shows the console's with the boot's and the kernel's lines (`docs/tty.md`). A running system upgrades itself from the release with `get-myos --upgrade`: the new kernel and initramfs go into the other slot, which boots next, the running one stays in the boot menu as the fallback; `get-myos --install DISK` lays the boot disk out on another disk, from the mirror or, with `--local` and no network, from the running system (the ISO included) (`docs/install.md`). A VPS takes the image written over its disk from the provider's rescue system (`dd`, `docs/install.md`), or, as a live medium, the release's hybrid ISO (`curl -L .../myos-x86_64.iso | dd of=/dev/sda`); to reach it over SSH (dropbear on port 2222, started by the boot script `/data/etc/rc.local`, which the administrator edits: `docs/install.md`), bring your own key (`docs/ssh.md`).
-
-**stdin** merges keyboard and serial. Keyboard characters come from a **loadable keymap** (default Swiss German via `user/init` → `/lib/kbd/ch.map`, US fallback; see `docs/keymap.md`). Serial always available and does not need a map.
-
-| Arch | Serial port | Baud rate |
-|------|-------------|-----------|
-| x86_64 | COM1 (I/O `0x3F8`) | 38400 8N1 |
-| AArch64 | PL011 UART | 115200 8N1 |
-| RISC-V | UART | 115200 8N1 |
-
----
-
-## VFS & Filesystems (Summary)
-
-- **VFS** — mount table with longest-prefix routing and bind mounts (`mount SRC TARGET bind`: a directory or file seen at a second place too, the target need not exist); `vfs::mounts_text()` exports `/proc/mounts`
-- **Open files** — an fd, a file mapping or a running program holds its file, not its name (`kernel/src/fs/node.rs`): it follows a rename of the file or of a directory above it, and a file unlinked or replaced (`rename` over it) while held stays readable and writable through it until the last holder lets go (tmpfs keeps it under a name no path reaches, a module filesystem with the `unlink_keep` hook its inode, ext2 does; on the others the holder's reads and writes fail instead). A filesystem that hands out file ids (tmpfs's files, a module's `file_id` hook: ext2's inode numbers) is read, written, sized and timed through the id once a file is open, a lookup by path only when it is opened; the node table shares one node per file, and `stat`'s `st_ino` is the id. Renames and unlinks exclude the calls that use a path or an open file, so none of them reaches a new file that took an old name
-- **File locks** (`kernel/src/fs/lock.rs`) — advisory, as on Unix: `flock` locks belong to the open file description (a `dup` or a `fork` shares them) and go with its last fd; `fcntl` record locks (`F_SETLK`, `F_SETLKW`, `F_GETLK`, libc's `lockf`) lock byte ranges for the process and go when it exits or closes any fd on the file (POSIX); Linux's open-file-description record locks are the description's. The two kinds never meet. A request that conflicts fails with `EWOULDBLOCK` without waiting, or waits until the holder lets go, a caught signal ending the wait (`EINTR`). No hard links, on purpose: a file has one name (`docs/security.md`), `link` fails with `EPERM`
-- **Mounting a disk** — `mount /dev/sda/data /mnt ext2` (or `mount PARTUUID=<guid> ...`, the partition's unique GUID): the target is any existing directory that is not a mount point yet, at the top level or anywhere below (`mkdir /tmp/usb`; `/mnt` is `/tmp/mnt` bound over the image's, so `mkdir /mnt/usb` works too); a disk is mounted once. At boot init's `mount -a` mounts the boot disk's ESP at `/boot` and what its `/boot/fstab` lists, the data partition at `/data` (`docs/install.md`). `umount DIR` gives the directory back once no file on the disk is open or mapped and nothing is mounted below it, after the filesystem's `unmount` hook wrote back what it caches (ext2). A directory a mount hangs from can be neither renamed nor removed. The kernel's own trees (`/`, `/tmp`, `/dev`, `/proc`) cannot be unmounted
-- **rootfs** — the read-only tree at `/`: every file of the image in one sorted table (the programs the kernel embeds, the Limine modules, the initramfs, which overrides an embedded program; a module's `vfs_register`); a directory is implied by its files (`mnt/.keep` for an empty one). `/tmp`, `/dev`, `/proc` and module filesystems are mounted over it
-- **Security** — every path the syscalls touch is checked against the policy (`kernel/src/sec`, `/etc/policy` from `etc/policy`) and the caller's namespace (`kernel/src/task/ns.rs`, which also implements `chroot`); labels come from the canonical path (bind mounts resolved), so a second name gives no second label (`docs/security.md`)
-- **procfs** — `/proc/mounts`, `/proc/partitions` and `/proc/cmdline` (Limine's `cmdline:`, the boot slot) (generated, not stored bytes); `/proc/boot/kernel`, `/proc/boot/initramfs` and, on the build's disks, `/proc/boot/tests` (the tests module, `docs/testing.md`), the files this boot came from, and `/proc/boot/partuuid`, the partition (mounted at `/boot`); every process at `/proc/<pid>/status` and its threads at `/proc/<pid>/task/<tid>/status`, with names and CPU times, and the CPUs' idle time at `/proc/cpu` (`docs/proc.md`); `/proc/self/ctx` (the caller's uid, user and domain) and `/proc/sys/security/users` (the policy's users, what libgloss's `getpwnam` and friends read); `/proc/sys/kernel/hostname` holds the host name ("myos" at boot; `echo name > /proc/sys/kernel/hostname`, or `hostname name`, sets it, up to 64 bytes); `/proc/sys/kernel/overflowuid` and `overflowgid` read 65534 (what bubblewrap reads)
-- **rootfs** — the read-only tree at `/`: every file of the image in one sorted table: the initramfs, the cpio archive Limine loads next to the kernel modules, a zstd frame the kernel decodes once at boot into pages of its own and then unpacks by reference (no copy; `kernel/src/fs/zstd.rs`), and a module's `vfs_register`. The kernel embeds no program: it starts `/bin/custom/init` from the initramfs; a directory is implied by its files (`mnt/.keep` for an empty one). `/tmp`, `/dev`, `/proc` and module filesystems are mounted over it
-- **procfs** — `/proc/mounts`, `/proc/partitions` and `/proc/cmdline` (Limine's `cmdline:`, the boot slot) (generated, not stored bytes); `/proc/boot/kernel`, `/proc/boot/initramfs` and, on the build's disks, `/proc/boot/tests` (the tests module, `docs/testing.md`), the files this boot came from, and `/proc/boot/partuuid`, the partition (mounted at `/boot`); every process at `/proc/<pid>/status` and its threads at `/proc/<pid>/task/<tid>/status`, with names and CPU times, and the CPUs' idle time at `/proc/cpu` (`docs/proc.md`); `/proc/sys/kernel/hostname` holds the host name ("myos" at boot; `echo name > /proc/sys/kernel/hostname`, or `hostname name`, sets it, up to 64 bytes); `/proc/sys/kernel/overflowuid` and `overflowgid` read 65534 (what bubblewrap reads)
-- **tmpfs/devfs** — writable mount for `O_CREAT`; device nodes
-- **virtio-blk / virtio-scsi / NVMe / SD** — modules registering the disks `vda`…, `sda`…, `nvme0n1` and `mmcblk0` through `blk_register` (`sd?`: the kernel hands out the letter, to SCSI disks and USB sticks alike); loaded before the filesystem modules. The virtio ones are the `virtio-drivers` crate bound to the module ABI by `modules/virtio`
-- **Disks and partitions** — a disk is a directory, `/dev/<disk>/`: `data` is the whole disk, `p<N>` the partition in entry `N` of its GUID partition table (numbered by entry, so a gap stays a gap), a block device of its own confined to its sectors (`kernel/src/blk.rs`, `kernel/src/blk/gpt.rs`), and `info` a line about the disk, `cat /dev/*/info` for all of them: its name, its size in bytes and what its driver says of it, where it is (a PCI function, a virtio-mmio window, a SCSI target and LUN behind its host, the `/proc/usb` device and its vendor:product) and what the device reports itself to be (`nvme0n1 1610612736 nvme pci 00:04.0 model "QEMU NVMe Ctrl" serial "myos"`; `vda 8589934592 virtio_blk pci 00:03.0 serial "…"`; `sda 1048576 virtio_scsi pci 00:05.0 target 0:0 vendor "QEMU" model "QEMU HARDDISK"`; `sdb 67108864 usb_storage usb 0x002 46f4:0001 vendor "QEMU" model "QEMU HARDDISK"`; a read-only virtio disk says `ro`). The table is read on the first look at `/dev` after the disk appeared: both CRC32s checked, the backup at the end of the disk when the primary is bad; MBR tables are not read. `/proc/partitions` lists them, one line each: `nvme1n1/p1 2048 20971520 c12a7328-f81f-11d2-ba4b-00a0c93ec93b <unique GUID> "EFI system"` (first sector, bytes, type and unique GUIDs, name). A disk's partitions go with it (a USB stick pulled out), which is refused while one is mounted or open; writing `rescan` to `/proc/pci` reads again the tables of the disks none of whose partitions is in use
-- **Page cache** — a file's pages that processes map without write permission (programs' and libraries' code and constant data) are one frame each, shared by every mapping of them and kept for the next process (`kernel/src/fs/pagecache.rs`); a write, a truncation or an unlink drops them, up to a quarter of RAM (`PageCacheKiB` in `/proc/meminfo`). A `MAP_SHARED` mapping of a regular file through a writable fd is the file: its pages are the cache's frames, written through it by every process that maps them, seen by `read` and updated by `write` at once, and written back to the file by `msync`, `munmap`, exit and exec; a file unlinked while an fd or a mapping holds it keeps its pages for them. A `MAP_SHARED | MAP_ANON` mapping is one of a tmpfs file no name reaches, shared with forked children and gone with its last mapping. POSIX shared memory is `/dev/shm`, a tmpfs directory bound there (`shm_open`, `shm_unlink`, `memfd_create` in libgloss: the file is created and unlinked at once; System V `shmget`/`shmat`/`shmdt`/`shmctl` too, a segment being a file there, its id the file's inode number, its mode reported as 0666 since the file's protection is the policy's). A tmpfs file is bytes in the kernel heap that the mapping's frames are written back to: a segment costs its size twice, up to the tmpfs file cap of 128 MiB (issue #338)
-- **Fork is copy-on-write** — a forked child maps its parent's pages (image, stack, heap, private mappings) rather than copies of them: both sides lose write permission to a shared page (`LEAF_COW` in the leaf entry, `kernel/src/user/cow.rs` counts its mappings), and the first store by either side, from userspace or by a kernel copy into the page, gives that side its own copy, or the frame itself when the other side's mapping has gone (`user::cow_break`). A shared mapping's and a device's pages are the same in both. Exec in place replaces the shared frames it keeps before it writes the new image. `Forks` and `CowCopies` in `/proc/meminfo` count the forks and the pages copied
-- **Block cache** — what is read from a disk is kept in 4 KiB pages, up to an eighth of RAM (least recently used out first, all of it given back when memory runs out; `BlockCacheKiB` in `/proc/meminfo`); writes go to the disk and update it
-- **FAT module** — FAT16 and FAT32 (`mkfs.fat DEVICE` makes a FAT32 one: fstool's formatter through `fatvol::format`), read-write, bound via `mount(2)` fstype `fat` on a device whose first sector is the volume's (`mount /dev/sda/data /mnt fat`, or a partition: `mount /dev/sda/p1 /mnt fat`): long names (VFAT), files and directories created, written, cut, grown with zeros, renamed (across directories too) and removed, file times set, both FAT copies and the FAT32 FSInfo kept up to date. FAT keeps no owners or permissions: everything reads as mode 0755 (0555 with the read-only attribute). A name a short 8.3 entry alone records is listed in lower case (`MSG` as `msg`, Linux's `shortname=lower`); lookups ignore case. The allocation table is cached and written back when the last fd on a file closes and at `umount`. The filesystem is the `fatvol` crate over fstool's FAT driver (crates.io, pinned); `cargo test -p fatvol` checks it against `fsck.fat` and mtools, and the boot test runs `fsck.fat -n` on the FAT test disk
-- **ext2 module** — the ext2 Linux and e2fsprogs know (1/2/4 KiB blocks, block groups, indirect blocks up to triple, symlinks, rename, sparse superblocks, files over 2 GiB), bound via `mount(2)` fstype `ext2` on a disk `mkfs.ext2` (or Linux's `mke2fs -t ext2`) formatted; `cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots carry an empty 4 GiB scratch disk (`/dev/nvme1n1/data`) for big filesystems
-- **virtio-net / netfs / netd** — kernel virtio-net → `/dev/net0/data` Ethernet; netfs mounts Plan 9 `/net`; netd runs smoltcp in userspace over `/dev/netd/data`; `/ping <ipv4|ipv6>` uses `/net/icmp`
-
----
-
-## Kernel Modules
-
-Kernel modules are ELFs in RAM. One loader copies `PT_LOAD`, applies relocs, calls `module_init`. The kernel embeds none of them:
-
-| | Boot | Runtime (`insmod`) |
-|---|---|---|
-| Bytes live in | `/lib/modules/<name>` in the initramfs, named in load order by `/lib/modules/boot.list` | `/lib/modules/<name>` in the initramfs (or any file) |
-| Loaded by | `modules::load_boot_modules` right after the initramfs is unpacked | `SYS_INSMOD` from `/bin/custom/insmod` |
-
-`/proc/modules` lists what is loaded. `rmmod <name>` (`SYS_RMMOD`) unloads a module that provides nothing any more: the kernel counts what each module registered through the `KernelApi` (devices, filesystems, mounts, `/proc` nodes, interrupts, the console, a personality, a service, a thread, a service it looked up) and refuses to unload one with a registration left; only block devices unregister (`blk_unregister`, a USB stick pulled out); `hello` unloads, a driver does not. Writing `rescan` to `/proc/pci` re-enumerates the bus and then calls every module's `module_rescan`: the block drivers bring up the controllers and disks that appeared since boot (`/dev/nvme1n1/data`, `/dev/vdb/data`, ...) and leave the known ones alone. The console module goes first (it paints the buffered boot output), then hello, pci_enum, acpi, rpi_firmware (the Pi's firmware, for the drivers that ask it), the block drivers (virtio_blk, virtio_scsi, nvme, sdmmc), the USB bus (usb, the core, the controller drivers xhci and dwc2, then the class drivers usb_hub, usb_storage and usb_hid), virtio_net, tap, netfs and the filesystems (fat, ext2). Modules behind a Cargo feature (`OPTIONAL_MODULES`: `linux` with `linux_compat`) are always shipped under `/lib/modules` but only listed in `boot.list` when the feature is on; `pcidev` and `pl061` (`RUNTIME_MODULES`) are shipped and never listed: root loads them (`docs/pci-acpi-smp.md`). The boot drive holds the kernel and the initramfs only, so an upgrade replaces two files.
-
-Module exports:
-```rust
-unsafe extern "C" fn module_init(api: *const KernelApi) -> i32
-unsafe extern "C" fn module_exit()   // optional: run by rmmod
-unsafe extern "C" fn module_rescan() // optional: probe for new devices after a /proc/pci rescan
-```
-
-`KernelApi` (`modules/abi`) is a `#[repr(C)]` table, ABI v59 (v59 gives a module a PCI function's I/O BAR, `pci_io_map`, and a device of 32-bit pointers DMA it reaches, `DmaDevice::below`, `docs/pci-acpi-smp.md`; v56 gives a board device's interrupt back, `irq_disable`, the line masked once no handler is left on it, and an interrupt domain's `mask` beside its `unmask`; v55 gives a PCI function's interrupt back, `pci_irq_disable`: its vector, handler slot and IOMMU remapping entry free for the next device, `docs/pci-acpi-smp.md`; v54 hands the kernel the PCI interrupt routes the firmware's `_PRT` gives, `pci_intx_route`, which x86_64 routes a function's INTx by, and maps physical memory for the acpi module's AML interpreter, `phys_map`, `docs/pci-acpi-smp.md` "AML"; v52 gives `/dev/pci` a BAR's address as the CPUs see it, `pci_bar_phys`, whether a device's DMA sees the caches, `dma_coherent`, and non-cacheable mappings for one that does not, `MYOS_MMAP_NOCACHE`, `docs/pci-acpi-smp.md`; v51 adds `irq_domain_register` / `irq_dispatch`, a module's secondary interrupt controller as an interrupt domain, and `MmioDevice::phandle`; v50 lets a file's `open` hook name another file for the fd: opening a `/net` protocol's `clone` gives the new conversation's `data`, `docs/sockets-curl.md`; v45 lets a filesystem's write hooks and `vfs_write` report a full filesystem, `VFS_ENOSPC`, the program's `ENOSPC`; v44 gave the `poll` hooks a change count, what an edge-triggered wait set member is reported against, `docs/events.md`; v35 added a filesystem's `statfs` hook and `vfs_statfs`: how full it is; v34 made a filesystem's stat size 64 bits, files and disks past 4 GiB; v33 added `irq_enable` (a board device's interrupt: a GIC SPI, a PLIC source, an ISA IRQ through the I/O APIC) and `console_input`, and `keyboard_irq` / `cursor_blinks` to the console's ops: the keyboards interrupt, `docs/pci-acpi-smp.md`; v32 added `current_uid` (the user the calling process runs for, `docs/security.md`); v31 added `power_register` (a module's power-off or reboot method, `docs/power.md`); v30 added a filesystem's `file_id` and `set_times_ino` hooks (the `*_ino` hooks are how an open file is reached) and `fd_lockctl` (file locks for the Linux layer); v29 added a filesystem's `set_size` and `set_size_ino` hooks (`ftruncate`); v28 added the hooks that keep a file unlinked while it is held (`unlink_keep`, `read_ino`, `write_ino`, `stat_ino`, `forget_ino`); v27 added `thread_place`; v26 added a filesystem's `unmount` hook (`umount`); v25 added file times, a filesystem's `set_times` hook and `vfs_set_times`; v21 added `blk_unregister`, the service registry (`service_register` / `service_lookup`) modules reach each other through, module threads (`thread_spawn`), `wake` and the USB bus types, `docs/usb.md`; v19 took `ioctl` out, v20 added the `open` hook that makes a file exclusive, `/dev/console/kbd`). Kernel fills it and passes it to `module_init`. Drivers register what they provide: `blk_register` (block devices), `dev_register` (char devices: the directory `/dev/<name>/` with `data` and an optional text `ctl`, and a `poll` hook for `data`'s readiness), `fs_register` / `vfs_mount` (filesystems; a backend's optional `mmap` hook maps device memory, `docs/fb.md`, and its `poll` hook reports readiness for `poll`), `console_register` (screen + keyboard), `personality_register` (a foreign syscall ABI, see `docs/linux-compat.md`); `dt_mmio_find` gives a driver its memory-mapped devices from the device tree.
-
-A module calls the table through its safe methods, one per entry with the
-same name (`api.blk_read(dev, lba, &mut buf)` for
-`(api.blk_read)(dev, lba, ptr, len)`): they take slices, `&str` and
-references, and the kernel copies or checks what it is handed, so no
-`unsafe` is needed. The few entries that cannot be safe (`dealloc`, the
-saved registers of a syscall, the FP/SIMD save area) have no method. A
-module keeps the table `module_init` received in a `static API: ApiCell`
-(`API.get()` afterwards) and its own state behind a `myos_abi::Lock`, a
-spin lock, or a `SleepLock` when it is held across a wait (a block driver's
-disks are one lock per slot, held for a request; usb_storage's requests
-and the USB host's transfers wait for their completion, so those sleep).
-No module has a `static mut`; what stays `unsafe` is hardware access
-(MMIO, DMA rings, cache maintenance) and the raw pointers of the C ABI's
-callbacks, in short helpers with `SAFETY:` comments. Every module crate
-denies `unsafe_op_in_unsafe_fn`.
-
-### Adding a module
-1. Copy `modules/hello` → `modules/foo` (keep panic=abort, opt-level=s, myos-abi, link flags)
-2. Add it to the module list in `kernel/build.rs` (builds `target/foo-<triple>` for every arch) and to `BOOT_MODULES` in `src/limine_image.rs` at the position it must load (that ships it in the initramfs and puts it in `/lib/modules/boot.list`); list the ELFs in `scripts/ci-build-kernels.sh` / `ci-pack-build-artifacts.sh`
-3. Or skip the boot list and load it on demand: `insmod /lib/modules/foo`
-
----
-
-## Userspace (Summary)
-
-### Syscalls
-A syscall takes up to six arguments in registers (x86-64: rdi, rsi, rdx, r10, r8, r9; aarch64: x0-x5; riscv64: a0-a5). The numbers only grow; a call that went keeps its number unused.
-
-- **Path calls** (`kernel/src/user/at.rs`): every one names its file by a directory fd and a path relative to it, `*at` style. `AT_FDCWD` (-100) is the cwd, an absolute path leaves the fd out, and `AT_EMPTY_PATH` with an empty path is the fd's own file. The calls are `openat`, `statat` (64-bit size, access and modification times, the caller's rights as permission bits, the label owner's uid; `AT_SYMLINK_NOFOLLOW` for a symlink itself), `mknodat` (a directory or a FIFO), `symlinkat`, `unlinkat` (`AT_REMOVEDIR`), `renameat`, `readlinkat`, `utimensat` (seconds; tmpfs and ext2 keep times, the other filesystems report 0 and refuse), `chdirat`, `listdirat` (the names, one per line), `execat` (an ELF, or a `#!` script run through its interpreter) and `statfsat` (syscall 94: how full the file's filesystem is, in blocks in all, free and available, file nodes in all and free, and whether it is read-only: ext2's and FAT's counts, tmpfs's the kernel heap, the image full; libc's `statvfs`, and `df`). libc's `fstat`, `fstatvfs`, `futimens`, `fchdir`, `fdopendir` and `fexecve` are these on the fd itself, and the plain calls (`open`, `stat`, `chdir`, ...) are these on `AT_FDCWD`. Each call holds the VFS tree lock from resolving its paths to acting on them, so a directory fd stands for its directory whatever is renamed meanwhile. The cwd is a directory node too: it follows a rename of its directory. A directory fd whose directory the caller's namespace cannot name is a capability: paths resolve beneath it only, with the rights it was opened with (`docs/security.md`). `openat` with `O_CREAT|O_EXCL` creates a new file or fails (`EEXIST`) in one step under the tree lock, so of several processes racing for a name exactly one gets it, and a symlink at the name counts as taken; `O_CLOEXEC` makes the fd close at exec; `O_NOFOLLOW` refuses a symlink as the last component (`ELOOP`) and `O_DIRECTORY` anything but a directory (`ENOTDIR`); a directory opened to write, create or truncate is `EISDIR`; so a walk of a tree with `openat` cannot be led out of it by a symlink swapped in.
-- **File I/O**: `pread(fd, buf, len, offset, flags)` and `pwrite` are read and write too: at the file position, which advances, or with `FILE_AT` at `offset`, the position left as it is (`ESPIPE` on a pipe or terminal; a write past the end leaves zeros in the gap). `ftruncate(fd, size)` cuts a file open for writing or grows it with zeros (tmpfs; ext2 through the module's `set_size` hook, the blocks past the end given back). `fdflags(fd, op, flags)` gets or sets an fd's close-on-exec flag (`fcntl`'s `F_GETFD`/`F_SETFD`); `dupfd` and `pipe` take it as a flag too (`F_DUPFD_CLOEXEC`, `pipe2(O_CLOEXEC)`). Exec closes the fds that have it; fork keeps it, and a copy made by `dupfd` has it only when asked (`dup2`'s never: `DUP_EXACT` makes `dupfd` a `dup2`, or a `dup3` with the flag).
-- **File locks**: `flock(fd, op)` (`LOCK_SH`, `LOCK_EX`, `LOCK_UN`, `| LOCK_NB`) and `lockctl(fd, cmd, range)`, a record lock on a byte range (get the first conflicting one, set, or set waiting; with `LOCKCTL_OFD` the open file description's rather than the process's): libc's `flock`, `fcntl`'s `F_GETLK`/`F_SETLK`/`F_SETLKW` and `lockf`, Rust's `File::lock` and `try_lock`.
-- **The rest**: `exit`, `close`, `fork`, `waitpid`, `brk`, `pipe`, `execname`, `dupfd`, `getcwd`, `mmap`, `munmap`, `mprotect`, `msync`, `madvise` (`MADV_DONTNEED` frees the pages, which read as zero or as their file next time, as allocators expect; other advice is ignored), `lseek`, `poll`, …, threads (`thread_spawn`, `thread_exit`, `wait_addr`, `wake_addr`, `gettid`, `set_tp`, `yield`, see `docs/threads.md`), `getppid`, `mount`, `umount`, `settimeofday` (sets the wall clock until the next boot; the RTC keeps its time), `clock_monotonic` (nanoseconds since boot, what std's `Instant` reads), `power` (power off, reboot or halt, `docs/power.md`), and the security calls (`docs/security.md`): `setuser` (run as a user, checked against the password), `ns` (narrow the caller's namespace; libc's `chroot` is a namespace of one binding) and `policy_load`.
-- **Gone**: the path calls before `*at` (`open`, `exec`, `listdir`, `stat`, `stat2`, `stat3`, `chdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `symlink`, `readlink`, `mkfifo`, `utimens`, `futimens`) and `chroot`; `read` and `write` (numbers 3 and 0): `pread` and `pwrite` without `FILE_AT`; `ioctl` (number 28): a device's state is its `ctl` file (`docs/tty.md`).
-
-### Init & Shell
-`user/init` = PID1: baked in, smoke-tests fork/`/ok`, forks `/netd` and the boot script `/etc/rc` (in the background: it ends with `[ OK ] boot complete`; `docs/install.md`), forks a getty on the serial port's `/dev/ttyS0` and on `/dev/tty1`…`ttyN` (the framebuffer's text screens, `N` from `/etc/ttys`; Alt+1…9 switch, Alt+0 shows the console's screen with the boot's and the kernel's lines, `docs/tty.md`), shows tty1's screen, and `wait()`/respawns each. Getty prompts `login: ` → execs `/u/login` → the kernel checks the password (`setuser`; `root` has none) and the process becomes that user, in its login domain (`root`: `admin`) → execs `/sh`. `/sh` = oksh 7.9 with PATH `/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc`. Editor: `vim` → `/bin/custom/vim` (FEAT_TINY; see `packages/vim/README.md`) and VCS: `git` → `/bin/custom/git` (the porcelain, and clones and fetches over SSH; see `packages/git/README.md`) are packages, `get-myos vim git` installs them as apps, `run-myos vim` runs one (`docs/packages.md`). `ps` lists the processes from `/proc` (`docs/proc.md`; `get-myos bottom` and `run-myos bottom` for an interactive `top`, `btm`). Framebuffer CSI includes scroll regions and 256/RGB colors, text is UTF-8 with box-drawing, block and braille glyphs (`docs/tty.md`); `TERMCAP=/lib/termcap` (`ports/termcap`) + termios raw mode for full-screen TUI. A terminal is a directory, `data` and `ctl` (its termios and window size as text), the console at `/dev/console/`, the ptys at `/dev/pts/N/` from `/dev/pts/clone`, with `/proc/self/fd/N` and `/proc/self/tty` naming them (`docs/tty.md`). Event counters (eventfd), timers (timerfd), wait sets (epoll) and signal fds (signalfd) are directories the same way, `/dev/event/N/`, `/dev/timer/N/`, `/dev/wait/N/` and `/dev/sig/N/` from their `clone` files: `data` is the fd a program holds, `ctl` and `status` its commands and state as text (`docs/events.md`; libgloss `<sys/eventfd.h>`, `<sys/timerfd.h>`, `<sys/epoll.h>`, `<sys/signalfd.h>`).
-
-### Rust Userspace
-Syscall 9 (`brk`) backs per-process heap. `user/lib` exposes `brk`, `heap_init`, bump `GlobalAlloc`. `user/ok` smoke-tests every boot. `user/heap` = CI-only heavy suite. `std` programs link prebuilt sysroot (`toolchain/std/build-sysroot.sh`). Its `std::fs` creates, writes (truncate, append, `create_new`), seeks and reads files, gives an open file's metadata, renames, removes, makes directories and symlinks, and `canonicalize` resolves a path to its real absolute form through the kernel (`realpath`, syscall 93); it has no hard links or permissions. The kernel has one failure value, so each call works out its `ErrorKind` (`NotFound`, `AlreadyExists`, `IsADirectory`, `ReadOnlyFilesystem`, ...) the way libgloss does; reads and writes tell EIO and EINTR apart (`/bin/std/fs` checks them). Its `std::thread` runs native threads, with std's futex locks on `wait_addr` / `wake_addr` and thread-locals at the thread pointer (`/bin/std/thread`, `docs/threads.md`). Its heap is dlmalloc, as on Xous, on anonymous `mmap` regions: freed memory is reused and whole regions go back with `munmap` (`/bin/std/alloc` puts 1 GiB through it in a process that stays small).
-
-### C Userspace (newlib + libgloss)
-Links against newlib with myos libgloss (syscall adapters + ENOSYS stubs; the adapters are the C both C libraries share, `toolchain/libmyos`, `docs/mlibc.md`). Its crt0 runs the constructors (`.init_array`, `__attribute__((constructor))`) before `main` and the destructors at exit, after the `atexit` handlers (`/bin/etc/ctor_smoke`). `stat` fills `st_atime`/`st_mtime` (`st_ctime` = `st_mtime`), and `utimensat`, `futimens`, `utimes`, `futimes`, `lutimes` and `utime` set them. `reboot` (`<sys/reboot.h>`) powers off, halts or reboots (`docs/power.md`); `settimeofday` and `clock_settime` (`CLOCK_REALTIME`) set the wall clock (sbase `date MMDDhhmm[[CC]YY]`), which `clock_gettime`'s `CLOCK_MONOTONIC` (and the GNU `CLOCK_BOOTTIME`, `_RAW` and `_COARSE`) does not follow: those count the kernel's time since boot; `gethostname`, `sethostname` and `uname`'s node name read and write `/proc/sys/kernel/hostname`; `syslog` has no daemon behind it: `openlog`/`syslog`/`vsyslog` write each message as one line `ident[pid]: message` to the console (`/dev/console/data`), and to stderr as well with `LOG_PERROR` (sbase `logger`). Without kernel syscalls of their own: `readv`/`writev` (`<sys/uio.h>`), `vfork`, `daemon` and `getrandom` (from `/dev/urandom`) are libc over the existing primitives, so are newlib's own POSIX `regcomp`/`regexec`, `glob` and `fnmatch` (`libc/posix`, which this newlib target leaves out of libc: libgloss builds them), the netdb service lookups find nothing (no services database), `setitimer` (`ITIMER_REAL`), `getitimer` and `alarm` send `SIGALRM` from one kernel timer per process (`docs/signals.md`), and POSIX threads run on the kernel's threads (`pthread_create`, mutexes, condition variables, once, keys; `errno` and stdio per thread; `docs/threads.md`; an empty `libpthread.a` keeps `-lpthread` linking). A port's `myos_compat.h` / `myos_stubs.c` holds only what newlib's headers lack or what has no honest implementation on myos (rlimits, `getrusage`); what libgloss provides is never redefined there.
-
-```sh
-./toolchain/newlib/build.sh         # fetch newlib 4.4.0, build libc + libgloss/myos
-./scripts/build-c-hello.sh          # minimal write() smoke
-./ports/sbase/build.sh              # 99 sbase utilities, one multicall ELF under /bin/sbase
-./ports/ubase/build.sh              # getty, login and df under /bin/ubase/
-./ports/oksh/build.sh               # oksh 7.9 as /sh
-./packages/vim/build.sh             # vim FEAT_TINY (a package: get-myos vim)
-./ports/zlib/build.sh               # static libz.a for git and get-myos
-./ports/libressl/build.sh           # static LibreSSL for curl, lynx, nginx and http
-./packages/git/build.sh             # git, SSH remotes (a package: get-myos git)
-./packages/tcc/build.sh             # TinyCC, the tcc package (get-myos tcc; -run support)
-./ports/ripgrep/build.sh            # ripgrep + PCRE2 as /c/rg
-```
-
-Implemented libgloss hooks call real syscalls where they exist; stubs return ENOSYS/EROFS for rest.
-
-### C Userspace (mlibc)
-A port opts into [mlibc](https://github.com/managarm/mlibc) 7.0.0 instead of newlib with `PORT_LIBC=mlibc` (`docs/ports.md`): the same shared C under mlibc's sysdeps (`toolchain/mlibc/sysdeps/myos`), built static with meson for the three arches (`./toolchain/mlibc/build.sh`, `target/mlibc-<arch>`; the image carries the sysroot at `/lib/mlibc`). The C smokes are built against it too (`/bin/etc/mlibc/*`) and the boot tests run them both ways (`cargo run -- test --tags mlibc`): `docs/mlibc.md`.
-
----
-
-## CI
-
-GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached. rust-cache restores `target/` with the Rust ports' cargo target dirs in it, and cargo does not track the std sysroot, newlib or target spec they were built against: each such dir carries a stamp of them and starts over when it differs (`myos_cargo_target_dir`, `toolchain/std/lib.sh`).
-
-Every run boots the disk images with the tests the change needs, selected by tag from the changed paths (`scripts/ci-select.py`, `docs/testing.md`), the long ones in boots of their own; a push to master, the daily run, a dispatch with `full_boot` and the `ci:full` label run every test, which also installs the build's own packages into the guest with `get-myos` from a mirror the launcher serves. On master, the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`) and the packages go to the rolling `rolling` release, get-myos's default mirror (`docs/packages.md`, `docs/testing.md`).
-
----
-
-## Notes
-
-- `poweroff` exits QEMU on every arch (`docs/power.md`); the boot test ends with it. A kernel panic exits too: `isa-debug-exit` on x86_64, PSCI `SYSTEM_OFF` / SBI shutdown elsewhere
-- Kernel linked in higher half; Limine sets stack, enables MMU, provides HHDM
-- User address space from VA 0: `[0, 512 GiB)` (PML4[0]) on x86_64, `[0, 66 GiB)` on aarch64 and riscv64; a position-independent image loads at 1 GiB, an `ET_EXEC` one at its link address (above 64 KiB), with its stack, heap and the 64 GiB mmap window above it. riscv64 maps device memory below 66 GiB at 128 GiB + phys (`RELOC_VA`)
-- AArch64 device MMIO in a higher-half window (`0xffff_8000_0000_0000 + phys`, 1 GiB device blocks, physical addresses below 127.5 TiB, in at most 16 regions of 512 GiB that hold devices; not in the HHDM at Limine base rev 3+)
-- Modules run from HHDM heap (rwx); loader flushes I-cache on AArch64 after copy
-- Limine binaries downloaded from GitHub release `v12.6.1` (sha256-pinned) into `target/limine-v12.6.1`
-- `user/ok` exits early if `/msg` absent (FAT disk not present); CI fails if `[ OK ] msg` / fat markers are missing
+| Page | What it covers |
+|------|----------------|
+| [running](docs/running.md) | building, the images, running in QEMU, persistent disks, real hardware, the memory layout |
+| [layout](docs/layout.md) | the source tree: what each directory and key file is |
+| [testing](docs/testing.md) | the boot tests, their tags, writing a test, CI |
+| [ports](docs/ports.md) | ported programs: the `port.env` descriptor, building, adding a port |
+| [packages](docs/packages.md) | packages, `get-myos` and `run-myos`, the mirror |
+| [install](docs/install.md) | the boot disk layout, installing, upgrading, the two slots |
+| [modules](docs/modules.md) | kernel modules, the module ABI, `insmod` and `rmmod` |
+| [fs](docs/fs.md) | the VFS, mounts, rootfs, tmpfs, devfs, disks, caches, FAT and ext2 |
+| [proc](docs/proc.md) | the files under `/proc` |
+| [scheduler](docs/scheduler.md) | scheduling, SMP, blocking waits and idle CPUs |
+| [threads](docs/threads.md) | threads, process lifetime, kernel stacks |
+| [signals](docs/signals.md) | signals |
+| [events](docs/events.md) | eventfd, timerfd, epoll and signalfd |
+| [security](docs/security.md) | users, domains, labels, the policy, namespaces |
+| [tty](docs/tty.md) | the console, text screens, ttys and ptys, the keyboard and mouse |
+| [keymap](docs/keymap.md) | keyboard maps |
+| [fb](docs/fb.md) | the framebuffer device |
+| [sound](docs/sound.md) | the sound core, the sound server, `play` and `rec` |
+| [usb](docs/usb.md) | USB: the core, the host controllers, the class drivers, userspace drivers |
+| [pci](docs/pci.md) | PCI: the module split, BARs, DMA, userspace PCI drivers |
+| [interrupts](docs/interrupts.md) | interrupt controllers and domains, device interrupts, MSI |
+| [iommu](docs/iommu.md) | the IOMMU on each architecture |
+| [platform](docs/platform.md) | the board description from ACPI and device trees, AML |
+| [power](docs/power.md) | power off, reboot, halt |
+| [net](docs/net.md) | networking: netd, `/net`, TCP and UDP, sockets, curl |
+| [sockets-unix](docs/sockets-unix.md) | `/net/unix` and `AF_UNIX` sockets |
+| [https](docs/https.md) | TLS and the CA bundle |
+| [ssh](docs/ssh.md) | dropbear |
+| [wifi](docs/wifi.md) | Wi-Fi: the daemon, the drivers, the simulated radio |
+| [linux-compat](docs/linux-compat.md) | the Linux syscall layer, Alpine packages |
+| [mlibc](docs/mlibc.md) | mlibc, the second C library, and C++ |
+| [raspberry-pi](docs/raspberry-pi.md) | the Raspberry Pi 3 and 4 |
 
 ## License
 
-myos's own code is dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+myos's own code is dual-licensed under [Apache-2.0](LICENSE-APACHE) or
+[MIT](LICENSE-MIT), at your option.
 
-A built image also contains third-party programs under their own licenses (some copyleft: Git, Lynx, GNU Make, TinyCC). See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the full list, the source offer and the license texts in [`licenses/`](licenses/); the same files are copied into the root of the ISO built by `cargo run -- iso`.
+A built image also contains third-party programs under their own licenses
+(some copyleft: Git, Lynx, GNU Make, TinyCC). See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the full list, the
+source offer and the license texts in [`licenses/`](licenses/); the same
+files are copied into the root of the ISO built by `cargo run -- iso`.

@@ -1,73 +1,61 @@
 # Power-off, reboot and halt
 
-`poweroff`, `reboot` and `halt` (`/bin/custom`, one program, `user/power`)
-take the system down. They are the native `power(action)` call, which needs
-`write` on the kernel object `kernel.power`: in the default policy only the
-`admin` domain (root) has it (`docs/security.md`). libc's `reboot(howto)`
-(`<sys/reboot.h>`: `RB_AUTOBOOT`, `RB_HALT`, `RB_POWEROFF`) and, in the
-Linux layer, Linux's `reboot(2)` are the same call.
+`poweroff`, `reboot` and `halt` take the system down. The kernel does the
+work (`kernel/src/power.rs`): it stops the processes, unmounts the disks
+and then tries each way it knows to power off or reset the machine.
+
+## Commands and calls
+
+- `poweroff`, `reboot` and `halt` are one program (`user/power`), installed
+  in `/bin/custom`.
+- They make the native `power(action)` call. It needs `write` on the kernel
+  object `kernel.power`, which in the default policy only the `admin`
+  domain (root) has (`docs/security.md`).
+- libc's `reboot(howto)` (`<sys/reboot.h>`) and, in the Linux layer,
+  Linux's `reboot(2)` are the same call.
 
 ## The sequence
 
-The kernel does the whole of it, whatever init is (`kernel/src/power.rs`):
+The kernel runs it whatever init is:
 
-1. **The processes stop.** Every process but the caller gets `SIGTERM`; the
-   kernel waits up to 2 seconds for them to exit, then sends `SIGKILL` to
-   what is left and waits up to 1 second more. Kernel threads (a driver's
-   own, like the xHCI `usb` thread) keep running.
-2. **The disks are unmounted**, the deepest mount first, so each filesystem
-   writes back what it caches (ext2). The binds go first: no process is
-   left to use them. A mount still busy (an fd the caller holds there) is
-   named on the console and left mounted. The block cache writes through
-   and needs nothing.
-3. **The methods are tried in order**, each announced on the console
-   (`[ INFO ] power off via acpi s5`). A method that returns has failed;
-   the next one is tried after a moment (a reset line takes a little while
-   to act).
-4. When none worked, or for `halt`, the console says `system halted` and
-   the CPU stops; the machine stays on.
+1. Every process but the caller gets `SIGTERM`, then `SIGKILL` after 2
+   seconds. Kernel threads keep running.
+2. The disks are unmounted, the deepest mount first, so each filesystem
+   writes back what it caches (ext2). A mount that is still busy is named
+   on the console and left mounted.
+3. The methods are tried in order. The console announces each one
+   (`[ INFO ] power off via acpi s5`). A method that returns has failed.
+4. When no method worked, or for `halt`, the console says `system halted`
+   and the CPU stops. The machine stays on.
 
 A second `power` call while the system is going down returns at once.
 
 ## The methods
 
-The ones modules register (`KernelApi::power_register`, ABI 31) come first,
-in the order they registered; then the arch's own
-(`kernel/src/arch/*/power.rs`).
+Methods that modules register (`KernelApi::power_register`) come first,
+then the arch's own (`kernel/src/arch/*/power.rs`).
 
 | Arch | Power off | Reboot |
 |------|-----------|--------|
-| x86_64 | ACPI S5 (`modules/acpi`) | the FADT's reset register (`modules/acpi`), the reset control register (port 0xCF9), the keyboard controller (0xFE to port 0x64), a triple fault |
+| x86_64 | ACPI S5 (`modules/acpi`) | the FADT's reset register (`modules/acpi`), port 0xCF9, the keyboard controller, a triple fault |
 | aarch64 | PSCI `SYSTEM_OFF` | PSCI `SYSTEM_RESET` |
 | riscv64 | SBI `SRST` shutdown, SBI 0.1 shutdown | SBI `SRST` cold reboot |
 
-- **ACPI** (`modules/acpi/src/power.rs`): S5 is entered by writing `_S5`'s
-  sleep types with `SLP_EN` to the FADT's PM1a (and PM1b) control
-  registers, after handing ACPI to the OS through the SMI command port
-  when the firmware has not (`SCI_EN` clear). The `_S5` values come from
-  the DSDT (the module's AML interpreter, or its scan when that failed:
-  `/proc/acpi/s5`, `docs/pci-acpi-smp.md` "AML"). Only registers in
-  system I/O space are used, which is what a PC has; a hardware-reduced
-  platform (aarch64 under EDK2) has none and uses PSCI.
-- **PSCI** is called through the conduit the platform description names:
-  the device tree's `/psci` `method`, or the FADT's arm boot flags
-  (`psci hvc (dt)` in `/proc/platform`); without one, HVC at EL1 and SMC
-  at EL2. On a Raspberry Pi 3 that HVC goes to myos's own boot stub, a
-  minimal PSCI (`docs/raspberry-pi.md`).
-
-`exit_qemu`, which the kernel calls on a panic and when the last process
-exits, is not this sequence: it powers off at once (PSCI, SBI) or, on
-x86_64, writes the test runs' `isa-debug-exit` port.
+- **ACPI** (`modules/acpi/src/power.rs`) takes the `_S5` sleep types from
+  the DSDT through the AML interpreter (`/proc/acpi/s5`,
+  `docs/platform.md` "AML"). It uses only registers in system I/O space,
+  which is what a PC has. A hardware-reduced platform (aarch64 under EDK2)
+  uses PSCI.
+- **PSCI** is called through the conduit the device tree or the FADT
+  names; `/proc/platform` shows it (`psci hvc (dt)`). On a Raspberry Pi 3
+  the HVC goes to myos's own boot stub (`docs/raspberry-pi.md`).
+- `exit_qemu`, called on a panic and when the last process exits, skips
+  this sequence and powers off at once.
 
 ## Tests
 
-- After the boot tests, the host types `poweroff` and expects QEMU to exit
-  by itself, a `power off via` line on the console (`src/boot_test.rs`);
-  the scratch disk's `e2fsck` that follows checks the unmount wrote ext2
-  back.
-- `sec_power` (`user/tests/kernel.sh`): a user without `kernel.power` is
-  refused under every name.
-- `platform`: an arm board names its PSCI conduit.
-- The Linux smoke: `reboot(RB_DISABLE_CAD)` succeeds (Ctrl-Alt-Del has no
-  meaning here; an init turns it off first), an unknown command is
-  `EINVAL`.
+After the boot tests the host types `poweroff` and expects QEMU to exit
+with a `power off via` line on the console (`src/boot_test.rs`); the
+scratch disk's `e2fsck` then checks the unmount. `sec_power`
+(`user/tests/kernel.sh`) checks that a user without `kernel.power` is
+refused.

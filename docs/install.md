@@ -1,21 +1,21 @@
 # Installing: the boot disk
 
-The disk images (`target/bios.img`, `target/uefi.img`, `target/aarch64.img`,
-`target/riscv64.img`; `write_boot_disk` in `src/limine_disk.rs`) are what an
-installed myos looks like: a GPT disk laid out for upgrades that swap the
-kernel and the initramfs (issue #351), with room for state that survives
-them.
+The disk images (`target/bios.img`, `target/uefi.img`,
+`target/aarch64.img`, `target/riscv64.img`; `src/limine_disk.rs`) are
+what an installed myos looks like. Each is a GPT disk laid out for
+upgrades that swap the kernel and the initramfs (issue #351), with room
+for state that survives them. This page covers the layout, upgrading,
+installing on another disk, and what is mounted and run at boot.
 
 | Partition | Type | Size | myos sees it as (a virtio disk) | Holds |
 |-----------|------|------|---------------------------------|-------|
-| 1 `BIOS Boot` | BIOS boot | 1 MiB at LBA 2048 | `/dev/vda/p1` | Limine's BIOS stage 2 (`limine bios-install`, x86) |
-| 2 `EFI System` | ESP (`c12a7328-…`) | 512 MiB, FAT32 | `/dev/vda/p2`, mounted at `/boot` | Limine, the boot slots, `limine.conf` and `fstab` |
-| 3 `myos data` | Linux data (`0fc63daf-…`) | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3`, mounted at `/data` | state an upgrade keeps: `get-myos`'s apps, `get-alpine`'s root |
+| 1 `BIOS Boot` | BIOS boot | 1 MiB | `/dev/vda/p1` | Limine's BIOS stage 2 (x86) |
+| 2 `EFI System` | ESP | 512 MiB, FAT32 | `/dev/vda/p2`, mounted at `/boot` | Limine, the boot slots, `limine.conf` and `fstab` |
+| 3 `myos data` | Linux data | 64 MiB (the rest of the disk after `--install`), ext2 | `/dev/vda/p3`, mounted at `/data` | state an upgrade keeps: `get-myos`'s apps, `get-alpine`'s root |
 
-The image is 579 MiB, written sparse: only what the partitions hold takes
-space on the host. A VPS whose disk hangs off a virtio-scsi controller
-(Hetzner's do) sees it as `/dev/sda` instead (`modules/virtio_scsi`); the
-fstab names the partitions by GUID, so the layout does not care.
+The image is 579 MiB, written sparse. A disk behind virtio-scsi (a
+Hetzner VPS) shows up as `/dev/sda` instead (`modules/virtio_scsi`); the
+fstab names partitions by GUID, so this does not matter.
 
 ## The ESP: two boot slots
 
@@ -23,8 +23,8 @@ fstab names the partitions by GUID, so the layout does not care.
 EFI/BOOT/BOOTX64.EFI          Limine (BOOTAA64.EFI, BOOTRISCV64.EFI)
 boot/limine/limine.conf       the only Limine config
 boot/limine/limine-bios.sys   x86: Limine's BIOS stage 3
-boot/a/kernel                 slot a: the kernel (its loadable segments)
-boot/a/initramfs              slot a: the initramfs
+boot/a/kernel                 slot a: the kernel
+boot/a/initramfs              slot a: the initramfs (zstd, issue #621)
 boot/a/version                slot a: its release, the initramfs's /lib/myos-release
 boot/b/                       slot b: empty until an upgrade writes it
 boot/virt-aarch64.dtb         aarch64, riscv64 (virt.dtb): the device tree
@@ -32,19 +32,12 @@ boot/tests                    the build's disks only: the tests module
 fstab                         what `mount -a` mounts at boot (below)
 ```
 
-The build's disks (`target/*.img`) carry the tests module too
-(`docs/testing.md`), at `boot/tests` beside the slots, and each entry of
-their config loads it after the slot's initramfs
-(`module_path: boot():/boot/tests`). `get-myos` writes that line into
-every entry it makes exactly when the ESP has the file, so an upgrade of a
-test disk keeps it; a disk installed from a mirror never has one.
+A slot takes some 6 MiB, so the ESP has room for both and to grow. The
+build's disks also carry the tests module (`docs/testing.md`), which
+their entries load and an upgrade keeps.
 
-Each slot holds a kernel and the initramfs built with it, a zstd frame
-the kernel decodes at boot (`kernel/src/fs/zstd.rs`, issue #621): some
-6 MiB together, about 17 MiB once the initramfs is decoded, so the ESP has
-room for both and to grow.
-`limine.conf` has an entry per filled slot, the active one first (Limine's
-`default_entry: 1`):
+`limine.conf` (`src/limine_image.rs`) has an entry per filled slot, the
+active one first:
 
 ```
 serial: yes
@@ -58,25 +51,17 @@ default_entry: 1
     cmdline: slot=b
 
 /myos a
-    protocol: limine
-    path: boot():/boot/a/kernel
-    module_path: boot():/boot/a/initramfs
+    ...
     cmdline: slot=a
 ```
 
-With two entries the menu waits three seconds, so the other slot can be
-picked at the console when the active one does not boot; with one (a fresh
-image: only slot `a`) it boots at once. aarch64 and riscv64 add their
-`global_dtb` (and riscv64 `paging_mode`) lines, as `src/main.rs` writes them.
-An entry's `cmdline: slot=X` is how the running system knows which slot it
-came from (`/proc/cmdline`), the fallback picked by hand included.
-
-An upgrade writes the slot that is not running, then rewrites
-`boot/limine/limine.conf` with that slot first. That file is the switch, and
-the only file the switch touches: Limine reads it from no other place (the
-images used to carry copies at `/limine.conf` and `/EFI/BOOT/limine.conf`).
-Writing a slot's files leaves the running one, and the config pointing at
-it, as they were until the switch.
+- With two entries the menu waits three seconds, so the other slot can
+  be picked at the console when the active one does not boot. With one
+  (a fresh image) it boots at once.
+- `cmdline: slot=X` tells the running system which slot it came from
+  (`/proc/cmdline`), including a fallback picked by hand.
+- An upgrade writes the slot that is not running, then rewrites
+  `limine.conf` with that slot first. That one file is the switch.
 
 ## Upgrading: `get-myos --upgrade`
 
@@ -84,45 +69,32 @@ it, as they were until the switch.
 get-myos --upgrade        # [-m MIRROR] [-f]
 ```
 
-On the running system, as root:
+Run it as root on the running system (`user/get-myos/boot.c`):
 
-1. The running slot is the `slot=` of `/proc/cmdline`; the boot disk's ESP is
-   the ESP partition (`/proc/partitions`) whose `boot/<slot>/version` is
-   this system's `/lib/myos-release`: the one `mount -a` mounted at
-   `/boot`, used there (it is mounted for the while when it is not).
-2. The mirror's `<arch>-boot.txt` (`docs/packages.md`) names the release's
-   kernel and initramfs with their sizes and SHA-256. When its release is
-   not newer than the running slot's version, there is nothing to do (`-f`
-   writes the other slot anyway).
-3. The other slot's `version` goes first. Each file is downloaded into
-   memory and checked against the list before it is written into the slot
-   (nothing unchecked reaches the ESP, and a slow disk does not stall the
-   download); the ESP is unmounted and mounted again, and what the disk has
-   is checked against the list too. Then the slot's `version`.
-4. Limine's files on the ESP are brought to the release's (the `esp` lines
-   of the list, `limine.conf` aside), those whose SHA-256 differs: each new
-   one is written beside the old (`BOOTX64.EFI.new`), all of them are read
-   back after a remount, then each is renamed over the old one (a FAT rename
-   rewrites one directory entry). On x86 a new `limine-bios.sys` reruns
-   `limine bios-install` on the boot disk: the BIOS stage (the MBR code and
-   stage 2) must be the same version as that file. It says what it
-   replaced.
-5. `limine.conf` is rewritten (beside it, then renamed over it) with the new
-   slot first and the running one as the fallback, `timeout: 3`: the global
-   lines and the entries come from the running config, or, when step 4
-   replaced anything, from the release's (a new Limine may read its config
-   differently; lines edited by hand are lost then).
-6. An ESP get-myos mounted itself is unmounted. It does not reboot:
-   `reboot` starts the new slot.
+1. Find the boot disk: the ESP whose `boot/<slot>/version` matches
+   `/lib/myos-release`, `<slot>` from `/proc/cmdline`. It is normally
+   mounted at `/boot`; otherwise get-myos mounts it for the duration.
+2. Read the mirror's `<arch>-boot.txt` (`docs/packages.md`): the
+   release's files with their sizes and SHA-256. Nothing to do when it
+   is not newer than the running slot; `-f` writes anyway.
+3. Write the other slot. Each file is checked in memory before it is
+   written and read back after a remount. The slot's `version` is
+   written last, so a half-written slot has none.
+4. Update Limine's files when the release's differ: write each beside
+   the old one, read them back, rename over. On x86 a new
+   `limine-bios.sys` reruns `limine bios-install`, since the BIOS stage
+   must match it.
+5. Switch: rewrite `limine.conf` with the new slot first and the running
+   one as fallback. When step 4 changed Limine, the config comes from the
+   release, and lines edited by hand are lost.
 
-A failure before step 4 leaves the running slot, Limine and the config as
-they were; the half-written slot has no `version`. Step 4 is the one that is
-not atomic: the renames happen one after the other, and `limine bios-install`
-rewrites sectors in place, so a power cut in that moment can leave a disk
-whose Limine pieces do not match. It runs only when the release's Limine
-differs, which is rare (a new Limine pin). The release's initramfs has no
-Linux layer (the default build's): an upgraded system gets it back with an
-image built with `--features linux_compat`.
+get-myos does not reboot; `reboot` starts the new slot. A failure before
+step 4 leaves the running system as it was. Step 4 is the one step that
+is not atomic (one rename after another, `bios-install` writes in place),
+but it runs only on a new Limine pin.
+
+The release's initramfs is the default build's, without the Linux layer;
+an image built with `--features linux_compat` brings it back.
 
 ## Installing on another disk: `get-myos --install DISK`
 
@@ -130,23 +102,15 @@ image built with `--features linux_compat`.
 get-myos --install nvme1n1    # or /dev/nvme1n1, /dev/nvme1n1/data
 ```
 
-Erases DISK and lays the boot disk out on it: the GPT (BIOS boot 1 MiB,
-the ESP 512 MiB, the data partition over the rest of the disk, ending on a
-MiB), read by the kernel at once (a `/proc/pci` rescan); `mkfs.fat` on the
-ESP and `mkfs.ext2` on the data partition; Limine's files from the release
-(the `esp` lines of `<arch>-boot.txt`: the EFI binary, x86's
-`limine-bios.sys`, the device tree, `startup.nsh`, and a `limine.conf` for
-slot `a` alone), each checked like the slot's; then step 3 of the upgrade
-fills slot `a` from the mirror. On x86 it then runs `limine bios-install`
-(Limine's own tool, the `limine` port, at `/bin/etc/limine`) for the BIOS
-stage: Limine's code in the MBR and its stage 2 in the BIOS boot partition,
-what the host does for the images; the disk boots by BIOS and by UEFI. It
-refuses the running boot disk, a disk with a partition mounted, and one
-under 580 MiB.
+This erases DISK and lays out the same GPT, with the data partition over
+the rest of the disk. It formats the ESP (FAT) and the data partition
+(ext2), writes Limine's files and slot `a` from the mirror, checked as in
+an upgrade, and on x86 runs `limine bios-install` (the `limine` port, at
+`/bin/etc/limine`). The disk then boots by BIOS and by UEFI.
 
-Nothing comes from the running system's ESP, so a system booted from the
-ISO (`cargo run -- iso`, a live medium) installs the same: boot it, then
-`get-myos --install` the disk.
+It refuses the running boot disk, a disk with a partition mounted, and a
+disk under 580 MiB. Nothing comes from the running ESP, so a system
+booted from the ISO (`cargo run -- iso`) installs the same way.
 
 ### Without a network: `--install DISK --local`
 
@@ -154,37 +118,32 @@ ISO (`cargo run -- iso`, a live medium) installs the same: boot it, then
 get-myos --install nvme1n1 --local
 ```
 
-Installs the running system itself, with no mirror: the kernel and the
-initramfs this boot came from, which the kernel shows at `/proc/boot/kernel`
-and `/proc/boot/initramfs` (what Limine loaded, kept in memory for the
-kernel's life, so it works however the system booted: the ISO from a CD or
-a USB stick, a disk), and Limine's files from the initramfs, which carries
-the ESP's at `/lib/myos-boot/` with a `boot.txt` in the release list's
-format. get-myos writes the list of those (`.get-myos/local-boot` in its
-root, `docs/packages.md`, the files named by their paths) and installs from it as from
-a mirror's: the same layout, checks and BIOS stage; slot `a` gets this
-system's release (`/lib/myos-release`). From the ISO, that is the ISO's
-system, the Linux layer included (the ISO is built with it); a later
-`--upgrade` from a mirror brings the release's initramfs, which has none.
-A system booted with the tests module (`/proc/boot/tests`, a test disk)
-installs it too: the list names it as an `esp` file (`boot/tests`) and, in
-place of the initramfs's `limine.conf`, a copy that loads it
-(`.get-myos/local-boot.limine.conf`).
+This installs the running system itself:
+
+- The kernel and the initramfs come from this boot: the kernel keeps
+  what Limine loaded at `/proc/boot/kernel` and `/proc/boot/initramfs`,
+  however it booted (ISO, USB stick, disk).
+- Limine's files come from the initramfs, at `/lib/myos-boot/` with a
+  `boot.txt` in the release list's format.
+- Slot `a` gets this system's release. From the ISO that includes the
+  Linux layer; a later `--upgrade` from a mirror drops it.
+- A system booted with the tests module (`/proc/boot/tests`) installs it
+  too, with a `limine.conf` that loads it.
+
+get-myos lists them in `.get-myos/local-boot` (`docs/packages.md`) and
+installs from that list as from a mirror's.
 
 ## Mounted at boot: `/boot`, `/data` and the fstab
 
-init runs `mount -a` before it starts anything else (`user/mount`):
+init runs `mount -a` (`user/mount`) before anything else:
 
-1. The ESP the system booted from is mounted at `/boot`: Limine tells the
-   kernel the GPT partition it loaded the kernel from, which it shows at
-   `/proc/boot/partuuid` (that partition's unique GUID, as
-   `/proc/partitions` lists it). Booted from the ISO there is none, and
-   nothing below happens.
-2. `/tmp/mnt` is bound over `/mnt`: the root is the read-only initramfs,
-   so this is where mount points can be made. A disk mounted at
-   `/mnt/disk` is listed at `/tmp/mnt/disk` in `/proc/mounts`.
-3. Each line of `/boot/fstab` (`fstab` at the ESP's root) is mounted,
-   unless its partition is mounted already:
+1. The ESP the system booted from is mounted at `/boot`. Limine tells the
+   kernel which partition it loaded from: `/proc/boot/partuuid`. Booted
+   from the ISO there is none, and nothing below happens.
+2. `/tmp/mnt` is bound over `/mnt`, since the root (the initramfs) is
+   read-only. A disk at `/mnt/disk` shows as `/tmp/mnt/disk` in
+   `/proc/mounts`.
+3. Each line of `/boot/fstab` is mounted unless its partition already is:
 
 ```
 # What `mount -a` mounts at boot (docs/install.md): PARTUUID=<guid> MOUNTPOINT FSTYPE [rw],
@@ -192,24 +151,18 @@ init runs `mount -a` before it starts anything else (`user/mount`):
 PARTUUID=6d796f73-0000-4000-8000-000000000004 /data ext2
 ```
 
-A partition is named only by its unique GUID (`PARTUUID=`): a disk's name
-(`nvme0n1`, `vda`) depends on the machine and on what else is plugged in,
-the GUID does not. A line naming a partition that is not there (a USB disk
-left out) is skipped; a line that is wrong (a `/dev/` path, an unknown
-option: the kernel has no read-only mounts, so `rw` is the only one) or that
-does not mount is reported. Neither stops the boot, and init says
-`mount -a: not everything mounted`. The mount point must exist, or be
-under `/mnt`, where it is made.
+A partition is named only by its unique GUID, because a disk's name
+(`nvme0n1`, `vda`) depends on the machine. A line for a missing
+partition is skipped. A wrong line (a `/dev/` path, an option other than
+`rw`, as there are no read-only mounts) or one that fails to mount is
+reported, but does not stop the boot. The mount point must exist or be
+under `/mnt`.
 
-The image builder writes the fstab of the images and `get-myos --install`
-that of the disk it lays out, each naming that disk's data partition. The
-images' partitions have fixed GUIDs (`6d796f73-…-000000000004` is the data
-partition): two disks written from the same image both match their fstab
-lines, and the first one found is mounted. Nothing else writes the fstab:
-`--upgrade` leaves it as it is.
+The image builder and `get-myos --install` write the fstab; `--upgrade`
+leaves it alone. The images' GUIDs are fixed, so of two disks written
+from the same image, the first found is mounted.
 
-To have a disk mounted at every boot, add its line on the running system
-and try it at once (the ESP is mounted read-write):
+To mount a disk at every boot:
 
 ```sh
 grep nvme1n1/ /proc/partitions      # the fifth field: the partition's unique GUID
@@ -219,121 +172,89 @@ mount -a                            # mounts what is not mounted yet
 
 `mount PARTUUID=<guid> DIR FSTYPE` mounts one by hand. A filesystem on a
 whole disk or in an MBR partition has no partition GUID and cannot be
-listed: naming one by its filesystem's own ID (Linux's `UUID=`) would be
-the way, if it is ever needed.
+listed.
 
 ## The boot script: `/etc/rc` and `/data/etc/rc.local`
 
-After `mount -a` and netd, init starts `/etc/rc` (`etc/rc` in the
-repository) and goes on to the logins without waiting for it
-(`[ OK ] rc started (in the background)`). The script's lines go to the
-console's screen (`Alt+0`, `docs/tty.md`), not to the ttys' logins; its
-last one says the boot is over, also written to `/tmp/boot.done`:
+After `mount -a` and netd, init starts `/etc/rc` (`etc/rc`) in the
+background and goes on to the logins. The script writes to the console's
+screen (`Alt+0`, `docs/tty.md`). Its last line is also written to
+`/tmp/boot.done`:
 
 ```
 [ OK ] boot complete (/data/etc/rc.local)
 [ WARN ] boot complete (/data/etc/rc.local exited 1)
 ```
 
-It runs as root, in `admin`. init starts it as `system`, and the policy's
-`exec /etc/rc -> rc` rule puts it in the `rc` domain, whose only power is
-entering a user without a password; the script uses it at once
-(`sec as root`, `docs/security.md`). Then it:
+The policy puts the script in the `rc` domain, whose only power is to
+become root in `admin` (`sec as root`, `docs/security.md`). It then:
 
-1. binds a writable directory over `/etc/dropbear`, for dropbear's host
-   keys and `authorized_keys` (`docs/ssh.md`): `/data/dropbear` when the
-   data partition is mounted, so they survive reboots and upgrades, else
-   `/tmp/dropbear`, until the next boot. Both are labelled `secret(root)`:
-   only root reads them;
-2. binds the global apps of `/data/apps` again (`get-myos -r /data/apps
-   --global`, `docs/packages.md`), so their programs are on `PATH` before
-   the first login; its output goes to `/tmp/get-myos-global.log`;
-3. when the data partition has an app list, `/data/apps/apps.list`, starts
-   `get-myos -r /data/apps --sync` in the background, so the apps are what
-   the list says (`docs/packages.md`), with the mirror they were installed
-   from; its output goes to `/tmp/get-myos-sync.log`;
-4. copies the image's `/etc/rc.local` to `/data/etc/rc.local` when that is
-   missing, and runs it with `sh` (without a data partition, the image's
-   own runs).
+1. binds a writable directory over `/etc/dropbear` for the host keys and
+   `authorized_keys` (`docs/ssh.md`): `/data/dropbear` when `/data` is
+   mounted, else `/tmp/dropbear`, both `secret(root)`;
+2. binds the global apps of `/data/apps`
+   (`get-myos -r /data/apps --global`, `docs/packages.md`) so they are on
+   `PATH` before the first login; log in `/tmp/get-myos-global.log`;
+3. when `/data/apps/apps.list` exists, runs `get-myos -r /data/apps
+   --sync` in the background; log in `/tmp/get-myos-sync.log`;
+4. copies the image's `/etc/rc.local` to `/data/etc/rc.local` when that
+   is missing, and runs it with `sh` (the image's own without `/data`).
 
-`/data/etc/rc.local` is the administrator's, edited on the running system
-(only `admin` may write `/data`); deleted, the default comes back at the
-next boot. The default loads the Linux layer (`docs/linux-compat.md`)
-unless the kernel did already, and starts dropbear on port 2222:
+`/data/etc/rc.local` is the administrator's to edit; deleting it brings
+the default back at the next boot. The default loads the Linux layer
+(`docs/linux-compat.md`) and starts dropbear:
 
 ```sh
 grep -q '^linux$' /proc/modules || insmod /lib/modules/linux
 dropbear -R -D /etc/dropbear -p 2222
 ```
 
-Something that stays in the foreground there holds the boot back from
-its last line, not the login: start daemons in the background (`&`, or a
-program's own `-d`; dropbear goes there unless given `-F`).
+A command left in the foreground holds back the boot's last line (not
+the login): start daemons with `&` or their own `-d`.
 
 ## The data partition
 
-An empty ext2 (`ext2fs::mkfs`, the same code as myos's `mkfs.ext2`) at
-`/data`, for what must outlive an upgrade. It holds the default roots of
-the package tools: `get-myos`'s apps in `/data/apps` (`docs/packages.md`)
-and `get-alpine`'s Alpine root in `/data/alpine` (`docs/linux-compat.md`),
-both labelled `sys.pkg`; the boot script's `/data/etc/rc.local` and
-dropbear's keys in `/data/dropbear` (above). Other candidates are `/etc`
-overrides and home directories; which of those move there is its own
-change. Only the
-administrator may write it (the policy's `sys.file` label). On a disk larger
-than the image (a VPS), the space after it is left unused: growing the
-partition to the disk needs the GPT rewritten and the ext2 grown (issue
-#488). So a disk written from the image has 64 MiB of `/data`: room for
-get-myos's apps, not for an Alpine root (a browser's takes some hundreds
-of MiB; apk stops with `No space left on device`). A VPS that needs one
-installs with `get-myos --install` from the ISO (below), which gives the
-data partition the rest of the disk.
+An ext2 at `/data` for what must outlive an upgrade. Only the
+administrator may write it (the policy's `sys.file` label). It holds
+`get-myos`'s apps (`/data/apps`) and `get-alpine`'s root
+(`/data/alpine`, `docs/linux-compat.md`), both labelled `sys.pkg`, plus
+`/data/etc/rc.local` and `/data/dropbear`.
+
+On a disk larger than the image, the space after it stays unused:
+growing the partition needs the GPT rewritten and the ext2 grown
+(issue #488). So a disk written from the image has 64 MiB of `/data`,
+enough for apps but not an Alpine root (apk stops with
+`No space left on device`). Install with `get-myos --install` from the
+ISO to give `/data` the whole disk.
 
 ## The first install
 
 From a rescue system (a VPS provider's, a live Linux), write the image
-(`cargo build` makes it; `uefi.img` and `bios.img` are the same disk, both
-BIOS and UEFI bootable) over the disk:
+over the disk. `uefi.img` and `bios.img` are the same disk, bootable both
+ways.
 
 ```sh
 zstd -c target/uefi.img | ssh root@rescue 'zstd -d | dd of=/dev/sda bs=1M conv=fsync'
 ```
 
-(`/dev/sda` is the rescue system's Linux name for the disk. zstd keeps the
-transfer to what the image holds; `dd` writes all of it, zeros included, so
-nothing of what the disk held before shows through.)
+The GPT's backup is at the end of the image, not of the disk; tools that
+offer to move it (`sgdisk -e`, `parted`) can safely do so.
 
-The GPT's backup is at the end of the image, not of the disk: tools that
-check it (`sgdisk -e`, `parted`) offer to move it to the end, which is safe.
-A VPS without a rescue system but with custom ISOs boots the hybrid ISO
-(`cargo run -- iso`), a live medium with the kernel and the initramfs at
-`boot/` and none of this layout, and installs from it with `get-myos
---install` (above; `--local` when it has no network).
+Without a rescue system, boot the hybrid ISO (`cargo run -- iso`) and
+install from it with `get-myos --install` (`--local` offline).
 
-## Inside the boot tests
+## Testing
 
-The boot tests boot a copy of the image (`target/boot-test-<name>.img`, so
-the build's own stays as built), slot `a`. myos sees the boot disk on every
-arch (a virtio disk: on x86 the third, `vdc`, after the test disks), and
-`kernel.sh`'s `boot_disk` checks its layout, as `mount -a` mounted it: the
-ESP at `/boot` (`/proc/boot/partuuid`), the slots, the one `limine.conf`,
-slot `a`'s version and `/proc/cmdline`, the fstab naming the data
-partition, the ext2 at `/data` with only what the boot script put there
-(`boot_rc` checks its work: the bind, `rc.local`, the Linux layer and
-dropbear); `fstab_mount` adds lines to
-`/boot/fstab` (a scratch partition under `/mnt`, a `/dev/` path, a missing
-GUID) and checks what `mount -a` does with each. It also checks that `/proc/boot/` holds slot `a`'s kernel and
-initramfs, and `/lib/myos-boot/` the ESP's Limine files. Every list ends
-with `get-myos --install --local` on the scratch disk. The full list runs
-`get-myos --upgrade -f` against the host's mirror (this build's boot files)
-after making the disk's Limine stale (its EFI binary changed; on x86
-`limine-bios.sys` too and the BIOS stage erased), so the upgrade has to
-replace it; then `get-myos --install` on the scratch disk from the mirror,
-and last the local install over it (`user/get-myos/test.sh`). When it
-passed, the launcher boots the disk again (`run.sh reboot`), which must come
-up from slot `b` at its release, with the Limine the upgrade wrote, and then
-the disk `--install --local` made (`run.sh installed`), from its slot `a`
-(either with its own data partition at `/data`, from its fstab):
-by BIOS on the bios job (the BIOS stages `limine bios-install` wrote), by
-UEFI on the others. The ISO is not booted in CI: an install from it runs
-the same code.
+The boot tests boot a copy of the image (`target/boot-test-<name>.img`;
+on x86 the boot disk is `vdc`). `user/tests/kernel.sh` checks the
+layout, the boot script and the fstab. `user/get-myos/test.sh` upgrades
+(replacing a stale Limine) and installs, and the launcher then boots the
+upgraded disk (`run.sh reboot`) and the installed one
+(`run.sh installed`). The ISO is not booted in CI: an install from it
+runs the same code.
+
+## History
+
+- The images used to carry copies of `limine.conf` at `/limine.conf` and
+  `/EFI/BOOT/limine.conf`. Only `boot/limine/limine.conf` remains, so the
+  upgrade's switch is one file.

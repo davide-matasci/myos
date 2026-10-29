@@ -56,7 +56,7 @@ t -t events sigfd $SMOKES/sigfd_smoke
 # uncached, its interrupt (MSI on x86, a shared INTx line elsewhere), a DMA
 # copy through a buffer of /dev/pci, and where the board has an IOMMU a DMA
 # outside the buffer refused (pcidev_smoke.c). The module is not loaded at
-# boot (root opts in, docs/pci-acpi-smp.md): the test loads it.
+# boot (root opts in, docs/pci.md): the test loads it.
 pcidev_test() {
 	{ grep -q '^pcidev$' /proc/modules || insmod /lib/modules/pcidev; } && $SMOKES/pcidev_smoke
 }

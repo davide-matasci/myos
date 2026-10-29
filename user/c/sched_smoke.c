@@ -1,5 +1,5 @@
 /* sched-smoke: boot-CI guest test of the scheduler's idle-pull balancing
- * (docs/pci-acpi-smp.md, "Scheduler").
+ * (docs/scheduler.md).
  *
  * A forked child starts on its parent's home CPU. While the parent keeps
  * that CPU busy, an idle CPU takes the child and makes itself its home: a

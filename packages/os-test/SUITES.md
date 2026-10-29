@@ -117,7 +117,7 @@ until they pass honestly (no xfails):
 
 - **udp/** entries were removed from `ci-nonbasic-100.tests` on 2026-09-21
   (below); the whole suite is curated in `ci-udp.tests` since netd has a
-  loopback interface and libgloss full UDP sockets (`docs/sockets-curl.md`).
+  loopback interface and libgloss full UDP sockets (`docs/net.md`).
 
 ## 2026-09-21 networking regression rollback
 

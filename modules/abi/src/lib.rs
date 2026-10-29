@@ -1090,7 +1090,7 @@ pub struct KernelApi {
     pub iommu_map: unsafe extern "C" fn(domain: i32, phys: u64, len: usize) -> i32,
     /// The function back in passthrough, its domain and mappings gone.
     pub iommu_detach: unsafe extern "C" fn(bus: u8, slot: u8, func: u8),
-    // --- ABI 51: interrupt domains (docs/pci-acpi-smp.md) ---
+    // --- ABI 51: interrupt domains (docs/interrupts.md) ---
     /// Make the module's secondary interrupt controller, `count` lines
     /// behind one interrupt of its own, an interrupt domain: the node
     /// `phandle` ([`MmioDevice::phandle`], 0 for none; a specifier whose

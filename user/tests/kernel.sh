@@ -535,7 +535,7 @@ keymap_ctl() {
 }
 t -t console keymap keymap_ctl
 
-# The board description (docs/pci-acpi-smp.md): one line per component,
+# The board description (docs/platform.md): one line per component,
 # each ending in the source it came from. The CPUs and the interrupt
 # controller are always there; the console UART and the PCIe host bridge
 # too, except on a PC, whose arch does not need them described (QEMU's
@@ -576,7 +576,7 @@ platform() {
 t -t smoke platform platform
 
 # The firmware's AML on a PC (the acpi module's interpreter,
-# docs/pci-acpi-smp.md "AML"): it ran to its end, found the PCI root
+# docs/platform.md "AML"): it ran to its end, found the PCI root
 # bridge's interrupt routes (_PRT, handed to the kernel for INTx) and
 # _S5, which power-off then uses.
 acpi_aml() {
@@ -589,7 +589,7 @@ acpi_aml() {
 }
 t -t smoke acpi acpi_aml
 
-# Interrupt domains (irqchip, docs/pci-acpi-smp.md "Interrupt domains"):
+# Interrupt domains (irqchip, docs/interrupts.md "Interrupt domains"):
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
 # their own, behind the controller's one. Its probe sets an idle input to
 # interrupt while low and enables that line's interrupt through the
@@ -981,6 +981,22 @@ frames_settled() {
 	done
 }
 
+# frames_verdict WHAT COUNT LIMIT: the line the leak tests print, and the
+# verdict: the delta within LIMIT. A leak costs at least a frame per exit
+# (issue #284's page tables were several), COUNT frames and up; the limit
+# is half of that, above what else moves while the test runs (netd's heap,
+# a device still settling from the test before: 15 frames once in CI, on
+# aarch64, against a limit of 8). On a failure, what the kernel knows: the
+# allocation sites and caches, and each process's size.
+frames_verdict() {
+	echo "mem: $1 x$2 FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le "$3" ] && return 0
+	grep -e '^Site' -e 'Cache' /proc/meminfo | tr '\n' ' '
+	echo
+	for f in /proc/[0-9]*/status; do cat "$f"; done 2> /dev/null
+	return 1
+}
+
 # Exiting a process must free all of its memory, page tables included
 # (issue #284). Fork many children that exit at once (no exec, so the page
 # cache does not grow) and confirm the live frame count returns to its
@@ -993,9 +1009,8 @@ mem_fork_no_leak() {
 		(:)
 		i=$((i + 1))
 	done
-	frames_settled 8
-	echo "mem: fork/exit x60 FramesLive $before -> $after (delta $((after - before)))"
-	[ "$((after - before))" -le 8 ]
+	frames_settled 30
+	frames_verdict fork/exit 60 30
 }
 t -t mm mem_fork_no_leak mem_fork_no_leak
 
@@ -1011,9 +1026,8 @@ mem_exec_no_leak() {
 		/bin/etc/hello > /dev/null 2>&1
 		i=$((i + 1))
 	done
-	frames_settled 16
-	echo "mem: exec x40 FramesLive $before -> $after (delta $((after - before)))"
-	[ "$((after - before))" -le 16 ]
+	frames_settled 20
+	frames_verdict exec 40 20
 }
 t -t mm mem_exec_no_leak mem_exec_no_leak
 

@@ -4,7 +4,7 @@
 //! On x86_64 the `acpi` crate's AML interpreter runs the firmware's AML
 //! (`aml`): the PCI interrupt routes (`_PRT`) for the kernel, and `_S5`.
 //! Without it (another arch, or the interpreter failed) `_S5` comes from
-//! the AML read (see docs/pci-acpi-smp.md): `Name (_S5, Package ...)`
+//! the AML read (see docs/platform.md): `Name (_S5, Package ...)`
 //! found by its bytes, its integers (Zero, One, Ones, Byte/Word/DWord/
 //! QWordPrefix, ReturnOp) read.
 
