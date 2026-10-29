@@ -21,10 +21,11 @@
  *     rounds, a spin lock under contention, a condition wait on
  *     CLOCK_MONOTONIC;
  *   - cancellation: of a thread blocked in read() (also before it has
- *     run), of one in a condition wait (its cleanup handler finds the
- *     mutex locked), of one with it disabled (it sleeps on, then ends at
- *     pthread_testcancel), of an asynchronous one at its next syscall, of
- *     the caller itself;
+ *     run), of one busy in malloc with a cleanup handler (deferred: it
+ *     acts at pthread_testcancel, not inside the allocator), of one in a
+ *     condition wait (its cleanup handler finds the mutex locked), of one
+ *     with it disabled (it sleeps on, then ends at pthread_testcancel), of
+ *     an asynchronous one, of the caller itself;
  *   - fork while two threads keep malloc and stdio busy: each child can
  *     use both.
  * Prints [ OK ] pthread.
@@ -693,6 +694,33 @@ static void *blocked_read(void *arg) {
     return NULL;
 }
 
+/* Inside malloc and free nearly all the time, with a cleanup handler to
+ * free at its end: deferred cancellation waits for pthread_testcancel (CI
+ * run 2343: mlibc ended the thread in its signal handler, inside the
+ * allocator's lock, and deadlocked freeing the handler). The blocks are
+ * 40 bytes, a cleanup handler record's size in mlibc: its allocator locks
+ * per size class. */
+static void *allocating(void *arg) {
+    (void)arg;
+    pthread_cleanup_push(count_cleanup, NULL);
+    for (;;) {
+        /* Milliseconds between the cancellation points, so that the
+         * signal lands in the allocator, not at the point. */
+        for (int n = 0; n < 1000; n++) {
+            void *p[16];
+            for (int i = 0; i < 16; i++) {
+                p[i] = malloc(40);
+            }
+            for (int i = 0; i < 16; i++) {
+                free(p[i]);
+            }
+        }
+        pthread_testcancel();
+    }
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
 static pthread_mutex_t cw_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cw_cond = PTHREAD_COND_INITIALIZER;
 static int cw_locked_in_cleanup;
@@ -732,7 +760,7 @@ static void *async_spinner(void *arg) {
     (void)arg;
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
     for (;;) {
-        getpid(); /* signals act on the way out of a syscall */
+        getpid(); /* the cancellation acts wherever its signal lands */
     }
     return NULL;
 }
@@ -786,6 +814,12 @@ static int cancellation(void) {
     }
     close(pipe_fds[0]);
     close(pipe_fds[1]);
+    for (int i = 0; i < 5; i++) {
+        int cleaned_before = cancel_cleaned;
+        if (cancelled(allocating, 50, "in malloc") || cancel_cleaned != cleaned_before + 1) {
+            return cancel_cleaned != cleaned_before + 1 ? fail("malloc's cleanup handler ran", cancel_cleaned) : 1;
+        }
+    }
     if (cancelled(cond_waiter, 50, "in a condition wait") || !cw_locked_in_cleanup
         || pthread_mutex_trylock(&cw_lock) != 0) {
         return fail("condition wait's mutex in its cleanup handler", cw_locked_in_cleanup);
