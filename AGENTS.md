@@ -170,7 +170,10 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
 ## CI (GitHub Actions)
 
 - `ci.yml` calls `ci-ports.yml` (cross-builds each port, cached as OCI
-  artifacts on GHCR keyed by a hash of its inputs, `scripts/ci-registry.sh`;
+  artifacts on GHCR keyed by a hash of its inputs: its own sources and the
+  outputs of the ports it builds against, so a change to a dependency that
+  leaves its outputs the same rebuilds nothing above it,
+  `scripts/ci-registry.sh`, `docs/ports.md` "Cache keys";
   its plan job, `scripts/ci-ports-plan.sh`, starts a toolchain or port job
   only for what the registry lacks; a port too long for one job, WebKitGTK,
   is built and cached an arch at a time, `PORT_ARCH_JOBS` in

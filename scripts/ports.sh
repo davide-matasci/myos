@@ -110,7 +110,22 @@ myos_port_stamp() {
   done | sort -u
 }
 
-# Everything the registry caches for NAME: the stamp and PORT_OUTPUTS for
+# The outputs stamp of the loaded port (`<input hash> <output hash>`,
+# docs/ports.md "Cache keys"): `.myos-<name>-outputs`, one per arch
+# (`.myos-<name>-<arch>-outputs`) for a port built an arch at a time, for
+# the ARCHes given (default: all).
+myos_port_outputs_stamp() {
+  local arch
+  if [[ "$PORT_ARCH_JOBS" == 1 ]]; then
+    for arch in "${@:-${MYOS_ARCHES[@]}}"; do
+      echo "target/.myos-$PORT_NAME-$arch-outputs"
+    done
+  else
+    echo "target/.myos-$PORT_NAME-outputs"
+  fi
+}
+
+# Everything the registry caches for NAME: the stamps and PORT_OUTPUTS for
 # every arch, or for ARCH alone (files or directories under target/).
 myos_port_outputs() {
   myos_port_load "$1" || return 1
@@ -118,6 +133,7 @@ myos_port_outputs() {
   local arches=("${MYOS_ARCHES[@]}") o arch path
   [[ -n "${2:-}" ]] && arches=("$2")
   myos_port_stamp "${arches[@]}"
+  myos_port_outputs_stamp "${arches[@]}"
   for o in $PORT_OUTPUTS; do
     for arch in "${arches[@]}"; do
       path="target/$(myos_port_expand "$o" "$arch")"

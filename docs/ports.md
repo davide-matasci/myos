@@ -30,8 +30,10 @@ port the registry lacks (`scripts/ci-ports-plan.sh`).
    model.
 2. Add `myos_<name>_version_hash` / `myos_<name>_is_current` to
    `scripts/myos-c-userspace-lib.sh` (copy an existing pair; dashes become
-   underscores). The first hashes the port's inputs, the second checks
-   that its outputs exist and match.
+   underscores). The first hashes the port's inputs: its own files and,
+   for every port it builds against, that port's outputs (`myos_dep_hash
+   <dep>`, "Cache keys" below; `myos_sysroot_version_hash` for the Rust
+   sysroot); the second checks that its outputs exist and match.
 3. Add a boot test: `test.sh` in the port directory with
    `PORT_TEST=test.sh` (`docs/testing.md`), and `host.sh` with
    `PORT_HOST=host.sh` when the test needs a peer on the host. A
@@ -67,7 +69,7 @@ minimal port needs only `PORT_FILES`.
 | `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`); build order only |
 | `PORT_RDEPS` | | packages this one needs on the running system, which `get-myos` installs first (`docs/packages.md`) |
 | `PORT_BUILD` | | the build script: a name in the port directory, or a repo-relative path with `/`. Empty: nothing to build |
-| `PORT_STAMP` | `.myos-<name>-version` | the `target/` file the script writes its input hash to when done |
+| `PORT_STAMP` | `.myos-<name>-version` | the `target/` file the script writes its input hash to when done ("Cache keys" below) |
 | `PORT_ARCH_JOBS` | `0` | `1` for a port too long to build in one CI job (below) |
 | `PORT_TIMEOUT` | `45` | the CI ports job's limit for the port, in minutes; at most 360 |
 | `PORT_OUTPUTS` | | what the script leaves under `target/` (what the registry caches); globs are allowed |
@@ -119,6 +121,62 @@ three. A port that depends on it (`surf`) and that the registry lacks
 while it lacks it too waits for those jobs in a second stage
 (`ports-after` in `ci-ports.yml`, its list from `ci-ports-plan.sh`),
 instead of building it in its own job.
+
+## Cache keys
+
+A port's **input hash** is its cache key: its stamp (`PORT_STAMP`, what
+its build script writes when done and `myos_<name>_is_current` compares),
+the tag of its artifact on GHCR (`scripts/ci-registry.sh`) and its package
+version (`docs/packages.md`). `myos_<name>_version_hash` computes it from
+the port's own sources (its directory, the build glue it uses) and, for
+every port it builds against, that port's **output hash**
+(`myos_dep_hash <dep>`): a hash of the files the dependency leaves under
+`target/` (its `PORT_OUTPUTS`, by relative path and content, the stamps
+left out). The dependency's sources are not in the key: a change to them
+that leaves its outputs the same (a README, a test, a file it ships as it
+is, a rebuild from the same sources, a change that only alters what the
+dependency's binaries do, though that is rare) rebuilds the dependency
+and nothing above it; one that changes its outputs changes its output
+hash, and every port keyed on it rebuilds, as before. The dependency's
+build must be reproducible for that: the toolchain gives the same bytes
+for the same sources on the same machine (`llvm-ar` writes no timestamps),
+and what differs between machines (another clang's code) is kept out of
+the keys as below. The Rust sysroot, the kernels bundle and the Linux
+layer are keyed by their sources alone (nothing builds against them
+through `myos_dep_hash`).
+
+The output hash is recorded beside the stamp, in
+`target/.myos-<name>-outputs` (one per arch, `.myos-<name>-<arch>-outputs`,
+for a port built an arch at a time), as `<input hash> <output hash>`: the
+registry push writes it (`myos_outputs_record`) and packs it with the
+port, and puts the hash on the artifact's manifest as the annotation
+`org.myos.ci.outputs`, which a pull and the CI plan read, without a
+download, into `target/.myos-dep-hash/<piece>` in the same form. A
+dependent's hash looks there first, then at the stamp, then (a build run
+by hand, no record yet) hashes the files, then asks the registry
+(`ci-registry.sh`'s `myos_dep_hash_hook`). The registry's record comes
+first so that a dependency rebuilt locally with another compiler than
+CI's (its bytes differ) keeps its dependents' keys CI's, and the local
+clone goes on pulling what CI built: **pull before building** after the
+sources moved (`ci-registry.sh pull all`, AGENTS.md's fast setup). A
+dependency whose outputs are neither current here nor known to the
+registry leaves the key undefined: `myos_hash` gives a one-off
+`unknown-...` value (and says why on stderr), which no stamp or tag ever
+matches, so the port is not current, the registry lacks it, and the push
+skips it; once the dependency is built or pulled the key is defined again.
+`./scripts/ci-registry.sh outputs NAME` prints a port's output hash.
+
+The CI plan (`scripts/ci-ports-plan.sh`, `ci-registry.sh plan`) walks the
+ports in build order: a hit's annotation serves the hashes of the ports
+after it; a port whose dependency the registry lacks has no defined key
+and is scheduled, and its job, after pulling or building the dependency,
+asks the registry again: with the dependency's outputs unchanged it is a
+hit, and the job ends with a pull. tcc installs `libtcc1.a` into newlib's
+tree (its own output, in the kernels hash): newlib's output hash leaves it
+out. Every key names the scheme (`keys=outputs-1` in `myos_hash`): a
+change to how keys are computed rebuilds everything once. What WebKitGTK
+compiles against is still every output of libsoup (issue #664: the
+GIO TLS backend and LibreSSL it only links are in the hash too).
 
 ## What reads the descriptors
 
