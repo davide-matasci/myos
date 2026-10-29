@@ -115,7 +115,10 @@ A port with `PORT_ARCH_JOBS=1` (`webkitgtk`) is built by CI as
 arch (the name in capitals, `-` as `_`). Its script builds the arches
 the variable lists (all by default) and writes a stamp per arch. The
 registry caches each arch apart; `ci-registry.sh pull <name>` pulls the
-three.
+three. A port that depends on it (`surf`) and that the registry lacks
+while it lacks it too waits for those jobs in a second stage
+(`ports-after` in `ci-ports.yml`, its list from `ci-ports-plan.sh`),
+instead of building it in its own job.
 
 ## What reads the descriptors
 

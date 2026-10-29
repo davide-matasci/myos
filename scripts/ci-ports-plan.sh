@@ -4,6 +4,10 @@
 # Writes GitHub outputs to $GITHUB_OUTPUT (stdout when unset):
 #   ports=<JSON>     the ports matrix (scripts/ports.sh --matrix) reduced to
 #                    the ports the registry lacks; `[]` skips the ports job
+#   ports_after=<JSON>  of those, the ones that depend on a port built an
+#                    arch at a time (PORT_ARCH_JOBS) that the registry lacks
+#                    too: they wait for its arch jobs (the ports-after job)
+#                    instead of building all of it in their own
 #   sysroot=, newlib=  true when that toolchain job has to run
 # A port job pulls what it depends on and builds a dependency the registry
 # lacks itself (ci-build-port.sh), so leaving the hits out is safe; the
@@ -44,8 +48,15 @@ for t in sysroot newlib; do
     echo "$t=false" >>"$out"
   fi
 done
-echo "ports=$(python3 -c 'import json, sys
-misses = set(sys.argv[1:])
-print(json.dumps([e for e in json.load(sys.stdin) if e["port"] in misses], separators=(",", ":")))' \
-  "${misses[@]+"${misses[@]}"}" <<<"$matrix")" >>"$out"
+python3 -c 'import json, sys
+misses = set(sys.argv[2:])
+lacking = [e for e in json.load(sys.stdin) if e["port"] in misses]
+# The ports built an arch at a time ("name:arch" entries) that are missing.
+split = {e["port"].split(":")[0] for e in lacking if ":" in e["port"]}
+after = [e for e in lacking if split & set(e["deps"].split())]
+now = [e for e in lacking if e not in after]
+with open(sys.argv[1], "a") as f:
+    f.write("ports=" + json.dumps(now, separators=(",", ":")) + "\n")
+    f.write("ports_after=" + json.dumps(after, separators=(",", ":")) + "\n")' \
+  "$out" "${misses[@]+"${misses[@]}"}" <<<"$matrix"
 echo "registry lacks: ${misses[*]:-nothing}"
