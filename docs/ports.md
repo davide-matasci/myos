@@ -2,93 +2,83 @@
 
 Every program the images carry, and every package that is built but not
 shipped in them, has one `port.env` file in its directory: its
-descriptor. The build (`build.rs`, `kernel/build.rs`), the initramfs
-packer (`src/initramfs.rs`), the CI registry and the CI matrices
-(`scripts/ports.sh`) read these descriptors. There is no other list of
-ports, and no Cargo feature per port. Read this page when you add a port,
-move one between the image and the packages, or change how one is built.
+descriptor. The build, the initramfs packer, the CI registry and the CI
+matrices all read these descriptors; there is no other list of ports and
+no Cargo feature per port. Read this page when you add a port, move one
+between the image and the packages, or change how one is built.
 
 ## Roles: where a directory lives
 
-| Directory | Role | Shipped |
-|-----------|------|---------|
-| `ports/<name>/` | image | in every image (initramfs) |
-| `user/<name>/`, `user/c/`, `user/std/` | image | the native userspace (Rust programs, C smokes, the `std` demos) |
-| `toolchain/newlib/`, `toolchain/std/`, `toolchain/mlibc/`, `toolchain/libcxx/` | image | the toolchains: newlib (its sysroot tree is in the tcc package), the Rust `std` sysroot, mlibc and LLVM's C++ runtimes (`docs/mlibc.md`); nothing of them is in the image (libcxx's C++ smoke goes to the tests module) |
-| `packages/<name>/` | package | built and cached by CI, not in the image; installed on a running system with `get-myos` (`docs/packages.md`) |
+| Directory | Role |
+|-----------|------|
+| `ports/<name>/` | in every image (initramfs) |
+| `user/<name>/`, `user/c/`, `user/std/` | the native userspace, in the image |
+| `toolchain/newlib/`, `toolchain/std/`, `toolchain/mlibc/`, `toolchain/libcxx/` | the toolchains (`docs/mlibc.md`); nothing of them is in the image |
+| `packages/<name>/` | built and cached by CI, installed on a running system with `get-myos` (`docs/packages.md`) |
 
 The role is the directory. **Moving `ports/foo` to `packages/foo` takes foo
 out of the image, and moving it back puts it in**, with no other change.
-CI builds and caches both roles the same way: `ci-ports.yml` reads its
-matrices from `scripts/ports.sh --matrix`, and runs a job only for a port
-the registry lacks (`scripts/ci-ports-plan.sh`).
+CI builds and caches both roles the same way, and runs a job only for a
+port the registry lacks (`scripts/ci-ports-plan.sh`).
 
 ## Adding a port
 
 1. Create `ports/<name>/` (or `packages/<name>/`) with `versions.env`
    (pin + sha256), `fetch.sh`, a `build.sh` that writes
    `target/.myos-<name>-version` with the hash when done, patches as
-   `*.myos.patch`, a `README.md`, and `port.env`.
+   `*.myos.patch`, a `README.md`, and `port.env`. `ports/lua` is a good
+   model.
 2. Add `myos_<name>_version_hash` / `myos_<name>_is_current` to
-   `scripts/myos-c-userspace-lib.sh` (copy an existing pair).
+   `scripts/myos-c-userspace-lib.sh` (copy an existing pair; dashes become
+   underscores). The first hashes the port's inputs, the second checks
+   that its outputs exist and match.
 3. Add a boot test: `test.sh` in the port directory with
-   `PORT_TEST=test.sh` in the descriptor (`docs/testing.md`). Add
-   `host.sh` with `PORT_HOST=host.sh` when the test needs a peer on the
-   host. A package's test runs in the full mode, after the install.
+   `PORT_TEST=test.sh` (`docs/testing.md`), and `host.sh` with
+   `PORT_HOST=host.sh` when the test needs a peer on the host. A
+   package's test runs in the full mode, after the install.
 4. Update `THIRD_PARTY_NOTICES.md` (see "License compliance" in
    `AGENTS.md`).
 
-Nothing else changes: `Cargo.toml`, the workflows, the registry, the pack
-lists and the initramfs packer are descriptor-driven.
+Nothing else changes: everything else is descriptor-driven.
 
 ### Patches and compat files
 
 Patches (`*.myos.patch`) and compat files (`myos_compat.h`,
-`myos_stubs.c`) are for what myos genuinely lacks:
-
-- a kernel feature (job control, timer signals, rlimits, `/var`);
-- a declaration newlib's headers leave out;
-- build glue.
-
-A function several ports would stub belongs in the libc, implemented over
-the existing primitives:
-
-- in the C both libcs share (`toolchain/libmyos`, `docs/mlibc.md`) when
-  it is the kernel's interface;
-- in libgloss (`toolchain/newlib/libgloss/myos`) when it is newlib's
-  alone.
-
-A workaround for a gap that has since been filled is removed. The audit
-that trimmed them is in the git history of the ports' files.
+`myos_stubs.c`) are for what myos genuinely lacks: a kernel feature, a
+declaration newlib's headers leave out, build glue. A function several
+ports would stub belongs in the libc instead: in `toolchain/libmyos`
+(`docs/mlibc.md`) when it is the kernel's interface, in libgloss
+(`toolchain/newlib/libgloss/myos`) when it is newlib's alone. A
+workaround for a gap that has since been filled is removed.
 
 ## The descriptor
 
-`port.env` is sourced by the shell and parsed line by line in Rust
-(`src/ports.rs`). Its lines are `KEY=value` or `KEY="value ..."`, and `#`
-starts a comment. Every key has a default, so a minimal port needs only
-`PORT_FILES`.
+`port.env` is sourced by the shell (`scripts/ports.sh`) and parsed line
+by line in Rust (`src/ports.rs`). Its lines are `KEY=value` or
+`KEY="value ..."`; `#` starts a comment. Every key has a default, so a
+minimal port needs only `PORT_FILES`.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `PORT_NAME` | the directory name | registry package, stamp and matrix name (`user/c` is `c-smokes`, `user/std` is `std-hello`, `toolchain/std` is `sysroot`) |
-| `PORT_KIND` | `port` | `port` (cross-built by a script), `user` (a Rust crate built by `kernel/build.rs`), `c` (the C smokes), `std` (the `std` demos), `toolchain` (newlib, the sysroot: built before everything else, by their own CI jobs; `build.rs` leaves them to the ports' scripts) |
-| `PORT_LIBC` | `newlib` | the C library a `port` or `c` port is built against: `newlib` (with libgloss, `target/newlib-<arch>`) or `mlibc` (`target/mlibc-<arch>`, `docs/mlibc.md`). `myos_write_cross_cc` and `scripts/build-c-smokes.sh` link against it (a build script that uses the cc sources its `port.env`). An `mlibc` port names `mlibc` in `PORT_DEPS` |
-| `PORT_CORE` | `0` | `1` for what a boot needs (the shell, getty, init's helpers, the CI smokes) |
-| `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`, the Rust ports need `sysroot`). The build loops order by them, and the CI ports job builds a dependency itself when the registry does not have it (`sysroot` means: wait for the sysroot job's artifact). Build order only: a runtime need is `PORT_RDEPS` |
-| `PORT_RDEPS` | | packages this one needs on the running system (`st` needs `x11-xft` and `x11-fonts`, `x11-xft` needs `x11-libs`): the `deps` field of the package index, which `get-myos` installs first (`docs/packages.md`). Only a package with files can be one (an image port is always there); `cargo run -- packages` refuses an unknown name or a loop |
-| `PORT_BUILD` | | the build script: a name is in the port directory (`build.sh`), a path with `/` is repo-relative (`scripts/build-c-smokes.sh`). Empty: nothing to build (`ports/termcap` ships a checked-in file) |
-| `PORT_STAMP` | `.myos-<name>-version` | the `target/` file the script writes its input hash to when done (the sysroot's is inside the sysroot); `.myos-<name>-{arch}-version` with `PORT_ARCH_JOBS` |
-| `PORT_ARCH_JOBS` | `0` | `1` for a port too long to build in one CI job (`webkitgtk`); see below |
-| `PORT_TIMEOUT` | `45` | the CI ports job's limit for the port (for each arch's job), in minutes; at most 360 |
-| `PORT_OUTPUTS` | | what the script leaves under `target/`, for the three arches (what the CI registry caches, with the stamp). Globs are allowed (`ubase-*-{none}`) |
-| `PORT_READY` | the first file output | a `target/` file whose presence means the port was built (`build.rs` runs the script when it is missing). Needed when the first output is a directory |
-| `PORT_FILES` | | what the image (or the package) gets, see below |
-| `PORT_TEST_FILES` | | what the tests module gets instead (`docs/testing.md`): the port's test programs, in the same syntax as `PORT_FILES`; on the build's disks, never in the ISO or the release. The `PORT_TEST` script and anything else under `lib/myos-tests/` go there too |
-| `PORT_BIN` | | `user` only: the crate's binary name (`myos_cat`) |
-| `PORT_WATCH` | | `user` only: extra source files the kernel build watches, relative to the crate (`../lib/src/lib.rs`) |
-| `PORT_PREPARE` | | `user` only: a script `kernel/build.rs` runs before it builds the crate, named like `PORT_BUILD`: what the build needs in `target/` first. netd's fetches smoltcp and applies myos's patches to it (`user/net/smoltcp/prepare.sh`, its `[patch.crates-io]`) |
-| `PORT_TEST` | | the port's boot test script, in the port directory (`test.sh`): packed as `lib/myos-tests/ports/<group>-<name>.sh` (`0` core image port, `1` image port, `2` package), run by the test runner in that order (`docs/testing.md`) |
-| `PORT_HOST` | | the host's side of that test, in the port directory (`host.sh`): not packed. The launcher runs it with the arguments of a `HOST <name> <args>` line the guest test prints (dropbear's SSH clients, the listen test's peer) |
+| `PORT_NAME` | the directory name | registry, stamp and matrix name |
+| `PORT_KIND` | `port` | `port` (cross-built by a script), `user` (a Rust crate built by `kernel/build.rs`), `c` (the C smokes), `std` (the `std` demos), `toolchain` (newlib, the sysroot: built first, by CI jobs of their own) |
+| `PORT_LIBC` | `newlib` | the C library to build against: `newlib` or `mlibc` (`docs/mlibc.md`) |
+| `PORT_CORE` | `0` | `1` for what a boot needs |
+| `PORT_DEPS` | | ports to build first (`vim` needs `ncurses`); build order only |
+| `PORT_RDEPS` | | packages this one needs on the running system, which `get-myos` installs first (`docs/packages.md`) |
+| `PORT_BUILD` | | the build script: a name in the port directory, or a repo-relative path with `/`. Empty: nothing to build |
+| `PORT_STAMP` | `.myos-<name>-version` | the `target/` file the script writes its input hash to when done |
+| `PORT_ARCH_JOBS` | `0` | `1` for a port too long to build in one CI job (below) |
+| `PORT_TIMEOUT` | `45` | the CI ports job's limit for the port, in minutes; at most 360 |
+| `PORT_OUTPUTS` | | what the script leaves under `target/` (what the registry caches); globs are allowed |
+| `PORT_READY` | the first file output | a `target/` file whose presence means the port was built |
+| `PORT_FILES` | | what the image (or the package) gets, below |
+| `PORT_TEST_FILES` | | what the tests module gets instead (`docs/testing.md`), same syntax |
+| `PORT_BIN`, `PORT_WATCH`, `PORT_PREPARE` | | `user` only: the binary name, extra watched sources, a script run before the build (netd's patched smoltcp) |
+| `PORT_TEST` | | the port's boot test script (`docs/testing.md`) |
+| `PORT_HOST` | | the host's side of that test, run by the launcher on a `HOST <name> <args>` line |
+
+`src/ports.rs` gives the finer points of each key.
 
 Paths in `PORT_OUTPUTS`, `PORT_READY` and `PORT_FILES` are relative to
 `target/` and expand per arch:
@@ -100,75 +90,47 @@ Paths in `PORT_OUTPUTS`, `PORT_READY` and `PORT_FILES` are relative to
 | `{myos}` | `x86_64-unknown-myos` | `aarch64-unknown-myos` | `riscv64-unknown-myos` |
 | `{kernel}` | `x86_64-unknown-none` | `aarch64-unknown-none-softfloat` | `riscv64imac-unknown-none-elf` |
 
-### Ports built an arch at a time
-
-A port with `PORT_ARCH_JOBS=1` (`webkitgtk`) is too long to build in one
-CI job.
-
-- The ports job builds it an arch at a time, as `<name>:<arch>`, with
-  `MYOS_<NAME>_ARCHES` set to the arch. The variable's name is the port's
-  name in capitals, with `-` as `_`.
-- The registry caches each arch apart. `ci-registry.sh pull <name>` pulls
-  the three.
-- The script builds the arches that variable lists (all by default) and
-  writes a stamp per arch. Its `myos_<name>_is_current` checks those
-  arches alone.
-
 ### `PORT_FILES`
 
-`PORT_FILES` holds space-separated entries, `kind:source:destination`. The
-destination is a path in the image (the initramfs root is `/`).
+Space-separated entries, `kind:source:destination`, the destination a
+path in the image:
 
 | Entry | Puts in the image |
 |-------|-------------------|
 | `bin:<target file>:<path>[,<alias>...]` | one ELF, mode 0755; the aliases are hard links (`oksh-{none}:bin/custom/sh,bin/sh`) |
 | `data:<target file>:<path>` | a file the build produced (`cacert.pem:lib/cacert.pem`) |
-| `file:<port dir file>:<path>` | a checked-in file of the port directory (`vimrc:lib/vim/vimrc`); `build.rs` watches it |
+| `file:<port dir file>:<path>` | a checked-in file of the port directory (`vimrc:lib/vim/vimrc`) |
 | `manifest:<target file>:<dir>` | every `name:/path/to/elf` line of the manifest as `<dir>/<name>` (ubase) |
-| `multicall:<elf>:<manifest>:<dir>` | the ELF once, every name of the manifest hard-linked to it under `<dir>` (sbase, uutils coreutils) |
-| `tree:<target dir>:<dir>` | a directory tree (os-test sources and prebuilt tests), keeping the host exec bits |
+| `multicall:<elf>:<manifest>:<dir>` | the ELF once, every name of the manifest hard-linked to it (sbase, uutils coreutils) |
+| `tree:<target dir>:<dir>` | a directory tree, keeping the host exec bits |
 
 A missing source file fails the build: the packer never silently leaves a
-file out. The kernel embeds no program. Every one, `init` included, comes
-from the initramfs.
+file out. The kernel embeds no program; every one, `init` included,
+comes from the initramfs.
+
+### Ports built an arch at a time
+
+A port with `PORT_ARCH_JOBS=1` (`webkitgtk`) is built by CI as
+`<name>:<arch>`, one job per arch, with `MYOS_<NAME>_ARCHES` set to that
+arch (the name in capitals, `-` as `_`). Its script builds the arches
+the variable lists (all by default) and writes a stamp per arch. The
+registry caches each arch apart; `ci-registry.sh pull <name>` pulls the
+three.
 
 ## What reads the descriptors
 
-- `build.rs` runs the script of every image port with a build script when
-  its `PORT_READY` is missing (the scripts skip themselves when current).
-  It watches `port.env`, the `file:` sources and the test script.
-- `kernel/build.rs` builds every `user` port for the kernel's arch into
-  `target/<bin>-<triple>`, where the initramfs packer takes it.
-- `src/initramfs.rs` packs the `PORT_FILES` of every image port, for the
-  arch being imaged.
-- `scripts/ports.sh` is the shell side. Its options are `--list`,
-  `--outputs NAME`, `--image-files NAME`, `--all-files`, `--kernel-files`,
-  `--all-outputs`, `--stamps`, `--build-list`, `--matrix`, `--tests`,
-  `--dir NAME` and `--script NAME`. As a library (`myos_port_load NAME`)
-  it serves:
-  - `scripts/ci-registry.sh`: what to cache, under the port's name;
-  - the CI build job: `ci-build-kernels.sh` builds every image port before
-    hashing the kernel inputs, and the port stamps are part of that hash;
-  - `ci-pack-build-artifacts.sh` and `ci-assert-boot-artifacts.sh`: what a
-    boot job needs;
-  - the `ci-ports.yml` ports matrix.
-- The registry needs `myos_<name>_version_hash` and
-  `myos_<name>_is_current` in `scripts/myos-c-userspace-lib.sh`, with
-  dashes as underscores (the sysroot's are in `toolchain/std/lib.sh`).
-  The first is the content hash of the port's inputs. The second checks
-  that its outputs exist and match.
-- The two toolchains newlib and the sysroot are ports too
-  (`toolchain/newlib`, `toolchain/std`), so the registry, the stamps and
-  the image files treat them like the rest. Only their CI jobs are their
-  own (`sysroot`, `newlib` in `ci-ports.yml`): every port pulls them, and
-  the sysroot build is long and cached apart.
+`build.rs` runs the build script of every image port whose `PORT_READY`
+is missing, `kernel/build.rs` builds the `user` ports, and
+`src/initramfs.rs` packs the `PORT_FILES`. On the shell side,
+`scripts/ports.sh` (`--list`, `--build-list`, `--matrix`, ..., or
+`myos_port_load NAME` as a library) serves the CI registry, the CI jobs
+and the `ci-ports.yml` matrix.
 
 ## The userspace ISA
 
-A port compiles for the arch's bare target (`<arch>-unknown-none`). It
-goes through newlib's tool wrappers
-(`target/newlib-bin/<arch>-unknown-myos-cc`), `myos_write_cross_cc` or
-`myos_mlibc_cflags`, which add the userspace's ISA (`myos_arch_cflags`,
+Ports compile for the arch's bare target (`<arch>-unknown-none`) through
+newlib's tool wrappers, `myos_write_cross_cc` or `myos_mlibc_cflags`,
+which add the userspace's ISA (`myos_arch_cflags` in
 `scripts/myos-c-userspace-lib.sh`):
 
 | Arch | ISA | Float ABI |
@@ -177,18 +139,10 @@ goes through newlib's tool wrappers
 | aarch64 | clang's default | hard float, NEON |
 | riscv64 | `-march=rv64gc -mabi=lp64d` (`MYOS_RISCV64_ISA`) | hard float, as on Linux |
 
-clang's default for a bare riscv64 triple would be soft float (rv64imac,
-lp64). A compile that bypasses the wrappers gets that default, and ld.lld
-refuses to link it with the rest (a different float ABI). The Rust
-targets of the std programs (`targets/*-unknown-myos.json`) match.
-
-`long double` is IEEE binary128 in software on aarch64 and riscv64.
-newlib's printf wants the conversions of `ports/sbase/trunctfdf2.c`;
-mlibc's links compiler-rt's (`libbuiltins.a`).
-
-The `no_std` Rust programs (init, netd, the smokes:
-`target/<bin>-{kernel}`) are built for the arch's hard-float bare target
-(`aarch64-unknown-none`, `riscv64gc-unknown-none-elf`, `kernel/build.rs`);
-http links LibreSSL. The kernel and its modules stay soft-float
-(`aarch64-unknown-none-softfloat`, `riscv64imac-unknown-none-elf`). They
-never touch the FP registers, and the kernel switches every user task's.
+clang's default for a bare riscv64 triple is soft float, so a compile
+that bypasses the wrappers fails to link with the rest. The `std`
+programs' Rust targets (`targets/*-unknown-myos.json`) and the `no_std`
+programs' hard-float bare targets (`kernel/build.rs`) match. The kernel
+and its modules stay soft-float (`aarch64-unknown-none-softfloat`,
+`riscv64imac-unknown-none-elf`): they never touch the FP registers, and
+the kernel switches every user task's.

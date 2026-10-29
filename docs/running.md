@@ -1,10 +1,9 @@
 # Building, running and real hardware
 
 This page covers what `cargo build` produces, how to boot those images in
-QEMU by hand or on a real machine, and the console's serial ports. It ends
-with the memory layout the kernel and the programs run in. For the
-launcher's own modes (`cargo run -- [uefi|aarch64|riscv64]`, the tests)
-see `README.md` and `docs/testing.md`.
+QEMU by hand or on a real machine, and the serial console. It ends with
+the memory layout. For the launcher's own modes (`cargo run --
+[uefi|aarch64|riscv64]`, the tests) see `README.md` and `docs/testing.md`.
 
 ## Building on macOS
 
@@ -17,24 +16,11 @@ brew install qemu llvm lld texinfo coreutils meson ninja
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"   # /usr/local/opt/llvm/bin on Intel
 ```
 
-- `llvm` provides `llvm-strip` and `llvm-ar`, which the cross wrappers use.
-- `lld` provides `ld.lld`, the ELF linker. On current Homebrew the `llvm`
-  formula alone no longer includes it.
-- `texinfo` provides `makeinfo` for newlib's docs. Its `missing` shim only
-  warns, but installing it keeps the build log clean.
-- `coreutils` provides `nproc` (which `toolchain/newlib/build.sh` also
-  treats as optional).
-- macOS's stock `/bin/bash` is 3.2, from 2007. `brew install bash`, with
-  Homebrew's bin first in `PATH`, avoids bash 3.2's parser quirks in the
-  build scripts.
+`lld` is a formula of its own on current Homebrew. macOS's `/bin/bash`
+is 3.2: `brew install bash`, with Homebrew's bin first in `PATH`, avoids
+its parser quirks in the build scripts.
 
 ## The images
-
-```sh
-cargo build
-```
-
-produces:
 
 | File | What |
 |------|------|
@@ -45,85 +31,65 @@ produces:
 | `target/rpi4.img` | the same for a Raspberry Pi 4 (`cargo run -- rpi4` only) |
 | `target/riscv64.img` | RISC-V ESP |
 
-The Limine binaries come from the GitHub release `v12.6.1`, sha256-pinned
-in `ports/limine/versions.env`, and land in `target/limine-v12.6.1`.
+Limine comes from a sha256-pinned release (`ports/limine/versions.env`).
+It boots the kernel with protocol base revision 6. The boot disk is GPT
+with a FAT32 ESP holding the boot slots `a` and `b`, and an ext2 data
+partition (`docs/install.md`). The ESP carries `limine.conf`, the kernel
+ELF (loadable segments only; the debug info stays in `target/`) and the
+initramfs with the modules as `/lib/modules/<name>`
+(`src/limine_image.rs`). On x86, `limine bios-install` makes the image
+boot from BIOS as well. There is no QEMU `-kernel` and no Multiboot.
 
 ## Running in QEMU
 
-`cargo run` builds the images and boots them in QEMU itself. These
-commands boot the built images by hand.
-
-### x86_64 BIOS
+`cargo run` boots the images itself. To boot them by hand:
 
 ```sh
+# x86_64 BIOS (UEFI: the same with target/uefi.img)
 qemu-system-x86_64 -m 256 \
   -drive format=raw,file=target/bios.img \
   -drive if=none,id=vd0,format=raw,file=target/fat.img \
   -device virtio-blk-pci,drive=vd0 \
   -serial stdio
-```
 
-### x86_64 UEFI
-
-The same command, with `target/uefi.img`.
-
-### AArch64
-
-```sh
+# AArch64
 qemu-system-aarch64 -m 256 -cpu cortex-a72 -machine virt,gic-version=2 \
   -drive format=raw,file=target/aarch64.img \
   -drive if=none,id=vd0,format=raw,file=target/fat.img \
   -device virtio-blk-device,drive=vd0 \
   -bios /usr/share/AAVMF/AAVMF_CODE.fd -serial stdio
-```
 
-The GIC version must match the device tree the launcher packed into the
-image. `MYOS_AARCH64_GIC=3 cargo run -- aarch64` builds for a GICv3 board.
-That board also runs without ACPI tables: add `acpi=off` to `-machine`.
-
-### RISC-V
-
-```sh
+# RISC-V
 qemu-system-riscv64 -m 256 -machine virt,aia=aplic-imsic \
   -drive format=raw,file=target/riscv64.img \
   -bios /usr/share/qemu/ovmf-bin/Edk2-riscv64.fd -serial stdio
-```
 
-The interrupt controllers must match the device tree the launcher packed
-into the image. The default is the AIA.
-`MYOS_RISCV_INTC=plic cargo run -- riscv64` builds for the PLIC (plain
-`-machine virt`).
-
-### ISO (hybrid)
-
-```sh
+# x86_64 hybrid ISO
 cargo run -- iso          # writes target/myos-x86_64.iso
 qemu-system-x86_64 -m 256 -cdrom target/myos-x86_64.iso -serial stdio
 ```
 
-### Power-off and panics
+The interrupt controllers must match the device tree the launcher packed
+into the image:
 
-`poweroff` exits QEMU on every arch (`docs/power.md`), and the boot test
-ends with it. A kernel panic exits QEMU too: through `isa-debug-exit` on
-x86_64, and PSCI `SYSTEM_OFF` / SBI shutdown elsewhere.
+- AArch64: `MYOS_AARCH64_GIC=3 cargo run -- aarch64` builds for a GICv3
+  board, which also runs without ACPI (`acpi=off` in `-machine`).
+- RISC-V: the default is the AIA. `MYOS_RISCV_INTC=plic cargo run --
+  riscv64` builds for the PLIC (plain `-machine virt`).
+
+`poweroff` exits QEMU on every arch (`docs/power.md`). A kernel panic
+exits it too (`isa-debug-exit` on x86_64, PSCI or SBI shutdown
+elsewhere).
 
 ## Disks
 
-### The data disk (`target/fat.img`)
+Every QEMU run attaches `target/fat.img` as the second virtio-blk disk.
+It holds `/msg`, which the `[ OK ] fat` and msg boot markers check. A
+machine without it still boots to the shell.
 
-All QEMU runs attach `target/fat.img` as the second virtio-blk disk. It
-holds `/msg`, which the `[ OK ] fat` and msg markers check.
-
-- `user/ok` exits early if `/msg` is absent (no FAT disk).
-- CI fails if the `[ OK ] msg` or fat markers are missing.
-- Bare metal without the disk still boots to the shell.
-
-### A persistent disk
-
-Every `cargo run` boots a freshly built image and rewrites the test disks,
-so nothing the guest writes survives. To test over a long time on one
-disk, use a persistent disk. This works in QEMU only, for interactive
-runs, not for `test`.
+Every `cargo run` rebuilds the test disks, so nothing the guest writes
+survives. For a long-lived system in QEMU (interactive runs, not `test`),
+use a persistent disk:
 
 ```sh
 MYOS_DISK=~/myos-disk.img cargo run          # attach a persistent extra disk (created sparse, 8 GiB, if missing)
@@ -133,57 +99,29 @@ get-myos --install --local <disk>            # lay the boot disk out on it (docs
 MYOS_BOOT_DISK=~/myos-disk.img cargo run     # also: uefi, aarch64, riscv64
 ```
 
-- An installed disk keeps `/data` (apps, the Alpine root) and upgrades
-  itself with `get-myos --upgrade`. A newer `cargo build` does not touch
-  it.
-- `MYOS_DISK` can stay set while you boot `MYOS_BOOT_DISK` from another
-  file, to attach a second data disk. QEMU locks images, so the two paths
-  must differ.
+An installed disk keeps `/data` across upgrades (`get-myos --upgrade`);
+a newer `cargo build` does not touch it.
+`MYOS_DISK` can stay set beside `MYOS_BOOT_DISK` to attach a second data
+disk, if the two paths differ (QEMU locks images).
 
 ## Real hardware
 
-Write the disk image to a USB stick or an internal drive:
-`target/uefi.img`, or `target/bios.img`, which is the same disk, both BIOS
-and UEFI bootable.
+Write `target/uefi.img` or `target/bios.img` (the same disk, BIOS and
+UEFI bootable) to a USB stick or an internal drive. It has the installed
+layout of `docs/install.md`: a 512 MiB FAT32 ESP with two boot slots and
+an ext2 data partition. The screen shows tty1's login; Alt+1…9 switch
+ttys and Alt+0 shows the console (`docs/tty.md`).
 
-The image has the installed layout (`docs/install.md`):
-
-- a 512 MiB FAT32 ESP with two boot slots for upgrades (`boot/a/`,
-  `boot/b/`) and the one `limine.conf` that picks between them;
-- then an ext2 data partition, for state that outlives an upgrade.
-
-The screen shows the boot, then tty1's login. Alt+1…9 switch between the
-ttys' text screens. Alt+0 shows the console's screen, with the boot's and
-the kernel's lines (`docs/tty.md`).
-
-Upgrading and installing (`docs/install.md`):
-
-- A running system upgrades itself from the release with
-  `get-myos --upgrade`. The new kernel and initramfs go into the other
-  slot, which boots next. The running one stays in the boot menu as the
-  fallback.
-- `get-myos --install DISK` lays the boot disk out on another disk, from
-  the mirror. With `--local` and no network it installs from the running
-  system (the ISO included).
-
-On a VPS:
-
-- Write the image over its disk from the provider's rescue system (`dd`,
-  `docs/install.md`).
-- Or, as a live medium, write the release's hybrid ISO
-  (`curl -L .../myos-x86_64.iso | dd of=/dev/sda`).
-- To reach it over SSH, bring your own key (`docs/ssh.md`). dropbear
-  listens on port 2222. The boot script `/data/etc/rc.local` starts it;
-  the administrator edits that script (`docs/install.md`).
+Upgrades, installs onto another disk and VPS setups are in
+`docs/install.md`. For SSH, bring your key (`docs/ssh.md`): dropbear
+listens on port 2222.
 
 ## Console input and serial ports
 
-**stdin** merges the keyboard and the serial port.
-
-- Keyboard characters go through a **loadable keymap**. The default is
-  Swiss German: `user/init` loads `/lib/kbd/ch.map`, with US as the
-  fallback (`docs/keymap.md`).
-- The serial port is always available and needs no map.
+stdin merges the keyboard and the serial port. The keyboard goes through
+a loadable keymap: `user/init` loads Swiss German (`/lib/kbd/ch.map`),
+with US as the fallback (`docs/keymap.md`). The serial port needs no
+map.
 
 | Arch | Serial port | Baud rate |
 |------|-------------|-----------|
@@ -191,43 +129,16 @@ On a VPS:
 | AArch64 | PL011 UART | 115200 8N1 |
 | RISC-V | UART | 115200 8N1 |
 
-## Boot
-
-Limine boots the kernel with protocol base revision 6 (the `limine` crate
-0.6.5). The launcher fetches the pinned Limine release and writes the boot
-disk: GPT, a FAT32 ESP with the boot slots `a` and `b`, and an ext2 data
-partition (`docs/install.md`). The ESP holds `limine.conf`, the kernel ELF
-and the initramfs:
-
-- the kernel ELF carries its loadable segments only; its debug info and
-  symbols stay in the ELF under `target/` (`boot_kernel` in
-  `src/limine_image.rs`);
-- the initramfs carries the module ELFs as `/lib/modules/<name>`
-  (`BOOT_MODULES` in `src/limine_image.rs`).
-
-Limine loads those two files and nothing else. On x86, `limine
-bios-install` makes the image bootable from BIOS as well as UEFI. There is
-no `bootloader` crate, no QEMU `-kernel` and no Multiboot.
-
 ## Memory layout
 
-- The kernel is linked in the higher half (`0xffffffff80000000` on
-  x86_64). Limine sets up its stack, enables the MMU and provides the HHDM:
-  physical memory is mapped at `phys + HHDM`.
-- Page tables come from the frame allocator after the heap.
-- On AArch64 the kernel's mappings, the device window included, are in
-  `TTBR1`; `TTBR0` holds user space only (`kernel/src/arch/aarch64/paging.rs`).
-- The user address space starts at VA 0: `[0, 512 GiB)` (PML4[0]) on
-  x86_64, `[0, 66 GiB)` on aarch64 and riscv64.
-  - A position-independent image loads at 1 GiB, an `ET_EXEC` one at its
-    link address (above 64 KiB).
-  - Its stack, heap and the 64 GiB mmap window lie above the image.
-  - riscv64 maps device memory below 66 GiB at 128 GiB + phys
-    (`RELOC_VA`).
-- AArch64 maps device MMIO in a higher-half window:
-  `0xffff_8000_0000_0000 + phys`, in 1 GiB device blocks, for physical
-  addresses below 127.5 TiB, in at most 16 regions of 512 GiB that hold
-  devices. Device memory is not in the HHDM at Limine base revision 3 and
-  later.
-- Modules run from the HHDM heap (rwx). On AArch64 the loader flushes the
-  I-cache after the copy.
+- The kernel runs in the higher half (`0xffffffff80000000` on x86_64).
+  Limine maps physical memory at `phys + HHDM`.
+- On AArch64 the kernel's mappings are in `TTBR1` and user space alone
+  in `TTBR0`. Device MMIO has its own higher-half window at
+  `0xffff_8000_0000_0000 + phys`, because Limine's HHDM leaves devices
+  out (`kernel/src/arch/aarch64/paging.rs`).
+- User space starts at VA 0: `[0, 512 GiB)` on x86_64, `[0, 66 GiB)` on
+  aarch64 and riscv64. A position-independent image loads at 1 GiB, an
+  `ET_EXEC` one at its link address. The stack, heap and the 64 GiB mmap
+  window lie above the image.
+- Modules run from the kernel heap (rwx, in the HHDM).
