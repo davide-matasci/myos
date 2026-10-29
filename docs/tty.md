@@ -3,10 +3,9 @@
 A terminal in myos is a directory with two files, the Plan 9 way. `data`
 is the terminal itself: what a program reads and writes. `ctl` is its
 state as text: read it to see the state, write it to change it. myos has
-no `ioctl`. Nothing about a terminal, or about any other device, goes
-through one. This page covers the terminals, the text screens, the raw
-keyboard and pointer files, and how libc and the Linux layer map the
-usual tty calls onto them.
+no `ioctl`, for terminals or any other device. This page covers the
+terminals, the text screens, the raw keyboard and pointer files, and how
+libc and the Linux layer map the usual tty calls onto them.
 
 ```
 /dev/console/data        the console: the kernel's messages, the boot's, the daemons'
@@ -24,81 +23,60 @@ usual tty calls onto them.
 /dev/tty                 POSIX: the calling process's controlling terminal (its data)
 /proc/self/fd/N          symlink to what fd N is open on, /dev/pts/3/data for a terminal
 /proc/self/tty           symlink to the controlling terminal's directory, /dev/pts/3
-/proc/self/exe           symlink to the program the process runs (the file its exec loaded)
+/proc/self/exe           symlink to the program the process runs
 ```
 
 ## Screens and logins
 
-The framebuffer has ten text screens. One is shown at a time.
+The framebuffer has ten text screens, one shown at a time
+(`modules/console`):
 
-- Screen 0 is the console's. It shows the kernel's messages, the boot's
-  status lines, and what processes write to `/dev/console/data` (the
-  boot script `/etc/rc`, a daemon's `syslog`).
-- Screens 1 to 9 are the terminals `/dev/tty1` to `/dev/tty9`.
+- screen 0 is the console's: the kernel's messages, the boot's status
+  lines, and what processes write to `/dev/console/data` (`/etc/rc`, a
+  daemon's `syslog`);
+- screens 1 to 9 are the terminals `/dev/tty1` to `/dev/tty9`.
 
-Every screen keeps its text while another is shown, and is drawn whole
-when it comes back. Text written to a screen that is not shown costs no
-drawing.
+`Alt+1` to `Alt+9`
+(left Alt, number row) show tty1 to tty9 and `Alt+0` the console; the
+console takes the key, so the shell never sees it (oksh's `Alt+digit`
+repeat count is lost). Writing `screen N` to `/dev/console/ctl` does the
+same. The keyboard types at the shown screen's terminal.
 
-To switch screens:
+The serial port is `/dev/ttyS0`. The kernel's messages always go to it as
+well as to screen 0, so a crash shows on a headless machine. Console
+output also goes there until `ttyS0` is first opened by its getty; the
+serial port thus shows the whole boot, then becomes a terminal like the
+others.
 
-- `Alt+1` to `Alt+9` (the left Alt and the number row) show tty1 to
-  tty9, and `Alt+0` shows the console. The console takes the key, so the
-  shell never sees it. oksh's `Alt+digit` repeat count is lost with it.
-- `screen N` written to `/dev/console/ctl` does the same. The ctl's
-  `screen` line says which screen is shown.
-
-The keyboard types at the shown screen's terminal: the console's on
-screen 0, `ttyN` on screen N.
-
-The serial port is `/dev/ttyS0`. The kernel's own messages always go to
-it as well as to screen 0, so a crash shows on a headless machine. What
-processes write to the console also goes to the serial port, until
-`ttyS0` is first opened (by its getty, at the end of init's boot). So the
-serial port shows the whole boot, and then becomes a terminal like the
-others. Its input then goes to `ttyS0` instead of the console.
-
-init starts a getty on `ttyS0` and on `tty1` to `ttyN`. It starts each
-again when its session ends. Once they run, init shows tty1's screen:
-the local login is on tty1, and the boot's lines are one `Alt+0` away.
-`N` comes from `/data/etc/ttys` when the data partition has one, else
-from the image's `/etc/ttys` (4). The file holds a number from 0 to 9 on
-a line of its own.
+init starts a getty on `ttyS0` and on `tty1` to `ttyN` and shows tty1. `N` comes from `/data/etc/ttys`
+when it exists, else the image's `/etc/ttys` (4): a number from 0 to 9.
 
 ```
 $ echo 2 > /data/etc/ttys        # tty1 and tty2 at the next boot
 ```
 
-### Programs that take the screen
-
-A program can hold the screen (`/dev/fb` in `graphics` mode, an X
-server). It then has the screen to itself: the text screens still take
-text, but nothing is drawn. While a program holds the keyboard
-(`/dev/console/kbd`), `Alt+N` is one more key for it, not a switch. When
-it gives the screen back, the shown screen is drawn again.
+A program that holds the screen (`/dev/fb` in `graphics` mode, an X
+server) has it to itself: the text screens still take text but nothing is
+drawn until it gives the screen back. While a program holds
+`/dev/console/kbd`, `Alt+N` is one more key for it.
 
 ### The ttys are ptys
 
-The ttys are pty pairs whose master the kernel holds (see "Ptys" below).
-Their termios, `ctty`, `^C` and window size work as a pty's, and
-`/proc/self/tty` names them (`/dev/tty3`, `/dev/ttyS0`).
+The ttys are pty pairs whose master the kernel holds ("Ptys" below), so
+their termios, `ctty`, `^C` and window size work as a pty's.
 
-- A screen's window size is the screen's. `ttyS0` has the screen's size
-  too, until a `winsize` line sets its own (the serial line has no size).
-- They are `dev.tty` in the policy, like the ptys. Each belongs to its
-  session's user. A user opens their own terminals, not another user's
-  or one that no session holds (`docs/security.md`).
-- A tty hangs up when a session claims it and when that session ends.
-  The fds opened on its `data` before then read and write `EIO` from
-  then on.
+- Their window size is the screen's (`ttyS0`'s until a `winsize` line).
+- They are `dev.tty` in the policy: each belongs to its session's user,
+  who opens only their own (`docs/security.md`).
+- A tty hangs up when a session claims it and when that session ends; fds
+  opened on it before then get `EIO`.
 
 ### `/dev/tty` and finding a terminal
 
 `/dev/tty` stays a plain file, because POSIX names it and ported programs
-open it as such. Its control file is `$(readlink /proc/self/tty)/ctl`.
-A program that holds only an fd finds the terminal's directory through
-`/proc/self/fd/N`. For a terminal the link's target ends in `/data`; a
-pipe end reads `pipe:[N]`.
+open it. Its control file is `$(readlink /proc/self/tty)/ctl`. A program
+holding only an fd finds the terminal through `/proc/self/fd/N`: for a
+terminal the target ends in `/data`; a pipe reads `pipe:[N]`.
 
 ## The control file
 
@@ -121,29 +99,21 @@ screen 1
 | `cc` | the 32 control characters, `VINTR` first, two hex digits each |
 | `winsize` | rows and columns |
 | `keymap` | console only: the file its keyboard map was loaded from, or `none` |
-| `screen` | console only: the text screen shown (above) |
+| `screen` | console only: the text screen shown |
 
-A write takes the same lines back. A line changes only what it names:
-
-- `lflag 0` puts the terminal in raw mode and leaves the rest alone;
-- `cc 03` sets `VINTR` only;
-- `screen 0` shows the console.
-
-Numbers are `0x` hex or decimal. Three more lines are commands:
+A write takes the same lines back, and a line changes only what it names
+(`lflag 0` is raw mode, `cc 03` sets `VINTR` only). Numbers are `0x` hex
+or decimal. Three more lines are commands:
 
 | Line | Effect |
 |------|--------|
-| `ctty` | the terminal becomes the writer's controlling terminal (what `TIOCSCTTY` does) |
-| `flush [in\|out\|both]` | discard the pending input and/or output; `both` when nothing is given |
-| `keymap PATH` | the console loads the keyboard map in that file (`docs/keymap.md`); a pty refuses it |
+| `ctty` | the terminal becomes the writer's controlling terminal (`TIOCSCTTY`) |
+| `flush [in\|out\|both]` | discard pending input and/or output; `both` by default |
+| `keymap PATH` | the console loads that keyboard map (`docs/keymap.md`) |
 
-A pty refuses `screen` too.
-
-A write applies all its lines or none. An unknown word, a bad number, a
-line with extra words, or a keymap that cannot be loaded fails the write
-with nothing changed. Lines must be whole within one write. The console
-accepts `winsize` and ignores it, since its size is the screen's. It has
-no output buffer to flush.
+A pty refuses `keymap` and `screen`; the console ignores `winsize`. A
+write applies all its lines or none, and lines must be whole within one
+write.
 
 ```
 $ echo 'lflag 0' > $(readlink /proc/self/tty)/ctl     # raw mode
@@ -152,35 +122,19 @@ $ echo 'winsize 50 132' > /dev/pts/0/ctl
 
 ## The screen
 
-The console's framebuffer copy (`modules/console/src/fb.rs`) draws an
-8x8 font. It understands the VT100/xterm escapes that full-screen
-programs use:
-
-- cursor movement, erasing, scroll regions, the cursor's visibility;
-- colors: the 8 ANSI ones (`30`–`37`, `40`–`47`, bright `90`–`97`),
-  xterm's 256 (`38;5;N`, `48;5;N`) and RGB (`38;2;R;G;B`,
-  `48;2;R;G;B`).
-
-Text is UTF-8. A character takes one cell, a wide one (East Asian, emoji)
-two, and a combining mark none, as a terminal program counts them.
-Besides ASCII, the font draws:
-
-- box drawing (U+2500–257F: light, heavy, double and rounded lines);
-- block elements (U+2580–259F: halves, eighths, shades, quadrants);
-- braille patterns (U+2800–28FF, which programs such as `btm` draw
-  graphs with);
-- a few symbols (arrows, triangles, `•`, `…`, `°`).
-
-Any other character is a `?` in its cells, and so are bytes that are not
-UTF-8. The serial port gets the bytes as written.
+The console draws an 8x8 font (`modules/console/src/fb.rs`) and
+understands the VT100/xterm escapes full-screen programs use, with 8,
+256 and RGB colors. Text is UTF-8 (wide characters take two cells).
+Besides ASCII the font has box drawing, block elements, braille and a few
+symbols; anything else is a `?`. The serial port gets the bytes as
+written.
 
 ## The raw keyboard
 
-`/dev/console/kbd` is the local keyboard as key events. That is PS/2 on
-x86_64, virtio-input on aarch64 and riscv64, and the USB keyboards on
-every arch. It is for programs that need more than the characters a
-terminal gives: a game, or a graphical session drawing on `/dev/fb`
-(`docs/fb.md`). One event per line:
+`/dev/console/kbd` is the local keyboard as key events: PS/2 on x86_64,
+virtio-input on aarch64 and riscv64, USB keyboards everywhere. It is for
+a game or a graphical session on `/dev/fb` (`docs/fb.md`). One event per
+line:
 
 ```
 d 42          Left Shift pressed
@@ -189,79 +143,42 @@ u 30          A released
 u 42
 ```
 
-- `d <code>[ <char>]` is a press, `u <code>` a release.
 - The code is Linux's `KEY_*` number (`linux/input-event-codes.h`) on
-  every arch: Left Ctrl 29, Enter 28, the arrows 103/105/106/108.
+  every arch.
 - The character is what the loaded keymap (`docs/keymap.md`) gives the
-  key with the Shift and AltGr held now, as UTF-8. It is left out for
-  space, for control characters (Enter, Backspace, Tab, Esc), for keys
-  the keymap does not map, and for every key while no keymap is loaded.
-- There is no autorepeat: a held key is one `d` and, later, one `u`.
+  key with the modifiers now held, as UTF-8. It is left out for space,
+  control characters, unmapped keys, and while no keymap is loaded.
+- There is no autorepeat.
 
-Opening the file takes the keyboard. Until its last fd closes (or its
-holder exits), no terminal gets keys from it and `Alt+N` does not switch
-screens. The serial port's terminal is not affected. One program holds
-the file at a time; another open fails.
+Opening the file takes the keyboard: until its last fd closes, no
+terminal gets keys and `Alt+N` does not switch (the serial port is not
+affected). One program holds it at a time; another open fails. Reads
+return whole lines, `poll` works, and the queue drops new events past
+128. The file exists once a keyboard is found
+(`modules/console/src/kbdev.rs`).
 
-- Reads return whole lines. A read waits for the next event, and `poll`
-  reports `POLLIN` while one is queued.
-- The queue holds 128 events and drops new ones while full.
-- The keyboard interrupts on input where the platform can route it (IRQ 1
-  through the I/O APIC, the virtio-input device's interrupt). Otherwise
-  it is polled every 10 ms while someone waits.
-- The virtio-input driver keeps 64 event buffers posted, the device's
-  whole queue, because QEMU drops a key event when the guest has none
-  posted (issue #650, History below).
-
-The file exists when the console module found a keyboard
-([`modules/console/src/kbdev.rs`](../modules/console/src/kbdev.rs)), or
-from the first USB keyboard on.
-
-### Keyboards of other modules
-
-A keyboard another module drives (`usb_hid`'s USB keyboards,
-`docs/usb.md`) hands the console its presses and releases through the
-`keyboard` service
-([`modules/console/src/keyboards.rs`](../modules/console/src/keyboards.rs)),
-in the same `KEY_*` codes. They go where the console's own keyboard's go:
-this file, the shown screen's terminal, `Alt+N`. Every keyboard shares
-the modifiers and Caps Lock.
-
-A USB keyboard does not repeat a held key, so the console repeats it, for
-the terminals only: 500 ms after the press, then every 33 ms, until the
-key is released or another is pressed. A USB keyboard's Caps Lock LED
-follows the console's Caps Lock.
-
-### Input without a reader
+Other modules' keyboards (`usb_hid`, `docs/usb.md`) feed the console
+through its `keyboard` service (`modules/console/src/keyboards.rs`), in
+the same codes, and share its modifiers and Caps Lock. A USB keyboard
+does not repeat, so the console repeats held keys for the terminals (500
+ms, then every 33 ms).
 
 Keyboard and serial input goes through the line discipline as it
-arrives, whether or not anything reads the terminal. The `console-input`
-kernel thread does this
-([`kernel/src/input.rs`](../kernel/src/input.rs)). So `^C` interrupts a
-job that never reads the terminal, such as `sha512sum /dev/zero`, and
-typed-ahead input is echoed at once.
-
-A read of the console (`/dev/console/data`, `/dev/tty`) waits as long as
-it takes; a shell at its prompt waits until the next key. It does not
-hold the filesystem tree meanwhile, so a rename, unlink or new file
-elsewhere does not wait for that key (devfs's `waits`,
+arrives, whether or not anything reads the terminal (the `console-input`
+thread, `kernel/src/input.rs`). So `^C` interrupts a job that never reads
+the terminal, and typed-ahead input echoes at once. A blocked read of the
+console does not hold the filesystem tree (devfs's `waits`,
 `kernel/src/fs/vfs.rs`).
 
 ## The pointer
 
-`/dev/console/mouse` is the pointer: what every mouse and tablet does. It
-is for the same programs as the raw keyboard; Xfbdev's `kdrive/myos`
-reads it (`packages/tinyx`). The console module serves the file and
-publishes the `pointer` service
-([`PointerOps`](../modules/abi/src/lib.rs)). These feed it, all into the
-one file:
-
-- a pointing device's driver in another module, today `usb_hid` (USB HID
-  mice and tablets, `docs/usb.md`);
-- the console's own: the PS/2 mouse on x86_64, and virtio-input mice and
-  tablets on the `virt` boards.
-
-One event per line:
+`/dev/console/mouse` is every mouse and tablet merged into one file, for
+the same programs as the raw keyboard; Xfbdev's `kdrive/myos` reads it
+(`packages/tinyx`). The console feeds it from the PS/2 mouse (x86_64,
+with the wheel), virtio-input mice and tablets (`virt` boards,
+`modules/console/src/virtio_input.rs`), and other modules through its
+`pointer` service (`PointerOps`, `modules/abi/src/lib.rs`; today
+`usb_hid`). One event per line:
 
 ```
 m 10 -5       moved 10 right and 5 up
@@ -274,143 +191,76 @@ u 272         released
 | Event | Meaning |
 |-------|---------|
 | `m <dx> <dy>` | relative motion, right and down positive |
-| `a <x> <y>` | an absolute position, both axes from 0 (left, top) to 32767 whatever the device's own range; the reader scales it to its screen |
+| `a <x> <y>` | an absolute position, 0 to 32767 on both axes whatever the device; the reader scales it |
 | `w <dz>` | the vertical wheel |
-| `d <code>`, `u <code>` | a button pressed or released, as Linux's `BTN_*` code: left 272, right 273, middle 274, side 275, extra 276 |
+| `d <code>`, `u <code>` | a button, as Linux's `BTN_*` code: left 272, right 273, middle 274, side 275, extra 276 |
 
-Motion not read yet is merged, so a slow reader gets fewer, larger steps
-rather than lost ones. Two `m` lines in a row become one, as do two `w`,
-and a newer `a` replaces the one before it. A button held when its mouse
-is pulled out is released (`u`).
+Unread motion is merged, so a slow reader gets fewer, larger steps rather
+than lost ones. The file is always there, since a USB mouse may come
+later. Opening it takes the pointer, as with the keyboard; nothing is
+queued while nobody holds it.
 
-The file is there whether or not a pointer is plugged in, since a USB
-mouse may come later. Opening it takes the pointer: one program holds it
-at a time, another open fails, and nothing is queued while nobody holds
-it. Reads return whole lines. A read waits for the next event, and `poll`
-reports `POLLIN` while one is queued (every event wakes the waiters). The
-queue holds 128 events and drops new ones while full.
-
-### The PS/2 mouse
-
-The PS/2 mouse is on the keyboard controller's second (aux) port. At boot
-the console sets it to its defaults and asks for the IntelliMouse wheel:
-the packets are then four bytes, three without it. The console reads the
-packets along with the keyboard's bytes. When a mouse answered, it
-prints `[ OK ] mouse (ps2, wheel)` on the console. Its buttons are
-left, right and middle.
-
-The two ports share the controller's one output buffer, so a mouse byte
-nobody takes holds back the keyboard's. The console therefore uses the
-port only in two cases:
-
-- its IRQ 12 is routed, as the keyboard's IRQ 1 is (both show in
-  `/proc/interrupts`, as `ps2 mouse` and `ps2 keyboard`);
-- the whole controller is polled because neither IRQ is routed. Then
-  `/dev/console/mouse`'s readers and the console's input thread read
-  the mouse every 10 ms
-  ([`modules/console/src/ps2.rs`](../modules/console/src/ps2.rs)).
-
-### virtio-input
-
-On the `virt` boards, a virtio-input device whose config space lists
-relative axes (`EV_REL`) is a mouse. One with absolute axes (`EV_ABS`) is
-a tablet, whose `ABS_X`/`ABS_Y` ranges scale its position. The first
-other device is the keyboard.
-
-- Up to two pointers. Each shows `[ OK ] mouse (virtio)` or
-  `tablet (virtio)` on the console, and `virtio-pointer` in
-  `/proc/interrupts`.
-- A frame's axes go to the file at its `SYN_REPORT`. Buttons
-  (`BTN_LEFT` to `BTN_EXTRA`) go at once
-  ([`modules/console/src/virtio_input.rs`](../modules/console/src/virtio_input.rs)).
+The PS/2 mouse shares the keyboard controller's output buffer, so the
+console uses it only when its IRQ 12 is routed or the whole controller is
+polled (`modules/console/src/ps2.rs`); otherwise an unread mouse byte
+would block the keyboard.
 
 ## Ptys
 
-Opening `/dev/pts/clone` allocates a pair and returns the master fd. The
-master's name in `/proc/self/fd` tells its index, so there is no
-`TIOCGPTN`. The slave is `/dev/pts/N/data`.
+Opening `/dev/pts/clone` allocates a pair and returns the master fd; its
+name in `/proc/self/fd` gives the index. The slave is `/dev/pts/N/data`
+(`kernel/src/pty.rs`).
 
-Opening the slave does not make it the controlling terminal. A session
-leader claims it with `ctty` on the pair's `ctl` (`TIOCSCTTY`; this is
-what `forkpty`'s child, dropbear's login and st do). A session leader is
-a process that called `setsid`, which also drops the console as its
-terminal.
+A session leader (after `setsid`) makes the slave its controlling
+terminal with `ctty` on the pair's `ctl`, as `forkpty`'s child, dropbear
+and st do; opening the slave does not. The claim lasts until the leader
+exits, and is ignored from a non-leader or for a pair another live
+session holds.
 
-- From then on the pair is the controlling terminal of every process in
-  that session: their `/dev/tty` and `/proc/self/tty`.
-- This lasts until the leader exits. The pair is then nobody's. A later
-  session leader with the same pid (a reused task slot) neither holds it
-  nor keeps the next claim out.
-- A claim by a process that leads no session is ignored, and so is a
-  claim of a pair that another live session holds.
+The termios, window size and session belong to the pair. When the last fd
+on both ends closes, the directory disappears. Closing the last master fd
+hangs up the session (`SIGHUP`, then `EIO` on the slave); closing the
+last slave fd makes the master read `EIO` once drained.
 
-The pair's termios, window size and session belong to the pair: both ends
-see them. When the last fd on both ends is closed, the directory
-disappears.
-
-- Closing the last master fd hangs up the session: `SIGHUP` to the
-  session leader's process group, then `EIO` on the slave.
-- Closing the last slave fd makes the master's reads report `EIO` once
-  drained ([`kernel/src/pty.rs`](../kernel/src/pty.rs)).
-
-There is no fixed number of pairs. Each takes a few KiB of kernel heap
-and holds at least one fd, so the fd limits bound them. A freed index is
-reused first.
-
-The kernel's terminals (`ttyS0`, `tty1`…`tty9`) are pairs too, made at
-boot, whose master the kernel holds for good. Their output goes to the
-serial port or their screen instead of a ring a master reads. Their input
-comes from the serial port or the keyboard. They are never hung up.
+There is no fixed number of pairs: each takes a few KiB of heap and at
+least one fd, so the fd limits bound them. The kernel's terminals
+(`ttyS0`, `tty1`…`tty9`) are pairs made at boot whose master the kernel
+holds for good, wired to the serial port or a screen, and never hung up.
 
 ## libc
 
 Nothing in libgloss or the Rust `libc` crate issues an ioctl syscall.
 libgloss finds the terminal behind an fd through its `/proc/self/fd` link
-(`toolchain/newlib/libgloss/myos/ttyctl.c`):
-
-| Call | How |
-|------|-----|
-| `tcgetattr` | reads the ctl |
-| `tcsetattr` | writes the termios lines |
-| `tcflush` | writes a `flush` line |
-| `isatty` | asks whether the link ends in `/data` (or `/master`) |
-| `ttyname` | returns the link's target |
-| `openpty` | opens `clone` and reads the master's link for the pair's directory |
-
-The `ioctl()` function is a shim for the requests ported programs make
-(`TCGETS`, `TCSETS`, `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`,
-`TIOCGPTN`, `TIOCSPTLCK`), served the same way. Anything else is
-`ENOTTY`. The Rust `libc` crate (`ports/crates/libc/myos.rs`) does the
-same for `isatty` and `ioctl`.
+(`toolchain/newlib/libgloss/myos/ttyctl.c`): `tcgetattr` reads the ctl,
+`tcsetattr` and `tcflush` write it, `isatty` checks that the link ends in
+`/data` (or `/master`), `ttyname` returns it, and `openpty` opens
+`clone`. The `ioctl()` function is a shim for the requests ported
+programs make (`TCGETS`, `TCSETS`, `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`,
+`TIOCSCTTY`, `TIOCGPTN`, `TIOCSPTLCK`); anything else is `ENOTTY`. The
+Rust `libc` crate does the same (`ports/crates/libc/myos.rs`).
 
 ## The Linux layer
 
-Alpine binaries speak the Linux tty ioctls (`TCGETS`, `TCSETS`, `TCFLSH`,
-`TIOCGWINSZ`, `TIOCSWINSZ`, `TIOCSCTTY`, `TIOCGPTN`, `TIOCSPTLCK`). The
-Linux module serves them from the same ctl text, which the kernel hands
-it for an fd (`KernelApi::tty_ctl_read` and `tty_ctl_write`,
-`modules/linux/src/tty.rs`). It converts to and from Linux's
-`struct termios`: the 36-byte kernel layout with `c_line` and 19 control
-characters. It maps musl's `/dev/ptmx` and `/dev/pts/N` onto `clone` and
-`data`, and `TIOCGPTN` reads the master's name (`KernelApi::fd_path`).
+The Linux module serves the same tty ioctls to Alpine binaries from the
+ctl text, which the kernel hands it for an fd (`KernelApi::tty_ctl_read`
+and `tty_ctl_write`, `modules/linux/src/tty.rs`), converting to Linux's
+`struct termios`. It maps musl's `/dev/ptmx` and `/dev/pts/N` onto
+`clone` and `data`.
 
 ## Devices
 
-There is no `ioctl` syscall. A module's character device is a directory
-like a terminal:
-
-- `/dev/net0/data` is the NIC (Ethernet frames);
-- `/dev/net0/ctl` is its state as text (`mac 52:54:00:12:34:56`,
-  `irq on`);
-- `/dev/netd/data` is the netfs channel to `netd`.
-
-A device says when its `data` is ready through `poll`. So `netd` sleeps
-in `poll` on the NIC and its channel instead of in a blocking request
+Other character devices follow the same pattern (`/dev/net0/data` and
+`ctl`, `/dev/netd/data`) and report readiness through `poll`
 (`myos_abi::ModuleChrOps`, `docs/scheduler.md`).
+
+## Testing
+
+`user/tests/kernel.sh` covers the terminal files and the kernel's
+terminals; the keyboard, pointer and screen smokes are in `user/c`
+(`kbd_smoke.c`, `mouse_smoke.c`, `fb_smoke.c`, run from `user/c/test.sh`).
 
 ## History
 
-- The virtio-input driver used to post eight event buffers. That gave a
-  burst of keys 40 ms of slack (QEMU's `sendkey` types a press and a
-  release 10 ms apart), and a reader woken that late under TCG missed
-  keys. It now posts 64, the device's whole queue (issue #650).
+- The virtio-input driver posts 64 event buffers, the device's whole
+  queue, because QEMU drops key events when the guest has none posted;
+  with eight, a reader woken late under TCG missed keys (issue #650).
