@@ -56,30 +56,43 @@ pub fn write(buf: &[u8]) {
 }
 /// `[ OK ] label` — same spacing as kernel `console::status_ok`.
 pub fn status_ok(label: &str) {
-    write(b"[ OK ] ");
-    write(label.as_bytes());
-    write(b"\n");
+    status_line(b"[ OK ] ", label);
 }
 
 /// `[ FAIL ] label` — same spacing as kernel `console::status_fail`.
 pub fn status_fail(label: &str) {
-    write(b"[ FAIL ] ");
-    write(label.as_bytes());
-    write(b"\n");
+    status_line(b"[ FAIL ] ", label);
 }
 
 /// `[ INFO ] label` — same spacing as kernel `console::status_info`.
 pub fn status_info(label: &str) {
-    write(b"[ INFO ] ");
-    write(label.as_bytes());
-    write(b"\n");
+    status_line(b"[ INFO ] ", label);
 }
 
 /// `[ WARN ] label` — same spacing as kernel `console::status_warn`.
 pub fn status_warn(label: &str) {
-    write(b"[ WARN ] ");
-    write(label.as_bytes());
-    write(b"\n");
+    status_line(b"[ WARN ] ", label);
+}
+
+/// A status line in one write: the kernel writes it to the console whole,
+/// so what another process prints at the same time lands before or after
+/// it, never inside. Written as three (the tag, the label, the newline),
+/// netd's line once came out between init's `[ OK ] ` and `rc started`,
+/// a boot marker the boot test then missed (CI run 2344; `ok lines`
+/// tests it). A label longer than the buffer still goes in pieces.
+fn status_line(tag: &[u8], label: &str) {
+    let mut line = [0u8; 256];
+    let len = tag.len() + label.len() + 1;
+    if len > line.len() {
+        write(tag);
+        write(label.as_bytes());
+        write(b"\n");
+        return;
+    }
+    line[..tag.len()].copy_from_slice(tag);
+    line[tag.len()..len - 1].copy_from_slice(label.as_bytes());
+    line[len - 1] = b'\n';
+    write(&line[..len]);
 }
 
 

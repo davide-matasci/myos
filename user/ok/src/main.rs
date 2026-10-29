@@ -7,10 +7,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use myos_user::{
-    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, close, exec, exit, exit_code, fork,
-    heap_init, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink, rename,
-    rmdir, stat_mode, status_fail, status_ok, status_warn, symlink, umount, unlink, wait_status,
-    write_fd,
+    Heap, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SIGTERM, arg, close, dup2, exec, exit,
+    exit_code, fork, heap_init, kill, listdir, mkdir, mount, open, open_flags, pipe, read, readlink,
+    rename, rmdir, stat_mode, status_fail, status_ok, status_warn, symlink, umount, unlink,
+    wait_status, write, write_fd,
 };
 
 #[global_allocator]
@@ -478,8 +478,97 @@ fn smoke_proc(buf: &mut [u8]) {
     status_ok("proc");
 }
 
+/// `ok lines` (user/ok/test.sh): two children print 100 status lines each
+/// into one pipe at the same time, and every line must come out whole. A
+/// status line is one write (`myos_user::status_ok`): written in pieces,
+/// netd's line once landed between init's `[ OK ] ` and its `rc started`,
+/// and the boot test missed that marker (CI run 2344). The pipe holds all
+/// of the lines (4 KiB), so no write of them is split either.
+fn status_lines() -> ! {
+    const LINES: usize = 100;
+    let Some((rd, wr)) = pipe() else {
+        miss("lines pipe");
+    };
+    for label in ["line a", "line b"] {
+        match fork() {
+            Some(0) => {
+                if !dup2(wr, 1) {
+                    exit_code(1);
+                }
+                for _ in 0..LINES {
+                    status_ok(label);
+                }
+                exit();
+            }
+            Some(_) => {}
+            None => miss("lines fork"),
+        }
+    }
+    close(wr);
+    for _ in 0..2 {
+        if !matches!(wait_status(), Some((_, 0))) {
+            miss("lines child");
+        }
+    }
+    let mut buf = [0u8; 4096];
+    let mut len = 0;
+    while len < buf.len() {
+        let n = read(rd, &mut buf[len..]);
+        if n == 0 || n == usize::MAX {
+            break;
+        }
+        len += n;
+    }
+    close(rd);
+    let (mut a, mut b, mut bad) = (0, 0, 0);
+    for line in buf[..len].split(|&c| c == b'\n') {
+        match line {
+            b"" => {}
+            b"[ OK ] line a" => a += 1,
+            b"[ OK ] line b" => b += 1,
+            _ => bad += 1,
+        }
+    }
+    if a == LINES && b == LINES && bad == 0 {
+        status_ok("lines");
+        exit();
+    }
+    // The counts, then the lines that are neither: the pieces.
+    write(b"[ FAIL ] lines: a ");
+    write_num(a);
+    write(b", b ");
+    write_num(b);
+    write(b", other ");
+    write_num(bad);
+    write(b"\n");
+    for line in buf[..len].split(|&c| c == b'\n') {
+        if !matches!(line, b"" | b"[ OK ] line a" | b"[ OK ] line b") {
+            write(line);
+            write(b"\n");
+        }
+    }
+    exit_code(1);
+}
+
+fn write_num(mut n: usize) {
+    let mut digits = [0u8; 20];
+    let mut i = digits.len();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    write(&digits[i..]);
+}
+
 fn main() -> ! {
     heap_init();
+    if arg(1) == Some(&b"lines"[..]) {
+        status_lines();
+    }
     let mut v = Vec::new();
     v.extend_from_slice(b"probe");
     let _ = v;
@@ -496,15 +585,12 @@ fn main() -> ! {
     exit();
 }
 
-#[cfg(target_arch = "x86_64")]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    main()
-}
+myos_user::x86_start!(main);
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_argc: usize, _argv: *const usize) -> ! {
+pub extern "C" fn _start(argc: usize, argv: *const usize) -> ! {
+    unsafe { myos_user::args::init_from_regs(argc, argv) };
     main()
 }
 
