@@ -19,6 +19,7 @@ struct MyosSysdepTags :
 	Sigtimedwait,
 	Kill,
 	Tgkill,
+	BeforeCancellableSyscall,
 	LibcLog,
 	LibcPanic,
 	Exit,

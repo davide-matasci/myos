@@ -160,9 +160,13 @@ pointer point. mlibc has its own (`docs/mlibc.md`).
 - 64 keys, with destructors.
 - Cancellation sends `SIGLOST` (nothing else on myos sends it), with no
   `SA_RESTART`, so a blocking call returns. Deferred cancellation acts at
-  the cancellation points (the list is in `pthread.c`); asynchronous
-  cancellation acts at the next syscall, so a loop that makes none is not
-  interrupted.
+  the cancellation points (the list is in `pthread.c`: the blocking calls
+  of `toolchain/libmyos`, between `__myos_cancel_enter` and `_leave`,
+  condition waits, joins, `pthread_testcancel`); asynchronous cancellation
+  acts wherever the signal lands (`docs/signals.md`). mlibc's cancellation
+  (`SIGCANCEL`, its own handler) acts under the same rule: its sysdeps
+  count the cancellation points the thread is in, and its handler ends
+  the thread only inside one (`toolchain/mlibc/sysdeps/myos/generic/thread.cpp`).
 - `fork` runs the `pthread_atfork` handlers and holds newlib's own locks
   across the fork, so the child finds malloc and stdio free.
 - `_POSIX_THREAD_SAFE_FUNCTIONS`: newlib's `_r` functions, libgloss's

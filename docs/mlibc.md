@@ -62,7 +62,7 @@ lines each over the shared C, under `toolchain/mlibc/sysdeps/myos/`
 |------|------|
 | `generic/sysdeps.cpp` | files, processes, memory, sockets, terminals, time, the event fds |
 | `generic/entry.cpp`, `<arch>/crt0.S` | the program's start |
-| `generic/thread.cpp`, `<arch>/thread-entry.S` | threads on the kernel's (`docs/threads.md`) |
+| `generic/thread.cpp`, `<arch>/thread-entry.S` | threads on the kernel's, and where a deferred cancellation may act: the cancellation points (`docs/threads.md`) |
 | `generic/signal.cpp` | the kernel's signal masks and `sigaction` records (`docs/signals.md`) behind mlibc's types, and the handler dispatch |
 | `generic/dirent.cpp` | `readdir` over the kernel's whole-directory listing (`listdirat`) |
 
