@@ -192,6 +192,10 @@ Do not paper over a slow shootdown path with a longer QEMU timeout.
 
 ## Blocking waits
 
+A task gives up its CPU in one of three ways: it calls `task::yield_now()`,
+the timer interrupt preempts it (the handler calls `task::schedule()` after
+the EOI, in user mode too), or it blocks in a wait.
+
 Tasks have a `Blocked` state. Every kernel wait follows one pattern:
 `wait`/`waitpid`, the console `read`, pipe, FIFO and pty reads, writes and
 opens, `sigsuspend`/`sigwait`, `nanosleep`, `poll`, and the Linux layer's

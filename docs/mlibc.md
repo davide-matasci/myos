@@ -121,8 +121,9 @@ headers. What myos answers of it lives in the shared C, with the headers
 in `sysdeps/myos/include`: `getrandom`, `getifaddrs`, `mount`, the mount
 table, `memfd_create`, the device number macros.
 
-- `times` and `setpriority` are `ENOSYS`: there is no CPU accounting and
-  no priorities (libgloss says the same). `getpriority` is 0.
+- `times` and `setpriority` are `ENOSYS` (libgloss says the same). The
+  kernel counts each task's CPU time, but not its user time apart from its
+  kernel time (issue #291), and has no priorities. `getpriority` is 0.
 - `getrlimit` reads `/proc/self/limits`. Only the main thread's stack and
   the fd table have a limit; `setrlimit` is `ENOSYS`.
 - `pthread_attr_get_np` of the main thread (WebKit's question) reads its

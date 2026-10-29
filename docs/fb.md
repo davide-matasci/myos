@@ -64,6 +64,24 @@ On the way back, the console draws the text screen shown again, with what
 it received meanwhile (`docs/tty.md`). `echo graphics > /dev/fb/ctl` from a
 shell takes the screen and gives it back at once.
 
+## A desktop on it
+
+An X server runs on the framebuffer and the raw keyboard: TinyX's
+`Xfbdev`, with MIT-SHM (`get-myos tinyx`, `packages/tinyx/README.md`).
+On top of it, as packages:
+
+- antialiased TrueType text through Xft (`packages/x11-xft/README.md`);
+- the dwm window manager, the st terminal and the dmenu menu dwm starts
+  (`packages/dwm/README.md`, `packages/st/README.md`,
+  `packages/dmenu/README.md`). `get-myos tinyx dwm` brings st, dmenu, the
+  Xft stack and the fonts with it; `run-myos tinyx,dwm:startx` starts the
+  session;
+- `xev`, which prints the events a window gets, and `xprop`, which prints
+  its properties (`get-myos x11-apps`, then `run-myos x11-apps`,
+  `packages/x11-apps/README.md`);
+- the surf web browser on WebKitGTK (`get-myos surf`, then `run-myos surf
+  URL` in dwm's terminal, `packages/surf/README.md`).
+
 ## How it works
 
 - **The mount**: the console module mounts its files at `dev/fb`

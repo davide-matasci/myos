@@ -6,6 +6,28 @@ with the memory layout the kernel and the programs run in. For the
 launcher's own modes (`cargo run -- [uefi|aarch64|riscv64]`, the tests)
 see `README.md` and `docs/testing.md`.
 
+## Building on macOS
+
+With Homebrew:
+
+```sh
+brew install qemu llvm lld texinfo coreutils meson ninja
+# Homebrew's llvm is keg-only (no ld.lld on PATH) — the newlib/ports cross
+# wrappers exec ld.lld, so prepend it:
+export PATH="/opt/homebrew/opt/llvm/bin:$PATH"   # /usr/local/opt/llvm/bin on Intel
+```
+
+- `llvm` provides `llvm-strip` and `llvm-ar`, which the cross wrappers use.
+- `lld` provides `ld.lld`, the ELF linker. On current Homebrew the `llvm`
+  formula alone no longer includes it.
+- `texinfo` provides `makeinfo` for newlib's docs. Its `missing` shim only
+  warns, but installing it keeps the build log clean.
+- `coreutils` provides `nproc` (which `toolchain/newlib/build.sh` also
+  treats as optional).
+- macOS's stock `/bin/bash` is 3.2, from 2007. `brew install bash`, with
+  Homebrew's bin first in `PATH`, avoids bash 3.2's parser quirks in the
+  build scripts.
+
 ## The images
 
 ```sh
@@ -169,10 +191,32 @@ On a VPS:
 | AArch64 | PL011 UART | 115200 8N1 |
 | RISC-V | UART | 115200 8N1 |
 
+## Boot
+
+Limine boots the kernel with protocol base revision 6 (the `limine` crate
+0.6.5). The launcher fetches the pinned Limine release and writes the boot
+disk: GPT, a FAT32 ESP with the boot slots `a` and `b`, and an ext2 data
+partition (`docs/install.md`). The ESP holds `limine.conf`, the kernel ELF
+and the initramfs:
+
+- the kernel ELF carries its loadable segments only; its debug info and
+  symbols stay in the ELF under `target/` (`boot_kernel` in
+  `src/limine_image.rs`);
+- the initramfs carries the module ELFs as `/lib/modules/<name>`
+  (`BOOT_MODULES` in `src/limine_image.rs`).
+
+Limine loads those two files and nothing else. On x86, `limine
+bios-install` makes the image bootable from BIOS as well as UEFI. There is
+no `bootloader` crate, no QEMU `-kernel` and no Multiboot.
+
 ## Memory layout
 
-- The kernel is linked in the higher half. Limine sets up its stack,
-  enables the MMU and provides the HHDM.
+- The kernel is linked in the higher half (`0xffffffff80000000` on
+  x86_64). Limine sets up its stack, enables the MMU and provides the HHDM:
+  physical memory is mapped at `phys + HHDM`.
+- Page tables come from the frame allocator after the heap.
+- On AArch64 the kernel's mappings, the device window included, are in
+  `TTBR1`; `TTBR0` holds user space only (`kernel/src/arch/aarch64/paging.rs`).
 - The user address space starts at VA 0: `[0, 512 GiB)` (PML4[0]) on
   x86_64, `[0, 66 GiB)` on aarch64 and riscv64.
   - A position-independent image loads at 1 GiB, an `ET_EXEC` one at its

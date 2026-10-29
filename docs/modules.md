@@ -55,6 +55,29 @@ boot by default:
 - `RUNTIME_MODULES` (`pcidev`, `pl061`) are shipped and never listed: root
   loads them (`docs/pci.md`).
 
+## What stays in the kernel
+
+The kernel keeps what must run before any module, or what every module
+needs; everything else is a module.
+
+| Component | Location | Why |
+|-----------|----------|-----|
+| PCI config access (`cfg_read32` / BAR map / `pci_find` / `pci_find_class`) | `kernel/src/pci.rs` + `arch/*/pci.rs` | The module ABI exposes it; every PCI driver is a module |
+| virtio-blk, virtio-scsi, NVMe, SD cards | `modules/virtio_blk`, `modules/virtio_scsi`, `modules/nvme`, `modules/sdmmc` | Register `/dev/<name>` through `blk_register`; loaded before the filesystem modules. The virtio modules are the `virtio-drivers` crate over the module ABI (`modules/virtio`: its `Hal`, PCI and virtio-mmio probing) |
+| USB: the core, the xHCI, EHCI, UHCI, OHCI and DWC2 hosts, hub and mass storage | `modules/usb`, `modules/xhci`, `modules/ehci`, `modules/uhci`, `modules/ohci`, `modules/dwc2`, `modules/usb_hub`, `modules/usb_storage` | The core publishes the USB bus as a service the class drivers look up and the controller drivers register with; sticks are `/dev/sdX/`, hot-pluggable (`docs/usb.md`) |
+| Framebuffer text, keyboards, keymap | `modules/console` | Serial stays in the kernel; the module registers screen + keyboard ops (`console_register`) |
+| Linux syscall layer | `modules/linux` | Registers a syscall *personality* (`personality_register`); the kernel keeps only which tasks have it (`kernel/src/personality.rs`) |
+| Full PCI enumeration → `/proc/pci` | `modules/pci_enum` (`.ko`) | Discovery + on-demand rescan via write; talks only through `KernelApi` |
+| Userspace SDIO drivers → `/dev/sdio` | `modules/sdmmc` | An SDIO card's functions' registers (CMD52, CMD53) and its interrupt for a driver that is a program: the Raspberry Pi's Wi-Fi chip (`docs/raspberry-pi.md` "SDIO") |
+| Userspace PCI drivers → `/dev/pci` | `modules/pcidev` | A function's registers, DMA memory and interrupt for a driver that is a program (`docs/pci.md`); loaded with `insmod`, not at boot |
+| The IOMMU | `kernel/src/iommu` | What a device's DMA reaches: all of memory for a kernel driver's, its own buffers for a program's (`docs/iommu.md`) |
+| Platform description (ACPI static tables, device tree) | `kernel/src/platform.rs`, `acpi.rs`, `dt.rs` | Device bases, interrupt routing and clocks come from it, before the heap exists (`docs/platform.md`) |
+| ACPI tables + AML → `/proc/acpi/*` | `modules/acpi` (`.ko`) | Optional; stubs when no RSDP. On x86_64 the `acpi` crate's AML interpreter: the PCI interrupt routes (`_PRT`) for the kernel and `_S5` (`docs/platform.md` "AML") |
+| Limine RSDP / MP requests | `kernel/src/limine_boot.rs` | Boot protocol |
+| AP bring-up + `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state + IPI helpers |
+| Cross-CPU scheduler | `kernel/src/task/` | Per-CPU `CURRENT`, task `affinity`, per-CPU run queues |
+| Proc exporters | `kernel/src/fs/procfs.rs` | Built-ins: `mounts`, `cpuinfo`, `platform`; dynamic via `proc_register` ABI |
+
 ## Module exports
 
 ```rust

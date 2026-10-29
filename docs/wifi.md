@@ -665,7 +665,7 @@ The MT7612U tests:
 ## Broadcom's radios
 
 The Raspberry Pi's Wi-Fi is a Broadcom (Cypress's, now Infineon's) FullMAC
-chip on the SoC's second SDHCI controller:
+chip on the SoC's second SDHCI controller (issue #547):
 
 | Chip | What | Boards |
 |------|------|--------|

@@ -4,7 +4,12 @@ A **package** is a port that CI builds and publishes but the image does not
 carry. On a running system, `get-myos` fetches it from a mirror and installs
 it as an **app**. An app has a directory of its own per version,
 `ROOT/<name>-<version>/`, with `ROOT/<name>` pointing at the current one.
-Nothing outside the app sees it until `run-myos` runs it.
+Nothing outside the app sees it until `run-myos` runs it:
+
+```sh
+get-myos coreutils            # install uutils coreutils
+run-myos coreutils:ls /tmp    # run one of its commands
+```
 
 A port is a package when its directory is `packages/<name>` instead of
 `ports/<name>` (`docs/ports.md`). Nothing else changes: the descriptor

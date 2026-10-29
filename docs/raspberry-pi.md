@@ -383,8 +383,10 @@ armstub=armstub8-myos.bin
 The myos disk goes on a USB stick
 (`sudo dd if=target/rpi3/myos.img of=/dev/sdX bs=4M conv=fsync`). U-Boot
 boots it when the SD card has no `EFI/BOOT` of its own. myos itself then
-runs from the initramfs. It sees the SD card (`/dev/mmcblk0`), not the
-stick (no USB driver yet), so `/boot` and `/data` are not mounted.
+runs from the initramfs. It sees the SD card (`/dev/mmcblk0`) and,
+through the DWC2 driver (above), the USB stick, whose ESP and data
+partition it mounts as `/boot` and `/data` as on the other boards. That
+is what the QEMU boot shows; it is untried on a real Pi 3.
 
 The console is the mini UART on GPIO 14 and 15 (the same pins as the
 Pi 4's, above), at 115200 8N1.

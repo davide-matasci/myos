@@ -215,6 +215,7 @@ Other calls:
 Not implemented yet:
 
 - `sigaltstack` / `SA_ONSTACK`, `sigqueue` / real-time signals, `ppoll`.
-- `ITIMER_VIRTUAL` and `ITIMER_PROF` (`ENOSYS`): they need CPU time
-  accounting.
+- `ITIMER_VIRTUAL` and `ITIMER_PROF` (`ENOSYS`). The kernel counts each
+  task's CPU time (`kernel/src/task/acct.rs`), but not its user time apart
+  from its kernel time (issue #291).
 - Stop/continue and job control.
