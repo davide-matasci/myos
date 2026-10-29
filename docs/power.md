@@ -46,7 +46,7 @@ in the order they registered; then the arch's own
   registers, after handing ACPI to the OS through the SMI command port
   when the firmware has not (`SCI_EN` clear). The `_S5` values come from
   the DSDT (the module's AML interpreter, or its scan when that failed:
-  `/proc/acpi/s5`, `docs/pci-acpi-smp.md` "AML"). Only registers in
+  `/proc/acpi/s5`, `docs/platform.md` "AML"). Only registers in
   system I/O space are used, which is what a PC has; a hardware-reduced
   platform (aarch64 under EDK2) has none and uses PSCI.
 - **PSCI** is called through the conduit the platform description names:

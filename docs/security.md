@@ -173,7 +173,7 @@ starts, is one, so it cannot be typed at the console.
 - `untrusted` reads the system and its user's home, and nothing more: no
   writes anywhere, no `/tmp`, no network, no secrets.
 - `/net` is every user's (`net {read write}`), but a conversation
-  (`/net/tcp/N`, `/net/unix/N`: `docs/sockets-curl.md`,
+  (`/net/tcp/N`, `/net/unix/N`: `docs/net.md`,
   `docs/sockets-unix.md`) belongs to the user whose process made it (an
   accepted connection to the listener's): only that user's processes open
   its files. The event counters, timers, wait sets and signal fds

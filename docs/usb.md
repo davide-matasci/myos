@@ -259,7 +259,7 @@ changes raise no interrupt: the module's thread looks at them four
 times a second (so an idle CPU still sleeps).
 Their structures are below 4 GiB (32-bit pointers,
 `DmaDevice::below`). UHCI's registers are in PCI I/O space
-(`KernelApi::pci_io_map`, `docs/pci-acpi-smp.md`).
+(`KernelApi::pci_io_map`, `docs/pci.md`).
 
 A UHCI isochronous OUT packet is a TD in the frame list entry of the
 frame it goes out in, queued from two frames ahead of the controller
@@ -457,7 +457,7 @@ modules' init.
   in all (EHCI, UHCI, OHCI), an EHCI's service intervals 4 frames apart
   at most; 4 USB speakers. No streams, no MSI
   for the devices: on
-  aarch64 the controller's own interrupt is INTx (`docs/pci-acpi-smp.md`).
+  aarch64 the controller's own interrupt is INTx (`docs/interrupts.md`).
 - Bulk transfers go through a 64 KiB bounce buffer per controller, one at
   a time; a control transfer's data stage is 1 KiB at most. A bulk IN
   endpoint whose transfers are queued (`transfer_start`) has a page of
@@ -475,4 +475,4 @@ modules' init.
   EHCI-to-xHCI port routing of older Intel chipsets is not. The
   Raspberry Pi 4's VL805 is taken with the firmware its UEFI firmware
   loaded (`docs/raspberry-pi.md`); a controller whose DMA is not coherent
-  gets the cache maintenance of its handle (`docs/pci-acpi-smp.md` "DMA").
+  gets the cache maintenance of its handle (`docs/pci.md` "DMA").

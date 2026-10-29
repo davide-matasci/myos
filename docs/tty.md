@@ -313,4 +313,4 @@ a terminal: `/dev/net0/data` is the NIC (Ethernet frames), `/dev/net0/ctl` its
 state as text (`mac 52:54:00:12:34:56`, `irq on`), `/dev/netd/data` the netfs
 channel to `netd`. A device says when its `data` is ready through `poll`, so
 `netd` sleeps in `poll` on the NIC and its channel instead of a blocking
-request (`myos_abi::ModuleChrOps`, `docs/pci-acpi-smp.md`).
+request (`myos_abi::ModuleChrOps`, `docs/scheduler.md`).

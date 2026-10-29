@@ -9,7 +9,7 @@
 | `build.rs` | Fetch Limine; wrap x86_64 kernel in BIOS+UEFI images; write `fat.img` |
 | `kernel/src/main.rs` | `#![no_std]` Limine entry: heap, IRQs, scheduler, rootfs, Limine modules, user init |
 | `kernel/src/limine_boot.rs` | Limine requests (HHDM, memmap, DTB, FB, modules, executable addr) |
-| `kernel/src/platform.rs` | The board description, filled once at boot from the ACPI static tables (`acpi.rs`: MADT, MCFG, SPCR, GTDT) and the device tree (`dt.rs`, `fdt` crate), shown by `/proc/platform` (`docs/pci-acpi-smp.md`) |
+| `kernel/src/platform.rs` | The board description, filled once at boot from the ACPI static tables (`acpi.rs`: MADT, MCFG, SPCR, GTDT) and the device tree (`dt.rs`, `fdt` crate), shown by `/proc/platform` (`docs/platform.md`) |
 | `kernel/src/dt.rs` | Device tree (aarch64, riscv64): fills the platform description; PCI INTx `interrupt-map`, `virtio,mmio` nodes |
 | `kernel/src/mm.rs` | Physical frame allocator (after 256 KiB heap; page tables, user pages, virtqueues) |
 | `kernel/src/power.rs` | Power-off, reboot, halt: stop the processes, unmount the disks, then the modules' and the arch's methods in turn (`docs/power.md`) |
@@ -45,8 +45,8 @@
 | `modules/sound` | The sound core: the cards' PCM streams as `/dev/sound/N/{ctl,data}`, their buffers, the `sound` service the card drivers register with (`docs/sound.md`) |
 | `modules/virtio_sound` | virtio-sound cards (PCI or MMIO): their playback and capture streams, for the sound core |
 | `modules/usbdev` | Userspace USB drivers: `/dev/usb`, the interfaces no kernel driver takes, their control, bulk and interrupt transfers as files (`docs/usb.md`) |
-| `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt, confined by the IOMMU where the board has one (`docs/pci-acpi-smp.md`); shipped for `insmod /lib/modules/pcidev`, not loaded at boot |
-| `modules/pl061` | The ARM PL061 GPIO controller's lines as an interrupt domain (`docs/pci-acpi-smp.md`, "Interrupt domains"); shipped for `insmod /lib/modules/pl061`, not loaded at boot |
+| `modules/pcidev` | Userspace PCI drivers: `/dev/pci`, a function's registers, DMA memory and interrupt, confined by the IOMMU where the board has one (`docs/pci.md`); shipped for `insmod /lib/modules/pcidev`, not loaded at boot |
+| `modules/pl061` | The ARM PL061 GPIO controller's lines as an interrupt domain (`docs/interrupts.md`, "Interrupt domains"); shipped for `insmod /lib/modules/pl061`, not loaded at boot |
 | `modules/usb_hid` | USB HID mice and tablets, the console's pointer (`/dev/console/mouse`), and boot keyboards, the console's keyboard (`docs/tty.md`, `docs/usb.md`) |
 | `modules/tap` | Virtual NICs: `/dev/tap/N`, a NIC whose wire is a program (the Wi-Fi daemon's link, `docs/wifi.md`) |
 | `modules/hello` | Sample module (`[ OK ] hello`) |

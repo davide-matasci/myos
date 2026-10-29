@@ -164,7 +164,7 @@ checks (command versions, API and capability bits, limits).
 
 The daemon drives the radio itself (`user/wifi/src/intel.rs`), the
 first `/dev/pci` has whose id is in the table, through `/dev/pci`
-(`docs/pci-acpi-smp.md`; `user/wifi/src/pci.rs`): BAR0 mapped, DMA
+(`docs/pci.md`; `user/wifi/src/pci.rs`): BAR0 mapped, DMA
 buffers, its MSI-X or MSI interrupt, or its INTx line (all the aarch64
 and riscv64 boards give a PCI function, an AX200 card's on them:
 serviced as MSI's, then unmasked again through `/dev/pci`'s `irq`).
@@ -612,5 +612,5 @@ of it when its link goes down or its program goes (or changed since netd
 last looked, within the second between two looks: the `program` count
 says so, and the NIC is taken again as the new one it is, with a lease
 of its own, issue #649); the wired `net0`
-keeps the default route while it has a lease (`docs/sockets-curl.md`,
+keeps the default route while it has a lease (`docs/net.md`,
 `multihome_smoke`).

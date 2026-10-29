@@ -2,7 +2,7 @@
 #define _MYOS_NETINET_TCP_H_
 
 /* The TCP socket options: setsockopt accepts and ignores them (netd's
- * smoltcp sockets keep their own settings, docs/sockets-curl.md). */
+ * smoltcp sockets keep their own settings, docs/net.md). */
 #define TCP_NODELAY 1
 #define TCP_MAXSEG 2
 #define TCP_CORK 3

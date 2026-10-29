@@ -2,7 +2,7 @@
 
 Local stream connections between processes, the way a display server talks
 to its clients, and record connections (`SOCK_SEQPACKET`), the way WebKit
-talks to its web process. As with TCP (`docs/sockets-curl.md`) there is no socket
+talks to its web process. As with TCP (`docs/net.md`) there is no socket
 syscall: the netfs module serves `/net/unix`, a Plan 9 style directory, and
 the libgloss socket library maps `AF_UNIX` onto it. Unlike TCP, nothing goes
 through netd: the bytes stay in the kernel.

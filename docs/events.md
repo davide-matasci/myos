@@ -8,7 +8,7 @@ that are ready, the signals that arrived), polls for readiness, and hands
 to a `poll` with its sockets and pipes. myos serves all four from the
 kernel (`kernel/src/evfd.rs`), as directories under `/dev` the Plan 9 way
 (`kernel/src/fs/evfs.rs`), like the terminals (`docs/tty.md`) and the
-`/net` conversations (`docs/sockets-curl.md`):
+`/net` conversations (`docs/net.md`):
 
 ```
 /dev/event/clone         open: allocates an event counter, the fd is its N/data
@@ -34,7 +34,7 @@ A program opens `clone` and keeps that fd: it is the new object's
 `N/data`, the eventfd, timerfd, epoll fd or signalfd, as opening
 `/dev/pts/clone` gives a new pair's master (`docs/tty.md`) and opening a
 `/net` protocol's `clone` a new conversation's `data`
-(`docs/sockets-curl.md`). The object is the fd's: it goes with the last
+(`docs/net.md`). The object is the fd's: it goes with the last
 fd on it, so none is ever left that nobody holds. The kernel knows the fd as its own kind (`FdEntry::Event`,
 `FdEntry::Timer`, `FdEntry::Wait`, `FdEntry::Sig` in
 `kernel/src/task/fd.rs`): `read`, `write` and `poll` on it are the

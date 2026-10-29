@@ -151,7 +151,7 @@
 #define CURL_DISABLE_VERBOSE_STRINGS 0
 #define HTTP_ONLY 1
 
-/* IPv6 over netd (docs/sockets-curl.md): AF_INET6 sockets, AAAA lookups. */
+/* IPv6 over netd (docs/net.md): AF_INET6 sockets, AAAA lookups. */
 #define USE_IPV6 1
 #define HAVE_SOCKADDR_IN6_SIN6_SCOPE_ID 1
 

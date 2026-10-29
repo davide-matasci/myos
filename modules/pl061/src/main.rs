@@ -1,5 +1,5 @@
 //! The ARM PL061 GPIO controller (QEMU `virt`'s, `arm,pl061`) as an
-//! interrupt domain (`docs/pci-acpi-smp.md`, "Interrupt domains"): its 8
+//! interrupt domain (`docs/interrupts.md`, "Interrupt domains"): its 8
 //! lines' interrupts, behind its one interrupt to the root controller,
 //! are interrupt numbers of their own, which a driver of a device on a
 //! line enables with `KernelApi::irq_enable` like any other. Register

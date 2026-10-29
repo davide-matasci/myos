@@ -31,7 +31,7 @@ cargo run -- rpi4        # writes target/rpi4.img
 `target/aarch64.img`: Limine is not given QEMU's device tree (so the
 kernel gets the firmware's), and the kernel command line has
 `platform=dt` (the firmware can offer ACPI tables too; myos reads the
-device tree, `docs/pci-acpi-smp.md`). Write it to a USB stick:
+device tree, `docs/platform.md`). Write it to a USB stick:
 
 ```sh
 sudo dd if=target/rpi4.img of=/dev/sdX bs=4M conv=fsync
@@ -88,7 +88,7 @@ The VL805 reaches the low 3 GiB (the bridge's `dma-ranges`), and its DMA
 does not see the CPU's caches: the xHCI driver's DMA memory comes from
 there, whatever the firmware's "Limit RAM to 3 GB" setting, and it
 cleans and invalidates the caches around each hand-over (`dma_sync`,
-`docs/pci-acpi-smp.md` "DMA").
+`docs/pci.md` "DMA").
 
 ## The SD card
 

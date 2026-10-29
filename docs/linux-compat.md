@@ -374,7 +374,7 @@ Anything else returns `ENOSYS`.
 
 ## Sockets
 
-A Linux socket is a conversation of the native `/net` (`docs/sockets-curl.md`;
+A Linux socket is a conversation of the native `/net` (`docs/net.md`;
 `modules/linux/src/net.rs`), whose fd is the conversation's `data` file:
 reads, writes, `dup`, `fork` and `close` are ordinary fd operations, and the
 last close hangs the conversation up. `socket` opens `/net/{tcp,udp}/clone`
@@ -387,7 +387,7 @@ so a blocking read or connect sleeps until netd's next reply wakes the
 pollers (a write retries while netd's request ring is full, or a TCP
 conversation has no send room left: 8 KiB queued in netd). A datagram
 socket's `sendto`, `sendmsg`, `recvfrom` and `recvmsg` go through the
-conversation's `hdata` (`docs/sockets-curl.md`): each datagram carries its
+conversation's `hdata` (`docs/net.md`): each datagram carries its
 destination or its sender, so musl's resolver, which asks every
 nameserver from one socket and takes the first answer, gets it from
 whichever; `send`, `write`, `recv` and `read` are the bare datagrams of
