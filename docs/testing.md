@@ -381,3 +381,9 @@ change could affect (arch-specific code: all three); a quick run per arch
 is usually enough locally, CI does the rest. The `net` tests need the
 network: in a sandbox behind a TLS-intercepting proxy, append its CA to
 `target/cacert.pem` for local runs only and restore it afterwards.
+
+## CI caches and runs (from the README)
+
+GitHub Actions caches Cargo with Swatinem/rust-cache (`prefix-key: limine-8.3-6`). Userspace port outputs are OCI artifacts on GHCR, one package per port (its `PORT_OUTPUTS`, `scripts/ports.sh`), tagged with stamp hash from `scripts/myos-c-userspace-lib.sh`; the ports matrices come from the descriptors. First run after stamp change = miss + push; later runs with same hashes = hit. Packages should be **public** for fork PRs. Source checkouts (`*-src`) are never cached. rust-cache restores `target/` with the Rust ports' cargo target dirs in it, and cargo does not track the std sysroot, newlib or target spec they were built against: each such dir carries a stamp of them and starts over when it differs (`myos_cargo_target_dir`, `toolchain/std/lib.sh`).
+
+Every run boots the disk images with the tests the change needs, selected by tag from the changed paths (`scripts/ci-select.py`, `docs/testing.md`), the long ones in boots of their own; a push to master, the daily run, a dispatch with `full_boot` and the `ci:full` label run every test, which also installs the build's own packages into the guest with `get-myos` from a mirror the launcher serves. On master, the x86_64 hybrid ISO with the Linux layer in it (`--features linux_compat`) and the packages go to the rolling `rolling` release, get-myos's default mirror (`docs/packages.md`, `docs/testing.md`).
