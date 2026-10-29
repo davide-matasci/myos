@@ -51,6 +51,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       ports: ${{ steps.plan.outputs.ports }}
+      ports_after: ${{ steps.plan.outputs.ports_after }}
       sysroot: ${{ steps.plan.outputs.sysroot }}
       newlib: ${{ steps.plan.outputs.newlib }}
     steps:
@@ -157,6 +158,64 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.plan.outputs.ports) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-26
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-none, aarch64-unknown-none-softfloat, riscv64imac-unknown-none-elf, aarch64-unknown-none, riscv64gc-unknown-none-elf
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: limine-8.3-6
+          cache-directories: |
+            target/myos-sysroot
+            target/patched-crates
+            target/crate-fetch-coreutils
+
+      - name: Download prebuilt sysroot
+        if: matrix.needs_sysroot == '1'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: myos-sysroot
+          path: target
+
+      - name: Build port (${{ matrix.port }})
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MYOS_CI_REGISTRY_PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: ./scripts/ci-build-port.sh "${{ matrix.port }}" "${{ matrix.script }}" "${{ matrix.needs_sysroot }}" "${{ matrix.deps }}"
+
+  # The ports that depend on a port built an arch at a time which the
+  # registry lacks (WebKitGTK's dependents): after its arch jobs have
+  # pushed it, which a 45-minute job could not build itself.
+  ports-after:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
+    # The port's own limit (PORT_TIMEOUT, docs/ports.md; WebKit's arches
+    # take hours each).
+    timeout-minutes: ${{ matrix.timeout }}
+    needs: [plan, wire-myos, sysroot, newlib, ports]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.wire-myos.result == 'success' &&
+      needs.plan.outputs.ports_after != '[]' &&
+      (needs.ports.result == 'success' || needs.ports.result == 'skipped') &&
+      (needs.sysroot.result == 'success' || needs.sysroot.result == 'skipped') &&
+      (needs.newlib.result == 'success' || needs.newlib.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.ports_after) }}
     steps:
       - uses: actions/checkout@v6
 

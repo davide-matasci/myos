@@ -131,7 +131,8 @@ The tests that fetch over HTTP(S) use the launcher's test web server
 (`src/test_www.rs`), not a site on the internet, whose answers vary from
 run to run. It serves `/hello.txt` on the guest's `10.0.2.2:8766` (HTTP)
 and `10.0.2.2:8767` (HTTPS, with a certificate of the test CA in
-`user/tests/tls`, made by its `make.sh` and committed). The tests trust
+`user/tests/tls`, made by its `make.sh` and committed, signed through an
+intermediate CA the server sends along, as a site's is). The tests trust
 that CA alone (`/lib/myos-tests/test-ca.pem`), never the image's bundle.
 
 What needs the real internet uses GitHub: `dns` and the Linux layer's

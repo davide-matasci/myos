@@ -1,3 +1,17 @@
+--- a/tls/openssl/gtlscertificate-openssl.c
++++ b/tls/openssl/gtlscertificate-openssl.c
+@@ -970,7 +970,10 @@
+   if (X509_verify_cert (csc) <= 0)
+     {
+       err = X509_STORE_CTX_get_error (csc);
+-      if (err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT)
++      /* myos: LibreSSL's verifier says _LOCALLY where OpenSSL's does not:
++       * without it, a certificate is never linked to an intermediate. */
++      if (err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT ||
++          err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY)
+         ret = TRUE;
+     }
+   else
 --- a/tls/openssl/gtlsclientconnection-openssl.c
 +++ b/tls/openssl/gtlsclientconnection-openssl.c
 @@ -420,7 +420,11 @@
