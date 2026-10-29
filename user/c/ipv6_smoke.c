@@ -1,4 +1,4 @@
-/* ipv6-smoke: boot-CI guest test for IPv6 (docs/sockets-curl.md).
+/* ipv6-smoke: boot-CI guest test for IPv6 (docs/net.md).
  *
  * getifaddrs lists lo's ::1 and net0's link-local address (its scope the
  * interface's index) and, once the router advertised, its SLAAC address,

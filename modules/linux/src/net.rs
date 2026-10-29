@@ -1,5 +1,5 @@
 //! Sockets over the native `/net`: `AF_INET` and `AF_INET6` (see
-//! `docs/sockets-curl.md`) and `AF_UNIX` streams and records
+//! `docs/net.md`) and `AF_UNIX` streams and records
 //! (`SOCK_SEQPACKET`, `docs/sockets-unix.md`).
 //! An `AF_INET6` socket names an IPv4 peer `::ffff:a.b.c.d`, and one it
 //! connects or sends to talks IPv4 to netd, as on Linux.
@@ -599,7 +599,7 @@ pub fn send(fd: usize, mut io: impl FnMut() -> R) -> R {
 }
 
 /// A UDP datagram's header in a conversation's `hdata`
-/// (`docs/sockets-curl.md`): the remote and local addresses (16 bytes each,
+/// (`docs/net.md`): the remote and local addresses (16 bytes each,
 /// IPv4 as `::ffff:a.b.c.d`), the remote and local ports.
 const UDP_HDR: usize = 36;
 /// The most a datagram carries.
@@ -653,7 +653,7 @@ fn ctl_connect(conv: &str, a: Addr) -> Result<(), usize> {
 }
 
 /// A UDP socket's local address and port, netd's answer to a tagged
-/// `local` (`docs/sockets-curl.md`): what a connect or send chose.
+/// `local` (`docs/net.md`): what a connect or send chose.
 fn udp_local(conv: &str) -> Option<Addr> {
     let tag = format!("#{}", time::monotonic_ns());
     fs::write(&format!("{conv}/ctl"), 0, format!("local {tag}").as_bytes())?;

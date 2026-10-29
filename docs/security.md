@@ -1,11 +1,11 @@
 # Security
 
-myos has no superuser. Every process runs **for a user, in a domain**;
-every file has a **label** that its path gives it; and the **policy**
+myos has no superuser. Every process runs **for a user, in a domain**.
+Every file has a **label**, which its path gives it. The **policy**
 (`/etc/policy`) says what each domain may do to each label. Whatever the
-policy does not grant is refused, for every user, root included. On top of
-that, a process can be given a **namespace**: only part of the tree, with
-fewer rights than the policy would allow (Plan 9's per-process namespaces).
+policy does not grant is refused, for every user, root included. On top
+of that, a process can be given a **namespace**: only part of the tree,
+with fewer rights than the policy would allow, as in Plan 9.
 
 What a process may do to a file is the intersection of three things:
 
@@ -13,18 +13,19 @@ What a process may do to a file is the intersection of three things:
 2. the binding the name goes through allows the right;
 3. the policy grants the right to the process's domain on the file's label.
 
-The code is `kernel/src/sec` (the policy and its checks),
-`kernel/src/task/ns.rs` (namespaces) and the checks in the syscalls
+The code: `kernel/src/sec` (the policy language and its checks),
+`kernel/src/task/ns.rs` (namespaces), and the checks in the syscalls
 (`kernel/src/user/syscall.rs`) and in the file calls modules make for a
-process (`kernel/src/modules/mod.rs`: the Linux layer).
+process (`kernel/src/modules/mod.rs`: the Linux layer). The tests are in
+`user/tests/kernel.sh` (tag `sec`), run as root in `admin`.
 
 ## The policy
 
-`etc/policy` in the repository is the default: the image carries it as
-`/etc/policy`, and the kernel has its own copy, used when the image's does
-not parse. `sec load FILE` replaces the policy until the next boot; it needs
-`write` on `kernel.policy`. Running processes keep their user and domain by
-name; one the new policy no longer has is left with no rights.
+`etc/policy` in the repository is the default. The image carries it as
+`/etc/policy`, and the kernel has its own copy, used when the image's
+does not parse. `sec load FILE` replaces it until the next boot; it needs
+`write` on `kernel.policy`. Running processes keep their user and domain
+by name; one whose user or domain the new policy lacks has no rights.
 
 ```
 mode enforcing                  # or permissive: refusals are logged, not made
@@ -49,227 +50,206 @@ domain untrusted:
 exec /bin/custom/netd -> netd
 ```
 
-- **Users.** `user NAME` with `groups:`, `domains:` (the domains exec may
-  move the user's processes into), `login:` (the domain `setuser` puts them
-  in, else the `login ->` line's; `none`: `setuser` never enters the user,
-  for an account like `system` that only runs what init starts), `home:`
-  (default `/`) and `password:`. A
-  user's uid is the position of its line, from 0. `/proc/sys/security/users`
-  lists them for libgloss (`getpwnam`, `getpwuid`, `getpwent`).
-- **Labels.** `label PATTERN KIND[(OWNER)]`. A pattern is an absolute path
-  whose components are literal, `*` (one component), `$name` (one
-  component, captured) or a final `**` (any number, none included). The
-  **last** rule that matches a file's path gives its label, so the general
-  rules come first. The owner is a captured component (`$u`) or a fixed
-  name. A file no rule matches is `unlabeled`. Labels are taken from the
-  file's **canonical** path, the one bind mounts resolve to, so a file
-  reached through a bind or a namespace binding has the label of where it
-  is stored (`get-myos`'s apps live under `/data/apps` or `/tmp/apps`,
-  labelled `sys.pkg`, whatever path `run-myos` shows them at, and so does
-  `get-alpine`'s root on the data partition, `/data/alpine`; `/dev/shm`,
-  POSIX shared memory, is `/tmp/.shm`, labelled `tmp`).
-- **Domains.** `domain NAME:` and rules on the same line or on the indented
-  lines below: `KIND(OWNER) {rights}`. The owner is `self` (the process's
-  user), `group` (any group of the user), `*` (anyone, or no owner), a fixed
-  name, or absent (the label has no owner). `* {rights}` covers every
-  label. The rights a domain has on a label are the union of its matching
-  rules.
-- **Rights.** `read`, `write` (covers `append`), `append`, `create`,
-  `remove`, `exec`, `setattr` (file times), `mount`, `signal`, and `all`.
-- **Kernel objects** are labels without a path: `kernel.modules` (`insmod`,
-  `rmmod`: `write`), `kernel.clock` (`settimeofday`: `write`),
-  `kernel.policy` (`sec load`: `write`), `kernel.users` (entering a user who
-  has no password: `write`), `kernel.power` (`poweroff`, `reboot`, `halt`:
-  `write`, `docs/power.md`), `kernel.mounts` (`mount`, `umount`: `write`; a
-  mount or bind changes the tree for every process, so `mount` on a
-  directory alone, which `all` grants, is not enough), `proc(USER)`
-  (signalling that user's processes, their threads included: `signal`). A
-  process may always signal itself.
+- **Users.** `user NAME` takes `groups:`, `domains:` (where exec may move
+  its processes), `login:` (the domain `setuser` enters, else the
+  `login ->` line's; `none` means nobody enters the user), `home:`
+  (default `/`) and `password:`. A user's uid is the position of its
+  line, from 0. `/proc/sys/security/users` lists them for libgloss's
+  `getpwnam` and friends.
+- **Labels.** `label PATTERN KIND[(OWNER)]`. Each path component is a
+  literal, `*` (one component), `$name` (one, captured) or a final `**`
+  (any number, none included). The **last** matching rule wins, so the
+  general rules come first; a file no rule matches is `unlabeled`.
+- **Domains.** `domain NAME:` is followed by `KIND(OWNER) {rights}` rules.
+  The owner is `self` (the process's user), `group` (any of its groups),
+  `*` (anyone, or no owner), a fixed name, or absent (the label has no
+  owner). `* {rights}` covers every label. A domain's rights on a label
+  are the union of its matching rules.
+- **Rights**: `read`, `write` (covers `append`), `append`, `create`,
+  `remove`, `exec`, `setattr` (file times), `mount`, `signal`, `all`.
 - **Transitions.** `exec PATTERN -> DOMAIN`: exec of a matching program
-  moves the process into the domain, when its user lists it in `domains:`
-  (otherwise the program runs in the caller's domain). The last matching
-  rule counts.
+  moves the process into the domain when its user lists the domain in
+  `domains:`; otherwise the program runs in the caller's domain. The last
+  matching rule counts.
+
+Labels come from the file's **canonical** path, the one bind mounts
+resolve to, so a file reached through a bind or a namespace has the label
+of where it is stored. `get-myos`'s apps (`/data/apps`, `/tmp/apps`) and
+`get-alpine`'s root (`/data/alpine`) are `sys.pkg` whatever path
+`run-myos` shows them at; `/dev/shm` is `/tmp/.shm`, labelled `tmp`.
+
+### Kernel objects
+
+| Label | What it guards |
+|---|---|
+| `kernel.modules` | `insmod`, `rmmod`: `write` |
+| `kernel.clock` | `settimeofday`: `write` |
+| `kernel.policy` | `sec load`: `write` |
+| `kernel.users` | entering a user who has no password: `write` |
+| `kernel.power` | `poweroff`, `reboot`, `halt`: `write` (`docs/power.md`) |
+| `kernel.mounts` | `mount`, `umount`: `write` |
+| `proc(USER)` | signalling that user's processes, their threads included: `signal` |
+
+A mount changes the tree for every process, so `mount` on the directory
+is not enough: `kernel.mounts` is needed too. A process may always signal
+itself.
 
 ### What each operation needs
 
 | Operation | Rights |
 |---|---|
 | `openat` | `read` and/or `write` (`append` with `O_APPEND`, `write` with `O_TRUNC`); a new file `create` too |
-| `statat` | any right (a file the caller has none on is not there for it); none for an fd's own file (`fstat`) |
-| `statfsat` | any right on the file named (as `statat`); none for an fd's own file (`fstatvfs`) |
+| `statat`, `statfsat` | any right (a file the caller has none on is not there for it); none on an fd's own file |
 | `listdirat`, `chdirat`, `readlinkat` | `read` |
-| `mknodat`, `symlinkat` | `create` (on the new name) |
+| `mknodat`, `symlinkat` | `create` |
 | `unlinkat` | `remove` |
-| `renameat` | `remove` on the old name, `create` on the new one (`remove` too when it replaces a file); for a directory, `remove` on every name beneath it and `create` on where each goes |
+| `renameat` | `remove` on the old name, `create` on the new (`remove` too when it replaces a file); for a directory, the same for every name beneath it |
 | `execat` | `exec` (a script's interpreter and a Linux program's dynamic linker too) |
 | `utimensat` | `setattr` |
-| `mount`, `umount` | `write` on `kernel.mounts`, `mount` on the directory (`umount` of a bind: on its target); a disk `read write`, a bind's source `read` |
+| `mount`, `umount` | `write` on `kernel.mounts`, `mount` on the directory (a bind's target); a disk `read write`, a bind's source `read` |
 | `insmod`, `rmmod` | `read` on the module, `write` on `kernel.modules` |
 | `kill` | `signal` on `proc(target's user)` |
-| `power` (`poweroff`, `reboot`, `halt`) | `write` on `kernel.power` |
+| `power` | `write` on `kernel.power` |
 
-An fd keeps the access it was opened with (one opened `O_WRONLY` does not
-read, whatever its holder may do): passing it to another process
-(inheritance, a namespace that cannot name the file) is a deliberate grant,
-not checked again. A call on an fd's own file (`futimens`, `fdopendir`,
-`fstat`'s permission bits) checks the policy against the rights its
-opener's namespace had there, not the caller's.
-`ftruncate` needs an fd opened for writing, by a process that may `write`
-the file: an fd a process could only `append` to is append-only, and takes
-every write at the end (`pwrite`'s offset is ignored on an `O_APPEND` fd,
-as on Linux). Because an fd is a grant, a
-program can keep one from the programs it execs: an fd marked
-close-on-exec (`O_CLOEXEC`, `FD_CLOEXEC`) is closed by the exec. libc's
-`opendir` and Rust's `std` open their fds so.
+### File descriptors
 
-`stat` shows what the caller may do: the owner's permission bits are
-`r` (read), `w` (write, or create in a directory), `x` (exec, or read for a
+An fd keeps the access it was opened with, and passing one to another
+process (by inheritance, or into a namespace that cannot name the file)
+is a deliberate grant, not checked again. A call on an fd's own file
+(`futimens`, `fdopendir`, `fstat`'s bits) checks the rights its opener's
+namespace had there; `ftruncate` needs an fd opened for writing. An fd a
+process could only `append` to takes every write at the end (`pwrite`'s
+offset is ignored on `O_APPEND`, as on Linux). To keep an fd from the
+programs it execs, a program marks it close-on-exec; libc's `opendir` and
+Rust's `std` do.
+
+### What `stat` shows
+
+`stat` shows what the caller may do: the owner's bits are `r` (read), `w`
+(write, or create in a directory) and `x` (exec, or read for a
 directory); the group's and others' are clear. `st_uid` is the label's
-owner when it is a user (`home(alice)`: alice's uid), else 0, so `ls -l`
-shows who owns a home's files. `chmod` and `chown` change nothing.
+owner when it is a user, else 0, so `ls -l` shows who owns a home's
+files. `chmod` and `chown` change nothing.
 
-Refusals are logged on the console, a few per second:
-`sec: denied alice/untrusted write,create on /home/alice/x [home(alice)]`
-(`would deny` in permissive mode).
+### Refusals
+
+Refusals are logged on the console, a few per second (`would deny` in
+permissive mode):
+
+```
+sec: denied alice/untrusted write,create on /home/alice/x [home(alice)]
+```
 
 ## Users and passwords
 
 The kernel checks passwords. `setuser(name, password)` (libgloss
 `myos_setuser`, ubase `login`, `sec as`) runs the calling process as the
-user, in its login domain, when the password is right. The policy keeps
-`sha256:SALT:HEX`, the SHA-256 of the salt followed by the password:
+user, in its login domain. The policy keeps `sha256:SALT:HEX`, the
+SHA-256 of the salt followed by the password:
 
 ```sh
 printf '%s' "SALTpassword" | sha256sum
 ```
 
-A user without a password can only be entered from a domain with `write`
-on `kernel.users`: `login` (the domain getty and login run in) and
-`admin`. So nothing else can become root, which has no password by
-default; give it one in the policy to require it at the console. A user
-with `login: none` is entered by nobody: `system`, whose processes init
-starts, is one, so it cannot be typed at the console.
+A user without a password can be entered only from a domain with `write`
+on `kernel.users` (`login`, where getty and login run, and `admin`), so
+nothing else becomes root, which has no password by default. Give root a
+password in the policy to require one at the console. A `login: none`
+user, such as `system`, is entered by nobody.
 
 ## The default policy
 
-- `system` runs init (`init`), netd (`netd`), the sound server (`sndd`:
-  `/dev/sound`'s streams, `dev.sound`, which only it and `admin` open;
-  every program plays through its socket, `docs/sound.md`), getty and
-  login (`login`),
-  init's `mount -a` (`mount`: the ESP at `/boot`, the fstab's partitions,
-  `docs/install.md`) and the boot smoke `/bin/custom/ok` (`smoke`), each
-  with what it uses. The boot script `/etc/rc` (`rc`, its `exec` rule)
-  may only read the system and enter a user without a password, which it
-  does at once: the rest of it runs as root, in `admin`
-  (`docs/install.md`).
-- dropbear's keys, `/data/dropbear` and `/tmp/dropbear` (bound over
-  `/etc/dropbear`, `docs/ssh.md`), are `secret(root)`: no other user reads
-  the host key or changes who may log in.
-- `root` logs in to `admin`: the whole system (the image, `/tmp`, devices,
-  `/proc`, `/net`, the kernel objects, every home) but not other users'
-  `secret`s. It can also run `shell` and `untrusted` programs.
-- `shell` is a user's: read and run the system, their own home and secrets,
-  `/tmp`, the terminals, the network, their own processes.
-- `untrusted` reads the system and its user's home, and nothing more: no
-  writes anywhere, no `/tmp`, no network, no secrets.
-- `/net` is every user's (`net {read write}`), but a conversation
-  (`/net/tcp/N`, `/net/unix/N`: `docs/sockets-curl.md`,
-  `docs/sockets-unix.md`) belongs to the user whose process made it (an
-  accepted connection to the listener's): only that user's processes open
-  its files. The event counters, timers, wait sets and signal fds
-  (`/dev/event/N`, `/dev/timer/N`, `/dev/wait/N`, `/dev/sig/N`:
-  `docs/events.md`) are `dev.common`, every user's to make, and belong the
-  same way to the user whose process opened `clone`.
-- The terminals (`/dev/ttyN`, `/dev/ttyS0`, `/dev/pts/N`: `docs/tty.md`)
-  are `dev.tty`, and each takes its user as the label's owner,
-  `dev.tty(alice)`: the user of the leader of the session that claimed it
-  (`ctty`), else, for a pty, the user whose process opened
-  `/dev/pts/clone` for it (`dev.common`, every user's). The kernel's ttys
-  are nobody's until a session claims them, and the console is nobody's.
-  Since `login` enters the user in the session's leader (getty's process),
-  a login hands its terminal over to the user it enters, and a terminal
-  whose session ended is nobody's (a pty its opener's) again. `/dev/tty`,
-  the caller's controlling terminal, is the caller's own while its session
-  has one. `shell` and `untrusted` have `dev.tty(self)`: a user opens their
-  own terminals' `data` and `ctl`, not another session's, nor one no
-  session holds (where a program waiting for the next login would read
-  its password), nor the console. The system's domains (`init`, `login`,
-  `rc`, `smoke`) and `admin` have `dev.tty(*)`, every terminal; `netd`
-  and `mount` write the console and the ttys no session holds. A kernel
-  tty also hangs up when it changes hands, as Linux's `vhangup` makes it:
-  when a session claims it and when that session ends, the fds opened on
-  its `data` before are dead (they read and write `EIO`), and its `ctl`
-  is checked at every write, not only at the open. So a program left
-  running after its user's session neither reads the next login's input
-  nor writes to its screen (getty claims the tty, then opens it again). A
-  pty does not hang up: its master's holder sees all of it anyway, and a
-  pair is not used again while an fd holds it. The
-  console keyboard and pointer themselves (`/dev/console/kbd`,
-  `/dev/console/mouse`) are `dev`: the administrator's, not every terminal
-  user's.
+`etc/policy` is commented; in short:
+
+- **`system`** runs init, netd, the sound server, getty and login, init's
+  `mount -a` and the boot smoke, each in its own domain. Only `sndd` and
+  `admin` open `/dev/sound`'s streams (`docs/sound.md`).
+- **`/etc/rc`** runs in `rc`, which may only read the system and enter a
+  passwordless user: it enters root at once (`docs/install.md`).
+- **`root`** logs in to `admin`: the whole system, but not other users'
+  `secret`s, such as dropbear's keys (`secret(root)`, `docs/ssh.md`).
+- **`shell`**, a user's domain: the system, their own home and secrets,
+  `/tmp`, their terminals, the network, their own processes.
+- **`untrusted`** reads the system and its user's home, nothing more.
+
+`/net` is every user's, but a conversation (`/net/tcp/N`, `/net/unix/N`:
+`docs/net.md`, `docs/sockets-unix.md`) belongs to the user whose process
+made it; an accepted one, to the listener's user. The event files
+(`/dev/event/N`, `/dev/timer/N`, `/dev/wait/N`, `/dev/sig/N`:
+`docs/events.md`) are `dev.common` and belong the same way to the user
+whose process opened `clone`.
+
+### Terminals
+
+A terminal (`docs/tty.md`) is `dev.tty(USER)`, where the user is the
+leader's of the session that claimed it (for an unclaimed pty, its
+opener's); an unclaimed kernel tty and the console are nobody's. `login`
+enters the user in getty's process, the session leader, so a login hands
+the terminal to its user. `shell` and `untrusted` have `dev.tty(self)`,
+so a user opens neither another session's terminal nor an unclaimed one,
+where the next login's password is typed; the system's domains and
+`admin` have `dev.tty(*)`. The console keyboard and pointer are `dev`,
+the administrator's.
+
+A kernel tty hangs up when it changes hands, as with Linux's `vhangup`:
+older fds on its `data` read and write `EIO`, and its `ctl` is checked at
+every write. So a program left behind by a session cannot reach the next
+login's. A pty does not hang up, and a pair is not reused while an fd
+holds it.
 
 ## Namespaces
 
 A process without a namespace sees the whole tree. `sec ns BIND... --
 CMD` (the `ns` syscall, libgloss `myos_ns`) gives the command only the
-bindings, each `PATH[=SOURCE][:RIGHTS]`: the real `SOURCE` (named as the
-caller sees it; default `PATH`) at `PATH`, with at most `RIGHTS` (default:
-all of the caller's there):
+bindings. Each is `PATH[=SOURCE][:RIGHTS]`: `SOURCE` (as the caller names
+it; default `PATH`) appears at `PATH`, with at most `RIGHTS` (default:
+all the caller's rights there).
 
 ```sh
 # B gets /dev/sda/data read-write and the programs it needs, and no other disk:
 sec ns /bin:read,exec /lib:read /dev/sda/data:read,write -- B
 ```
 
-- A path under no binding does not exist; a directory above bindings (`/`,
-  `/dev` above `/dev/sda/data`) is made up and lists only them.
-- A directory a binding leads to lists its own entries and the names bound
-  directly below it: with `/` bound to `/` and a file bound at
-  `/bin/custom/vim`, `ls /bin/custom` shows vim among the image's programs
-  (`run-myos`, `docs/packages.md`).
-- A binding's source must be one the caller can name, and its rights are at
-  most the caller's there, so a namespace only narrows. There is no way back
-  to a name the namespace lacks: `mount` and `bind` need names too.
-- The policy still applies: the namespace hides, the policy refuses.
-- A namespace is inherited on fork and kept across exec. `chroot DIR`
-  (libc) is a namespace of one binding, `DIR` at `/`.
+- A path under no binding does not exist. A directory above bindings is
+  made up and lists only them; a bound directory lists its own entries
+  plus the names bound directly below it (how `run-myos` adds an app to
+  `/bin/custom`, `docs/packages.md`).
+- A namespace only narrows: a source must be nameable by the caller, its
+  rights are at most the caller's, and `mount` and `bind` need names too.
+  The policy still applies.
+- It is inherited on fork and kept across exec. `chroot DIR` (libc) is a
+  namespace of one binding, `DIR` at `/`.
 - `/proc/self/fd/N` names a file as the namespace does; a file it cannot
   name has no link to re-open.
-- A file handed over as an open fd (`sec ns ... -- B < /dev/sdb/data`) works:
-  the fd is the grant.
-- A directory handed over as an open fd that the namespace cannot name is
-  a **capability** (`sec ns ... -- B 3< /srv/data`): the `*at` calls on it
-  (`openat(3, "x/y", ...)`, `mkdirat`, `unlinkat`, `renameat`, ...) work
-  beneath it, with the rights its opener's namespace had on the directory
-  when it was opened (all of them without a namespace) in place of the
-  namespace's, and the policy still applies. Paths stay beneath it: `..`
-  above it, an absolute path, an absolute symlink target or a relative one
-  leading out fails. A directory opened beneath it is a capability with the
-  same rights, beneath which the same holds. It has no name in the
-  holder's view, so it cannot be the cwd (`fchdir` fails) nor hold a
-  program to exec.
+- An open fd handed over still works: it is the grant
+  (`sec ns ... -- B < /dev/sdb/data`).
+
+### Directory capabilities
+
+A directory handed over as an fd the namespace cannot name is a
+**capability** (`sec ns ... -- B 3< /srv/data`). The `*at` calls work
+beneath it, with the rights its opener's namespace had on it, and the
+policy still applies. Paths stay beneath it: `..` above it, absolute
+paths and symlinks leading out fail. Directories opened beneath it are
+capabilities too. It has no name in the holder's view, so it cannot be
+the cwd (`fchdir` fails) nor hold a program to exec.
 
 ## Limits
 
-- Labels are path rules only: a label cannot be set on a single file (no
-  extended attributes).
-- No hard links, on purpose: a file has one name, so its label (from that
-  name) is the only one it has. A second name elsewhere would give the
-  same file another label, and another binding of a namespace could reach
-  it. `link`/`linkat` fail with `EPERM`; git renames its objects into
-  place instead. A file with several names on an ext2 disk made elsewhere
-  is reached by any of them, each its own label.
-- `chmod`/`chown` do nothing, and there is one group database entry (root)
-  for libc; the policy's groups only feed `shared(group)` rules.
-- Linux programs see uid and gid 0 whoever runs them (their rights are
-  still their user's and domain's).
-- A new policy needs `sec load` (or a reboot), and processes keep their user
-  and domain by name across it.
-- Per-user `/tmp` is a namespace away (bind `/tmp/USER` at `/tmp`); login
-  does not set one up yet.
-- A terminal's user is the session leader's user, so a process another
-  user starts in that session (`sec as`) reaches the terminal through the
-  fds it inherits and `/dev/tty`, not by name.
-- A rename of a directory walks its tree to check every name (the labels
-  beneath the new name may differ): a large tree takes a moment, and one
-  whose directory listing exceeds 256 KiB is refused.
+- Labels are path rules only: no label on a single file (no extended
+  attributes).
+- No hard links, on purpose: a file has one name, so one label, and no
+  second name lets a namespace reach it. `link` fails with `EPERM`. (A
+  file with several names on a foreign ext2 disk gets each name's label.)
+- `chmod` and `chown` do nothing; libc has one group entry (root). The
+  policy's groups only feed `shared(group)` rules.
+- Linux programs see uid and gid 0; their rights are still their user's
+  and domain's.
+- A new policy needs `sec load` or a reboot.
+- Per-user `/tmp` is a namespace away (bind `/tmp/USER` at `/tmp`), but
+  login does not set one up yet.
+- A process another user starts in a session (`sec as`) reaches its
+  terminal only through inherited fds and `/dev/tty`.
+- A directory rename checks every name beneath it, as the labels may
+  differ: a large tree takes a moment, and one whose listing exceeds
+  256 KiB is refused.

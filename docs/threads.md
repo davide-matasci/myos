@@ -1,111 +1,107 @@
 # Threads
 
-A myos process can run several threads: tasks that share its address
-space, open files, cwd and root, signal dispositions, process group and
-session, and exit status, each with its own registers, stacks, thread
-pointer (TLS base) and blocked/pending signals.
+A myos process can run several threads. They are tasks that share the
+process's address space, open files, cwd and root, signal dispositions,
+process group and session, and exit status. Each thread has its own
+registers, stacks, thread pointer (TLS base), and blocked and pending
+signals. This page covers the kernel's threads, their syscalls, and the
+two thread libraries on top: Rust's `std::thread` and libgloss's
+pthreads. How tasks are scheduled and block is in `docs/scheduler.md`.
 
 ## Model
 
 | Where | What |
 |-------|------|
 | `kernel/src/task/thread.rs` | creating threads, thread and process exit, waiting on an address |
-| `kernel/src/task/tp.rs` | the user thread pointer per task (x86_64 FS base, aarch64 `tpidr_el0`; riscv64's `tp` is in the trap frame) |
-| `kernel/src/task/mod.rs` | `Task::tgid`, `with_process_mut` / `with_thread_mut`, `current_pid` |
-| `kernel/src/user/syscall.rs` | `caller_regs`, `thread_start` and the native syscalls below |
+| `kernel/src/task/tp.rs` | the user thread pointer per task |
+| `kernel/src/task/mod.rs` | `Task::tgid`, `with_process_mut` / `with_thread_mut` |
+| `kernel/src/user/syscall.rs` | the native syscalls below |
 | `user/lib/src/thread.rs` | `myos_user::thread`: Rust wrappers |
 
-Every thread is a task slot. The first thread of a process, its leader, is
-also the process: the pid is the leader's slot, and the leader's slot holds
-what the threads share. Each task has a `tgid`, the slot of its leader
-(its own for a single-threaded process), and the shared state is always
-reached through it (`with_process_mut`). A thread's id (tid) is its slot.
+Every thread is a task slot, and its id (tid) is its slot. The first
+thread, the leader, is also the process: the pid is the leader's tid, and
+the leader's slot holds what the threads share. Each task's `tgid` is its
+leader's slot, and the kernel reaches the shared state through it. pids
+and tids share one number space.
 
-Every thread gets a home CPU of its own, round-robin like the processes
-(`user_affinity` in `task/lifecycle.rs`; an idle CPU may take it from a
-busy home later, `docs/pci-acpi-smp.md`), so the threads of a process run
-in parallel. A new thread first waits on its creator's CPU, which runs the
-syscall with interrupts off, until `place_thread` moves it: the Linux
-layer's `clone` stores the thread ids the new thread reads first
-(`CLONE_PARENT_SETTID`, ...) before it does.
+A native thread starts at `entry(arg)` on its own stack; a Linux `clone`
+thread starts like a forked child (result 0) on its own stack.
 
-An address space is then loaded on several CPUs. A mapping removed or
-narrowed (`munmap`, `mprotect`, `madvise`, a shrinking `brk`) is flushed on
-every CPU that has it loaded (`flush_user_tlb`: an IPI shootdown on x86 and
-riscv64, the inner-shareable `tlbi` on aarch64), and the frames it unmapped
-are freed only after that flush (`free_mapped_page` keeps them until then):
-before it, another thread could still reach them through its TLB. A change
-that only adds mappings (the heap growing, an `mmap` that is not `MAP_FIXED`)
-asks no other CPU to flush on x86_64 and aarch64, which cache no missing
-translation (`flush_user_tlb_added`); riscv64 may, and flushes everywhere.
-A change that widens a mapping's permissions (`mprotect` to writable or
-executable) records the region's new protection before it rewrites the
-pages present, so a page another thread faults in meanwhile takes the new
-one (a fault that read the old record reads it again under the fault lock,
-`PROT_GEN`), and flushes every CPU afterwards; a permission fault on a
-fetch or a load whose entry allows the access, a translation cached before
-that flush, drops the translation and retries, and one on a page whose
-region allows the access applies the region's protection to the page again.
+## CPUs and TLBs
 
-A new thread starts in user mode from a full register image
-(`task::UserRegs`, the same one a forked child resumes with): a native thread
-at `entry(arg)` on its own stack, a Linux `clone` thread like a forked child
-(result 0) on its own stack.
+Every thread gets a home CPU of its own, round-robin like processes, and
+an idle CPU may take it from a busy home later (`docs/scheduler.md`,
+"Idle-pull balancing"). So the threads of a process run in parallel. A
+new thread first waits on its creator's CPU until the syscall places it;
+the Linux layer's `clone` uses that window to store the thread ids the
+thread reads first.
+
+An address space loaded on several CPUs shapes the TLB flushes
+(`flush_user_tlb` and its callers):
+
+- **Removing or narrowing a mapping** (`munmap`, `mprotect`, `madvise`, a
+  shrinking `brk`) flushes every CPU that has the address space loaded.
+  The unmapped frames are freed only after that flush, since another
+  thread could reach them through its TLB until then.
+- **Only adding mappings** flushes no other CPU on x86_64 and aarch64,
+  which cache no missing translation; riscv64 may, so it flushes
+  everywhere.
+- **Widening permissions** records the new protection before rewriting
+  the pages, so a page faulted in meanwhile takes it. A permission fault
+  on an access the page or region allows comes from a stale translation:
+  the kernel fixes the page and retries.
+
+The scheduler keeps a user task loaded on one CPU at a time, so these
+rules also cover a task an idle CPU pulls.
 
 ## Lifetime
 
 - `thread_exit` ends the calling thread. A thread is nobody's child: its
   slot is freed once it is off its kernel stack.
-- The kernel has 512 task slots, one per thread, kernel threads and idle
-  tasks included (`task::MAX_TASKS`, `MYOS_MAX_TASKS` for modules); a
-  `fork` or `thread_spawn` past them fails (`EAGAIN` in libc). Scans of
-  every task stop at the highest slot ever used.
-- Every thread has a 64 KiB kernel stack (`task::STACK_SIZE`), a heap
-  allocation with a canary word at its bottom that `schedule` checks on
-  every switch away from it: a thread that ran off its stack panics the
-  kernel naming itself (`kernel stack overflow: task N`), instead of
-  corrupting whatever the heap placed below, another stack's saved context
-  for instance, which would fail much later with a jump to address 0 in a
-  task that did nothing wrong. An aarch64 kernel fault report carries the
-  link register and the stack pointer at the fault for the same reason.
-- The process ends with its last thread. The leader carries the process, so
-  it always goes last: a leader whose own thread ends waits for the others,
-  then exits the process (closes its fds, reports to the parent, frees the
-  address space).
-- `exit` (and a fatal signal, or a fault) ends the whole process: the first
-  one sets the exit status, the other threads get `SIGKILL`, and the leader
-  exits the process once they are gone. A signal also acts when an
-  interrupt preempts a thread in user mode (`signal::on_user_interrupt`), so
-  a thread spinning without syscalls cannot keep its process alive, and a
-  handler reaches it there.
-- `exec` first ends the process's other threads. Only the leader may exec
-  while there are others (Linux lets any thread, which then takes over the
-  pid; not supported).
-- `fork` from any thread makes a single-threaded child whose thread resumes
-  with the calling thread's registers.
+- The process ends with its last thread. The leader carries the process,
+  so it always goes last: a leader whose own thread ends waits for the
+  others, then exits the process (fds closed, parent told, address space
+  freed).
+- `exit`, a fatal signal or a fault ends the whole process. The first one
+  sets the exit status and the other threads get `SIGKILL`.
+- A signal also acts when an interrupt preempts a thread in user mode, so
+  a thread spinning without syscalls cannot keep its process alive.
+- `exec` first ends the other threads; only the leader may exec while
+  there are others (see "Limits").
+- `fork` from any thread makes a single-threaded child that resumes with
+  the calling thread's registers.
+
+The kernel has 512 task slots, one per thread, kernel threads and idle
+tasks included (`task::MAX_TASKS`, `MYOS_MAX_TASKS` for modules). A
+`fork` or `thread_spawn` past them fails (`EAGAIN` in libc). Every thread
+has a 64 KiB kernel stack (`task::STACK_SIZE`) with a canary that
+`schedule` checks on every switch away: a thread that ran off its stack
+panics the kernel naming itself (`kernel stack overflow: task N`) rather
+than corrupting a neighbouring stack and failing much later elsewhere.
 
 ## Signals
 
-Dispositions (`sigaction`, ignored signals) belong to the process; the
-blocked mask and the pending set belong to each thread. A signal sent to a
-pid goes to the leader thread, one sent to a tid to that thread. A signal
-whose action is to terminate ends the whole process.
+Dispositions belong to the process; the blocked mask and the pending set
+to each thread. A signal sent to a pid goes to the leader, one sent to a
+tid to that thread, and a terminating action ends the whole process
+(`docs/signals.md`).
 
 ## Waiting on an address
 
 `wait_addr(addr, expected, timeout)` blocks the calling thread while the
-32-bit word at `addr` holds `expected`; `wake_addr(addr, n)` wakes up to `n`
-threads of the same process waiting on it. Together with atomic operations
-in user space they make locks, condition variables and joins (they are what
-Linux `futex` maps onto). A wait re-reads the word under the scheduler's
-wake sequence, so a wake between the check and the sleep is never lost.
-That sequence counts every wake in the system, so a wake for something else
-in the same window would end the sleep too: the kernel then sleeps again
-while the word still holds `expected` and the timeout has not passed
-(issue #520). A wait ends in `0` only on a `wake_addr` for its address or
-when the word changed while it slept, which is why a waker changes the word
-before it wakes (as Linux `futex` asks). Callers still re-check their
-condition, as with any futex.
+32-bit word at `addr` holds `expected`. `wake_addr(addr, n)` wakes up to
+`n` threads of the same process waiting on it. With user-space atomics
+they make locks, condition variables and joins; Linux `futex` maps onto
+them.
+
+A wait re-reads the word under the scheduler's wake sequence, so a wake
+between the check and the sleep is never lost (`docs/scheduler.md`,
+"Blocking waits"). That sequence counts every wake in the system, so the
+kernel sleeps again while the word still holds `expected` and the timeout
+has not passed (issue #520). A wait ends in `0` only on a `wake_addr` for
+its address, or when the word changed; so a waker changes the word before
+it wakes, as with Linux `futex`, and callers still re-check their
+condition.
 
 ## Syscalls
 
@@ -117,120 +113,67 @@ condition, as with any futex.
 | 55 | `wait_addr(addr, expected, timeout_ns)` | `0` woken, `1` the word differed, `2` timed out (`timeout_ns` 0 = none); `EINTR` on a signal |
 | 56 | `wake_addr(addr, count)` | returns how many it woke |
 | 57 | `gettid()` | the calling thread's id |
-| 89 | `set_tp(value)` | make `value` the calling thread's thread pointer, as `thread_spawn`'s `tls` is a new thread's (x86_64 user code cannot write the FS base) |
+| 89 | `set_tp(value)` | set the calling thread's thread pointer (x86_64 user code cannot write the FS base) |
 | 90 | `yield()` | let the other tasks ready on this CPU run first |
 
-`user/heap` (`thread_smoke`, `[ OK ] threads` in boot CI) checks shared
-memory, wait/wake, and that a process exits while one of its threads sleeps
-on an address and another spins in user mode.
+`user/heap`'s `thread_smoke` (the `[ OK ] threads` boot line) covers the
+kernel side.
 
 ## Rust `std::thread`
 
-The std port (`toolchain/std`) runs `std::thread` on these calls:
+The std port (`toolchain/std`, `sys/thread/myos.rs`) runs `std::thread`
+on these calls. A thread is one mapping: a guard page, its stack (1 MiB
+by default, paged in as touched) and a top page with its TLS table and
+the word its handle waits on. `join` frees the mapping, or the thread
+itself when it was detached first; it then ends in a few instructions
+that touch only that word, with signals blocked, so nothing lands on a
+stack being freed.
 
-- **Spawning** (`sys/thread/myos.rs`): a thread gets one mapping: a guard
-  page, its stack (1 MiB by default, paged in as it is touched) and a top
-  page holding its TLS table and the word its handle waits on. Whoever is
-  last frees the mapping: `join` once the thread has ended, or the thread
-  itself when its handle was dropped first (detached). A thread ends in a
-  few instructions that touch no memory but that word once a joiner may
-  free its stack, with its signals blocked so no handler frame lands there.
-- **Locks**: std's futex-based `Mutex`, `Condvar`, `RwLock`, `Once` and
-  thread parking, on `wait_addr` / `wake_addr` (`pal/myos/futex.rs`). The
-  heap (`brk`) takes a `Mutex`.
-- **Thread-locals** (`sys/thread_local/key/myos.rs`): a table of 499 keys
-  per thread at the thread pointer, its word 0 pointing at itself so x86_64
-  code reads it at `fs:0`; the main thread's is a static, installed with
-  `set_tp` before `main`. std runs a thread's destructors when it ends.
-- `available_parallelism` counts the CPUs of `/proc/cpu`
-  (`docs/proc.md`), `yield_now` is `yield`.
+- std's futex-based locks and parking run on `wait_addr` / `wake_addr`
+  (`pal/myos/futex.rs`).
+- Thread-locals (`sys/thread_local/key/myos.rs`): 499 keys per thread at
+  the thread pointer, whose word 0 points at itself (x86_64's `fs:0`).
+- `available_parallelism` counts `/proc/cpu` (`docs/proc.md`).
 
-The `*-unknown-myos` targets are no longer `singlethread` (which compiled
-atomics to plain loads and stores). `/bin/std/thread` (`user/std/thread`, test
-`std_thread`) checks the locks, channels, thread-locals and their
-destructors, scoped threads, parking, and that joined and detached threads
-free their task slots and stacks (120 threads).
+The `*-unknown-myos` targets are not `singlethread`. Test: `std_thread`
+(`/bin/std/thread`, `user/std/thread`).
 
 ## C threads (pthreads)
 
 libgloss (`toolchain/newlib/libgloss/myos/pthread.c`) runs POSIX threads
-on the same calls, laid out as the std port's:
+on the same calls, laid out like std's: one mapping per thread, with its
+control block `struct __pthread` on top, where `pthread_t` and the thread
+pointer point. mlibc has its own (`docs/mlibc.md`).
 
-- **A thread** is one mapping: a guard page, its stack (1 MiB unless the
-  attributes say otherwise, paged in as touched) and on top its control
-  block, `struct __pthread`, which `pthread_t` points at and the thread
-  pointer too (word 0 points at itself, for x86_64's `fs:0`). Joining frees
-  the mapping, or the thread itself when it was detached first, ending in
-  the same register-only sequence as a std thread with its signals blocked.
-  A thread created detached is detached by `pthread_create` only once it
-  has stored the thread's id into the block (before that, the thread could
-  end and unmap the block under the store).
-  The main thread's block is a static, and its thread pointer is only set
-  when the second thread starts: a program that never starts one runs as
-  before. The last thread to end exits the process as `exit(0)` does
-  (atexit handlers, stdio flushed); a `pthread_exit` from `main` leaves the
-  others running.
-- **newlib's state per thread**: newlib is built with `__DYNAMIC_REENT__`
-  (`toolchain/newlib/build.sh`), so `errno` and stdio reach their state
-  through `__getreent()`, which libgloss answers with the calling thread's
-  own `struct _reent` (the main thread's is newlib's `_impure_ptr`). Its
-  internal locks (malloc, stdio's streams, atexit, the environment, tz) are
-  retargeted (`--enable-newlib-retargetable-locking`) to libgloss mutexes.
-- **Locks** are one futex word on `wait_addr` / `wake_addr` (0 free, 1 held,
-  2 held with waiters). A mutex keeps its holder's tid and a recursive
-  one's count beside it, so `pthread_mutex_t` is four words in the
-  sysroot's `<sys/_pthreadtypes.h>` (`build-libgloss.sh`; newlib's own is
-  one), and `pthread_t` a pointer. A relock of a default mutex is
-  `EDEADLK`, a normal one waits for itself as POSIX says. A condition
-  variable is a sequence number its waiters sleep on and the clock of its
-  timed waits (`pthread_condattr_setclock`: `CLOCK_REALTIME` or
-  `CLOCK_MONOTONIC`, the kernel's time since boot); `pthread_once` a word
-  the others wait on while the first runs the routine.
-- **Read-write locks, barriers, spin locks** (declared by the sysroot's
-  `features.h`). A read-write lock counts its readers or marks its writer,
-  and its waiters sleep on a sequence number a release moves on; readers
-  go first, so a thread may take its read lock again. A barrier counts the
-  threads of a round under a lock word, the last one moves the round on
-  and wakes the others (and gets `PTHREAD_BARRIER_SERIAL_THREAD`). A spin
-  lock is a word taken by exchange; a spinning thread yields its CPU now
-  and then. All three are private to a process (`wait_addr` keys its words
-  by process): `PTHREAD_PROCESS_SHARED` is `EINVAL`.
-- **Keys**: 64, values per thread, destructors run when a thread ends. A
-  key made again in a deleted key's slot reads `NULL` everywhere.
-- **Cancellation**: `pthread_cancel` marks the thread and sends it
-  `SIGLOST` (which nothing else on myos sends), with a handler that has no
-  `SA_RESTART`, so a blocking call it interrupts returns. Deferred (the
-  default), the thread ends with `PTHREAD_CANCELED` in a cancellation
-  point: `read`, `write` and the socket calls over them, `poll`, `select`,
-  `pselect`, `accept`, `connect`, `wait`, `waitpid`, `sleep`, `usleep`,
-  `nanosleep`, `sigsuspend`, `sigwait`, `pthread_join`,
-  `pthread_testcancel`, and the condition waits, which end with the mutex
-  locked again as the cleanup handlers expect. Asynchronous, it ends at
-  its next syscall: signals act on the way out of one (`signals.md`), so a
-  loop that makes none is not interrupted. With cancellation disabled the
-  thread blocks the signal, so nothing is cut short; enabled again, the
-  cancellation waits for the next cancellation point. Cleanup handlers and
-  key destructors run with cancellation disabled.
-- **fork** runs the `pthread_atfork` handlers and holds newlib's own locks
-  (atexit, every stream's, the environment, tz, malloc) across the fork,
-  so a child forked while another thread is in malloc or stdio finds them
-  free; the child is the forking thread alone.
-- **Thread-safe functions** (`_POSIX_THREAD_SAFE_FUNCTIONS` in the
-  sysroot's `features.h`): newlib's `_r` functions, libgloss's `getpw*_r`,
-  `getgr*_r`, `readdir_r` and `ttyname_r`, and `flockfile` /
-  `funlockfile` / `ftrylockfile` on the stream's own lock, the one stdio
-  takes around each call. libX11 is built with its locks
-  (`packages/x11-libs`), which its constructor turns on before `main`.
+- The main thread's block is a static, and its thread pointer is set only
+  when a second thread starts. The last thread to end exits as `exit(0)`
+  does, so a `pthread_exit` from `main` leaves the others running.
+- newlib is built with `__DYNAMIC_REENT__` (`toolchain/newlib/build.sh`):
+  `errno` and stdio state are per thread, and newlib's internal locks are
+  retargeted to libgloss mutexes.
+- Mutexes are a futex word plus the holder's tid and a recursion count,
+  so the sysroot's `pthread_mutex_t` is four words. Condition variables
+  take `CLOCK_REALTIME` or `CLOCK_MONOTONIC`. Read-write locks (readers
+  first), barriers and spin locks are there too.
+- `PTHREAD_PROCESS_SHARED` is `EINVAL`: `wait_addr` keys its words by
+  process.
+- 64 keys, with destructors.
+- Cancellation sends `SIGLOST` (nothing else on myos sends it), with no
+  `SA_RESTART`, so a blocking call returns. Deferred cancellation acts at
+  the cancellation points (the list is in `pthread.c`); asynchronous
+  cancellation acts at the next syscall, so a loop that makes none is not
+  interrupted.
+- `fork` runs the `pthread_atfork` handlers and holds newlib's own locks
+  across the fork, so the child finds malloc and stdio free.
+- `_POSIX_THREAD_SAFE_FUNCTIONS`: newlib's `_r` functions, libgloss's
+  `getpw*_r`, `getgr*_r`, `readdir_r`, `ttyname_r`, and `flockfile` on
+  the stream's own lock. libX11 is built with its locks
+  (`packages/x11-libs`).
 
-`/bin/etc/pthread_smoke` (test `pthread`) checks the API on one thread,
-then a mutex and a condition variable under contention, `errno`, keys,
-stdio and malloc per thread, `pthread_once` across threads, `pthread_exit`
-with a cleanup handler, a detached thread, 150 threads started and joined,
-100 threads alive at once, read-write locks, barriers and spin locks
-under contention, a condition wait on `CLOCK_MONOTONIC`, cancellation in
-`read`, in a condition wait, while disabled, asynchronous and of the
-caller itself, and forks while two threads keep malloc and stdio busy.
+Test: `pthread` (`/bin/etc/pthread_smoke`, `user/c/pthread_smoke.c`).
 
-## Not yet
+## Limits
 
-- `exec` from a thread other than the leader.
+- Only the leader may `exec` while the process has other threads. Linux
+  lets any thread exec, and that thread then takes over the pid; myos
+  does not support this yet.

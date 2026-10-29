@@ -2,7 +2,7 @@
 //!
 //! The scheduler itself lives in `task/`; this module tracks online CPUs,
 //! AP entry, IPI TLB shootdown / reschedule, and `/proc/cpuinfo`.
-//! See `docs/pci-acpi-smp.md`.
+//! See `docs/scheduler.md`.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;

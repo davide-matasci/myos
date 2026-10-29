@@ -76,7 +76,7 @@ const REP_IFADDRS: u8 = 8;
 /// A udp conv's new peer (its address as in [`UDP_HDR`], its port
 /// big-endian): its queued datagrams from anyone else go.
 const REP_PEER: u8 = 9;
-/// netd's conversation table as `/net/convs` text (docs/sockets-curl.md).
+/// netd's conversation table as `/net/convs` text (docs/net.md).
 const REP_CONVS: u8 = 10;
 
 /// The header of a udp conv's datagrams to and from netd: remote address,

@@ -54,7 +54,7 @@ A master forks the workers (`worker_processes`), which share the
 listening sockets, a shared-memory accept mutex (`MAP_SHARED |
 MAP_ANON`) and the channels the master talks to them over (`socketpair`,
 fds passed with `SCM_RIGHTS`). `listen` takes any address, 127.0.0.0/8 or
-the host's own (`docs/sockets-curl.md`). The `user` directive defaults to
+the host's own (`docs/net.md`). The `user` directive defaults to
 root: myos has no superuser to give up, and `setuid` changes nothing.
 
 ## Test

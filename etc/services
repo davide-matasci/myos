@@ -1,5 +1,5 @@
 # The services a libc looks up by name: the one the resolver needs. A port
 # number in a program is what the service lookups find nothing for
-# (docs/sockets-curl.md).
+# (docs/net.md).
 domain		53/udp
 domain		53/tcp

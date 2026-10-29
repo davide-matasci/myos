@@ -1,3 +1,3 @@
-# The name every libc resolves without a lookup (docs/sockets-curl.md).
+# The name every libc resolves without a lookup (docs/net.md).
 127.0.0.1	localhost
 ::1	localhost

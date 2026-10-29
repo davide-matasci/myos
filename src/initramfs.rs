@@ -405,7 +405,7 @@ pub fn build_boot_archives(
     add(&mut entries, "etc/ttys", read(&manifest_dir.join("etc/ttys")));
     // The names resolved without a lookup and the services known by name
     // (mlibc's resolver reads them; libgloss knows localhost and the DNS
-    // port itself, docs/sockets-curl.md).
+    // port itself, docs/net.md).
     add(&mut entries, "etc/hosts", read(&manifest_dir.join("etc/hosts")));
     add(&mut entries, "etc/services", read(&manifest_dir.join("etc/services")));
     add(&mut entries, "etc/dropbear/.keep", Some(b"\n".to_vec()));

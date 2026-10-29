@@ -535,7 +535,7 @@ keymap_ctl() {
 }
 t -t console keymap keymap_ctl
 
-# The board description (docs/pci-acpi-smp.md): one line per component,
+# The board description (docs/platform.md): one line per component,
 # each ending in the source it came from. The CPUs and the interrupt
 # controller are always there; the console UART and the PCIe host bridge
 # too, except on a PC, whose arch does not need them described (QEMU's
@@ -576,7 +576,7 @@ platform() {
 t -t smoke platform platform
 
 # The firmware's AML on a PC (the acpi module's interpreter,
-# docs/pci-acpi-smp.md "AML"): it ran to its end, found the PCI root
+# docs/platform.md "AML"): it ran to its end, found the PCI root
 # bridge's interrupt routes (_PRT, handed to the kernel for INTx) and
 # _S5, which power-off then uses.
 acpi_aml() {
@@ -589,7 +589,7 @@ acpi_aml() {
 }
 t -t smoke acpi acpi_aml
 
-# Interrupt domains (irqchip, docs/pci-acpi-smp.md "Interrupt domains"):
+# Interrupt domains (irqchip, docs/interrupts.md "Interrupt domains"):
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
 # their own, behind the controller's one. Its probe sets an idle input to
 # interrupt while low and enables that line's interrupt through the
