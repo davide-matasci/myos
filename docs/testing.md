@@ -21,8 +21,9 @@ the ISO is for.
 
 QEMU emulates the guest's CPU (TCG) unless told otherwise. On a host with
 `/dev/kvm`, `MYOS_X86_ACCEL=kvm` runs the x86 boots on the host's CPU
-(`-accel kvm`, the CPU model still `qemu64`, so the guest sees the same
-CPU). The light list then takes about 400 s instead of 670 to 950. CI does
+(`-accel kvm`). The CPU model is `max` either way: under TCG everything
+QEMU emulates, under KVM the host's CPU, both with XSAVE and AVX, as
+real machines have them (`arch/x86/fpu.rs`). The light list then takes about 400 s instead of 670 to 950. CI does
 this for its x86 boots. aarch64 and riscv64 stay under TCG on an x86 host.
 
 ## Selecting tests

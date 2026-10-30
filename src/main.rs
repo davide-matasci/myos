@@ -84,10 +84,16 @@ fn riscv_limine_conf() -> String {
 /// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
 /// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
 /// needs the x2APIC MSRs.
-/// `+rdtscp`: the kernel keeps its CPU index in `IA32_TSC_AUX`, RDTSCP's
+/// RDTSCP: the kernel keeps its CPU index in `IA32_TSC_AUX`, RDTSCP's
 /// register (`arch/x86/cpu.rs`); TCG lets a CPU model without the feature
 /// write it, KVM faults the write.
-const X86_CPU: &str = "qemu64,+x2apic,+rdtscp";
+/// `max` for that, and so that the boots see XSAVE and AVX as every x86
+/// machine of the last decade has them (JavaScriptCore's JIT emits AVX
+/// when CPUID has it; the kernel turns AVX state on, `arch/x86/fpu.rs`):
+/// everything TCG emulates (AVX and AVX2 since QEMU 7.2), the host's CPU
+/// under KVM. (qemu64 with `+xsave,+avx` added hangs TCG on the CR4 write
+/// that turns XSAVE on.)
+const X86_CPU: &str = "max";
 
 /// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM
 /// path of `kernel/src/arch/x86/pci.rs`) with Intel's IOMMU (`kernel/src/
@@ -101,8 +107,8 @@ const X86_CPU: &str = "qemu64,+x2apic,+rdtscp";
 /// friendlier on a loaded 4-core host where MTTCG's vCPU threads starve
 /// each other and a boot stalls with no serial output. `MYOS_X86_ACCEL=kvm`
 /// runs the guest on the host's CPU through KVM instead (a host with
-/// `/dev/kvm`; the CPU model stays [`X86_CPU`], so the guest sees the same
-/// CPU either way): a measurement of what the emulation costs, not a boot
+/// `/dev/kvm`; the CPU model stays [`X86_CPU`], `max`, which under KVM is
+/// the host's CPU): a measurement of what the emulation costs, not a boot
 /// CI runs (`docs/testing.md`).
 fn x86_accel_args() -> Vec<&'static str> {
     if std::env::var("MYOS_X86_ACCEL").as_deref() == Ok("kvm") {
