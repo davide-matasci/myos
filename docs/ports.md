@@ -171,7 +171,17 @@ ports in build order: a hit's annotation serves the hashes of the ports
 after it; a port whose dependency the registry lacks has no defined key
 and is scheduled, and its job, after pulling or building the dependency,
 asks the registry again: with the dependency's outputs unchanged it is a
-hit, and the job ends with a pull. tcc installs `libtcc1.a` into newlib's
+hit, and the job ends with a pull. A port job (`scripts/ci-build-port.sh`)
+pulls or builds every port its port builds against, transitively, in
+build order (`scripts/ports.sh --deps`), each before the next is keyed on
+it, and a dependency it built that another job pushed first is replaced
+here by that job's artifact: a build is not always the same bytes twice
+(libxcb's generated code, for one), the jobs run in parallel, and what
+every job keys on must be the registry's outputs, else the same sources
+get a key per job and nothing finds anything. The build job's pulls
+(`scripts/ci-build-pull-and-kernels.sh`) run once every port job is done,
+in parallel, each port's hash finding its dependencies' records through
+the registry when their pulls have not landed yet. tcc installs `libtcc1.a` into newlib's
 tree (its own output, in the kernels hash): newlib's output hash leaves it
 out. Every key names the scheme (`keys=outputs-1` in `myos_hash`): a
 change to how keys are computed rebuilds everything once. What WebKitGTK

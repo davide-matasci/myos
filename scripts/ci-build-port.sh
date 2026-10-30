@@ -6,7 +6,9 @@
 # PORT names the registry package (a port's name, or `<name>:<arch>` for an
 # arch of a port built an arch at a time: the script builds that arch,
 # MYOS_<NAME>_ARCHES); DEPS is the space-separated PORT_DEPS of its
-# descriptor.
+# descriptor, what a piece without a descriptor (linux-compat) depends on:
+# a port's are all the ports it builds against, transitively, in build
+# order (scripts/ports.sh --deps).
 set -euo pipefail
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true
 
@@ -14,8 +16,13 @@ PORT="${1:?port name}"
 SCRIPT="${2:?build script}"
 NEEDS_SYSROOT="${3:-0}"
 DEPS="${4:-}"
+if closure="$(./scripts/ports.sh --deps "${PORT%%:*}" 2>/dev/null)"; then
+  DEPS="$closure"
+fi
 
 ./scripts/ci-registry.sh pull newlib || true
+# Each dependency in build order, so that it is keyed on the registry's
+# outputs of the ones before it, as every other job keys it.
 for dep in $DEPS; do
   ./scripts/ci-registry.sh pull "$dep" || true
   if ! ./scripts/ci-registry.sh current "$dep"; then
@@ -23,7 +30,13 @@ for dep in $DEPS; do
     # registry keeps the first push), so the matrix has no second stage.
     echo "==> dependency $dep not in the registry; building it"
     "./$(./scripts/ports.sh --script "$dep")"
-    ./scripts/ci-registry.sh push "$dep" || true
+    # Pushed; or another job pushed it first, and that build replaces this
+    # one here: a build is not always the same bytes twice (docs/ports.md
+    # "Cache keys"), and what is keyed on it must be the registry's.
+    if ./scripts/ci-registry.sh push "$dep" | tee /dev/stderr | grep -q 'already present'; then
+      echo "==> dependency $dep pushed by another job first; taking its build"
+      ./scripts/ci-registry.sh pull "$dep" || true
+    fi
   fi
 done
 ./scripts/ci-registry.sh pull "$PORT" || true
