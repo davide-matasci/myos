@@ -125,24 +125,29 @@ fn flush_tlb_local() {
 
 /// Flush this CPU's TLB if a shootdown epoch is pending. Safe with IF off —
 /// call from `schedule` so remotes ACK without needing the IPI handler.
+/// Interrupts are off across it when they were on (the lock loops that
+/// call it): a task preempted between finding its CPU and the ack, and
+/// resumed on another CPU (`sched::pull`), would otherwise flush that one
+/// and ack for the first, whose stale translations then stay (the same
+/// window as `task::with_cpu`'s).
 pub fn tlb_service() {
+    let flags = arch::irq_save();
+    arch::irq_off();
     let cpu = cpu_id();
-    if cpu >= MAX_CPUS {
-        return;
-    }
-    let epoch = TLB_EPOCH.load(Ordering::SeqCst);
-    let seen = TLB_SEEN[cpu].load(Ordering::SeqCst);
-    if seen >= epoch {
-        return;
-    }
-    flush_tlb_local();
-    let _ = TLB_SEEN[cpu].try_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
-        if s >= epoch {
-            None
-        } else {
-            Some(epoch)
+    if cpu < MAX_CPUS {
+        let epoch = TLB_EPOCH.load(Ordering::SeqCst);
+        if TLB_SEEN[cpu].load(Ordering::SeqCst) < epoch {
+            flush_tlb_local();
+            let _ = TLB_SEEN[cpu].try_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
+                if s >= epoch {
+                    None
+                } else {
+                    Some(epoch)
+                }
+            });
         }
-    });
+    }
+    arch::irq_restore(flags);
 }
 
 /// IPI handler entry: same as soft service (idempotent on epoch).

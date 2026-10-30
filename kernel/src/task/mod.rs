@@ -258,14 +258,28 @@ static LOADED_ASPACE: [AtomicU64; crate::smp::MAX_CPUS] = [
     AtomicU64::new(0),
 ];
 
+/// This CPU's entry of a per-CPU table, read or written with interrupts
+/// off: between finding the CPU and touching its entry an interrupt may
+/// switch the task out (the timer and the reschedule IPI schedule from
+/// kernel mode too), and a task preempted in a syscall can resume on
+/// another CPU (`pull`), where it would reach the first CPU's entry. A
+/// `sigaction` that read `current_slot` that way set a stranger's
+/// disposition: the login shell started with SIGINT ignored, one boot in
+/// twenty (issue #672).
+fn with_cpu<T>(f: impl FnOnce(usize) -> T) -> T {
+    let flags = irq_save();
+    irq_off();
+    let r = f(crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1));
+    irq_restore(flags);
+    r
+}
+
 fn loaded_aspace() -> u64 {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    LOADED_ASPACE[cpu].load(Ordering::SeqCst)
+    with_cpu(|cpu| LOADED_ASPACE[cpu].load(Ordering::SeqCst))
 }
 
 fn set_loaded_aspace(a: u64) {
-    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
-    LOADED_ASPACE[cpu].store(a, Ordering::SeqCst);
+    with_cpu(|cpu| LOADED_ASPACE[cpu].store(a, Ordering::SeqCst))
 }
 
 /// Has a CPU other than this one `aspace` loaded (a thread of its process
@@ -280,14 +294,13 @@ pub fn aspace_loaded_anywhere(aspace: u64) -> bool {
     LOADED_ASPACE.iter().any(|a| a.load(Ordering::SeqCst) == aspace)
 }
 
+/// The slot of the task running on this CPU ([`with_cpu`]: one step).
 fn current_slot() -> usize {
-    let cpu = crate::smp::cpu_id();
-    CURRENT[cpu.min(crate::smp::MAX_CPUS - 1)].load(Ordering::SeqCst)
+    with_cpu(|cpu| CURRENT[cpu].load(Ordering::SeqCst))
 }
 
 fn set_current_slot(slot: usize) {
-    let cpu = crate::smp::cpu_id();
-    CURRENT[cpu.min(crate::smp::MAX_CPUS - 1)].store(slot, Ordering::SeqCst);
+    with_cpu(|cpu| CURRENT[cpu].store(slot, Ordering::SeqCst))
 }
 
 pub fn init() {
