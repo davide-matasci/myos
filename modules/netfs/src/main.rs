@@ -38,7 +38,7 @@ use core::alloc::{GlobalAlloc, Layout};
 
 use myos_abi::{
     status_ok, ABI_VERSION, ApiCell, KernelApi, Lock, LockGuard, ModuleChrOps, ModuleVfsOps,
-    VfsStatInfo, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT,
+    VfsStatInfo, MYOS_POLLERR, MYOS_POLLHUP, MYOS_POLLIN, MYOS_POLLOUT, MYOS_WAIT_ANY,
 };
 
 const S_IFDIR: u32 = 0o040000;
@@ -92,6 +92,14 @@ const REP_HDR: usize = 9;
 /// (HTTPS handshake timed out in CI).
 const MSG_CAP: usize = 2048;
 const RING: usize = 128; /* SSH writev/kex burst; was 32 — riscv EIO */
+/// How long a request waits for room in the ring before it is refused as
+/// if netd were gone: netd drains the ring as it runs, in milliseconds,
+/// and a burst of sends (a bulk write, a download's credits) fills it
+/// faster than that on a loaded guest. A clone, a ctl command or a send
+/// that found it full failed outright, and `socket()` with it (issue
+/// #574: EIO on a listener's second `socket()`, two conversations into
+/// the smoke); now they wait for netd's next read (`with_ring_room`).
+const RING_WAIT_NS: u64 = 5_000_000_000;
 const MAX_CONV: usize = 128; /* netd's, see its MAX_CONV */
 /// Per-conversation RX staging. Cert chains exceed 512; drop = TLS timeout.
 const DATA_CAP: usize = 32768;
@@ -144,8 +152,12 @@ impl RingBuf {
         wake: false,
     };
 
+    fn full(&self) -> bool {
+        self.count as usize >= RING
+    }
+
     fn push(&mut self, src: &[u8]) -> bool {
-        if self.count as usize >= RING || src.is_empty() || src.len() > MSG_CAP {
+        if self.full() || src.is_empty() || src.len() > MSG_CAP {
             return false;
         }
         let i = self.head as usize % RING;
@@ -334,6 +346,30 @@ fn api() -> &'static KernelApi {
 fn wake_any() {
     if let Some(api) = API.try_get() {
         api.wake_any();
+    }
+}
+
+/// Run `f` with the state locked once the request ring has room for a
+/// request, or after [`RING_WAIT_NS`] without (`f` then finds it full and
+/// fails as netd gone). netd's reads drain the ring and wake the waiters
+/// (`chr_read`). Not with the lock held: netd takes it to read. Returns
+/// `f`'s result and whether netd is owed a wake (`RingBuf::take_wake`).
+fn with_ring_room<R>(mut f: impl FnMut(&mut State) -> R) -> (R, bool) {
+    let api = api();
+    let deadline = api.monotonic_ns() + RING_WAIT_NS;
+    loop {
+        let seq = api.wait_seq();
+        // A signal that ends the wait (the caller's `read`/`write` fails as
+        // it would with netd gone) counts as the deadline.
+        let now = if api.signal_interrupt_wait() { deadline } else { api.monotonic_ns() };
+        {
+            let st = &mut *lock();
+            if !st.req.full() || now >= deadline {
+                let r = f(st);
+                return (r, st.req.take_wake());
+            }
+        }
+        api.block_until(MYOS_WAIT_ANY, seq, deadline);
     }
 }
 
@@ -1098,10 +1134,7 @@ unsafe extern "C" fn net_open(path: *const u8, path_len: usize, out: *mut u8, ou
     let id = if p == PROTO_UNIX {
         unix::clone()
     } else {
-        let (id, wake) = {
-            let st = &mut *lock();
-            (clone_locked(st, p), st.req.take_wake())
-        };
+        let (id, wake) = with_ring_room(|st| clone_locked(st, p));
         if wake {
             wake_any();
         }
@@ -1363,10 +1396,8 @@ unsafe extern "C" fn net_write(
     if node.proto() == Some(PROTO_UNIX) {
         return unix::write(node, src);
     }
-    let (n, wake) = {
-        let st = &mut *lock();
-        (write_locked(st, node, src), st.req.take_wake())
-    };
+    // A ctl command or a send waits for room in the ring (`RING_WAIT_NS`).
+    let (n, wake) = with_ring_room(|st| write_locked(st, node, src));
     if wake {
         wake_any();
     }
@@ -1524,16 +1555,24 @@ unsafe extern "C" fn chr_poll(changes: *mut u64) -> u32 {
 }
 
 unsafe extern "C" fn chr_read(buf: *mut u8, buf_len: usize) -> i32 {
-    let st = &mut *lock();
     if buf.is_null() {
         return -1;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(buf, buf_len) };
-    // No serial spam here: CI login typing matches against the serial log, and
-    // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
-    let n = st.req.pop(out);
-    if n.is_some() {
-        retry_closes(st);
+    let (n, made_room) = {
+        let st = &mut *lock();
+        // No serial spam here: CI login typing matches against the serial log, and
+        // leftover TEMP `[cr] n typ=` lines stole keystrokes / timed out WaitLogin.
+        let was_full = st.req.full();
+        let n = st.req.pop(out);
+        if n.is_some() {
+            retry_closes(st);
+        }
+        (n, was_full && n.is_some())
+    };
+    if made_room {
+        // The requests waiting for room (`with_ring_room`) may go now.
+        wake_any();
     }
     n.map_or(-1, |n| n as i32)
 }

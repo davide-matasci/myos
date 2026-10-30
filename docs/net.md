@@ -180,6 +180,14 @@ window offered to the peer) until netfs's 32 KiB buffer has room. A
 conversation's writers may queue up to 32 KiB in netd; a write with no
 room left is refused, and the library waits for `POLLOUT`.
 
+The requests to netd (a clone, a `ctl` command, a send, a close) go
+through a ring of 128 in netfs, which netd drains as it reads
+`/dev/netd/data`. A burst of sends on a loaded guest fills it faster than
+that; a clone, a command or a send that finds it full waits for netd's
+next read, 5 s at most, and fails only past that, as with netd gone (a
+full ring refused them outright, and `socket()` failed with `EIO`, issue
+#574). A close never waits: it is queued for netd's next read instead.
+
 ### Conversation indices
 
 netd has 128 conversations (TCP, UDP and ICMP together), as netfs has
