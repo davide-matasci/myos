@@ -252,6 +252,11 @@ t -t mm fault $SMOKES/fault_smoke
 # by a kill, by the process's own interval timer), one at its default ends
 # the process, each within a second (sigspin_smoke.c).
 t -t signal sigspin $SMOKES/sigspin_smoke
+# A signal's disposition across fork and exec: an ignored one stays ignored
+# (a shell's background job ignores SIGINT: `sleep 3 & kill -INT $!` leaves
+# the sleep alive), a caught one reverts to its default, and a parent's
+# ignore reaches the exec'd program through the fork (sigexec_smoke.c).
+t -t signal sigexec $SMOKES/sigexec_smoke
 # A JIT's pattern from two threads: one makes a range of pages not touched
 # yet executable with mprotect while the other reads them, then code
 # written into every page runs. A page the reader faulted in while mprotect
@@ -392,7 +397,9 @@ t -t console,mouse virtio_mouse virtio_mouse_events
 # The keyboard types at the tty whose text screen is shown (docs/tty.md):
 # tty9's here, which has no getty. ^C there while nothing reads it: the
 # console's input thread runs the line discipline anyway and the tty's
-# session (kbd_smoke intr, which reads only /dev/zero) gets SIGINT.
+# session (kbd_smoke intr, which reads only /dev/zero) gets SIGINT. The
+# job is a background one, so the shell starts it with SIGINT ignored, as
+# POSIX has it; the program puts the default back for the ^C (kbd_smoke.c).
 ctrl_c() {
 	echo 'screen 9' > /dev/console/ctl || return 1
 	$SMOKES/kbd_smoke intr /dev/tty9/data &

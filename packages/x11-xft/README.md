@@ -33,7 +33,7 @@ PNG glyphs or HarfBuzz.
 
 | File | What |
 |------|------|
-| `fonts.conf` | fontconfig's configuration, `/lib/x11/etc/fonts/fonts.conf`: the fonts in `/lib/fonts`, the cache in `/tmp/fontconfig`, `monospace`, `sans-serif` and `serif` all DejaVu Sans Mono |
+| `fonts.conf` | fontconfig's configuration, `/lib/x11/etc/fonts/fonts.conf`: the fonts in `/lib/fonts`, the cache in `/tmp/fontconfig`, `monospace`, `sans-serif` and `serif` all DejaVu Sans Mono; the monospace families programs name (st's `Liberation Mono`, `Courier New`, `Consolas`, ...) are `monospace` too, where fontconfig would otherwise pick the closest name, the proportional DejaVu Sans |
 | `gperf-lite.py` | a stand-in for gperf (not a build prerequisite), enough for fontconfig's object-name table: a linear search instead of a perfect hash |
 | `fontconfig-double.myos.patch` | two `long double` literals made `double`: aarch64 and riscv64 have no quad-float helpers here |
 | `myos_compat.h` | `lstat`, which newlib declares elsewhere (mlibc in `<sys/stat.h>`) |

@@ -93,6 +93,7 @@ read pid name state ppid pgid sid threads size cpu children start kind faults < 
 | time | its CPU time |
 | start | when it started |
 | pending, blocked | its pending and blocked signals (hex bit masks, bit N = signal N) |
+| ignored, caught | its process's dispositions: the signals it ignores, the ones it catches (hex bit masks; the rest are at their default) |
 
 `/proc/cpu`:
 
