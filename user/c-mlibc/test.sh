@@ -32,6 +32,7 @@ t -t events,mlibc,evfd mlibc_evfd $MLIBC/evfd_smoke
 t -t events,mlibc,epoll mlibc_epoll $MLIBC/epoll_smoke
 t -t events,mlibc,sigfd mlibc_sigfd $MLIBC/sigfd_smoke
 t -t signal,mlibc,sigspin mlibc_sigspin $MLIBC/sigspin_smoke
+t -t signal,mlibc,sigexec mlibc_sigexec $MLIBC/sigexec_smoke
 t -t pcidev,mlibc mlibc_pcidev mlibc_run pcidev_test
 t -t tap,mlibc mlibc_tap $MLIBC/tap_smoke
 t -t tap,netfs,mlibc,multihome mlibc_multihome $MLIBC/multihome_smoke

@@ -252,6 +252,11 @@ t -t mm fault $SMOKES/fault_smoke
 # by a kill, by the process's own interval timer), one at its default ends
 # the process, each within a second (sigspin_smoke.c).
 t -t signal sigspin $SMOKES/sigspin_smoke
+# A signal's disposition across fork and exec: an ignored one stays ignored
+# (a shell's background job ignores SIGINT: `sleep 3 & kill -INT $!` leaves
+# the sleep alive), a caught one reverts to its default, and a parent's
+# ignore reaches the exec'd program through the fork (sigexec_smoke.c).
+t -t signal sigexec $SMOKES/sigexec_smoke
 # A JIT's pattern from two threads: one makes a range of pages not touched
 # yet executable with mprotect while the other reads them, then code
 # written into every page runs. A page the reader faulted in while mprotect

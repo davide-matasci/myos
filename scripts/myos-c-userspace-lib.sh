@@ -519,6 +519,7 @@ MYOS_C_SMOKES=(
   "epoll-smoke user/c/epoll_smoke.c"
   "sigfd-smoke user/c/sigfd_smoke.c"
   "sigspin-smoke user/c/sigspin_smoke.c"
+  "sigexec-smoke user/c/sigexec_smoke.c"
   "pcidev-smoke user/c/pcidev_smoke.c"
   "tap-smoke user/c/tap_smoke.c"
   "multihome-smoke user/c/multihome_smoke.c"
