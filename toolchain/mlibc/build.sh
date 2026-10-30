@@ -66,10 +66,12 @@ build_one() {
   mkdir -p "$build"
   # The cross file: clang for the bare target, as the newlib wrappers run it
   # (toolchain/newlib/tool-wrappers.sh), ld.lld for meson's link checks.
+  # -nostdinc++: clang's bare-metal riscv64 driver adds its own libc++
+  # headers, which Homebrew's llvm has, configured for macOS.
   cat > "$build/cross.txt" <<EOC
 [binaries]
 c = ['$CLANG', '--target=$elf', $arch_flags '-ffreestanding', '-fPIC']
-cpp = ['$CLANGXX', '--target=$elf', $arch_flags '-ffreestanding', '-fPIC']
+cpp = ['$CLANGXX', '--target=$elf', $arch_flags '-ffreestanding', '-fPIC', '-nostdinc++']
 ar = '$AR_BIN'
 strip = '$STRIP_BIN'
 

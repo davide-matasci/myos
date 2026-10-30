@@ -51,6 +51,16 @@ build_one() {
   mkdir -p "$build"
   cd "$build"
 
+  # When build and host differ (a macOS build machine: the host is forced
+  # to Linux above), configure ignores the *_FOR_TARGET tools given below
+  # and asks the target compiler for them; Apple clang answers with Xcode's
+  # Mach-O ar and ranlib, which break on ELF archives. Its cached answers
+  # are set to the wrappers instead.
+  local binutils_paths=() tool
+  for tool in ar as ld nm objdump ranlib strip; do
+    binutils_paths+=("ac_cv_path_$(echo "$tool" | tr a-z A-Z)_FOR_TARGET=$ROOT/target/newlib-bin/${triple}-${tool}")
+  done
+
   "$ROOT/target/newlib-src/configure" \
     --host=x86_64-pc-linux-gnu \
     --target="$triple" \
@@ -68,7 +78,8 @@ build_one() {
     RANLIB_FOR_TARGET="${triple}-ranlib" \
     NM_FOR_TARGET="${triple}-nm" \
     CFLAGS_FOR_TARGET="$TARGET_CFLAGS" \
-    CXXFLAGS_FOR_TARGET="$TARGET_CFLAGS"
+    CXXFLAGS_FOR_TARGET="$TARGET_CFLAGS" \
+    "${binutils_paths[@]}"
 
   # Portable core count: nproc is GNU coreutils and absent on macOS.
   local jobs

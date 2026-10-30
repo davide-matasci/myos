@@ -82,7 +82,7 @@ build_ltc() {
     objs+=("$o")
   done < <(cd "$LTC" && find src -name '*.c' ! -path 'src/primitives/*' | sort)
   rm -f "$out"
-  ar crs "$out" "${objs[@]}"
+  "${triple}-ar" crs "$out" "${objs[@]}"
   echo "$out"
 }
 
@@ -103,7 +103,7 @@ build_ltm() {
     objs+=("$o")
   done < <(cd "$LTM" && find . -maxdepth 1 -name '*.c' | sort)
   rm -f "$out"
-  ar crs "$out" "${objs[@]}"
+  "${triple}-ar" crs "$out" "${objs[@]}"
   echo "$out"
 }
 
