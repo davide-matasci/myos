@@ -10,9 +10,22 @@ MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 # A cache key from the `sha256sum` lines (and version strings) on stdin.
 # The checkout path is cut from them first, so a port's key is the same
 # wherever the repository is checked out and a local clone pulls what CI
-# built (issue #286).
+# built (issue #286). A `dep-hash-unknown:` line (myos_dep_hash: the
+# outputs of a port this one builds against are not known) leaves the key
+# undefined: a one-off `unknown-...` value, which no stamp or registry tag
+# ever matches, so the port is never current and the registry lacks it.
+# `keys=` names the scheme: every key changes with it (so every artifact
+# at a new key was pushed by the code that reads it).
 myos_hash() {
-  awk -v root="$MYOS_ROOT/" '{ i = index($0, root); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(root)) } 1' \
+  local input
+  input="keys=outputs-1"$'\n'"$(cat)"
+  if grep -q '^dep-hash-unknown:' <<<"$input"; then
+    grep '^dep-hash-unknown:' <<<"$input" | sort -u \
+      | sed 's/^dep-hash-unknown:/myos: cache key undefined: the outputs of /; s/$/ are neither built here nor in the registry/' >&2
+    printf 'unknown-%s\n' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    return 0
+  fi
+  awk -v root="$MYOS_ROOT/" '{ i = index($0, root); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(root)) } 1' <<<"$input" \
     | sha256sum | awk '{print $1}'
 }
 
@@ -24,6 +37,184 @@ myos_port_dir() {
   else
     echo "$MYOS_ROOT/packages/$1"
   fi
+}
+
+# ---- Output keys ------------------------------------------------------------
+#
+# A port's input hash (myos_<name>_version_hash: its stamp, and the
+# registry's tag for it) covers its own sources and, for every port it
+# builds against, that port's *output hash* (myos_dep_hash): a hash of the
+# files the dependency leaves under target/ (its PORT_OUTPUTS, without the
+# stamps), recorded beside its stamp in target/.myos-<name>-outputs as
+# `<input hash> <output hash>` when it is built (the registry push writes
+# it; a build run by hand gets it from the files the first time a dependent
+# asks) and carried by the registry with the port: the file in the
+# artifact, and the hash as an annotation of its manifest, which the CI
+# plan and a pull read into target/.myos-dep-hash/ (what the registry says
+# comes first: a dependency rebuilt here with another compiler than CI's
+# keeps its dependents' keys CI's). So a change to a dependency that leaves
+# its outputs the same (its README or test, a file it ships as it is, a
+# rebuild from the same sources) changes nothing above it, and one that
+# changes them rebuilds the dependents, as before. A dependency whose
+# outputs are neither current here nor known to the registry leaves the
+# key undefined (myos_hash). docs/ports.md, "Cache keys".
+
+MYOS_DEP_HASH_CACHE="$MYOS_ROOT/target/.myos-dep-hash"
+
+# The port library (scripts/ports.sh: the descriptors), once, on first use.
+myos_ports_lib() {
+  if ! declare -F myos_port_outputs >/dev/null; then
+    # shellcheck source=scripts/ports.sh
+    source "$MYOS_ROOT/scripts/ports.sh"
+  fi
+}
+
+# The outputs stamp of a piece (a port, or `<name>:<arch>` of a port built
+# an arch at a time): target/.myos-<name>[-<arch>]-outputs.
+myos_outputs_stamp() {
+  local name="${1%%:*}"
+  if [[ "$1" == *:* ]]; then
+    echo "$MYOS_ROOT/target/.myos-${name}-${1#*:}-outputs"
+  else
+    echo "$MYOS_ROOT/target/.myos-${name}-outputs"
+  fi
+}
+
+# The registry's record of a piece's output hash (a pull or the CI plan
+# writes it from the artifact's annotation): the same `<input hash>
+# <output hash>` line as the stamp.
+myos_dep_hash_cache() {
+  echo "$MYOS_DEP_HASH_CACHE/${1//:/-}"
+}
+
+# Whether a piece is current: its port's myos_<name>_is_current, for the
+# one arch of `<name>:<arch>`.
+myos_piece_is_current() {
+  local name="${1%%:*}" var
+  if [[ "$1" == *:* ]]; then
+    var="MYOS_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')_ARCHES"
+    (export "$var=${1#*:}"; "myos_${name//-/_}_is_current")
+  else
+    "myos_${name//-/_}_is_current"
+  fi
+}
+
+# The hash of what a piece leaves under target/: its PORT_OUTPUTS, every
+# file by relative path and content (a symbolic link by its target), the
+# stamps left out. The sbase and ubase manifests name their ELFs by
+# absolute path (a registry pull rewrites them): hashed with the checkout
+# path cut. tcc installs libtcc1.a into newlib's tree (its own output,
+# which the kernels hash covers): left out, so newlib's hash is the same
+# before and after.
+myos_outputs_hash_files() {
+  local name="${1%%:*}" arch=""
+  [[ "$1" == *:* ]] && arch="${1#*:}"
+  myos_ports_lib
+  (
+    cd "$MYOS_ROOT"
+    local p f
+    # shellcheck disable=SC2086
+    myos_port_outputs "$name" $arch \
+      | grep -v -e '/\.myos-[^/]*-version$' -e '/\.myos-[^/]*-outputs$' \
+      | while IFS= read -r p; do
+          [[ -e "$p" || -L "$p" ]] || continue
+          if [[ -d "$p" && ! -L "$p" ]]; then
+            find "$p" \( -type f -o -type l \)
+          else
+            echo "$p"
+          fi
+        done \
+      | grep -v '^target/newlib-[^/]*/[^/]*/lib/libtcc1\.a$' \
+      | LC_ALL=C sort \
+      | while IFS= read -r f; do
+          if [[ -L "$f" ]]; then
+            printf '%s  %s\n' "$(readlink "$f" | sha256sum | awk '{print $1}')" "$f"
+          elif [[ "$f" == *-manifest-*.txt ]]; then
+            printf '%s  %s\n' "$(sed "s|$MYOS_ROOT/||g" "$f" | sha256sum | awk '{print $1}')" "$f"
+          else
+            sha256sum "$f"
+          fi
+        done \
+      | sha256sum | awk '{print $1}'
+  )
+}
+
+# Record a current piece's output hash in its outputs stamp (the registry
+# push, after a build): the hash.
+myos_outputs_record() {
+  local piece="$1" fn h stamp
+  fn="myos_${piece%%:*}_version_hash"
+  fn="${fn//-/_}"
+  if ! myos_piece_is_current "$piece"; then
+    echo "error: $piece is not current: nothing to record" >&2
+    return 1
+  fi
+  h="$(myos_outputs_hash_files "$piece")"
+  stamp="$(myos_outputs_stamp "$piece")"
+  mkdir -p "$(dirname "$stamp")"
+  printf '%s %s\n' "$("$fn")" "$h" >"$stamp.tmp.$$"
+  mv -f "$stamp.tmp.$$" "$stamp"
+  printf '%s\n' "$h"
+}
+
+# A piece's output hash for input hash VH: the registry's record, else its
+# outputs stamp (either when it is VH's), else from its files when it is
+# current here (recorded then), else what myos_dep_hash_hook (the registry
+# script's, asking the registry) gives. Nothing, and 1, otherwise.
+myos_piece_output_hash() {
+  local piece="$1" vh="$2" rec rv rh h
+  for rec in "$(myos_dep_hash_cache "$piece")" "$(myos_outputs_stamp "$piece")"; do
+    if [[ -f "$rec" ]]; then
+      read -r rv rh <"$rec" || true
+      if [[ "$rv" == "$vh" && -n "$rh" ]]; then
+        printf '%s\n' "$rh"
+        return 0
+      fi
+    fi
+  done
+  if myos_piece_is_current "$piece"; then
+    myos_outputs_record "$piece"
+    return 0
+  fi
+  if declare -F myos_dep_hash_hook >/dev/null; then
+    if h="$(myos_dep_hash_hook "$piece" "$vh")" && [[ -n "$h" ]]; then
+      rec="$(myos_dep_hash_cache "$piece")"
+      mkdir -p "$(dirname "$rec")"
+      printf '%s %s\n' "$vh" "$h" >"$rec.tmp.$$"
+      mv -f "$rec.tmp.$$" "$rec"
+      printf '%s\n' "$h"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# In a port's input hash: the output hash of port NAME it builds against,
+# as `outputs:<piece>:<hash>` lines (one per arch for a port built an arch
+# at a time), or the `dep-hash-unknown:` line myos_hash turns into an
+# undefined key.
+myos_dep_hash() {
+  local name="$1" fn vh piece h lines=""
+  fn="myos_${name//-/_}_version_hash"
+  if ! declare -F "$fn" >/dev/null; then
+    echo "error: no function $fn (scripts/myos-c-userspace-lib.sh)" >&2
+    printf 'dep-hash-unknown:%s\n' "$name"
+    return 0
+  fi
+  vh="$("$fn")"
+  if [[ -z "$vh" || "$vh" == unknown-* ]]; then
+    printf 'dep-hash-unknown:%s\n' "$name"
+    return 0
+  fi
+  myos_ports_lib
+  for piece in $(myos_port_jobs "$name"); do
+    if ! h="$(myos_piece_output_hash "$piece" "$vh")" || [[ -z "$h" ]]; then
+      printf 'dep-hash-unknown:%s\n' "$name"
+      return 0
+    fi
+    lines="${lines}outputs:${piece}:${h}"$'\n'
+  done
+  printf '%s' "$lines"
 }
 
 # riscv64 userspace is rv64gc with the lp64d ABI (hard float), as Linux's:
@@ -196,7 +387,7 @@ myos_libcxx_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
+      myos_dep_hash mlibc
       find "$MYOS_ROOT/toolchain/libcxx" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags and the link the build and the smoke take (below).
@@ -251,8 +442,8 @@ myos_get_myos_version_hash() {
       sha256sum "$MYOS_ROOT/user/get-myos/get-myos.c" "$MYOS_ROOT/user/get-myos/pkgtools.c" \
         "$MYOS_ROOT/user/get-myos/pkgtools.h" "$MYOS_ROOT/user/get-myos/boot.c" \
         "$MYOS_ROOT/user/get-myos/boot.h" "$MYOS_ROOT/user/get-myos/build.sh"
-      myos_newlib_version_hash
-      myos_zlib_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash zlib
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -277,8 +468,8 @@ myos_get_alpine_version_hash() {
     {
       sha256sum "$MYOS_ROOT/packages/get-alpine/get-alpine.c" "$MYOS_ROOT/packages/get-alpine/build.sh" \
         "$MYOS_ROOT/user/get-myos/pkgtools.c" "$MYOS_ROOT/user/get-myos/pkgtools.h"
-      myos_newlib_version_hash
-      myos_zlib_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash zlib
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -370,7 +561,7 @@ myos_c_smokes_mlibc_version_hash() {
   local h entry
   h="$(
     {
-      myos_mlibc_version_hash
+      myos_dep_hash mlibc
       sha256sum "$MYOS_ROOT/user/c/hello.c" "$MYOS_ROOT/user/c/socket_smoke.c"
       for entry in "${MYOS_C_SMOKES[@]}"; do
         sha256sum "$MYOS_ROOT/${entry#* }"
@@ -397,7 +588,7 @@ myos_sbase_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       sha256sum "$MYOS_ROOT/ports/sbase/build.sh"
       sha256sum "$MYOS_ROOT/ports/sbase/prepare.sh"
       sha256sum "$MYOS_ROOT/ports/sbase/fetch.sh"
@@ -441,7 +632,7 @@ myos_oksh_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       sha256sum "$MYOS_ROOT/ports/oksh/build.sh"
       sha256sum "$MYOS_ROOT/ports/oksh/prepare.sh"
       sha256sum "$MYOS_ROOT/ports/oksh/fetch.sh"
@@ -466,7 +657,7 @@ myos_limine_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       find "$MYOS_ROOT/ports/limine" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -488,7 +679,7 @@ myos_ubase_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       sha256sum "$MYOS_ROOT/ports/ubase/build.sh"
       sha256sum "$MYOS_ROOT/ports/ubase/prepare.sh"
       sha256sum "$MYOS_ROOT/ports/ubase/fetch.sh"
@@ -576,8 +767,8 @@ myos_ripgrep_version_hash() {
       find "$MYOS_ROOT/ports/ripgrep" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_sysroot_version_hash
-      myos_newlib_version_hash
-      myos_pcre2_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash pcre2
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -614,7 +805,7 @@ myos_dropbear_version_hash() {
         "$MYOS_ROOT/ports/dropbear/myos_shims.c" \
         "$MYOS_ROOT/ports/dropbear/myos_builtins.c" \
         "$MYOS_ROOT"/ports/dropbear/*.myos.patch || true
-      myos_newlib_version_hash
+      myos_dep_hash newlib
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -684,8 +875,8 @@ myos_curl_version_hash() {
         "$MYOS_ROOT/ports/curl/config-myos.h" || true
       # Statically links LibreSSL: its inputs, not its build stamp (a job
       # that only pulls the artifacts lacks it).
-      myos_libressl_version_hash
-      myos_newlib_version_hash
+      myos_dep_hash libressl
+      myos_dep_hash newlib
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -716,7 +907,7 @@ myos_tcc_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       sha256sum "$(myos_port_dir tcc)/build.sh"
       sha256sum "$(myos_port_dir tcc)/prepare.sh"
       sha256sum "$(myos_port_dir tcc)/fetch.sh"
@@ -747,8 +938,8 @@ myos_vim_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_ncurses_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash ncurses
       sha256sum "$(myos_port_dir vim)/build.sh"
       sha256sum "$(myos_port_dir vim)/prepare.sh"
       sha256sum "$(myos_port_dir vim)/fetch.sh"
@@ -775,8 +966,8 @@ myos_ncurses_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_mlibc_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash mlibc
       sha256sum "$(myos_port_dir ncurses)/build.sh"
       sha256sum "$(myos_port_dir ncurses)/prepare.sh"
       sha256sum "$(myos_port_dir ncurses)/fetch.sh"
@@ -806,7 +997,7 @@ myos_clear_version_hash() {
   local h
   h="$(
     {
-      myos_ncurses_version_hash
+      myos_dep_hash ncurses
       find "$(myos_port_dir clear)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1061,8 +1252,8 @@ myos_x11_libs_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_mlibc_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash mlibc
       find "$(myos_port_dir x11-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1086,9 +1277,9 @@ myos_tinyx_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_x11_libs_version_hash
-      myos_zlib_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash x11-libs
+      myos_dep_hash zlib
       find "$(myos_port_dir tinyx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1112,8 +1303,8 @@ myos_x11_xft_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_x11_libs_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash x11-libs
       find "$(myos_port_dir x11-xft)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1153,8 +1344,8 @@ myos_dwm_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_x11_xft_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash x11-xft
       find "$(myos_port_dir dwm)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1177,8 +1368,8 @@ myos_st_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_x11_xft_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash x11-xft
       find "$(myos_port_dir st)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1205,7 +1396,7 @@ myos_bottom_version_hash() {
       # Rust ports share (packages/coreutils/prepare.sh); C: newlib (btm_smoke,
       # and libgloss behind the libc crate).
       myos_sysroot_version_hash
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       find "$(myos_port_dir bottom)" "$MYOS_ROOT/ports/crates/libc" \
         "$MYOS_ROOT/packages/coreutils/crates" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
@@ -1230,8 +1421,8 @@ myos_dmenu_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_x11_xft_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash x11-xft
       find "$(myos_port_dir dmenu)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1256,8 +1447,8 @@ myos_x11_apps_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_x11_xft_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash x11-xft
       find "$(myos_port_dir x11-apps)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1279,8 +1470,8 @@ myos_zlib_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_mlibc_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash mlibc
       sha256sum "$MYOS_ROOT/ports/zlib/build.sh"
       sha256sum "$MYOS_ROOT/ports/zlib/fetch.sh"
       sha256sum "$MYOS_ROOT/ports/zlib/versions.env"
@@ -1308,8 +1499,8 @@ myos_libressl_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_mlibc_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash mlibc
       find "$MYOS_ROOT/ports/libressl" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1336,8 +1527,8 @@ myos_pcre2_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_mlibc_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash mlibc
       find "$(myos_port_dir pcre2)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1362,10 +1553,10 @@ myos_nginx_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_zlib_version_hash
-      myos_pcre2_version_hash
-      myos_libressl_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash zlib
+      myos_dep_hash pcre2
+      myos_dep_hash libressl
       find "$(myos_port_dir nginx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1388,8 +1579,8 @@ myos_git_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_zlib_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash zlib
       sha256sum "$(myos_port_dir git)/build.sh"
       sha256sum "$(myos_port_dir git)/prepare.sh"
       sha256sum "$(myos_port_dir git)/fetch.sh"
@@ -1419,8 +1610,8 @@ myos_lynx_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_ncurses_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash ncurses
       # versions.env content hashed below
       # shellcheck source=ports/lynx/versions.env
       # LYNX_VERSION may be unset when called from registry; hash the env file.
@@ -1430,7 +1621,7 @@ myos_lynx_version_hash() {
       sha256sum "$(myos_port_dir lynx)/fetch.sh"
       # LibreSSL is a lynx build dependency: its inputs, not its build
       # stamp, which a job that only pulls the artifacts lacks.
-      myos_libressl_version_hash
+      myos_dep_hash libressl
       find "$(myos_port_dir lynx)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1452,7 +1643,7 @@ myos_lua_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       sha256sum "$(myos_port_dir lua)/versions.env"
       sha256sum "$(myos_port_dir lua)/build.sh"
       sha256sum "$(myos_port_dir lua)/fetch.sh"
@@ -1478,7 +1669,7 @@ myos_sqlite_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
+      myos_dep_hash mlibc
       find "$(myos_port_dir sqlite)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1502,8 +1693,8 @@ myos_libedit_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
-      myos_ncurses_version_hash
+      myos_dep_hash mlibc
+      myos_dep_hash ncurses
       find "$(myos_port_dir libedit)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1527,9 +1718,9 @@ myos_glib_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
-      myos_zlib_version_hash
-      myos_pcre2_version_hash
+      myos_dep_hash mlibc
+      myos_dep_hash zlib
+      myos_dep_hash pcre2
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags and the cc the build takes.
@@ -1561,9 +1752,9 @@ myos_image_libs_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
-      myos_zlib_version_hash
-      myos_x11_libs_version_hash
+      myos_dep_hash mlibc
+      myos_dep_hash zlib
+      myos_dep_hash x11-libs
       find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
@@ -1590,11 +1781,11 @@ myos_cairo_pango_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
-      myos_libcxx_version_hash
-      myos_glib_version_hash
-      myos_image_libs_version_hash
-      myos_x11_xft_version_hash
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      myos_dep_hash glib
+      myos_dep_hash image-libs
+      myos_dep_hash x11-xft
       find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -1622,7 +1813,7 @@ myos_gtk3_version_hash() {
   local h
   h="$(
     {
-      myos_cairo_pango_version_hash
+      myos_dep_hash cairo-pango
       find "$(myos_port_dir gtk3)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1648,11 +1839,11 @@ myos_libsoup_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
-      myos_libcxx_version_hash
-      myos_glib_version_hash
-      myos_libressl_version_hash
-      myos_sqlite_version_hash
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      myos_dep_hash glib
+      myos_dep_hash libressl
+      myos_dep_hash sqlite
       find "$(myos_port_dir libsoup)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -1681,8 +1872,8 @@ myos_webkitgtk_version_hash() {
   local h
   h="$(
     {
-      myos_gtk3_version_hash
-      myos_libsoup_version_hash
+      myos_dep_hash gtk3
+      myos_dep_hash libsoup
       find "$(myos_port_dir webkitgtk)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -1711,7 +1902,7 @@ myos_surf_version_hash() {
   local h
   h="$(
     {
-      myos_webkitgtk_version_hash
+      myos_dep_hash webkitgtk
       find "$(myos_port_dir surf)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -1739,12 +1930,12 @@ myos_python_version_hash() {
   local h
   h="$(
     {
-      myos_mlibc_version_hash
+      myos_dep_hash mlibc
       sha256sum "$(myos_port_dir zlib)/versions.env"
-      myos_libressl_version_hash
-      myos_ncurses_version_hash
-      myos_sqlite_version_hash
-      myos_libedit_version_hash
+      myos_dep_hash libressl
+      myos_dep_hash ncurses
+      myos_dep_hash sqlite
+      myos_dep_hash libedit
       find "$(myos_port_dir python)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1769,8 +1960,8 @@ myos_openssl_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
-      myos_libressl_version_hash
+      myos_dep_hash newlib
+      myos_dep_hash libressl
       find "$(myos_port_dir openssl)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1834,7 +2025,7 @@ myos_make_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       find "$(myos_port_dir make)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       sha256sum "$MYOS_ROOT/ports/sbase/trunctfdf2.c" 2>/dev/null
@@ -1857,7 +2048,7 @@ myos_os_test_version_hash() {
   local h
   h="$(
     {
-      myos_newlib_version_hash
+      myos_dep_hash newlib
       sha256sum "$(myos_port_dir os-test)/versions.env"
       sha256sum "$(myos_port_dir os-test)/build.sh"
       sha256sum "$(myos_port_dir os-test)/fetch.sh"

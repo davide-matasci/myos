@@ -4,9 +4,11 @@ name: CI ports
 # descriptors (scripts/ports.sh --matrix: every ports/, packages/, user/ and
 # toolchain/std directory with a port.env and a build script), so adding a
 # port does not touch this file. Everything is cached on GHCR under a hash
-# of its inputs (scripts/ci-registry.sh): the plan job asks the registry
-# which pieces it lacks (scripts/ci-ports-plan.sh), and only those get a
-# job. When the registry has everything, no port job starts at all.
+# of its inputs, its sources and the outputs of the ports it builds against
+# (scripts/ci-registry.sh, docs/ports.md "Cache keys"): the plan job asks
+# the registry which pieces it lacks (scripts/ci-ports-plan.sh), and only
+# those get a job. When the registry has everything, no port job starts at
+# all.
 on:
   workflow_call:
 

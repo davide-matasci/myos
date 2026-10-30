@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The plan job of ci-ports.yml: ask the registry (manifests only, no
-# download) which pieces it lacks at their current input hash, all at once.
-# Writes GitHub outputs to $GITHUB_OUTPUT (stdout when unset):
+# download) which pieces it lacks at their current input hash, in build
+# order (ci-registry.sh plan: a port's hash covers its dependencies' output
+# hashes, which the registry's answers for them give). Writes GitHub
+# outputs to $GITHUB_OUTPUT (stdout when unset):
 #   ports=<JSON>     the ports matrix (scripts/ports.sh --matrix) reduced to
 #                    the ports the registry lacks; `[]` skips the ports job
 #   ports_after=<JSON>  of those, the ones that depend on a port built an
@@ -22,23 +24,7 @@ mapfile -t ports < <(python3 -c 'import json, sys
 for e in json.load(sys.stdin): print(e["port"])' <<<"$matrix")
 
 ./scripts/ci-registry.sh login || true
-logs="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/myos-ci-plan.XXXXXX")"
-jobs=0
-for p in sysroot newlib "${ports[@]}"; do
-  ( ./scripts/ci-registry.sh exists "$p" >"$logs/$p" 2>&1 && touch "$logs/$p.hit" ) || true &
-  jobs=$((jobs + 1))
-  if (( jobs >= 12 )); then
-    wait -n || true
-    jobs=$((jobs - 1))
-  fi
-done
-wait
-misses=()
-for p in sysroot newlib "${ports[@]}"; do
-  cat "$logs/$p"
-  [[ -f "$logs/$p.hit" ]] || misses+=("$p")
-done
-rm -rf "$logs"
+mapfile -t misses < <(./scripts/ci-registry.sh plan sysroot newlib "${ports[@]}")
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 for t in sysroot newlib; do

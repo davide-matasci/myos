@@ -15,6 +15,7 @@
 #   scripts/ports.sh --stamps                     version stamps of the image ports
 #   scripts/ports.sh --tests [image|all]          the boot test scripts of the ports (PORT_TEST), repo-relative
 #   scripts/ports.sh --build-list [image|all]     `<name> <script>` of the ports to build, in order
+#   scripts/ports.sh --deps NAME                  the ports NAME builds against, transitively, in build order
 #   scripts/ports.sh --matrix                     ci-ports.yml ports matrix (JSON)
 
 MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -110,7 +111,22 @@ myos_port_stamp() {
   done | sort -u
 }
 
-# Everything the registry caches for NAME: the stamp and PORT_OUTPUTS for
+# The outputs stamp of the loaded port (`<input hash> <output hash>`,
+# docs/ports.md "Cache keys"): `.myos-<name>-outputs`, one per arch
+# (`.myos-<name>-<arch>-outputs`) for a port built an arch at a time, for
+# the ARCHes given (default: all).
+myos_port_outputs_stamp() {
+  local arch
+  if [[ "$PORT_ARCH_JOBS" == 1 ]]; then
+    for arch in "${@:-${MYOS_ARCHES[@]}}"; do
+      echo "target/.myos-$PORT_NAME-$arch-outputs"
+    done
+  else
+    echo "target/.myos-$PORT_NAME-outputs"
+  fi
+}
+
+# Everything the registry caches for NAME: the stamps and PORT_OUTPUTS for
 # every arch, or for ARCH alone (files or directories under target/).
 myos_port_outputs() {
   myos_port_load "$1" || return 1
@@ -118,6 +134,7 @@ myos_port_outputs() {
   local arches=("${MYOS_ARCHES[@]}") o arch path
   [[ -n "${2:-}" ]] && arches=("$2")
   myos_port_stamp "${arches[@]}"
+  myos_port_outputs_stamp "${arches[@]}"
   for o in $PORT_OUTPUTS; do
     for arch in "${arches[@]}"; do
       path="target/$(myos_port_expand "$o" "$arch")"
@@ -212,6 +229,30 @@ myos_port_build_order() {
   done
 }
 
+# The ports NAME builds against, transitively (its PORT_DEPS and theirs),
+# in build order, the toolchains with jobs of their own (newlib, the
+# sysroot) left out: what a CI port job pulls or builds, each before the
+# next, so that every one is keyed on the registry's outputs of the ones
+# before it (scripts/ci-build-port.sh, docs/ports.md "Cache keys").
+myos_port_deps_closure() {
+  local todo=("$1") closure=() name dep
+  while [[ ${#todo[@]} -gt 0 ]]; do
+    name="${todo[0]}"
+    todo=("${todo[@]:1}")
+    myos_port_load "$name" || return 1
+    for dep in $PORT_DEPS; do
+      case "$dep" in sysroot|newlib) continue ;; esac
+      [[ " ${closure[*]-} " == *" $dep "* ]] && continue
+      closure+=("$dep")
+      todo+=("$dep")
+    done
+  done
+  for name in $(myos_port_build_order all); do
+    [[ " ${closure[*]-} " == *" $name "* ]] && echo "$name"
+  done
+  return 0
+}
+
 # The CI jobs (and registry pieces) of NAME: NAME, or `NAME:<arch>` per
 # arch for a port built an arch at a time (PORT_ARCH_JOBS=1: its build
 # script builds the arches MYOS_<NAME>_ARCHES lists).
@@ -299,6 +340,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     --matrix) myos_ports_matrix ;;
     --tests) myos_port_tests "${2:-image}" ;;
     --dir) myos_port_load "$2" && echo "$PORT_DIR" ;;
+    --deps) myos_port_deps_closure "$2" ;;
     --script) myos_port_load "$2" && myos_port_build_script ;;
     --build-list)
       # Every port of the role with a build script, in build order:

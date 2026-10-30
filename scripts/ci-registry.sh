@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Pull/push myos userspace *outputs* as GHCR OCI artifacts (oras).
 #
-# Tags are the stamp hashes from myos-c-userspace-lib.sh / toolchain/std/lib.sh.
+# Tags are the stamp hashes from myos-c-userspace-lib.sh / toolchain/std/lib.sh:
+# a port's input hash, which covers the *output hashes* of the ports it
+# builds against (myos_dep_hash, docs/ports.md "Cache keys"). A push
+# records a port's output hash in its outputs stamp (packed with it) and as
+# an annotation of the artifact's manifest; a pull and the plan read the
+# annotation into target/.myos-dep-hash/, where the dependents' hashes find
+# it without a download.
 # Cache ELFs, newlib prefixes, stamps — never *-src or *-myos-build trees.
 # skip-if-fresh (myos_*_is_current) stays the local truth after a pull.
 #
@@ -9,6 +15,9 @@
 #   ./scripts/ci-registry.sh pull PORT
 #   ./scripts/ci-registry.sh push PORT
 #   ./scripts/ci-registry.sh current PORT   exit 0 when PORT's outputs are current
+#   ./scripts/ci-registry.sh exists PORT    exit 0 when the registry has PORT at its hash
+#   ./scripts/ci-registry.sh plan PORT...   the ports the registry lacks, in order (the CI plan)
+#   ./scripts/ci-registry.sh outputs PORT   PORT's output hash (recorded from its files when current)
 # PORT is a port with a descriptor and a build script (`scripts/ports.sh
 # --list`: its stamp and PORT_OUTPUTS are cached, keyed by its
 # myos_<name>_version_hash), or one of the pieces cached the same way:
@@ -36,6 +45,8 @@ ORAS_LINUX_AMD64_SHA256="9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca17
 ORAS_LINUX_ARM64_SHA256="ac7156f93a21e903f7ad606c792f3560f17e0cd0e36365634701b1e7cc4e4eca"
 ORAS_ARTIFACT_TYPE="application/vnd.myos.ci.port.v1"
 ORAS_LAYER_TYPE="application/vnd.myos.ci.port.layer.v1.tar+zst"
+# The manifest annotation carrying a port's output hash.
+ORAS_OUTPUTS_ANNOTATION="org.myos.ci.outputs"
 
 # Every port with a build script in build order (the toolchains first:
 # sysroot and newlib, which the others pull; image and package ports), then
@@ -47,7 +58,7 @@ done < <(myos_port_build_order all)
 ALL_PORTS+=(linux-compat kernels)
 
 usage() {
-  echo "usage: $0 pull|push|current|exists PORT | login" >&2
+  echo "usage: $0 pull|push|current|exists|outputs PORT | plan PORT... | login" >&2
   echo "  PORT: ${ALL_PORTS[*]} all" >&2
   exit 2
 }
@@ -82,14 +93,69 @@ piece_env() {
   printf 'MYOS_%s_ARCHES=%s' "$name" "${1#*:}"
 }
 
+# A piece's input hash; 1 (nothing printed) when it is undefined: the
+# outputs of a port it builds against are neither built here nor in the
+# registry (myos_hash's `unknown-...`).
 port_hash() {
-  local fn
+  local fn h
   case "$1" in
     *:*) port_hash "${1%%:*}" ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '
 ' ;;
-    *) fn="$(port_fn "$1" version_hash)" || return 2; "$fn" ;;
+    *)
+      fn="$(port_fn "$1" version_hash)" || return 2
+      h="$("$fn")"
+      [[ -n "$h" && "$h" != unknown-* ]] || return 1
+      printf '%s' "$h"
+      ;;
   esac
+}
+
+# The pieces with an output hash: the ports (the sysroot, the kernels and
+# the Linux layer are keyed by their sources alone; nothing builds against
+# them through myos_dep_hash).
+has_outputs_key() {
+  case "$1" in
+    sysroot|kernels|linux-compat) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# The output hash annotated on the manifest JSON on stdin, or 1 (an
+# artifact without one, or no manifest at all).
+annotation_outputs() {
+  python3 -c 'import json, sys
+try:
+    h = json.load(sys.stdin).get("annotations", {}).get(sys.argv[1], "")
+except ValueError:
+    h = ""
+if not h: sys.exit(1)
+print(h)' "$ORAS_OUTPUTS_ANNOTATION"
+}
+
+# Keep the registry's output hash of PIECE at input hash HASH where the
+# dependents' hashes look first (myos_piece_output_hash).
+cache_outputs() {
+  local piece="$1" hash="$2" outputs="$3" rec
+  rec="$(myos_dep_hash_cache "$piece")"
+  mkdir -p "$(dirname "$rec")"
+  printf '%s %s\n' "$hash" "$outputs" >"$rec.tmp.$$"
+  mv -f "$rec.tmp.$$" "$rec"
+}
+
+# myos_dep_hash's way to the registry (scripts/myos-c-userspace-lib.sh):
+# the output hash of PIECE at input hash HASH, from the annotation of its
+# manifest (no download); nothing, and 1, when the registry lacks it.
+myos_dep_hash_hook() {
+  local piece="$1" hash="$2" ref json
+  has_outputs_key "$piece" || return 1
+  ref="$(registry_ref "$piece" "$hash")"
+  ensure_oras >&2
+  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+    oras_login >/dev/null 2>&1 || true
+  fi
+  json="$(oras manifest fetch "$ref" 2>/dev/null)" || return 1
+  annotation_outputs <<<"$json"
 }
 
 port_is_current() {
@@ -192,7 +258,8 @@ oras_login() {
     return 0
   fi
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  user="${GITHUB_ACTOR:-${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY%%/*}}}"
+  user="${GITHUB_ACTOR:-${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY:-davide-matasci/myos}}}"
+  user="${user%%/*}"
   user="$(lower "$user")"
   if [[ -z "$token" || -z "$user" ]]; then
     echo "registry login failed: missing GITHUB_TOKEN or username"
@@ -268,7 +335,7 @@ try_public_package() {
   local token owner pkg enc url
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   [[ -n "$token" ]] || return 0
-  owner="${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY%%/*}}"
+  owner="${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY:-davide-matasci/myos}}"; owner="${owner%%/*}"
   pkg="$(package_name "$port")"
   enc="${pkg//\//%2F}"
   for url in \
@@ -314,7 +381,10 @@ needs_force_replace() {
 cmd_exists() {
   local port="$1"
   local hash ref
-  hash="$(port_hash "$port")"
+  if ! hash="$(port_hash "$port")"; then
+    echo "registry lacks ${port}: its key is undefined (a dependency's outputs are not in the registry)"
+    return 1
+  fi
   ref="$(registry_ref "$port" "$hash")"
   ensure_oras
   if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
@@ -335,8 +405,11 @@ cmd_login() {
 
 cmd_pull() {
   local port="$1"
-  local hash ref tmp tarball
-  hash="$(port_hash "$port")"
+  local hash ref tmp tarball outputs
+  if ! hash="$(port_hash "$port")"; then
+    echo "registry miss ${port}: its key is undefined (a dependency's outputs are not built here nor in the registry)"
+    return 0
+  fi
   ref="$(registry_ref "$port" "$hash")"
   clear_force_replace "$port"
   ensure_oras
@@ -385,6 +458,14 @@ cmd_pull() {
   rm -rf "$tmp"
   if port_is_current "$port"; then
     clear_force_replace "$port"
+    # The output hash, as the registry has it (the artifact's own stamp
+    # says the same; one without is recorded from its files).
+    if has_outputs_key "$port"; then
+      if outputs="$(oras manifest fetch "$ref" 2>/dev/null | annotation_outputs)" && [[ -n "$outputs" ]]; then
+        cache_outputs "$port" "$hash" "$outputs"
+      fi
+      [[ -f "$(myos_outputs_stamp "$port")" ]] || myos_outputs_record "$port" >/dev/null
+    fi
     echo "registry hit ${port} ${hash}"
   else
     mark_force_replace "$port" "$hash"
@@ -399,7 +480,7 @@ cmd_pull() {
 
 cmd_push() {
   local port="$1"
-  local hash ref tmp list status
+  local hash ref tmp list status outputs annotate=()
   if ! can_push; then
     echo "registry skip push (disabled)"
     return 0
@@ -408,7 +489,10 @@ cmd_push() {
     echo "registry skip push ${port}: not current"
     return 0
   fi
-  hash="$(port_hash "$port")"
+  if ! hash="$(port_hash "$port")"; then
+    echo "registry skip push ${port}: its key is undefined"
+    return 0
+  fi
   ref="$(registry_ref "$port" "$hash")"
   ensure_oras
   if ! oras_login; then
@@ -426,6 +510,12 @@ cmd_push() {
       return 0
     fi
   fi
+  # The output hash, in the outputs stamp (packed below) and on the manifest.
+  if has_outputs_key "$port"; then
+    outputs="$(myos_outputs_record "$port")"
+    cache_outputs "$port" "$hash" "$outputs"
+    annotate=(--annotation "${ORAS_OUTPUTS_ANNOTATION}=${outputs}")
+  fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/myos-ci-reg.XXXXXX")"
   list="$tmp/members.txt"
   existing_members "$port" >"$list"
@@ -441,7 +531,7 @@ cmd_push() {
   set +e
   (
     cd "$tmp" && oras push "$ref" \
-      --artifact-type "$ORAS_ARTIFACT_TYPE" \
+      --artifact-type "$ORAS_ARTIFACT_TYPE" "${annotate[@]+"${annotate[@]}"}" \
       "${port}.tar.zst:${ORAS_LAYER_TYPE}" >/dev/null
   ) 2>"$tmp/oras.err"
   status=$?
@@ -460,6 +550,58 @@ cmd_push() {
   clear_force_replace "$port"
   rm -rf "$tmp"
   echo "registry push ${port} ${hash}"
+}
+
+# The CI plan: of the pieces of the PORTs given, in build order, the ones
+# the registry lacks at their input hash (manifests only, no download), one
+# port per line. A hit's output hash goes to target/.myos-dep-hash/, where
+# the hashes of the ports after it find it; a port whose dependency the
+# registry lacks has no defined hash and counts as lacking (its job pulls
+# or builds the dependency, then asks again: it may be a hit by then, its
+# dependency's outputs unchanged).
+cmd_plan() {
+  local port piece hash ref json outputs misses=""
+  ensure_oras >&2
+  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+    oras_login >&2 || true
+  fi
+  for port in "$@"; do
+    for piece in $(port_pieces "$port"); do
+      if ! hash="$(port_hash "$piece")"; then
+        echo "registry lacks ${piece}: its key is undefined (a dependency's outputs are not in the registry)" >&2
+        misses="$misses $port"
+        continue
+      fi
+      ref="$(registry_ref "$piece" "$hash")"
+      if json="$(oras manifest fetch "$ref" 2>/dev/null)"; then
+        echo "registry has ${piece} ${hash}" >&2
+        if has_outputs_key "$piece" && outputs="$(annotation_outputs <<<"$json")" && [[ -n "$outputs" ]]; then
+          cache_outputs "$piece" "$hash" "$outputs"
+        fi
+      else
+        echo "registry lacks ${piece} ${hash}" >&2
+        misses="$misses $port"
+      fi
+    done
+  done
+  printf '%s\n' $misses | awk 'NF && !seen[$0]++'
+}
+
+# PORT's output hash per piece (`<piece> <hash>`): recorded from its files
+# when it is current here, else the registry's.
+cmd_outputs() {
+  local port="$1" piece hash h
+  for piece in $(port_pieces "$port"); do
+    if ! hash="$(port_hash "$piece")"; then
+      echo "error: ${piece}: its key is undefined" >&2
+      return 1
+    fi
+    if ! h="$(myos_piece_output_hash "$piece" "$hash")"; then
+      echo "error: ${piece}: outputs neither built here nor in the registry" >&2
+      return 1
+    fi
+    echo "$piece $h"
+  done
 }
 
 # CMD (pull, push, exists) for each piece of PORT: exists fails when a
@@ -494,6 +636,14 @@ case "$CMD" in
     ;;
   login)
     cmd_login
+    ;;
+  plan)
+    shift
+    cmd_plan "$@"
+    ;;
+  outputs)
+    [[ -n "$PORT" ]] || usage
+    cmd_outputs "$PORT"
     ;;
   pull|push)
     [[ -n "$PORT" ]] || usage
