@@ -15,7 +15,7 @@ The package installs `dmenu`, `stest` (the file tests `dmenu_path` filters
 `PATH` with) and the upstream scripts `dmenu_run` and `dmenu_path`, shell
 scripts the kernel runs through their `#!/bin/sh` line. `dmenu_path` caches
 the program list in `$XDG_CACHE_HOME/dmenu_run` (`$HOME/.cache` without it,
-`/.cache` for root) and lists it again when a `PATH` directory changes. The
+`/home/root/.cache` for root) and lists it again when a `PATH` directory changes. The
 stock configuration (`config.def.h`): the font is fontconfig's `monospace`
 (DejaVu Sans Mono, the `x11-fonts` package), the selected item `#005577`.
 

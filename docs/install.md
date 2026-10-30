@@ -192,6 +192,11 @@ become root in `admin` (`sec as root`, `docs/security.md`). It then:
 1. binds a writable directory over `/etc/dropbear` for the host keys and
    `authorized_keys` (`docs/ssh.md`): `/data/dropbear` when `/data` is
    mounted, else `/tmp/dropbear`, both `secret(root)`;
+   and the same way `/data/home` (else `/tmp/home`, gone at the next
+   boot) over `/home`, the users' homes, with a directory made in it for
+   each user whose `home:` is below it (`docs/security.md`; root's is
+   `/home/root`). A login before that finds the image's `/home/root`,
+   empty and read-only;
 2. binds the global apps of `/data/apps`
    (`get-myos -r /data/apps --global`, `docs/packages.md`) so they are on
    `PATH` before the first login; log in `/tmp/get-myos-global.log`;
@@ -218,7 +223,7 @@ An ext2 at `/data` for what must outlive an upgrade. Only the
 administrator may write it (the policy's `sys.file` label). It holds
 `get-myos`'s apps (`/data/apps`) and `get-alpine`'s root
 (`/data/alpine`, `docs/linux-compat.md`), both labelled `sys.pkg`, plus
-`/data/etc/rc.local` and `/data/dropbear`.
+`/data/etc/rc.local`, `/data/dropbear` and the homes, `/data/home`.
 
 On a disk larger than the image, the space after it stays unused:
 growing the partition needs the GPT rewritten and the ext2 grown

@@ -393,6 +393,9 @@ pub fn build_boot_archives(
     add(&mut entries, "mnt/.keep", Some(b"\n".to_vec()));
     add(&mut entries, "boot/.keep", Some(b"\n".to_vec()));
     add(&mut entries, "data/.keep", Some(b"\n".to_vec()));
+    // Root's home (`etc/policy`): /etc/rc binds a writable /home over the
+    // image's; a login before that finds this one, empty and read-only.
+    add(&mut entries, "home/root/.keep", Some(b"\n".to_vec()));
     // The security policy (docs/security.md); the kernel carries the same
     // file as its fallback.
     add(&mut entries, "etc/policy", read(&manifest_dir.join("etc/policy")));

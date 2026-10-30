@@ -193,7 +193,7 @@ boot_disk() {
 		fi
 	done < /lib/myos-boot/boot.txt
 	[ $r = 0 ] || { cat /tmp/boot-esp.txt; return 1; }
-	[ "$(ls /data | tr '\n' ' ')" = "dropbear etc lost+found " ]
+	[ "$(ls /data | tr '\n' ' ')" = "dropbear etc home lost+found " ]
 }
 # The boot script (etc/rc, docs/install.md), which run.sh waited for: as
 # root, it bound the data partition's /data/dropbear over /etc/dropbear,
@@ -349,6 +349,15 @@ boot_zstd() {
 }
 t -t blk boot_zstd boot_zstd
 t -t smoke boot_rc boot_rc
+# Root's home (etc/policy): /home/root, on the data partition's /home,
+# which /etc/rc bound over the image's.
+boot_home() {
+	[ "$HOME" = /home/root ] || { echo "HOME=$HOME"; return 1; }
+	grep -q '^/data/home /home bind' /proc/mounts || { cat /proc/mounts; return 1; }
+	echo home > ~/.boot-home && [ "$(cat /data/home/root/.boot-home)" = home ] || return 1
+	rm ~/.boot-home
+}
+t -t smoke,security boot_home boot_home
 t -t fs,smoke fstab_mount fstab_mount
 
 # A terminal is a directory (docs/tty.md): `data` is the terminal, `ctl` its
