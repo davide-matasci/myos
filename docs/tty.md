@@ -122,9 +122,11 @@ $ echo 'winsize 50 132' > /dev/pts/0/ctl
 
 ## The screen
 
-The console draws an 8x8 font (`modules/console/src/fb.rs`) and
-understands the VT100/xterm escapes full-screen programs use, with 8,
-256 and RGB colors. Text is UTF-8 (wide characters take two cells).
+The console draws an 8x8 font (`modules/console/src/fb.rs`), scaled by
+a whole factor on a large screen so the text stays readable: 1 below
+900 lines (QEMU's 1280x800), 2 at 1920x1080, 3 at 2560x1600, 4 at
+3840x2160, and never below 80 columns. It understands the VT100/xterm
+escapes full-screen programs use, with 8, 256 and RGB colors. Text is UTF-8 (wide characters take two cells).
 Besides ASCII the font has box drawing, block elements, braille and a few
 symbols; anything else is a `?`. The serial port gets the bytes as
 written.
