@@ -10,15 +10,16 @@ the memory layout. For the launcher's own modes (`cargo run --
 With Homebrew:
 
 ```sh
-brew install qemu llvm lld texinfo coreutils meson ninja
+brew install qemu llvm lld texinfo coreutils meson ninja cmake bash
 # Homebrew's llvm is keg-only (no ld.lld on PATH) — the newlib/ports cross
 # wrappers exec ld.lld, so prepend it:
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"   # /usr/local/opt/llvm/bin on Intel
 ```
 
-`lld` is a formula of its own on current Homebrew. macOS's `/bin/bash`
-is 3.2: `brew install bash`, with Homebrew's bin first in `PATH`, avoids
-its parser quirks in the build scripts.
+`lld` is a formula of its own on current Homebrew. Apple's clang has no
+RISC-V backend, so the riscv64 builds need Homebrew's llvm first in `PATH`.
+macOS's `/bin/bash` is 3.2: Homebrew's bash, with Homebrew's bin first in
+`PATH`, avoids its parser quirks in the build scripts.
 
 ## The images
 
