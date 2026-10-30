@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <string.h>
@@ -45,6 +46,10 @@ static int intr(const char *tty) {
     if (setsid() < 0) {
         return fail("intr: setsid");
     }
+    /* Started as a background job of the test's shell, so with SIGINT
+     * ignored, as POSIX has it for one; the ^C it waits for is the tty's
+     * to deliver, so the default action is put back here. */
+    signal(SIGINT, SIG_DFL);
     int t = open(tty, O_RDWR);
     if (t < 0 || ioctl(t, TIOCSCTTY, 0) != 0) {
         return fail("intr: controlling terminal");

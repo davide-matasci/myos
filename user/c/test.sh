@@ -397,7 +397,9 @@ t -t console,mouse virtio_mouse virtio_mouse_events
 # The keyboard types at the tty whose text screen is shown (docs/tty.md):
 # tty9's here, which has no getty. ^C there while nothing reads it: the
 # console's input thread runs the line discipline anyway and the tty's
-# session (kbd_smoke intr, which reads only /dev/zero) gets SIGINT.
+# session (kbd_smoke intr, which reads only /dev/zero) gets SIGINT. The
+# job is a background one, so the shell starts it with SIGINT ignored, as
+# POSIX has it; the program puts the default back for the ^C (kbd_smoke.c).
 ctrl_c() {
 	echo 'screen 9' > /dev/console/ctl || return 1
 	$SMOKES/kbd_smoke intr /dev/tty9/data &

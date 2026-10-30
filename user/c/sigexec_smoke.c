@@ -15,7 +15,10 @@
  *   dfl   the child leaves the parent's handler on SIGINT in place: the
  *         exec resets it to the default, and the SIGINT ends the sleep;
  *   inh   the parent itself ignores SIGINT when it forks, the child changes
- *         nothing: the sleep inherits the ignore through fork and exec.
+ *         nothing: the sleep inherits the ignore through fork and exec;
+ *   child a forked child's sigaction works right after the fork, and
+ *         changes the child's dispositions and not its parent's, over
+ *         thousands of forks.
  *
  * Prints [ OK ] sigexec, or [ FAIL ] sigexec: <case>: <what happened>.
  */
@@ -166,6 +169,66 @@ static void run_case(const char *what, int child_disp, int survives) {
     }
 }
 
+/* A forked child's sigaction is the child's alone: FORKS children that
+ * set SIGUSR1 to SIG_IGN and exit, while the parent keeps its handler; the
+ * parent reads its disposition back after each (`child`). A shell's
+ * background jobs set SIGINT and SIGQUIT to SIG_IGN right after the fork,
+ * and the test runner's shell was found with the two ignored while it
+ * caught the rest (issue #672). */
+#define FORKS 3000
+static void on_usr1(int sig) {
+    (void)sig;
+}
+static void child_sigaction_stays_in_child(void) {
+    struct sigaction sa, old;
+    int i;
+    memset(&sa, 0, sizeof sa);
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = on_usr1;
+    if (sigaction(SIGUSR1, &sa, NULL) != 0) {
+        fail("child", "sigaction(SIGUSR1)", 0);
+        return;
+    }
+    for (i = 0; i < FORKS; i++) {
+        pid_t pid = fork();
+        int st;
+        if (pid < 0) {
+            fail("child", "fork failed", 0);
+            return;
+        }
+        if (pid == 0) {
+            struct sigaction ign;
+            memset(&ign, 0, sizeof ign);
+            sigemptyset(&ign.sa_mask);
+            ign.sa_handler = SIG_IGN;
+            if (sigaction(SIGUSR1, &ign, NULL) != 0 || sigaction(SIGUSR2, &ign, NULL) != 0) {
+                _exit(7);
+            }
+            _exit(0);
+        }
+        if (waitpid(pid, &st, 0) != pid) {
+            fail("child", "waitpid", 0);
+            return;
+        }
+        if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+            fail("child", "a fresh child's sigaction failed", st);
+            return;
+        }
+        if (sigaction(SIGUSR1, NULL, &old) != 0 || old.sa_handler != on_usr1) {
+            printf("[ FAIL ] sigexec: child: the parent's SIGUSR1 handler is gone after fork %d (now %s)\n", i,
+                   old.sa_handler == SIG_IGN ? "ignored" : old.sa_handler == SIG_DFL ? "default" : "another handler");
+            failed = 1;
+            return;
+        }
+        if (sigaction(SIGUSR2, NULL, &old) != 0 || old.sa_handler != SIG_DFL) {
+            printf("[ FAIL ] sigexec: child: the parent's SIGUSR2 is %s after fork %d\n",
+                   old.sa_handler == SIG_IGN ? "ignored" : "caught", i);
+            failed = 1;
+            return;
+        }
+    }
+}
+
 int main(void) {
     struct sigaction sa, old;
     memset(&sa, 0, sizeof sa);
@@ -191,6 +254,7 @@ int main(void) {
         return 1;
     }
     run_case("inh", -1, 1);
+    child_sigaction_stays_in_child();
     if (failed) {
         return 1;
     }
