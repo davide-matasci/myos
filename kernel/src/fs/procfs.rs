@@ -359,12 +359,14 @@ fn thread_status(tid: usize) -> Option<alloc::string::String> {
     }
     let _ = writeln!(
         out,
-        " {:#x} {} {} {:#x} {:#x}",
+        " {:#x} {} {} {:#x} {:#x} {:#x} {:#x}",
         t.wait_key,
         ms(t.cpu_ns),
         ms(t.start_ns),
         t.sig_pending,
         t.sig_blocked,
+        t.sig_ignored,
+        t.sig_caught,
     );
     Some(out)
 }

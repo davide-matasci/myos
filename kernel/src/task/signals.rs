@@ -429,6 +429,24 @@ fn with_tables(f: impl FnOnce(&mut [SigTable; MAX_TASKS])) {
     irq_restore(flags);
 }
 
+/// The signals process `pid` catches (a handler installed), as a bit mask.
+/// Caller may hold `TASKS` (it comes first in lock order).
+pub(super) fn signal_caught_mask(pid: usize) -> u32 {
+    if pid >= MAX_TASKS {
+        return 0;
+    }
+    let mut mask = 0u32;
+    with_tables(|tabs| {
+        let tab = &tabs[pid];
+        for sig in 1..32usize {
+            if tab.act[sig].handler != 0 && tab.tramp != 0 {
+                mask |= 1 << sig;
+            }
+        }
+    });
+    mask
+}
+
 /// Whether process `pid` wants no zombies: it ignores `SIGCHLD` or set
 /// `SA_NOCLDWAIT` for it. Caller holds `TASKS` (it comes first in lock order).
 pub(super) fn signal_no_zombies(tasks: &TaskTable, pid: usize) -> bool {

@@ -44,6 +44,9 @@ pub struct ThreadInfo {
     pub start_ns: u64,
     pub sig_pending: u32,
     pub sig_blocked: u32,
+    /// Its process's dispositions: the signals ignored, the ones caught.
+    pub sig_ignored: u32,
+    pub sig_caught: u32,
 }
 
 /// A slot `/proc` shows: one that holds a task whose pid still exists.
@@ -172,6 +175,8 @@ pub fn thread_info(tid: usize) -> Option<ThreadInfo> {
             start_ns: acct::start_ns(tid),
             sig_pending: t.sig_pending,
             sig_blocked: t.sig_blocked,
+            sig_ignored: tasks.sig_ignored(t.tgid),
+            sig_caught: super::signals::signal_caught_mask(t.tgid),
         })
     })
 }

@@ -91,8 +91,8 @@ capture() {
 # sleep whose pid the watch leaves in $OUT/hw-NAME.pid; the watch writes the
 # pid before it looks at the mark, so one side or the other sees the other's.
 # (The sleep's own kill was lost too when it fell in the child's moment as
-# a shell before the exec, to the handler there: ports/oksh/trap.myos.patch
-# and exec.myos.patch.)
+# a shell before the exec, to the handler there, which now takes it at
+# once: ports/oksh/trap.myos.patch.)
 hung_watch() {
 	HUNG=300
 	has "$SKIP" heavy && HUNG=120
@@ -106,7 +106,7 @@ hung_watch() {
 	wait $hw_sleep 2> /dev/null
 	: > $OUT/hw-$1.pid
 	[ -s $OUT/hw-$1.done ] && return 0
-	echo "HUNG $1: still running after ${HUNG}s; its threads (tid pid name state cpu wait time start pending blocked), then the processes:"
+	echo "HUNG $1: still running after ${HUNG}s; its threads (tid pid name state cpu wait time start pending blocked ignored caught), then the processes:"
 	for hw_f in /proc/[0-9]*/task/*/status; do cat "$hw_f"; done 2> /dev/null
 	for hw_d in /proc/[0-9]*; do echo "$hw_d $(tr '\0' ' ' < $hw_d/cmdline 2> /dev/null)"; done
 }
