@@ -86,6 +86,14 @@ as Ready, without the lock held. A task leaving a CPU stays Running until
 peer could resume it from a stale switch frame. A wake that lands
 mid-switch is deferred to `finish_switch`.
 
+A user task's FP/SIMD registers are saved when it leaves a CPU and
+restored when it next runs (`task/fpu.rs`). On x86 a CPU with XSAVE and
+AVX gets AVX state turned on at boot (CR4.OSXSAVE, XCR0 = x87 | SSE |
+AVX, `arch/x86/fpu.rs`), as a program that finds AVX in CPUID expects,
+and the image is XSAVE's (with ymm0-15's upper halves); without, FXSAVE's.
+`heap`'s `avx` stage checks both on the CI machines, whose CPU model has
+AVX.
+
 ## Idle CPUs
 
 `kernel_main` (task 0) is the BSP's idle task, and `ap_idle_body` the

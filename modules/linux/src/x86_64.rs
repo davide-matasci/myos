@@ -255,7 +255,7 @@ fn arch_prctl(code: usize, addr: usize) -> usize {
 
 pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 struct Fx([u8; FP_BYTES]);
 
 // ---- signal frame ---------------------------------------------------------
@@ -298,8 +298,9 @@ fn get_u64(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(b[off..off + 8].try_into().unwrap())
 }
 
-/// Linux `rt_sigframe`: `[restorer][ucontext][siginfo]`, the FXSAVE image
-/// 64-byte aligned above it, `rsp ≡ 8 (mod 16)` at handler entry.
+/// Linux `rt_sigframe`: `[restorer][ucontext][siginfo]`, the FP image
+/// (FXSAVE's layout, then XSAVE's header and AVX state) 64-byte aligned
+/// above it, `rsp ≡ 8 (mod 16)` at handler entry.
 pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     let sp = regs.word(R_RSP) as usize;
     let fp_va = sp.checked_sub(RED_ZONE + FP_BYTES)? & !63;

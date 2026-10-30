@@ -272,6 +272,7 @@ int main(void) {
     // Userspace BSD sockets over /net/tcp (no socket syscall).
     run_prog(b"/bin/etc/socket_smoke", &[b"socket_smoke"]);
     fpu_smoke();
+    avx_smoke();
     thread_smoke();
     status_ok("smoke");
     exit();
@@ -418,6 +419,89 @@ fn fpu_smoke() {
             write(b"fpu FAIL: FP registers changed across preemption\n");
         }
     }
+}
+
+/// x86: a CPU whose CPUID has AVX gets AVX state on (OSXSAVE, XCR0's SSE
+/// and AVX bits), and ymm registers' upper halves survive preemption as
+/// [`fpu_smoke`]'s values do.
+#[cfg(target_arch = "x86_64")]
+fn avx_smoke() {
+    let leaf1 = core::arch::x86_64::__cpuid(1);
+    if leaf1.ecx & (1 << 28) == 0 {
+        write(b"[ OK ] avx (the CPU has none)\n");
+        return;
+    }
+    // CPUID's OSXSAVE says the kernel set CR4.OSXSAVE; XCR0 what it enabled.
+    let xcr0 = if leaf1.ecx & (1 << 27) != 0 {
+        let lo: u32;
+        unsafe { core::arch::asm!("xgetbv", in("ecx") 0, out("eax") lo, out("edx") _, options(nostack, nomem)) };
+        lo
+    } else {
+        0
+    };
+    if xcr0 & 0b110 != 0b110 {
+        write(b"avx FAIL: the CPU has AVX, the kernel left its state off\n");
+        return;
+    }
+    const CHILDREN: u64 = 4;
+    const ITERS: u64 = 2_000_000;
+    for k in 0..CHILDREN {
+        match fork() {
+            None => write(b"fork fail\n"),
+            Some(0) => {
+                let base = 1000.0 * (k + 1) as f64;
+                let ok = avx_spin(base.to_bits(), ITERS) == (base + ITERS as f64).to_bits();
+                exit_code(if ok { 0 } else { 1 });
+            }
+            Some(_) => {}
+        }
+    }
+    let mut bad = 0;
+    for _ in 0..CHILDREN {
+        match wait_status() {
+            Some((_, 0)) => {}
+            _ => bad += 1,
+        }
+    }
+    if bad == 0 {
+        write(b"[ OK ] avx\n");
+    } else {
+        write(b"avx FAIL: ymm upper halves changed across preemption\n");
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx_smoke() {
+    write(b"[ OK ] avx (x86 only)\n");
+}
+
+/// [`fp_spin`] in a ymm register's upper half (AVX).
+#[cfg(target_arch = "x86_64")]
+fn avx_spin(bits: u64, n: u64) -> u64 {
+    let out: u64;
+    unsafe {
+        core::arch::asm!(
+            "vmovq xmm0, {v}",
+            "vinsertf128 ymm0, ymm0, xmm0, 1",
+            "mov {t}, 0x3ff0000000000000",
+            "vmovq xmm1, {t}",
+            "vinsertf128 ymm1, ymm1, xmm1, 1",
+            "2:",
+            "vaddpd ymm0, ymm0, ymm1",
+            "dec {n}",
+            "jnz 2b",
+            "vextractf128 xmm0, ymm0, 1",
+            "vmovq {v}, xmm0",
+            "vzeroupper",
+            v = inout(reg) bits => out,
+            n = inout(reg) n => _,
+            t = out(reg) _,
+            out("xmm0") _,
+            out("xmm1") _,
+            options(nostack, nomem),
+        );
+    }
+    out
 }
 
 /// Add 1.0 to `bits` (an f64) `n` times, keeping it in an FP register.

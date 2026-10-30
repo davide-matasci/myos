@@ -387,7 +387,7 @@ pub mod task {
     pub mod fpu {
         pub const BYTES: usize = myos_abi::MYOS_FP_BYTES;
         /// # Safety
-        /// `buf` is 16-byte aligned and `BYTES` long.
+        /// `buf` is 64-byte aligned and `BYTES` long.
         pub unsafe fn save(buf: *mut u8) {
             unsafe { (super::api().fpu_save)(buf) }
         }

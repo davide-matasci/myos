@@ -77,3 +77,7 @@ pub unsafe fn restore(buf: *const u8) {
     pub fn live() -> bool {
         true
     }
+
+/// An image from user memory needs no fixing up here (x86's XSAVE header
+/// does).
+pub fn sanitize(_image: &mut [u8; BYTES]) {}

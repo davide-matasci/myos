@@ -34,7 +34,7 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
 /// f0-f31 then fcsr: the `__riscv_d_ext_state` layout (see `task::fpu`).
 pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 struct Fp([u8; FP_BYTES]);
 
 // ---- signal frame ---------------------------------------------------------

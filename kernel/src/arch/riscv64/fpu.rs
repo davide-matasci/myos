@@ -119,3 +119,7 @@ pub unsafe fn restore(buf: *const u8) {
         unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) s, options(nomem, nostack)) };
         s & (3 << 13) != 0
     }
+
+/// An image from user memory needs no fixing up here (x86's XSAVE header
+/// does).
+pub fn sanitize(_image: &mut [u8; BYTES]) {}

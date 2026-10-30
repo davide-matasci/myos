@@ -39,7 +39,7 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
 pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as FP_BYTES};
 const FPSIMD_MAGIC: u32 = 0x4650_8001;
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 struct Fp([u8; FP_BYTES]);
 
 // ---- signal frame ---------------------------------------------------------

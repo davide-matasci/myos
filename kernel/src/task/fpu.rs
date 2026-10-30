@@ -14,7 +14,7 @@ use super::MAX_TASKS;
 
 use crate::arch::fpu as arch;
 
-pub use arch::{restore, save, BYTES};
+pub use arch::{restore, sanitize, save, BYTES};
 
 #[repr(C, align(64))]
 struct Buf(UnsafeCell<[u8; BYTES]>);

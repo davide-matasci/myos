@@ -1,5 +1,5 @@
 # The heavy smoke: std and C programs, sbase, find, ripgrep, tcc, the socket
-# and ping clients, FPU state across preemption, threads (`heap mini`, the
+# and ping clients, FPU and AVX state across preemption, threads (`heap mini`, the
 # `heap_mini` test); with uutils and git's porcelain (apps, installed
 # before the tests, which heap runs in their view: run-myos) as the `heap`
 # test, which runs tcc's stages too (the tcc package). It prints a
@@ -18,7 +18,7 @@ heap_smoke() {
 	cat $OUT/heap.log
 	[ $rc -eq 0 ] || { echo "heap exit $rc"; return 1; }
 	for n in std "std cat" "std echo" bigalloc c sbase sls find ripgrep "sbase argv" ping socket fpu \
-		threads smoke; do
+		avx threads smoke; do
 		contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 	done
 	if [ "$1" = full ]; then
@@ -37,7 +37,7 @@ heap_smoke() {
 			contains "[ OK ] $n" $OUT/heap.log || { echo "missing: [ OK ] $n"; return 1; }
 		done
 	fi
-	# heap's own failure lines ("threads FAIL", "fpu FAIL: ..."); a path
+	# heap's own failure lines ("threads FAIL", "fpu FAIL: ...", "avx FAIL: ..."); a path
 	# such as EAI_FAIL.c in a listing is not one.
 	! grep -q -E "(^| )FAIL" $OUT/heap.log
 }
