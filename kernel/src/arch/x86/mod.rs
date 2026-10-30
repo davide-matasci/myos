@@ -59,6 +59,9 @@ pub fn init_interrupts() {
     crate::console::status_info(&alloc::format!("pci config: {}", pci::config_source()));
     interrupts::init();
     ioapic::init();
+    // AVX state on before any task switches and before the APs start, which
+    // turn it on as they come up (`ap_init`).
+    fpu::enable(true);
 }
 
 pub fn wait_for_interrupt_proof() {
@@ -67,6 +70,7 @@ pub fn wait_for_interrupt_proof() {
 
 pub fn ap_init(logical: usize) {
     interrupts::ap_init(logical);
+    fpu::enable(false);
     crate::user::ap_init();
 }
 

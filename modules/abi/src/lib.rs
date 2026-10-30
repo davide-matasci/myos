@@ -106,7 +106,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 59: a PCI function's I/O BAR ([`KernelApi::pci_io_map`], [`PciIo`]).
 /// 60: no `PersonalityOps::flags` (every riscv64 user task has the FPU
 /// on, so a personality need not ask).
-pub const ABI_VERSION: u32 = 60;
+/// 61: x86's FP/SIMD image is XSAVE's (`MYOS_FP_BYTES` 832, ymm0-15's
+/// upper halves included), and the save area of `fpu_save` /
+/// `fpu_restore` is 64-byte aligned on every arch.
+pub const ABI_VERSION: u32 = 61;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -539,11 +542,12 @@ pub const MYOS_SIGSEGV: u32 = 11;
 /// `sa_flags` bit: on `SIGCHLD`, children leave no zombie (kernel `signal::SA_NOCLDWAIT`).
 pub const MYOS_SA_NOCLDWAIT: u32 = 0x20;
 
-/// Size of the FP/SIMD register image `fpu_save` writes (x86_64 FXSAVE,
-/// aarch64 `fpsimd_context` head + v0-v31, riscv64 f0-f31 + fcsr). The
-/// buffer must be 16-byte aligned.
+/// Size of the FP/SIMD register image `fpu_save` writes (x86_64 XSAVE of
+/// x87, SSE and AVX, of which a CPU without AVX fills the FXSAVE region,
+/// the first 512 bytes; aarch64 `fpsimd_context` head + v0-v31, riscv64
+/// f0-f31 + fcsr). The buffer must be 64-byte aligned.
 #[cfg(target_arch = "x86_64")]
-pub const MYOS_FP_BYTES: usize = 512;
+pub const MYOS_FP_BYTES: usize = 832;
 #[cfg(target_arch = "aarch64")]
 pub const MYOS_FP_BYTES: usize = 528;
 #[cfg(target_arch = "riscv64")]
@@ -914,7 +918,7 @@ pub struct KernelApi {
     pub signal_interrupt_wait: unsafe extern "C" fn() -> i32,
     /// End the current process as if killed by native signal `sig`.
     pub signal_terminate: unsafe extern "C" fn(sig: u32) -> !,
-    /// Save / load the user FP/SIMD registers (`MYOS_FP_BYTES`, 16-aligned).
+    /// Save / load the user FP/SIMD registers (`MYOS_FP_BYTES`, 64-byte aligned).
     pub fpu_save: unsafe extern "C" fn(buf: *mut u8),
     pub fpu_restore: unsafe extern "C" fn(buf: *const u8),
     pub thread_pointer_get: unsafe extern "C" fn() -> u64,
@@ -1334,7 +1338,7 @@ impl StrRef {
 /// their field: `dealloc` (a pointer from `alloc`), the saved registers of
 /// a syscall (`native_syscall`, `fork_from`, `thread_spawn_from`,
 /// `personality_exec`'s strings) and the FP/SIMD save area (`fpu_save`,
-/// `fpu_restore`, 16-byte aligned).
+/// `fpu_restore`, 64-byte aligned).
 impl KernelApi {
     pub fn write_str(&self, s: &str) {
         self.write_bytes(s.as_bytes());

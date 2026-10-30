@@ -5,6 +5,10 @@
 /// FPCR, then v0-v31.
 pub const BYTES: usize = 528;
 
+/// The registers' initial state as an image: FPSR and FPCR 0 (no flags;
+/// round to nearest, no exception traps), v0-v31 zero.
+pub const INIT: [u8; BYTES] = [0; BYTES];
+
 /// # Safety
 /// `buf` is 16-byte aligned and `BYTES` long.
 pub unsafe fn save(buf: *mut u8) {
@@ -77,3 +81,7 @@ pub unsafe fn restore(buf: *const u8) {
     pub fn live() -> bool {
         true
     }
+
+/// An image from user memory needs no fixing up here (x86's XSAVE header
+/// does).
+pub fn sanitize(_image: &mut [u8; BYTES]) {}

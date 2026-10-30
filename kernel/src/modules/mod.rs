@@ -1406,7 +1406,14 @@ unsafe extern "C" fn api_fpu_save(buf: *mut u8) {
 
 unsafe extern "C" fn api_fpu_restore(buf: *const u8) {
     if !buf.is_null() {
-        unsafe { crate::task::fpu::restore(buf) }
+        // The image may come from user memory (a Linux signal frame): one
+        // the CPU would refuse must not fault in the kernel.
+        #[repr(C, align(64))]
+        struct Image([u8; crate::task::fpu::BYTES]);
+        let mut image = Image([0; crate::task::fpu::BYTES]);
+        unsafe { core::ptr::copy_nonoverlapping(buf, image.0.as_mut_ptr(), image.0.len()) };
+        crate::task::fpu::sanitize(&mut image.0);
+        unsafe { crate::task::fpu::restore(image.0.as_ptr()) }
     }
 }
 
