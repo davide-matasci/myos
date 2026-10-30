@@ -106,6 +106,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 59: a PCI function's I/O BAR ([`KernelApi::pci_io_map`], [`PciIo`]).
 /// 60: no `PersonalityOps::flags` (every riscv64 user task has the FPU
 /// on, so a personality need not ask).
+/// 61: x86's FP/SIMD image is XSAVE's (`MYOS_FP_BYTES` 832, ymm0-15's
+/// upper halves included), and the save area of `fpu_save` /
+/// `fpu_restore` is 64-byte aligned on every arch.
 pub const ABI_VERSION: u32 = 61;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
@@ -915,7 +918,7 @@ pub struct KernelApi {
     pub signal_interrupt_wait: unsafe extern "C" fn() -> i32,
     /// End the current process as if killed by native signal `sig`.
     pub signal_terminate: unsafe extern "C" fn(sig: u32) -> !,
-    /// Save / load the user FP/SIMD registers (`MYOS_FP_BYTES`, 16-aligned).
+    /// Save / load the user FP/SIMD registers (`MYOS_FP_BYTES`, 64-byte aligned).
     pub fpu_save: unsafe extern "C" fn(buf: *mut u8),
     pub fpu_restore: unsafe extern "C" fn(buf: *const u8),
     pub thread_pointer_get: unsafe extern "C" fn() -> u64,

@@ -15,6 +15,21 @@ pub const BYTES: usize = 832;
 
 /// The XSAVE header's offset in the image.
 const HEADER: usize = 512;
+
+/// The registers' initial state as an image: x87's control word 0x37f (all
+/// exceptions masked, every register tag empty), MXCSR 0x1f80 (the same
+/// for SSE; XRSTOR loads it from here whatever the header says), every
+/// register zero, and a zero XSAVE header, on which XRSTOR puts every
+/// component in its initial state.
+pub const INIT: [u8; BYTES] = {
+    let mut image = [0u8; BYTES];
+    image[0] = 0x7f;
+    image[1] = 0x03;
+    image[24] = 0x80;
+    image[25] = 0x1f;
+    image
+};
+
 /// XCR0's x87, SSE and AVX state bits.
 const XCR0: u64 = 0b111;
 

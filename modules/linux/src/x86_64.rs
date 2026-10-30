@@ -258,6 +258,27 @@ pub use crate::k::task::fpu::{restore as fp_restore, save as fp_save, BYTES as F
 #[repr(C, align(64))]
 struct Fx([u8; FP_BYTES]);
 
+/// MXCSR_MASK, the MXCSR bits this CPU accepts (a reserved one set would
+/// fault the restore in the kernel): a CPU constant, read from a live save
+/// of the registers once (0 there means the default 0xffbf) and kept.
+static MXCSR_MASK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn mxcsr_mask() -> u32 {
+    use core::sync::atomic::Ordering;
+    let mask = MXCSR_MASK.load(Ordering::Relaxed);
+    if mask != 0 {
+        return mask;
+    }
+    let mut live = Fx([0; FP_BYTES]);
+    unsafe { fp_save(live.0.as_mut_ptr()) };
+    let mut mask = u32::from_le_bytes(live.0[28..32].try_into().unwrap());
+    if mask == 0 {
+        mask = 0xffbf;
+    }
+    MXCSR_MASK.store(mask, Ordering::Relaxed);
+    mask
+}
+
 // ---- signal frame ---------------------------------------------------------
 
 /// `struct ucontext` up to and including `uc_sigmask`.
@@ -370,15 +391,9 @@ pub fn sigreturn(regs: &mut SyscallRegs) -> Option<(usize, u64)> {
     if fp_va != 0 {
         let mut fx = Fx([0; FP_BYTES]);
         sys::get_bytes(fp_va, &mut fx.0).ok()?;
-        // MXCSR bits this CPU rejects would #GP in fxrstor: keep the valid
-        // ones (MXCSR_MASK from a live FXSAVE; 0 means the default 0xffbf).
-        let mut live = Fx([0; FP_BYTES]);
-        unsafe { fp_save(live.0.as_mut_ptr()) };
-        let mut valid = u32::from_le_bytes(live.0[28..32].try_into().unwrap());
-        if valid == 0 {
-            valid = 0xffbf;
-        }
-        let mxcsr = u32::from_le_bytes(fx.0[24..28].try_into().unwrap()) & valid;
+        // MXCSR bits this CPU rejects would fault the restore: keep the
+        // valid ones.
+        let mxcsr = u32::from_le_bytes(fx.0[24..28].try_into().unwrap()) & mxcsr_mask();
         fx.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
         unsafe { fp_restore(fx.0.as_ptr()) };
     }

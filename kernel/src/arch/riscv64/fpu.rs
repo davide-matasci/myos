@@ -7,6 +7,10 @@
 /// f0-f31 then fcsr: the `__riscv_d_ext_state` layout.
 pub const BYTES: usize = 264;
 
+/// The registers' initial state as an image: f0-f31 and fcsr zero (round
+/// to nearest, no flags).
+pub const INIT: [u8; BYTES] = [0; BYTES];
+
 /// # Safety
 /// `buf` is 8-byte aligned and `BYTES` long.
 pub unsafe fn save(buf: *mut u8) {

@@ -81,18 +81,17 @@ fn riscv_limine_conf() -> String {
         &["a"],
     )
 }
-/// Default qemu64 does not advertise x2APIC (CI #49 panicked, #50 fell back
-/// to PIC and hung). Limine leaves PIC IRQs dead, so the kernel timer proof
-/// needs the x2APIC MSRs.
-/// RDTSCP: the kernel keeps its CPU index in `IA32_TSC_AUX`, RDTSCP's
-/// register (`arch/x86/cpu.rs`); TCG lets a CPU model without the feature
-/// write it, KVM faults the write.
-/// `max` for that, and so that the boots see XSAVE and AVX as every x86
-/// machine of the last decade has them (JavaScriptCore's JIT emits AVX
-/// when CPUID has it; the kernel turns AVX state on, `arch/x86/fpu.rs`):
-/// everything TCG emulates (AVX and AVX2 since QEMU 7.2), the host's CPU
-/// under KVM. (qemu64 with `+xsave,+avx` added hangs TCG on the CR4 write
-/// that turns XSAVE on.)
+/// The x86 boots' CPU model: `max`, everything TCG emulates (AVX and AVX2
+/// since QEMU 7.2), the host's CPU under KVM. The kernel needs x2APIC
+/// (Limine leaves the PIC's IRQs dead, so the timer proof needs the x2APIC
+/// MSRs; the default qemu64 has none: CI #49 panicked, #50 fell back to
+/// the PIC and hung) and RDTSCP (it keeps its CPU index in `IA32_TSC_AUX`,
+/// RDTSCP's register, `arch/x86/cpu.rs`; TCG lets a model without the
+/// feature write it, KVM faults the write); and the boots should see XSAVE
+/// and AVX as every x86 machine of the last decade has them
+/// (JavaScriptCore's JIT emits AVX when CPUID has it; the kernel turns AVX
+/// state on, `arch/x86/fpu.rs`). qemu64 with `+xsave,+avx` added hangs
+/// TCG on the CR4 write that turns XSAVE on.
 const X86_CPU: &str = "max";
 
 /// `-machine` for the x86 boots: `q35` (a PCIe PC with an MCFG, the ECAM

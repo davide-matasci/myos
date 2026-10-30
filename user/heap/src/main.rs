@@ -443,7 +443,10 @@ fn avx_smoke() {
         write(b"avx FAIL: the CPU has AVX, the kernel left its state off\n");
         return;
     }
-    const CHILDREN: u64 = 4;
+    // Twice the boots' four CPUs: with a child per CPU none need share
+    // one, and a kernel switching FXSAVE's half alone (xmm, not the upper
+    // halves) would pass, since nothing else on the CPU touches ymm.
+    const CHILDREN: u64 = 8;
     const ITERS: u64 = 2_000_000;
     for k in 0..CHILDREN {
         match fork() {
