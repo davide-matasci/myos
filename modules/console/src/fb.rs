@@ -1,4 +1,5 @@
-//! Pixel framebuffer writer using the built-in 8x8 font.
+//! Pixel framebuffer writer using the built-in 8x8 font, scaled by a
+//! whole factor on a large screen ([`scale_for`]).
 //!
 //! Interprets a minimal ANSI/VT100 CSI subset so userspace TUIs (vim) can
 //! position the cursor, clear regions, and set colors (the 8 ANSI ones, the
@@ -19,6 +20,14 @@ use crate::font;
 
 const FONT_W: usize = 8;
 const FONT_H: usize = 8;
+
+/// How many pixels each font dot takes, each way, on a `width` x `height`
+/// screen: one more for every 450 lines, so the text on a laptop's dense
+/// panel is about as big as on a 1280x800 screen (QEMU's, 1), and never
+/// fewer than 80 columns. 1920x1080 gets 2, 2560x1600 3, 3840x2160 4.
+fn scale_for(width: usize, height: usize) -> usize {
+    (height / 450).min(width / (80 * FONT_W)).max(1)
+}
 
 /// Soft dark-theme palette (framebuffer only; serial stays plain text).
 pub const BG: (u8, u8, u8) = (0x12, 0x14, 0x1a);
@@ -90,6 +99,8 @@ pub struct FrameBufferWriter {
     fb_len: usize,
     /// The cells, row by row (`rows() * cols()`), from the kernel's heap.
     cells: *mut Cell,
+    /// Pixels per font dot, each way ([`scale_for`]).
+    scale: usize,
     /// The screen is on the framebuffer: drawing goes to the pixels too.
     visible: bool,
     width: usize,
@@ -148,7 +159,8 @@ impl FrameBufferWriter {
         let bpp = (info.bpp as usize).max(8);
         let bytes_per_pixel = (bpp + 7) / 8;
         let len = (info.pitch as usize) * (info.height as usize);
-        let ncells = (info.width as usize / FONT_W).max(1) * (info.height as usize / FONT_H).max(1);
+        let scale = scale_for(info.width as usize, info.height as usize);
+        let ncells = (info.width as usize / (FONT_W * scale)).max(1) * (info.height as usize / (FONT_H * scale)).max(1);
         let cells = crate::api().alloc(ncells * core::mem::size_of::<Cell>(), core::mem::align_of::<Cell>()) as *mut Cell;
         if cells.is_null() {
             return None;
@@ -161,6 +173,7 @@ impl FrameBufferWriter {
             fb: info.addr as *mut u8,
             fb_len: len,
             cells,
+            scale,
             visible: false,
             width: info.width as usize,
             height: info.height as usize,
@@ -239,12 +252,21 @@ impl FrameBufferWriter {
         self.visible = false;
     }
 
+    /// A cell's width and height in pixels.
+    fn cell_w(&self) -> usize {
+        FONT_W * self.scale
+    }
+
+    fn cell_h(&self) -> usize {
+        FONT_H * self.scale
+    }
+
     fn cols(&self) -> usize {
-        (self.width / FONT_W).max(1)
+        (self.width / self.cell_w()).max(1)
     }
 
     fn rows(&self) -> usize {
-        (self.height / FONT_H).max(1)
+        (self.height / self.cell_h()).max(1)
     }
 
     /// Character-cell geometry for `TIOCGWINSZ`.
@@ -682,10 +704,10 @@ impl FrameBufferWriter {
         mask |= (((1u32 << self.r_size) - 1) & 0xff) << self.r_shift;
         mask |= (((1u32 << self.g_size) - 1) & 0xff) << self.g_shift;
         mask |= (((1u32 << self.b_size) - 1) & 0xff) << self.b_shift;
-        let x0 = col * FONT_W;
-        let y0 = row * FONT_H;
-        for dy in 0..FONT_H {
-            for dx in 0..FONT_W {
+        let x0 = col * self.cell_w();
+        let y0 = row * self.cell_h();
+        for dy in 0..self.cell_h() {
+            for dx in 0..self.cell_w() {
                 let x = x0 + dx;
                 let y = y0 + dy;
                 if x >= self.width || y >= self.height {
@@ -1094,7 +1116,8 @@ impl FrameBufferWriter {
             return;
         }
         let pitch = self.pitch;
-        let (src_off, dst_off, len) = (src * FONT_H * pitch, dst * FONT_H * pitch, n * FONT_H * pitch);
+        let row_len = self.cell_h() * pitch;
+        let (src_off, dst_off, len) = (src * row_len, dst * row_len, n * row_len);
         let px = self.pixels();
         if src_off + len <= px.len() && dst_off + len <= px.len() {
             px.copy_within(src_off..src_off + len, dst_off);
@@ -1115,12 +1138,14 @@ impl FrameBufferWriter {
         if !self.visible {
             return;
         }
-        let x0 = col * FONT_W;
-        let y0 = row * FONT_H;
-        for (dy, bits) in cell.glyph.iter().copied().enumerate() {
-            for dx in 0..FONT_W {
-                let on = bits & (1 << dx) != 0;
-                self.put_pixel(x0 + dx, y0 + dy, if on { cell.fg } else { cell.bg });
+        let s = self.scale;
+        let x0 = col * self.cell_w();
+        let y0 = row * self.cell_h();
+        for y in 0..self.cell_h() {
+            let bits = cell.glyph[y / s];
+            for x in 0..self.cell_w() {
+                let on = bits & (1 << (x / s)) != 0;
+                self.put_pixel(x0 + x, y0 + y, if on { cell.fg } else { cell.bg });
             }
         }
     }
