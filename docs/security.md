@@ -32,7 +32,7 @@ mode enforcing                  # or permissive: refusals are logged, not made
 boot system init                # the first process (init): user and domain
 login -> shell                  # the domain `setuser` enters by default
 
-user root    domains: admin shell untrusted   login: admin
+user root    domains: admin shell untrusted   login: admin   home: /home/root
 user system  domains: init netd login mount   login: none
 user alice   groups: dev   domains: shell untrusted   home: /home/alice   password: sha256:SALT:HEX
 
@@ -53,7 +53,9 @@ exec /bin/custom/netd -> netd
 - **Users.** `user NAME` takes `groups:`, `domains:` (where exec may move
   its processes), `login:` (the domain `setuser` enters, else the
   `login ->` line's; `none` means nobody enters the user), `home:`
-  (default `/`) and `password:`. A user's uid is the position of its
+  (default `/`; `login` sets `HOME` to it and starts there: root's is
+  `/home/root`, which `/etc/rc` makes writable, `docs/install.md`) and
+  `password:`. A user's uid is the position of its
   line, from 0. `/proc/sys/security/users` lists them for libgloss's
   `getpwnam` and friends.
 - **Labels.** `label PATTERN KIND[(OWNER)]`. Each path component is a
@@ -76,7 +78,9 @@ Labels come from the file's **canonical** path, the one bind mounts
 resolve to, so a file reached through a bind or a namespace has the label
 of where it is stored. `get-myos`'s apps (`/data/apps`, `/tmp/apps`) and
 `get-alpine`'s root (`/data/alpine`) are `sys.pkg` whatever path
-`run-myos` shows them at; `/dev/shm` is `/tmp/.shm`, labelled `tmp`.
+`run-myos` shows them at; the homes `/etc/rc` binds over `/home`
+(`/data/home`, `/tmp/home`) carry `/home`'s rules (`home($u)`, the
+`.ssh` directory `secret($u)`); `/dev/shm` is `/tmp/.shm`, labelled `tmp`.
 
 ### Kernel objects
 

@@ -25,6 +25,16 @@ fi
 mkdir -p $keep/dropbear && mount $keep/dropbear /etc/dropbear bind \
 	|| echo "[ WARN ] rc: cannot bind $keep/dropbear on /etc/dropbear"
 
+# The users' homes (`home:` in /etc/policy; root's is /home/root): /home,
+# a directory of the read-only root, gets $keep/home bound over it, with a
+# directory for each user whose home is below it. A login before this
+# finds the image's /home/root, empty and read-only.
+while read -r uid name home groups; do
+	case $home in /home/?*) mkdir -p "$keep$home" ;; esac
+done < /proc/sys/security/users
+mount $keep/home /home bind || echo "[ WARN ] rc: cannot bind $keep/home on /home"
+HOME=/home/root
+
 # The global apps (`get-myos --global`, docs/packages.md): bound again
 # where the image would have their files, before the first login.
 if [ $keep = /data ] && [ -d /data/apps/.get-myos/global ]; then

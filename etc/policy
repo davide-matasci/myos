@@ -9,7 +9,7 @@ login -> shell
 # Users. The uid is the position (root is 0). A user without a password
 # can only be entered by a domain with `write` on kernel.users (login);
 # one with `login: none` by nobody: system only runs what init starts.
-user root    domains: admin shell untrusted   login: admin
+user root    domains: admin shell untrusted   login: admin   home: /home/root
 user system  domains: init netd sndd login smoke mount rc   login: none
 
 # Labels: the last rule that matches a file's path names its label;
@@ -30,6 +30,11 @@ label /data/alpine/**        sys.pkg
 label /data/dropbear/**      secret(root)
 label /home/$u/**            home($u)
 label /home/$u/.ssh/**       secret($u)
+# Where /etc/rc keeps /home: a file has the label of where it is stored.
+label /data/home/$u/**       home($u)
+label /data/home/$u/.ssh/**  secret($u)
+label /tmp/home/$u/**        home($u)
+label /tmp/home/$u/.ssh/**   secret($u)
 label /mnt/**                mnt
 label /dev/**                dev
 # The terminals. A pty's or a tty's label is its user's, dev.tty(alice):
