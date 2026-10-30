@@ -1,6 +1,15 @@
 --- jobs.c
 +++ jobs.c
-@@ -160,8 +160,10 @@
+@@ -131,6 +131,8 @@
+ static pid_t		restore_ttypgrp = -1;
+ static pid_t		our_pgrp;
+ static int const	tt_sigs[] = { SIGTSTP, SIGTTIN, SIGTTOU };
++/* myos: trap.c; a forked child, before and after cleartraps. */
++extern volatile sig_atomic_t forked_child;
+ 
+ static void		j_set_async(Job *);
+ static void		j_startjob(Job *);
+@@ -160,8 +162,10 @@
  	setsig(&sigtraps[SIGCHLD], j_sigchld,
  	    SS_RESTORE_ORIG|SS_FORCE|SS_SHTRAP);
  
@@ -13,18 +22,46 @@
  
  	/* shl_j is used to do asynchronous notification (used in
  	 * an interrupt handler, so need a distinct shf)
-@@ -499,13 +501,29 @@
- 				setsig(&sigtraps[tt_sigs[i]], SIG_DFL,
- 				    SS_RESTORE_DFL|SS_FORCE);
- 		}
--		if (Flag(FBGNICE) && (flags & XBGND))
--			nice(4);
-+		/* myos: no nice(2). */
- 		if ((flags & XBGND) && !Flag(FMONITOR)) {
- 			setsig(&sigtraps[SIGINT], SIG_IGN,
- 			    SS_RESTORE_IGN|SS_FORCE);
- 			setsig(&sigtraps[SIGQUIT], SIG_IGN,
- 			    SS_RESTORE_IGN|SS_FORCE);
+@@ -391,6 +395,7 @@
+ 	int		rv = 0;
+ 	int		forksleep;
+ 	int		ischild;
++	sigset_t	sm_fork;
+ 
+ 	if (flags & XEXEC)
+ 		/* Clear XFORK|XPCLOSE|XCCLOSE|XCOPROC|XPIPEO|XPIPEI|XXCOM|XBGND
+@@ -399,7 +404,17 @@
+ 		return execute(t, flags & (XEXEC | XERROK), xerrok);
+ 
+ 	/* no SIGCHLD's while messing with job and process lists */
+-	sigprocmask(SIG_BLOCK, &sm_sigchld, &omask);
++	/* myos: nor, until the child has set itself up (forked_child, its
++	 * SIGINT and SIGQUIT ignored for a background job), a signal the
++	 * shell dies of by catching it: one sent to the child's pid right
++	 * after the fork (`sleep 3 & kill $!`) waits, blocked, for the child's
++	 * sigprocmask below, where trapsig takes it as the program would. */
++	sm_fork = sm_sigchld;
++	sigaddset(&sm_fork, SIGINT);
++	sigaddset(&sm_fork, SIGQUIT);
++	sigaddset(&sm_fork, SIGTERM);
++	sigaddset(&sm_fork, SIGHUP);
++	sigprocmask(SIG_BLOCK, &sm_fork, &omask);
+ 
+ 	p = new_proc();
+ 	p->next = NULL;
+@@ -485,9 +500,35 @@
+ 	    ((flags & XCCLOSE) && ischild)))
+ 		close(close_fd);
+ 	if (ischild) {		/* child */
++		forked_child = 1;
+ 		/* Do this before restoring signal */
+ 		if (flags & XCOPROC)
+ 			coproc_cleanup(false);
++		if ((flags & XBGND) && !Flag(FMONITOR)) {
++			setsig(&sigtraps[SIGINT], SIG_IGN,
++			    SS_RESTORE_IGN|SS_FORCE);
++			setsig(&sigtraps[SIGQUIT], SIG_IGN,
++			    SS_RESTORE_IGN|SS_FORCE);
 +			/* myos: ignored for good, as if the job had inherited
 +			 * them so (POSIX: an asynchronous list's SIGINT and
 +			 * SIGQUIT stay ignored). The exec of the command, by
@@ -36,16 +73,36 @@
 +			 * With the original now "ignored", every exec in this
 +			 * child (a subshell's too, `(cmd; sleep 3) &`) keeps
 +			 * SIG_IGN, and a trap of its own cannot take them back,
-+			 * as for a signal ignored on entry to the shell.
++			 * as for a signal ignored on entry to the shell. Set
++			 * before the signals come unblocked below: a SIGINT
++			 * pending since the fork is dropped, not taken.
 +			 */
 +			sigtraps[SIGINT].flags =
 +			    (sigtraps[SIGINT].flags & ~TF_ORIG_DFL) | TF_ORIG_IGN;
 +			sigtraps[SIGQUIT].flags =
 +			    (sigtraps[SIGQUIT].flags & ~TF_ORIG_DFL) | TF_ORIG_IGN;
++		}
+ 		sigprocmask(SIG_SETMASK, &omask, NULL);
+ 		cleanup_parents_env();
+ 		/* If FMONITOR or FTALKING is set, these signals are ignored,
+@@ -499,13 +540,10 @@
+ 				setsig(&sigtraps[tt_sigs[i]], SIG_DFL,
+ 				    SS_RESTORE_DFL|SS_FORCE);
+ 		}
+-		if (Flag(FBGNICE) && (flags & XBGND))
+-			nice(4);
++		/* myos: no nice(2). */
+ 		if ((flags & XBGND) && !Flag(FMONITOR)) {
+-			setsig(&sigtraps[SIGINT], SIG_IGN,
+-			    SS_RESTORE_IGN|SS_FORCE);
+-			setsig(&sigtraps[SIGQUIT], SIG_IGN,
+-			    SS_RESTORE_IGN|SS_FORCE);
++			/* myos: SIGINT and SIGQUIT ignored above, before the
++			 * signals came unblocked. */
  			if (!(flags & (XPIPEI | XCOPROC))) {
  				int fd = open("/dev/null", O_RDONLY);
  				if (fd != 0) {
-@@ -1136,7 +1154,6 @@
+@@ -1136,7 +1174,6 @@
  	Proc		*p = NULL;
  	int		pid;
  	int		status;
@@ -53,7 +110,7 @@
  
  	/* Don't wait for any processes if a job is partially started.
  	 * This is so we don't do away with the process group leader
-@@ -1149,15 +1166,12 @@
+@@ -1149,15 +1186,12 @@
  			goto finished;
  		}
  
@@ -69,7 +126,7 @@
  		/* find job and process structures for this pid */
  		for (j = job_list; j != NULL; j = j->next)
  			for (p = j->proc_list; p != NULL; p = p->next)
-@@ -1169,15 +1183,9 @@
+@@ -1169,15 +1203,9 @@
  			warningf(true, "bad process waited for (pid = %d)",
  				pid);
  			 */

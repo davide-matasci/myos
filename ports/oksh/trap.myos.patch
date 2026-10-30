@@ -1,55 +1,49 @@
 --- trap.c
 +++ trap.c
-@@ -12,6 +12,11 @@
+@@ -12,6 +12,9 @@
  #include "sh.h"
  
  Trap sigtraps[NSIG + 1];
-+/* myos: the process each signal was last taken in (trapsig): a forked
-+ * child tells a signal it took itself from a trap pending in its parent
-+ * at the fork, which is the parent's to run (cleartraps).
-+ */
-+static pid_t trap_pids[NSIG + 1];
++/* myos: 1 in a forked child until cleartraps, 2 after it (exchild sets
++ * it): trapsig takes a fatal signal there as the program would. */
++volatile sig_atomic_t forked_child;
  
  static struct sigaction Sigact_ign, Sigact_trap;
  
-@@ -137,6 +137,7 @@
+@@ -136,6 +139,26 @@
+ 	Trap *p = &sigtraps[i];
  	int errno_ = errno;
  
++	/* myos: in a forked child on its way to the exec of its command (or
++	 * running a subshell), the shell's handler is the wrong one for a
++	 * signal the shell dies of by catching it (SIGTERM, SIGINT, SIGHUP:
++	 * TF_DFL_INTR or TF_FATAL): it would only set a flag, which the exec
++	 * drops, and `sleep 3 & kill $!` slept on when the kill fell in the
++	 * child's few milliseconds as a shell (CI #2315, #2351). The signal is
++	 * taken now, with its default action, as the program would have:
++	 * until cleartraps the traps are the parent's, which the child drops
++	 * anyway; after it, one the child set itself runs as usual. One
++	 * ignored (a background job's SIGINT) is never delivered. The signal,
++	 * blocked while its handler runs, acts as the handler returns.
++	 */
++	if (forked_child && (forked_child == 1 || !p->trap) &&
++	    (p->flags & (TF_DFL_INTR|TF_FATAL)) && p->cursig != SIG_IGN) {
++		setsig(p, SIG_DFL, SS_RESTORE_CURR|SS_FORCE);
++		kill(getpid(), i);
++		errno = errno_;
++		return;
++	}
++
  	trap = p->set = 1;
-+	trap_pids[i] = getpid();
  	if (p->flags & TF_DFL_INTR)
  		intrsig = 1;
- 	if ((p->flags & TF_FATAL) && !p->trap) {
-@@ -274,8 +274,9 @@
- {
- 	int i;
- 	Trap *p;
-+	pid_t me = getpid();
- 
- 	trap = 0;
- 	intrsig = 0;
- 	fatal_trap = 0;
- 	for (i = NSIG+1, p = sigtraps; --i >= 0; p++) {
-@@ -280,5 +280,22 @@
- 	fatal_trap = 0;
- 	for (i = NSIG+1, p = sigtraps; --i >= 0; p++) {
-+		/* myos: a signal the shell dies of by catching it (SIGTERM,
-+		 * SIGINT, SIGHUP: trapsig, TF_DFL_INTR or TF_FATAL; with a
-+		 * trap of the user's too, which the child drops, or without
-+		 * one; not one ignored for a background job) that the child
-+		 * took since the fork, at its first syscall, is not a pending
-+		 * trap to drop: the child dies of it now, as the program it was
-+		 * forked for would have (`sleep 3 & kill $!` left the sleep
-+		 * alive when the kill came within the child's first
-+		 * milliseconds). A trap pending in the parent at the fork is
-+		 * the parent's: dropped, as before.
-+		 */
-+		if (p->set && trap_pids[p->signal] == me && p->cursig != SIG_IGN &&
-+		    p->signal > 0 && p->signal < NSIG &&
-+		    (p->flags & (TF_DFL_INTR|TF_FATAL))) {
-+			setsig(p, SIG_DFL, SS_RESTORE_CURR|SS_FORCE);
-+			kill(me, p->signal);
-+		}
- 		p->set = 0;
+@@ -283,6 +306,9 @@
  		if ((p->flags & TF_USER_SET) && (p->trap && p->trap[0]))
  			settrap(p, NULL);
+ 	}
++	/* myos: from here a trap is the child's own (trapsig). */
++	if (forked_child)
++		forked_child = 2;
+ }
+ 
+ /* restore signals just before an exec(2) */
