@@ -942,10 +942,22 @@ usb_hub_replug() {
 }
 t -t usb usb_hub_replug usb_hub_replug
 
-# Live frame count (allocated minus freed) from /proc/meminfo.
+# Live frame count (allocated minus freed) from /proc/meminfo, less the
+# block and page caches: their frames are given back when memory runs out,
+# not leaked, and they fill in the background while a test runs (the stick
+# usb_hub_replug plugs back in gets mounted and read; a program's pages are
+# cached on its first run): 15 frames once on aarch64-gicv3, in the 60
+# forks of mem_fork_no_leak (issue #661), against a limit of 8 then.
 frames_live() {
-	set -- $(grep '^FramesLive:' /proc/meminfo)
-	echo "$2"
+	fl_live=0
+	fl_cache=0
+	while read -r fl_key fl_val _; do
+		case $fl_key in
+		FramesLive:) fl_live=$fl_val ;;
+		BlockCacheKiB: | PageCacheKiB:) fl_cache=$((fl_cache + fl_val / 4)) ;;
+		esac
+	done < /proc/meminfo
+	echo $((fl_live - fl_cache))
 }
 
 # Set `before` to the live frame count once it holds still for a second (at
@@ -981,16 +993,33 @@ frames_settled() {
 	done
 }
 
-# frames_verdict WHAT COUNT LIMIT: the line the leak tests print, and the
-# verdict: the delta within LIMIT. A leak costs at least a frame per exit
-# (issue #284's page tables were several), COUNT frames and up; the limit
-# is half of that, above what else moves while the test runs (netd's heap,
-# a device still settling from the test before: 15 frames once in CI, on
-# aarch64, against a limit of 8). On a failure, what the kernel knows: the
+# frames_round WHAT COUNT LIMIT CMD: one round of a leak test, CMD run
+# COUNT times from a quiet baseline, and its line; 0 when the frames it
+# left behind are within LIMIT.
+frames_round() {
+	frames_quiet
+	fr_i=0
+	while [ $fr_i -lt $2 ]; do
+		eval "$4"
+		fr_i=$((fr_i + 1))
+	done
+	frames_settled $3
+	echo "mem: $1 x$2 FramesLive $before -> $after (delta $((after - before)))"
+	[ "$((after - before))" -le "$3" ]
+}
+
+# frames_verdict WHAT COUNT LIMIT CMD: the leak tests' verdict. A leak costs
+# at least a frame per exit (issue #284's page tables were several), COUNT
+# frames and up; the limit is half of that, above what else moves while the
+# test runs (netd's heap, a device still settling from the test before: 15
+# frames once in CI, on aarch64, against a limit of 8, issue #661). A round
+# over the limit is run once more from a fresh baseline: a leak repeats, a
+# background allocation does not. On a failure, what the kernel knows: the
 # allocation sites and caches, and each process's size.
 frames_verdict() {
-	echo "mem: $1 x$2 FramesLive $before -> $after (delta $((after - before)))"
-	[ "$((after - before))" -le "$3" ] && return 0
+	frames_round "$@" && return 0
+	echo "mem: $1: over the limit once; again, from a fresh baseline"
+	frames_round "$@" && return 0
 	grep -e '^Site' -e 'Cache' /proc/meminfo | tr '\n' ' '
 	echo
 	for f in /proc/[0-9]*/status; do cat "$f"; done 2> /dev/null
@@ -1002,15 +1031,7 @@ frames_verdict() {
 # cache does not grow) and confirm the live frame count returns to its
 # baseline: a per-exit leak would ratchet it up.
 mem_fork_no_leak() {
-	frames_live > /dev/null # warm the grep path (caches its code once)
-	frames_quiet
-	i=0
-	while [ $i -lt 60 ]; do
-		(:)
-		i=$((i + 1))
-	done
-	frames_settled 30
-	frames_verdict fork/exit 60 30
+	frames_verdict fork/exit 60 30 '(:)'
 }
 t -t mm mem_fork_no_leak mem_fork_no_leak
 
@@ -1019,15 +1040,7 @@ t -t mm mem_fork_no_leak mem_fork_no_leak
 # persistent frames.
 mem_exec_no_leak() {
 	/bin/etc/hello > /dev/null 2>&1 # warm: cache the program's pages
-	frames_live > /dev/null
-	frames_quiet
-	i=0
-	while [ $i -lt 40 ]; do
-		/bin/etc/hello > /dev/null 2>&1
-		i=$((i + 1))
-	done
-	frames_settled 20
-	frames_verdict exec 40 20
+	frames_verdict exec 40 20 '/bin/etc/hello > /dev/null 2>&1'
 }
 t -t mm mem_exec_no_leak mem_exec_no_leak
 
