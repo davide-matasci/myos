@@ -49,7 +49,10 @@ t -t smoke shell_path sh_path
 # handler for it is then the shell's until the exec, and the exec-time
 # check has to put the default back before it takes the signal again).
 # A background job's SIGINT stays ignored, as POSIX has it: one sent right
-# after the start must not end the job.
+# after the start must not end the job, nor one sent once the command runs
+# (the exec of the command put the shell's original disposition back, the
+# default, and a SIGINT that came after it ended the job: jobs.myos.patch,
+# CI #2351), a subshell's command included.
 sh_kill_fresh() {
 	n=0
 	while [ $n -lt 30 ]; do
@@ -64,18 +67,23 @@ sh_kill_fresh() {
 		n=$((n + 1))
 	done
 	trap - TERM
-	sleep 3 &
-	p=$!
-	kill -INT $p
-	sleep 1
-	kill -0 $p 2> /dev/null || { echo "a background job died of SIGINT"; return 1; }
-	s=$(date +%s)
-	kill $p
-	wait $p 2> /dev/null
-	st=$?
-	e=$(date +%s)
-	# The job, a second old, is the sleep itself: its TERM ends it at once.
-	[ $((e - s)) -lt 2 ] && [ $st -eq 143 ] || { echo "the job killed after a second: status $st after $((e - s)) s"; return 1; }
+	for job in 'sleep 5' '(sleep 5)'; do
+		eval "$job &"
+		p=$!
+		kill -INT $p
+		sleep 1
+		kill -0 $p 2> /dev/null || { wait $p 2> /dev/null; echo "$job &: died of a SIGINT sent at its start (wait status $?)"; return 1; }
+		kill -INT $p
+		sleep 1
+		kill -0 $p 2> /dev/null || { wait $p 2> /dev/null; echo "$job &: died of a SIGINT sent once it ran (wait status $?)"; return 1; }
+		s=$(date +%s)
+		kill $p
+		wait $p 2> /dev/null
+		st=$?
+		e=$(date +%s)
+		# The job, two seconds old, is the sleep itself: its TERM ends it at once.
+		[ $((e - s)) -lt 2 ] && [ $st -eq 143 ] || { echo "$job &: killed after two seconds: status $st after $((e - s)) s"; return 1; }
+	done
 	return 0
 }
 t -t smoke,signal shell_kill_fresh sh_kill_fresh

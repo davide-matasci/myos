@@ -13,7 +13,7 @@
  
  	/* shl_j is used to do asynchronous notification (used in
  	 * an interrupt handler, so need a distinct shf)
-@@ -499,8 +501,7 @@
+@@ -499,13 +501,29 @@
  				setsig(&sigtraps[tt_sigs[i]], SIG_DFL,
  				    SS_RESTORE_DFL|SS_FORCE);
  		}
@@ -23,7 +23,29 @@
  		if ((flags & XBGND) && !Flag(FMONITOR)) {
  			setsig(&sigtraps[SIGINT], SIG_IGN,
  			    SS_RESTORE_IGN|SS_FORCE);
-@@ -1136,7 +1137,6 @@
+ 			setsig(&sigtraps[SIGQUIT], SIG_IGN,
+ 			    SS_RESTORE_IGN|SS_FORCE);
++			/* myos: ignored for good, as if the job had inherited
++			 * them so (POSIX: an asynchronous list's SIGINT and
++			 * SIGQUIT stay ignored). The exec of the command, by
++			 * comexec with the background flag gone, restores the
++			 * shell's original dispositions (setexecsig,
++			 * SS_RESTORE_ORIG), which undid the two setsig calls
++			 * above when the shell had started with them at the
++			 * default: `sleep 3 & kill -INT $!` ended the sleep.
++			 * With the original now "ignored", every exec in this
++			 * child (a subshell's too, `(cmd; sleep 3) &`) keeps
++			 * SIG_IGN, and a trap of its own cannot take them back,
++			 * as for a signal ignored on entry to the shell.
++			 */
++			sigtraps[SIGINT].flags =
++			    (sigtraps[SIGINT].flags & ~TF_ORIG_DFL) | TF_ORIG_IGN;
++			sigtraps[SIGQUIT].flags =
++			    (sigtraps[SIGQUIT].flags & ~TF_ORIG_DFL) | TF_ORIG_IGN;
+ 			if (!(flags & (XPIPEI | XCOPROC))) {
+ 				int fd = open("/dev/null", O_RDONLY);
+ 				if (fd != 0) {
+@@ -1136,7 +1154,6 @@
  	Proc		*p = NULL;
  	int		pid;
  	int		status;
@@ -31,7 +53,7 @@
  
  	/* Don't wait for any processes if a job is partially started.
  	 * This is so we don't do away with the process group leader
-@@ -1149,15 +1149,12 @@
+@@ -1149,15 +1166,12 @@
  			goto finished;
  		}
  
@@ -47,7 +69,7 @@
  		/* find job and process structures for this pid */
  		for (j = job_list; j != NULL; j = j->next)
  			for (p = j->proc_list; p != NULL; p = p->next)
-@@ -1169,15 +1166,9 @@
+@@ -1169,15 +1183,9 @@
  			warningf(true, "bad process waited for (pid = %d)",
  				pid);
  			 */
