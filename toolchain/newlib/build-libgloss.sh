@@ -207,9 +207,10 @@ fi
 "$CC" -c "$PORT/crtn.S" -o "$out/obj/crtn.o"
 
 # crt*.o are standalone CRT objects, not members of libgloss.a
-# Use llvm-ar when present: Apple's BSD ar writes ELF archive symbol tables
-# rust-lld cannot index (undefined getpid/write/sbrk at link time on macOS).
-AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
+# The ar wrapper takes llvm-ar (brew's or the pinned nightly's): Apple's BSD
+# ar writes ELF archive symbol tables rust-lld cannot index (undefined
+# getpid/write/sbrk at link time on macOS), and refuses an empty archive.
+AR_BIN="${triple}-ar"
 "$AR_BIN" rcs "$out/libgloss.a" "$out/obj"/*.o
 "$AR_BIN" d "$out/libgloss.a" crti.o crtn.o 2>/dev/null || true
 cp "$out/libgloss.a" "$libdir/libgloss.a"

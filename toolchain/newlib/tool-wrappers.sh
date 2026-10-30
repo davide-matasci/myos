@@ -61,7 +61,9 @@ exec strip \"\$@\"
   # Apple's BSD ar writes ELF archive symbol tables that rust-lld cannot
   # index (undefined getpid/write/sbrk pulled from libc.a members), so
   # prefer llvm-ar/llvm-ranlib (brew llvm or the pinned rust sysroot) and
-  # fall back to plain ar on GNU/Linux hosts.
+  # fall back to plain ar on GNU/Linux hosts. The sysroot has no
+  # llvm-ranlib: its llvm-ar indexes instead (`llvm-ar s`, which
+  # llvm-ranlib is), as Apple's ranlib mangles an ELF archive.
   write_wrapper "${triple}-ar" "#!/usr/bin/env bash
 LLVM_AR=\"\$(command -v llvm-ar 2>/dev/null || true)\"
 if [ -z \"\$LLVM_AR\" ]; then
@@ -80,6 +82,8 @@ if [ -z \"\$LLVM_RANLIB\" ]; then
   [ -n \"\$SYSROOT\" ] && [ -n \"\$HOST\" ] && LLVM_RANLIB=\"\$SYSROOT/lib/rustlib/\$HOST/bin/llvm-ranlib\"
 fi
 if [ -n \"\$LLVM_RANLIB\" ] && [ -x \"\$LLVM_RANLIB\" ]; then exec \"\$LLVM_RANLIB\" \"\$@\"; fi
+LLVM_AR=\"\$SYSROOT/lib/rustlib/\$HOST/bin/llvm-ar\"
+if [ -n \"\$SYSROOT\" ] && [ -x \"\$LLVM_AR\" ]; then exec \"\$LLVM_AR\" s \"\$@\"; fi
 exec ranlib \"\$@\"
 "
 done
