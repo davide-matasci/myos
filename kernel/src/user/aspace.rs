@@ -344,7 +344,7 @@ pub fn reclaim_user_aspace(
     };
     let heap_lim = heap_limit_va(base, stack_off);
     // Heap pages only exist below brk (sys_brk frees on shrink; nothing maps
-    // the rest of the window), so stop there: walking all HEAP_PAGES (4096)
+    // the rest of the window), so stop there: walking all HEAP_PAGES
     // on every exit was most of the exit cost in the debug kernel.
     let mut va = heap_base;
     while va < heap_end.min(heap_lim) {

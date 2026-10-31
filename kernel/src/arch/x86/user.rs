@@ -17,10 +17,10 @@ pub const USER_WINDOW: u64 = 1 << 39;
 pub const MMAP_AREA_PAGES: usize = 1 << 24;
 /// User stack below the heap: 1 MiB.
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap capacity (mapped on demand by `sys_brk`): the TLS
-/// arena stays in ELF BSS; git Phase-1 object writes need ≥1 MiB and GNU
-/// make's os-test parsing xmallocs well past 512 pages, so 16 MiB.
-pub const HEAP_PAGES: usize = 4096;
+/// Per-process brk heap capacity (mapped on demand by `sys_brk`): 256 MiB.
+/// newlib's malloc grows only by `brk`, and the X server's pixmaps are
+/// screen sized (dwm's is the whole screen, 33 MB at 3840x2160).
+pub const HEAP_PAGES: usize = 65536;
 /// Image, stack, heap and the mmap window must fit the window above
 /// `DEFAULT_USER_BASE` (511 GiB).
 pub const USER_SPAN_PAGES: usize = ((USER_WINDOW - DEFAULT_USER_BASE) / 4096) as usize;

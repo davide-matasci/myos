@@ -200,7 +200,8 @@ t -t sched child $SMOKES/child_smoke
 # CLOCK_BOOTTIME since boot, going on when the wall clock is set back
 # (issue #317), clock_getres; on mlibc, getauxval over the kernel's
 # auxiliary vector, getrlimit and the main thread's stack
-# (pthread_attr_get_np) from /proc/self (libc_smoke.c).
+# (pthread_attr_get_np) from /proc/self; a 64 MiB malloc, from the brk
+# heap on newlib (libc_smoke.c).
 t -t smoke libc $SMOKES/libc_smoke
 # The *at calls: a directory fd and the cwd stand for their directory
 # whatever is renamed; fstat of an unlinked file; fdopendir (on mlibc,

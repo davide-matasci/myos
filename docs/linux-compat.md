@@ -397,7 +397,7 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
     compile `core`).
   - At most 1024 distinct files mapped at once; a file mapping past that
     is read in whole.
-  - A 16 MiB `brk` heap.
+  - A 256 MiB `brk` heap.
   - 256 fds per process, 2048 open file descriptions in the system, 512
     tasks in total, 64 pipes (and 24 named FIFOs) of 4 KiB each.
   - `/tmp` files of at most 128 MiB each, all in the kernel heap (a
