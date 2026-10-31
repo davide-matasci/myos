@@ -113,6 +113,22 @@ layout of `docs/install.md`: a 512 MiB FAT32 ESP with two boot slots and
 an ext2 data partition. The screen shows tty1's login; Alt+1…9 switch
 ttys and Alt+0 shows the console (`docs/tty.md`).
 
+On macOS, find the stick's disk in `diskutil list` (`disk4` below) and
+write the whole disk, not a partition; the raw device (`/dev/rdisk4`) is
+much faster:
+
+```sh
+diskutil list
+disk=disk4
+diskutil unmountDisk /dev/"$disk"
+sudo dd if=target/bios.img of=/dev/r"$disk" bs=4m
+sync
+diskutil eject /dev/"$disk"
+```
+
+On Linux, `sudo dd if=target/bios.img of=/dev/sdX bs=4M conv=fsync`
+does the same.
+
 Upgrades, installs onto another disk and VPS setups are in
 `docs/install.md`. For SSH, bring your key (`docs/ssh.md`): dropbear
 listens on port 2222.
