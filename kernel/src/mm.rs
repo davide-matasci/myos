@@ -99,11 +99,13 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
     let caches = (crate::blk::cache_frames() as u64, crate::fs::pagecache::frames() as u64);
     let (faults, around, flushes, page_flushes) = crate::user::fault_counts();
     let (forks, copies) = crate::user::cow::counts();
+    let (deferred, retired) = crate::user::deferred_counts();
     alloc::format!(
         "FramesAlloc: {}\nFramesFree: {}\nFramesLive: {}\nLiveKiB: {}\n\
          SiteVirtq: {}\nSiteFault0: {}\nSiteExec: {}\nSitePageTable: {}\nSiteMmap: {}\nSiteOther: {}\n\
          Faults: {}\nFaultAround: {}\nTlbFlushes: {}\nTlbPageFlushes: {}\nTlbShootdowns: {}\n\
          Forks: {}\nCowCopies: {}\nSyscalls: {}\n\
+         DeferredFrames: {}\nRetiredAspaces: {}\n\
          BlockCacheKiB: {}\nPageCacheKiB: {}\n\
          MemTotalKiB: {}\nMemFreeKiB: {}\nMemAvailableKiB: {}\n",
         a,
@@ -124,6 +126,8 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         forks,
         copies,
         crate::user::syscalls(),
+        deferred,
+        retired,
         caches.0 * (PAGE / 1024),
         caches.1 * (PAGE / 1024),
         total * (PAGE / 1024),

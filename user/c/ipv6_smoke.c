@@ -24,7 +24,13 @@
  * test's own on the loopback interface that drops the first AAAA query,
  * an AF_UNSPEC lookup still gives both families, the AAAA query sent
  * again once the A answer came (CI #2369: a lost AAAA datagram left the
- * lookup with IPv4 alone). Prints [ OK ] ipv6 dnsretry.
+ * lookup with IPv4 alone). `dnsservfail`: the server answers the first
+ * query of each type with SERVFAIL, and the lookup asks again instead of
+ * taking that for the name's lack of records (CI #2388: one SERVFAIL from
+ * the runner's resolver failed a lookup at once). `dnsrefused`: the
+ * server comes up only after the first queries were refused (nobody at
+ * the port), and the lookup asks again a second later. Each prints
+ * [ OK ] ipv6 <mode>.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -523,18 +529,24 @@ static int dns(void) {
 static const unsigned char fake_a[4] = {192, 0, 2, 7};
 static const unsigned char fake_aaaa[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7};
 
-/* Serve the queries on `sock` until killed: an A query gets fake_a at
- * once, the first AAAA query no answer (the datagram lost), the next ones
- * fake_aaaa. */
-static void fake_dns(int sock) {
+/* What the fake server does with the first query of each type: drops it
+ * (the datagram lost), or answers SERVFAIL. */
+#define FAKE_DROP 1
+#define FAKE_SERVFAIL 2
+
+/* Serve the queries on `sock` until killed: an A query gets fake_a, an
+ * AAAA query fake_aaaa, but the first of each type gets `first`'s
+ * treatment (the first AAAA alone for FAKE_DROP). */
+static void fake_dns(int sock, int first) {
     unsigned char q[512], a[560];
     struct sockaddr_in from;
     socklen_t fromlen;
-    int dropped = 0;
+    int seen[2] = {0, 0};
     for (;;) {
         ssize_t n;
         size_t pos = 12, len;
         unsigned type;
+        int fresh;
         fromlen = sizeof from;
         n = recvfrom(sock, q, sizeof q, 0, (struct sockaddr *)&from, &fromlen);
         if (n < 12) {
@@ -548,14 +560,20 @@ static void fake_dns(int sock) {
             continue;
         }
         type = ((unsigned)q[pos] << 8) | q[pos + 1];
-        if (type == 28 && !dropped) {
-            dropped = 1;
+        fresh = !seen[type == 28];
+        seen[type == 28] = 1;
+        if (fresh && first == FAKE_DROP && type == 28) {
             continue;
         }
         memcpy(a, q, (size_t)n);
         a[2] |= 0x80; /* a response */
-        a[7] = 1;     /* one answer */
         len = (size_t)n;
+        if (fresh && first == FAKE_SERVFAIL) {
+            a[3] = (unsigned char)((a[3] & 0xf0) | 2); /* SERVFAIL, no records */
+            sendto(sock, a, len, 0, (struct sockaddr *)&from, fromlen);
+            continue;
+        }
+        a[7] = 1;        /* one answer */
         a[len++] = 0xc0; /* the question's name */
         a[len++] = 0x0c;
         a[len++] = (unsigned char)(type >> 8);
@@ -580,33 +598,57 @@ static void fake_dns(int sock) {
     }
 }
 
-/* getaddrinfo(AF_UNSPEC) against fake_dns gives the A address first and
- * the AAAA one too, within a few seconds (the AAAA query sent again a
- * second after the A answer, not after the 5 s a server gets). */
-static int dns_retry(void) {
+/* The fake server's socket, bound on 127.0.0.1:FAKE_DNS_PORT, or -1. */
+static int fake_dns_socket(void) {
     struct sockaddr_in me;
-    struct addrinfo hints, *res, *r;
-    struct timespec t0, t1;
-    long ms;
-    int sock, v4 = 0, v6 = 0, rc;
-    pid_t pid;
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
     memset(&me, 0, sizeof me);
     me.sin_family = AF_INET;
     me.sin_port = htons(FAKE_DNS_PORT);
     me.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (sock < 0 || bind(sock, (struct sockaddr *)&me, sizeof me) != 0) {
-        return fail("dnsretry: the fake server's socket");
+        return -1;
+    }
+    return sock;
+}
+
+/* getaddrinfo(AF_UNSPEC) against fake_dns gives the A address first and
+ * the AAAA one too, within a few seconds, whatever the server does with
+ * the first queries (`mode`): dnsretry drops the first AAAA (the query
+ * is sent again a second after the A answer, not after the 5 s a server
+ * gets), dnsservfail answers SERVFAIL first (asked again a second on),
+ * dnsrefused has the server come up 300 ms late, the first queries
+ * refused at its port (asked again a second on). */
+static int dns_retry(const char *mode) {
+    struct addrinfo hints, *res, *r;
+    struct timespec t0, t1;
+    long ms;
+    int sock = -1, v4 = 0, v6 = 0, rc;
+    int first = strcmp(mode, "dnsservfail") == 0 ? FAKE_SERVFAIL : FAKE_DROP;
+    int late = strcmp(mode, "dnsrefused") == 0;
+    pid_t pid;
+    if (!late && (sock = fake_dns_socket()) < 0) {
+        return fail("the fake server's socket");
     }
     pid = fork();
     if (pid < 0) {
-        return fail("dnsretry: fork");
+        return fail("fork");
     }
     if (pid == 0) {
-        fake_dns(sock);
+        if (late) {
+            struct timespec wait = {0, 300 * 1000000L};
+            nanosleep(&wait, NULL);
+            sock = fake_dns_socket();
+            if (sock < 0) {
+                _exit(1);
+            }
+        }
+        fake_dns(sock, first);
         _exit(0);
     }
-    close(sock);
+    if (sock >= 0) {
+        close(sock);
+    }
     setenv("MYOS_DNS", "127.0.0.1!5553", 1);
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -619,7 +661,7 @@ static int dns_retry(void) {
     waitpid(pid, NULL, 0);
     ms = (t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     if (rc != 0) {
-        printf("[ FAIL ] ipv6 dnsretry: getaddrinfo: %s after %ld ms\n", gai_strerror(rc), ms);
+        printf("[ FAIL ] ipv6 %s: getaddrinfo: %s after %ld ms\n", mode, gai_strerror(rc), ms);
         return 1;
     }
     for (r = res; r != NULL; r = r->ai_next) {
@@ -633,12 +675,12 @@ static int dns_retry(void) {
     }
     freeaddrinfo(res);
     if (!v4 || !v6) {
-        printf("[ FAIL ] ipv6 dnsretry: the lookup gave %s%s after %ld ms\n", v4 ? "IPv4" : "",
+        printf("[ FAIL ] ipv6 %s: the lookup gave %s%s after %ld ms\n", mode, v4 ? "IPv4" : "",
                v6 ? (v4 ? " and IPv6" : "IPv6") : (v4 ? " alone" : "nothing"), ms);
         return 1;
     }
     if (ms > 4000) {
-        printf("[ FAIL ] ipv6 dnsretry: the lookup took %ld ms\n", ms);
+        printf("[ FAIL ] ipv6 %s: the lookup took %ld ms\n", mode, ms);
         return 1;
     }
     return 0;
@@ -646,13 +688,15 @@ static int dns_retry(void) {
 #endif
 
 int main(int argc, char **argv) {
-    if (argc > 1 && strcmp(argv[1], "dnsretry") == 0) {
+    if (argc > 1
+        && (strcmp(argv[1], "dnsretry") == 0 || strcmp(argv[1], "dnsservfail") == 0
+            || strcmp(argv[1], "dnsrefused") == 0)) {
 #ifndef __MLIBC_POSIX_OPTION
-        if (dns_retry()) {
+        if (dns_retry(argv[1])) {
             return 1;
         }
 #endif
-        printf("[ OK ] ipv6 dnsretry\n");
+        printf("[ OK ] ipv6 %s\n", argv[1]);
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "dns") == 0) {

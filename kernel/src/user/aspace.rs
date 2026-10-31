@@ -400,6 +400,17 @@ fn retire_aspace(aspace: u64) {
     }
 }
 
+/// The frames whose release waits for a CPU to drop their address space
+/// ([`UNMAPPED`]) and the reclaimed address spaces some CPU still has
+/// loaded ([`RETIRED`]), for `/proc/meminfo`.
+pub fn deferred_counts() -> (usize, usize) {
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let n = (UNMAPPED.lock().len(), RETIRED.lock().len());
+    crate::arch::irq_restore(flags);
+    n
+}
+
 /// How a fault touched a page.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Access {
