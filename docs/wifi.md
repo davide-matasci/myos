@@ -11,7 +11,9 @@ traffic over it. It drives four kinds of radio:
   takes ("MediaTek's radios");
 - the Raspberry Pi's own Broadcom chip ("Broadcom's radios").
 
-None has been tried on the hardware yet.
+An AX201 (`8086:06f0`) on a laptop has scanned, joined a network, taken a
+DHCP lease and carried curl's HTTPS. The other radios have not been tried
+on the hardware yet.
 
 ## `wifi`
 
@@ -106,6 +108,11 @@ URL; when it names a directory holding a copy of linux-firmware's tree (a
 USB stick), `wifi-firmware` copies from it. The tests are
 `wifi_firmware_check` and `wifi_firmware_fetch` (tag `net`).
 
+On a machine whose only network is the radio, the one file it needs can
+also come on the boot stick: copied from another computer onto the
+stick's FAT partition (`/boot` on myos, `docs/install.md`), then into
+`/data/firmware`. `wifi-firmware list` says whether its SHA-256 matches.
+
 ## Intel's radios
 
 | Radio | PCI | Kind |
@@ -136,8 +143,8 @@ VT-d confines it to the daemon's buffers.
 `cargo test -p iwx` (CI runs it) tests the encodings and runs the driver
 against a model of each radio (`user/wifi/iwx/tests/model`): bring-up with
 MSI and MSI-X, a scan and a join. The model checks every command and
-register access against OpenBSD's if_iwxreg.h. Whether Intel's firmware
-agrees needs the hardware.
+register access against OpenBSD's if_iwxreg.h. On a laptop's AX201,
+Intel's firmware agrees.
 
 ## MediaTek's radios
 
@@ -268,7 +275,8 @@ there while a program holds `/dev/tap/N/prog`. Opening `prog` makes the NIC
 
 ## Limits
 
-- No radio has been tried on the hardware, nor the kernel's SDIO layer.
+- Only the AX201 has been tried on the hardware: not the AX200, the
+  MediaTek or Broadcom radios, nor the kernel's SDIO layer.
 - The passphrase is a command argument, so `ps` shows it.
 - WPA3 (SAE), 802.1X, TKIP and management frame protection are not
   supported.
