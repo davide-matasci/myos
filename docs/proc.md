@@ -146,8 +146,11 @@ kernel call site (`Site*`, for leak hunting), every process's page faults
 (`Faults`) and the extra pages fault-around mapped (`FaultAround`,
 `docs/linux-compat.md`), forks and copy-on-write copies (`Forks`,
 `CowCopies`, `docs/fs.md`), `Syscalls`, the TLB flushes and shootdowns
-(`TlbFlushes`, `TlbPageFlushes`, `TlbShootdowns`), and the caches' sizes
-(`BlockCacheKiB`, `PageCacheKiB`).
+(`TlbFlushes`, `TlbPageFlushes`, `TlbShootdowns`), the frames of exited
+processes whose release waits for a CPU to drop their address space and
+such address spaces (`DeferredFrames`, `RetiredAspaces`: both 0 once a
+CPU has run something else), and the caches' sizes (`BlockCacheKiB`,
+`PageCacheKiB`).
 
 ## Reading it from a tool
 
