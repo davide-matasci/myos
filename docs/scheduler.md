@@ -44,7 +44,8 @@ the task alone.
 
 It allocates nothing and waits on no lock, since the stuck CPU may hold
 any: the task is named only when the task table is free, and a line the
-console is busy for waits for the next second. CPU 0 itself is not
+console or its screen is busy for (the console module's non-blocking
+`status_line_try`, `docs/modules.md`) waits for the next second. CPU 0 itself is not
 watched: its tick is the watcher, so a freeze of every CPU, CPU 0's tick
 included, says nothing. The boot tests fail on the report
 (`docs/testing.md`).

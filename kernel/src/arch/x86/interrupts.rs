@@ -566,14 +566,19 @@ extern "x86-interrupt" fn nmi(frame: InterruptStackFrame) {
     let rip = frame.instruction_pointer.as_u64();
     let user = frame.code_segment.0 & 3 == 3;
     let mut calls = [0u64; crate::task::SAMPLE_CALLS];
-    if !user {
+    let sp0 = frame.stack_pointer.as_u64() & !7;
+    // A kernel stack only: between `syscall` and the switch to it, and
+    // before `sysret`, the stack is still the user's while CS says
+    // kernel, and a page of it may be gone (another thread's munmap): a
+    // fault here would be the kernel's.
+    if !user && sp0 >= 0xffff_8000_0000_0000 {
         let text = 0xffff_ffff_8000_0000u64..core::ptr::addr_of!(__etext) as u64;
-        let mut sp = frame.stack_pointer.as_u64() & !7;
+        let mut sp = sp0;
         let mut n = 0;
         // A short look: the words up to the end of the stack's page, at
         // most 512, so the read stays inside the interrupted stack.
         let end = (sp | 0xfff) + 1;
-        while sp < end && sp - (frame.stack_pointer.as_u64() & !7) < 512 * 8 && n < calls.len() {
+        while sp < end && sp - sp0 < 512 * 8 && n < calls.len() {
             let w = unsafe { core::ptr::read_volatile(sp as *const u64) };
             if text.contains(&w) {
                 calls[n] = w;

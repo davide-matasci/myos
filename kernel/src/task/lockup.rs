@@ -25,7 +25,10 @@
 //! ```
 //!
 //! The report is made in the timer interrupt, so it allocates nothing and
-//! takes no lock it could wait on: the stuck CPU may hold any of them.
+//! takes no lock it could wait on: the stuck CPU may hold any of them, the
+//! console module's screen included (`console::status_warn_now` tries the
+//! screen through `ModuleConsoleOps::status_line_try` and the serial port
+//! only once that took).
 
 use super::*;
 use core::fmt::Write;

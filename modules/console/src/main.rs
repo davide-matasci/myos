@@ -140,6 +140,30 @@ unsafe extern "C" fn status_line(
     }
 }
 
+/// `status_line` from an interrupt: the screen when nobody holds it (a CPU
+/// the report is about may), else nothing and 0.
+unsafe extern "C" fn status_line_try(
+    tag: *const u8,
+    tag_len: usize,
+    kind: u32,
+    label: *const u8,
+    label_len: usize,
+) -> i32 {
+    let color = match kind {
+        CONSOLE_STATUS_OK => fb::OK,
+        CONSOLE_STATUS_FAIL => fb::FAIL,
+        CONSOLE_STATUS_WARN => fb::WARN,
+        _ => fb::INFO,
+    };
+    let Some(mut guard) = FB.try_lock() else {
+        return 0;
+    };
+    if let Some(w) = guard.get(0) {
+        w.put_status_line(text(tag, tag_len), color, text(label, label_len));
+    }
+    1
+}
+
 /// Put screen `n` on the framebuffer, the one shown before kept in its
 /// cells. While a program has the screen ([`fbdev`]) it only becomes the
 /// one shown when the program gives the screen back.
@@ -252,6 +276,7 @@ unsafe extern "C" fn keymap_loaded() -> i32 {
 static OPS: ModuleConsoleOps = ModuleConsoleOps {
     write_kind,
     status_line,
+    status_line_try,
     show,
     winsize,
     blink,
