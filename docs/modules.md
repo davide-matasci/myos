@@ -61,7 +61,7 @@ needs.
 | AP bring-up, `/proc/cpuinfo` | `kernel/src/smp.rs` | Must run before modules; owns CPU-local state and IPIs |
 | Scheduler | `kernel/src/task/` | Per-CPU run queues and current task |
 | Serial console | `kernel/src/console.rs`, `arch/*/serial.rs` | Boot output before the console module; the module registers screen and keyboard ops |
-| Built-in `/proc` files | `kernel/src/fs/procfs.rs` | `mounts`, `cpuinfo`, `platform`; modules add theirs with `proc_register` |
+| Built-in `/proc` files | `kernel/src/fs/procfs.rs` | `mounts`, `cpuinfo`, `platform`; modules add theirs with `proc_register` (a fixed text), `proc_set_reader` (text made at each read) and `proc_set_writer` |
 | Which tasks run a syscall personality | `kernel/src/personality.rs` | The Linux layer itself is `modules/linux` |
 
 Everything else is a module under `modules/`; `docs/layout.md` lists them.

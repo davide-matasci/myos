@@ -109,7 +109,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 61: x86's FP/SIMD image is XSAVE's (`MYOS_FP_BYTES` 832, ymm0-15's
 /// upper halves included), and the save area of `fpu_save` /
 /// `fpu_restore` is 64-byte aligned on every arch.
-pub const ABI_VERSION: u32 = 61;
+pub const ABI_VERSION: u32 = 62;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1164,6 +1164,19 @@ pub struct KernelApi {
     /// shows them at) and its size in bytes into `*size`. Reach them
     /// through a [`PciIo`]. 0, or -1 for no such I/O BAR.
     pub pci_io_map: unsafe extern "C" fn(bus: u8, slot: u8, func: u8, bar: u8, base: *mut usize, size: *mut u32) -> i32,
+    // --- ABI 62 ---
+    /// Attach or clear a reader for an existing `/proc/<name>` node: each
+    /// read(2) of it then calls `reader(buf, cap)`, which writes the node's
+    /// text now into `buf` (cut at `cap`) and returns its full length, or
+    /// negative on error, in place of the registered data (a value that
+    /// changes, read from the hardware when asked: a battery's charge).
+    /// Called in the reading task, without kernel locks held. 0 ok,
+    /// negative when there is no such node.
+    pub proc_set_reader: unsafe extern "C" fn(
+        name: *const u8,
+        name_len: usize,
+        reader: Option<unsafe extern "C" fn(*mut u8, usize) -> i32>,
+    ) -> i32,
 }
 
 /// A PCI function's I/O registers ([`KernelApi::pci_io_map`]): ports on
@@ -1455,6 +1468,14 @@ impl KernelApi {
         writer: Option<unsafe extern "C" fn(*const u8, usize) -> i32>,
     ) -> i32 {
         unsafe { (self.proc_set_writer)(name.as_ptr(), name.len(), writer) }
+    }
+
+    pub fn proc_set_reader(
+        &self,
+        name: &str,
+        reader: Option<unsafe extern "C" fn(*mut u8, usize) -> i32>,
+    ) -> i32 {
+        unsafe { (self.proc_set_reader)(name.as_ptr(), name.len(), reader) }
     }
 
     /// `ctx` is handed back to `handler`, which says what it points to.

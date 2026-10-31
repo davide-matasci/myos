@@ -12,6 +12,7 @@
 //! cargo run -- aarch64 test           # every test (also uefi, riscv64)
 //! ```
 
+mod acpi_battery;
 mod boot_test;
 mod limine_image;
 mod initramfs;
@@ -835,6 +836,7 @@ fn qemu_test_bios(disk: &Path) -> std::process::Child {
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    acpi_battery::add(&mut cmd);
     sound::add(&mut cmd, true);
     usb2::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);
@@ -899,6 +901,7 @@ fn qemu_test_uefi(disk: &Path) -> std::process::Child {
     add_boot_disk(&mut cmd, disk);
     add_virtio_net(&mut cmd);
     add_edu(&mut cmd);
+    acpi_battery::add(&mut cmd);
     sound::add(&mut cmd, true);
     usb2::add(&mut cmd, true);
     add_wifi_radio(&mut cmd);

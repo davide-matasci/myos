@@ -41,6 +41,11 @@ const MODULES: &[(&str, &str)] = &[
     ("linux", "linux"),
 ];
 
+/// A module's script to run before its build (repo-relative), as a user
+/// program's `PORT_PREPARE`: the acpi crate with myos's patches, which the
+/// acpi module's `[patch.crates-io]` names.
+const MODULE_PREPARE: &[(&str, &str)] = &[("acpi", "modules/acpi/crate/prepare.sh")];
+
 fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -65,7 +70,11 @@ fn main() {
     // Kernel modules: built here so `target/<module>-<triple>` exists for the
     // initramfs (`/lib/modules`: the kernel loads the boot ones from there,
     // `insmod` the others). The kernel embeds none of them.
+    let repo = manifest.join("..");
     for &(dir, bin) in MODULES {
+        if let Some((_, script)) = MODULE_PREPARE.iter().find(|(d, _)| *d == dir) {
+            prepare(&repo, script, bin);
+        }
         let _ = nested_elf(
             &cargo,
             manifest,
@@ -83,7 +92,6 @@ fn main() {
     // `packages/<name>/port.env` of kind `user`), init among them, built for
     // this arch into `target/<bin>-<triple>`, where the initramfs packer
     // takes them. The kernel embeds none of them.
-    let repo = manifest.join("..");
     println!("cargo:rerun-if-changed={}", repo.join("src/ports.rs").display());
     for port in ports::load_all(&repo) {
         if port.kind != ports::Kind::User {
@@ -111,14 +119,16 @@ fn main() {
 
 }
 
-/// Run a user program's `PORT_PREPARE` script (repo-relative), unless the
-/// program comes prebuilt (`MYOS_PREBUILT`, see `nested_elf`).
+/// Run a user program's `PORT_PREPARE` script or a module's prepare script
+/// (repo-relative), unless the program comes prebuilt (`MYOS_PREBUILT`, see
+/// `nested_elf`).
 fn prepare(repo: &Path, script: &str, bin: &str) {
     if env::var("MYOS_PREBUILT").is_ok_and(|v| v.split(',').any(|b| b == bin)) {
         return;
     }
     let path = repo.join(script);
-    println!("cargo:rerun-if-changed={}", path.display());
+    // The script's directory: its pins and patches too.
+    println!("cargo:rerun-if-changed={}", path.parent().unwrap_or(&path).display());
     let status = Command::new("bash")
         .arg(&path)
         .status()

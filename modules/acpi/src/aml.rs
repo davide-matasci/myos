@@ -1,7 +1,9 @@
 //! The firmware's AML, run by the `acpi` crate's interpreter (x86_64):
 //! every PCI bridge's `_PRT` (the routes of its devices' INTx pins, through
 //! link devices where the firmware has them) handed to the kernel
-//! (`pci_intx_route`), and `_S5` (the power-off sleep types).
+//! (`pci_intx_route`), `_S5` (the power-off sleep types), and the
+//! batteries and AC adapters (`battery`: `/proc/acpi/battery`, the thread
+//! answering its reads after the boot's work).
 //!
 //! The interpreter is someone else's code over the firmware's, and stops
 //! with a panic at what it does not implement yet (`todo!`). It runs in a
@@ -27,7 +29,7 @@ use acpi::platform::AcpiPlatform;
 use acpi::{AcpiTables, Handle, Handler, PciAddress, PhysicalMapping};
 use myos_abi::{KernelApi, Lock, PCI_INTX_ACTIVE_LOW, PCI_INTX_LEVEL};
 
-use crate::api;
+use crate::{api, battery};
 
 /// The thread's state: running, done (its results below), or parked by a
 /// panic (its message in [`REPORT`]).
@@ -52,10 +54,10 @@ const PNP0A08: u64 = 0x080a_d041;
 
 /// The crate's way into the machine, through the module ABI.
 #[derive(Clone, Copy)]
-struct Host;
+pub(crate) struct Host;
 
 /// A port of the machine's I/O space.
-fn inb(port: u16) -> u8 {
+pub(crate) fn inb(port: u16) -> u8 {
     let v: u8;
     unsafe { core::arch::asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack, preserves_flags)) };
     v
@@ -70,7 +72,7 @@ fn inl(port: u16) -> u32 {
     unsafe { core::arch::asm!("in eax, dx", out("eax") v, in("dx") port, options(nomem, nostack, preserves_flags)) };
     v
 }
-fn outb(port: u16, v: u8) {
+pub(crate) fn outb(port: u16, v: u8) {
     unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") v, options(nomem, nostack, preserves_flags)) };
 }
 fn outw(port: u16, v: u16) {
@@ -234,6 +236,11 @@ pub fn panicked(info: &core::panic::PanicInfo) -> bool {
     true
 }
 
+/// The interpreter's thread stopped on a panic.
+pub fn stopped() -> bool {
+    STATE.load(Ordering::Acquire) == PANICKED
+}
+
 /// Run the interpreter on the tables of RSDP `rsdp_phys` in a thread:
 /// whether it started.
 pub fn start(api: &KernelApi, rsdp_phys: u64) -> bool {
@@ -245,13 +252,18 @@ static RSDP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::
 
 unsafe extern "C" fn thread(_ctx: *mut core::ffi::c_void) {
     IN_THREAD.store(true, Ordering::Release);
-    let report = match run(RSDP.load(Ordering::Relaxed)) {
-        Ok(r) => r,
-        Err(e) => alloc::format!("interpreter: {e}\n"),
+    let (report, serve) = match run(RSDP.load(Ordering::Relaxed)) {
+        Ok((r, interp, power)) => (r, power.map(|p| (interp, p))),
+        Err(e) => (alloc::format!("interpreter: {e}\n"), None),
     };
     REPORT.lock().push_str(&report);
-    IN_THREAD.store(false, Ordering::Release);
     STATE.store(DONE, Ordering::Release);
+    // With a battery or an adapter the thread stays, the one running AML
+    // (a panic still parks it).
+    match serve {
+        Some((interp, power)) => battery::answer(&interp, &power),
+        None => IN_THREAD.store(false, Ordering::Release),
+    }
 }
 
 /// Wait for the thread until `deadline` (monotonic ns): `_S5`'s sleep
@@ -276,19 +288,22 @@ pub fn wait(api: &KernelApi, deadline: u64) -> (Option<(u8, u8)>, String) {
 }
 
 /// Load the tables, set the namespace up, then read every bridge's `_PRT`
-/// and `_S5`: what was found, for the report.
-fn run(rsdp: usize) -> Result<String, String> {
+/// and `_S5` and find the batteries: what was found, for the report, the
+/// interpreter, and the batteries when there are any.
+fn run(rsdp: usize) -> Result<(String, Interpreter<Host>, Option<battery::Power>), String> {
     let tables = unsafe { AcpiTables::from_rsdp(Host, rsdp) }.map_err(|e| alloc::format!("tables: {e:?}"))?;
     let platform = AcpiPlatform::new(tables, Host).map_err(|e| alloc::format!("platform: {e:?}"))?;
     let interp = Interpreter::new_from_platform(&platform).map_err(|e| alloc::format!("loading the AML: {e:?}"))?;
+    // Laptops' `_INI`s and battery methods read the embedded controller.
+    let mut out = battery::install_ec(&interp);
     interp.initialize_namespace();
+    battery::reg_ec(&interp);
     // The OS uses the APIC: the firmware's `_PRT` then gives GSIs, not
     // the 8259's IRQs.
     let pic = name("\\_PIC");
     if let Err(e) = interp.evaluate_if_present(pic, vec![Object::Integer(1).wrap()]) {
         return Err(alloc::format!("\\_PIC: {e:?}"));
     }
-    let mut out = String::new();
     let mut routes = 0;
     for (path, root) in bridges(&interp) {
         let Some(bus) = bus_of(&interp, &path, root, 0) else {
@@ -332,10 +347,11 @@ fn run(rsdp: usize) -> Result<String, String> {
         }
         None => out.push_str("_S5 none\n"),
     }
-    Ok(out)
+    let power = battery::find(&interp, &mut out);
+    Ok((out, interp, power))
 }
 
-fn name(s: &str) -> AmlName {
+pub(crate) fn name(s: &str) -> AmlName {
     AmlName::from_str(s).unwrap_or_else(|_| AmlName::root())
 }
 

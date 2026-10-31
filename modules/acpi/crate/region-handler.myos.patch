@@ -1,0 +1,77 @@
+acpi: call the region handler installed for a space
+
+An embedded controller's operation regions (and every other space the
+interpreter does not reach itself) went to a handler `install_region_handler`
+had installed only to fail with LibUnimplemented: a battery's _BST, which
+reads the embedded controller on a ThinkPad, could not be evaluated. The
+access now goes to the handler, which gets the byte offset in the region
+too. Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -2544,9 +2544,14 @@
+             | RegionSpace::GenericSerialBus
+             | RegionSpace::Pcc
+             | RegionSpace::Oem(_) => {
+-                if let Some(_handler) = self.region_handlers.lock().get(&region.space) {
+-                    warn!("Custom region handlers aren't actually supported yet.");
+-                    Err(AmlError::LibUnimplemented)
++                if let Some(handler) = self.region_handlers.lock().get(&region.space) {
++                    match length {
++                        1 => handler.read_u8(region, offset).map(u64::from),
++                        2 => handler.read_u16(region, offset).map(u64::from),
++                        4 => handler.read_u32(region, offset).map(u64::from),
++                        8 => handler.read_u64(region, offset),
++                        _ => panic!(),
++                    }
+                 } else {
+                     Err(AmlError::NoHandlerForRegionAccess(region.space))
+                 }
+@@ -2611,9 +2616,14 @@
+             | RegionSpace::GenericSerialBus
+             | RegionSpace::Pcc
+             | RegionSpace::Oem(_) => {
+-                if let Some(_handler) = self.region_handlers.lock().get(&region.space) {
+-                    warn!("Custom region handlers aren't actually supported yet.");
+-                    Err(AmlError::LibUnimplemented)
++                if let Some(handler) = self.region_handlers.lock().get(&region.space) {
++                    match length {
++                        1 => handler.write_u8(region, offset, value as u8),
++                        2 => handler.write_u16(region, offset, value as u16),
++                        4 => handler.write_u32(region, offset, value as u32),
++                        8 => handler.write_u64(region, offset, value),
++                        _ => panic!(),
++                    }
+                 } else {
+                     Err(AmlError::NoHandlerForRegionAccess(region.space))
+                 }
+--- a/src/aml/op_region.rs
++++ b/src/aml/op_region.rs
+@@ -8,16 +8,19 @@
+     pub parent_device_path: AmlName,
+ }
+ 
++/// A handler for the accesses to the operation regions of one space that
++/// the interpreter does not do itself (an embedded controller's, ...):
++/// `offset` is the access's byte offset in `region`.
+ pub trait RegionHandler {
+-    fn read_u8(&self, region: &OpRegion) -> Result<u8, AmlError>;
+-    fn read_u16(&self, region: &OpRegion) -> Result<u16, AmlError>;
+-    fn read_u32(&self, region: &OpRegion) -> Result<u32, AmlError>;
+-    fn read_u64(&self, region: &OpRegion) -> Result<u64, AmlError>;
++    fn read_u8(&self, region: &OpRegion, offset: usize) -> Result<u8, AmlError>;
++    fn read_u16(&self, region: &OpRegion, offset: usize) -> Result<u16, AmlError>;
++    fn read_u32(&self, region: &OpRegion, offset: usize) -> Result<u32, AmlError>;
++    fn read_u64(&self, region: &OpRegion, offset: usize) -> Result<u64, AmlError>;
+ 
+-    fn write_u8(&self, region: &OpRegion, value: u8) -> Result<(), AmlError>;
+-    fn write_u16(&self, region: &OpRegion, value: u16) -> Result<(), AmlError>;
+-    fn write_u32(&self, region: &OpRegion, value: u32) -> Result<(), AmlError>;
+-    fn write_u64(&self, region: &OpRegion, value: u64) -> Result<(), AmlError>;
++    fn write_u8(&self, region: &OpRegion, offset: usize, value: u8) -> Result<(), AmlError>;
++    fn write_u16(&self, region: &OpRegion, offset: usize, value: u16) -> Result<(), AmlError>;
++    fn write_u32(&self, region: &OpRegion, offset: usize, value: u32) -> Result<(), AmlError>;
++    fn write_u64(&self, region: &OpRegion, offset: usize, value: u64) -> Result<(), AmlError>;
+ }
+ 
+ #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

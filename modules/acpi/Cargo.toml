@@ -21,6 +21,11 @@ myos-abi = { path = "../abi" }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 acpi = "=6.1.1"
 
+# With myos's patches (crate/*.myos.patch): crate/prepare.sh lays it out
+# in target/acpi-myos before kernel/build.rs builds the module.
+[patch.crates-io]
+acpi = { path = "../../target/acpi-myos" }
+
 [profile.dev]
 panic = "abort"
 opt-level = "s"

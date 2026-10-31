@@ -116,8 +116,11 @@ checks it (tag `smoke`).
 ## AML
 
 On x86_64 the acpi module runs the firmware's AML with the `acpi` crate's
-interpreter, unmodified, over the module ABI (`modules/acpi/src/aml.rs`).
-It calls `\_PIC(1)`, runs the devices' `_STA` and `_INI`, hands every PCI
+interpreter over the module ABI (`modules/acpi/src/aml.rs`). The crate
+is patched (`modules/acpi/crate/*.myos.patch`, laid out in
+`target/acpi-myos` by `crate/prepare.sh` before kernel/build.rs builds
+the module): its embedded controller accesses go to the region handler
+the module installs, which 6.1.1 leaves unimplemented. It calls `\_PIC(1)`, runs the devices' `_STA` and `_INI`, hands every PCI
 bridge's `_PRT` routes to the kernel (`KernelApi::pci_intx_route`), and
 evaluates `\_S5` for the power-off. A function behind a bridge with no
 `_PRT` is routed through the PCI-to-PCI swizzle
@@ -136,6 +139,42 @@ waits for it 5 seconds at most. When it fails, nothing is routed (the
 drivers of functions without MSI poll), `_S5` comes from the scan below,
 and `/proc/acpi/aml` says why. The `source:` line of `/proc/acpi/s5`
 says which one gave `_S5` (`AML interpreter`, `AML _S5 scan`).
+
+### Batteries
+
+A laptop's batteries (`PNP0C0A`) and AC adapter (`ACPI0003`) are AML
+devices whose methods read the embedded controller (`PNP0C09`), so the
+acpi module handles its regions (`modules/acpi/src/battery.rs`): its
+data and command/status ports from its `_CRS`, a byte read or written
+through the ACPI EC protocol, each step bounded to 100 ms. It installs
+the handler before the namespace's `_INI`s and calls the controller's
+`_REG (3, 1)` after them. `/proc/acpi/battery`, there when the
+firmware has a battery or an adapter, is made at each read: each
+battery's `_STA`, `_BIX` (else `_BIF`) and `_BST`, each adapter's
+`_PSR`. Capacities and rates are in mWh and mW, or mAh and mA when the
+battery says so; a value the battery reports unknown is left out:
+
+```
+BAT0 present 1
+BAT0 state discharging
+BAT0 percent 75
+BAT0 remaining 30000 mWh
+BAT0 full 40000 mWh
+BAT0 design 50000 mWh
+BAT0 rate 10000 mW
+BAT0 voltage 11100 mV
+AC online 0
+```
+
+`battery` (`/bin/etc/battery`, `user/c/battery.c`) prints it a line per
+device (`BAT0: 75% discharging, 3:00 left`, `AC: offline`; `-r` the file
+as it is). As the interpreter may still panic, only its thread runs AML:
+it stays after the boot's work to answer the reads (`KernelApi::proc_set_reader`
+calls the module in the reading task, which asks the thread and waits 5
+seconds at most), and a read after a panic says `error interpreter
+stopped`. QEMU's PCs have no battery: the x86 test boots add an SSDT with
+one (`src/acpi_battery.rs`, test `battery`). The embedded controller
+path runs only on real laptops.
 
 ### The `_S5` scan
 
