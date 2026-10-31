@@ -342,6 +342,13 @@ impl<D: Device> Dev<D> {
         }
     }
 
+    /// Stop the radio for good: its firmware halted and the device reset,
+    /// so that the next system's driver (Windows' after a reboot) finds it
+    /// as at power-on. Nothing works on this `Dev` afterwards.
+    pub fn stop(&mut self) {
+        self.hw.stop_device();
+    }
+
     /// Start the hardware and the firmware, up to its ALIVE
     /// (iwx_start_hw, iwx_start_fw, iwx_load_firmware).
     pub fn load(&mut self, fw: &Firmware) -> Result<(), Error> {

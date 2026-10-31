@@ -191,6 +191,9 @@ pub struct Device {
     pub rx: Option<RxRing>,
     backlog: VecDeque<Vec<u8>>,
     pub fw: Option<Fw>,
+    /// The driver stopped the device's DMA (RESET's STOP_MASTER), which
+    /// the device acknowledges with MASTER_DISABLED.
+    pub master_stopped: bool,
     /// The access points the radio reaches: they keep their stations
     /// across the device's resets.
     pub air: Air,
@@ -271,6 +274,7 @@ impl Device {
             rx: None,
             backlog: VecDeque::new(),
             fw: None,
+            master_stopped: false,
             air: Air::new(),
         };
         d.reset();
@@ -305,6 +309,7 @@ impl Device {
         self.rx = None;
         self.backlog.clear();
         self.fw = None;
+        self.master_stopped = false;
         self.update_irq();
     }
 
@@ -370,7 +375,7 @@ impl Device {
             INT => self.int,
             INT_MASK => self.int_mask,
             FH_INT_STATUS => self.fh_int_status,
-            RESET => 0,
+            RESET => if self.master_stopped { RESET_MASTER_DISABLED } else { 0 },
             // The radio is on (no kill switch).
             GP_CNTRL => self.gp_cntrl | if self.clock_ready() { GP_MAC_CLOCK_READY } else { 0 } | GP_HW_RF_KILL_SW,
             HW_REV => self.hw.hw_rev_raw,
@@ -438,6 +443,8 @@ impl Device {
             RESET => {
                 if v & RESET_SW != 0 {
                     self.reset();
+                } else if v & RESET_STOP_MASTER != 0 {
+                    self.master_stopped = true;
                 }
             }
             GP_CNTRL => {

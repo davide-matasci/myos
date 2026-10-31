@@ -57,6 +57,14 @@ struct Host {
     start: Instant,
 }
 
+impl Host {
+    /// A second driver's platform on the same model: its buffers at bus
+    /// addresses from `next`, clear of the first's.
+    fn twin(&self, next: u64) -> Host {
+        Host { dev: self.dev.clone(), rises: self.rises.clone(), next, start: self.start }
+    }
+}
+
 impl Bus for Host {
     fn read32(&mut self, off: u32) -> u32 {
         self.dev.lock().unwrap().read(off, 4) as u32
@@ -156,6 +164,37 @@ fn brought_up(fw: &Firmware, chip: &'static Chip, radio: &'static Hardware, msix
         // -2C passive (radar).
         assert_eq!(info.channels.len(), 13 + 4 + 4 + 12 + 5);
         assert!(info.channels.iter().any(|c| c.number == 52 && c.ghz5 && c.passive));
+    }
+}
+
+/// Stopped (the daemon's exit at a power off), the radio runs no firmware
+/// and comes up again under a new driver from scratch: what the next
+/// system's driver needs after a reboot, which does not power an
+/// integrated radio down.
+#[test]
+fn stopped_then_brought_up_again() {
+    let file = firmware();
+    let fw = Firmware::parse(file).unwrap();
+    for (chip, radio) in RADIOS {
+        for msix in [false, true] {
+            let what = format!("{} (MSI-X {msix})", chip.name);
+            let (r, host) = rig(radio, msix);
+            let second = host.twin(0x40_0000_0000);
+            let mut dev = Dev::new(host, msix, chip).unwrap();
+            dev.load(&fw).unwrap_or_else(|e| panic!("load {what}: {e:?}, {:?}", failed(&r)));
+            dev.init(&fw).unwrap_or_else(|e| panic!("init {what}: {e:?}, {:?}", failed(&r)));
+            dev.stop();
+            {
+                let d = r.dev.lock().unwrap();
+                assert!(d.fw.is_none(), "{what}: the firmware still runs after the stop");
+                assert_eq!(d.failed, None, "{what}");
+            }
+            drop(dev);
+            let mut again = Dev::new(second, msix, chip).unwrap();
+            again.load(&fw).unwrap_or_else(|e| panic!("load {what} again: {e:?}, {:?}", failed(&r)));
+            again.init(&fw).unwrap_or_else(|e| panic!("init {what} again: {e:?}, {:?}", failed(&r)));
+            assert_eq!(failed(&r), None, "{what}");
+        }
     }
 }
 

@@ -222,6 +222,38 @@ impl<B: Bus> Hw<B> {
         }
     }
 
+    /// Put the NIC's basic functions to sleep: its DMA stopped, the
+    /// adapter back to uninitialized (iwx_apm_stop).
+    fn apm_stop(&mut self) {
+        self.set_bits(DBG_LINK_PWR_MGMT, RESET_LINK_PWR_MGMT_DISABLED);
+        self.set_bits(HW_IF_CONFIG, HW_IF_PREPARE | HW_IF_ENABLE_PME);
+        self.bus.delay_us(1000);
+        self.clear_bits(DBG_LINK_PWR_MGMT, RESET_LINK_PWR_MGMT_DISABLED);
+        self.bus.delay_us(5000);
+        self.set_bits(RESET, RESET_STOP_MASTER);
+        // Waited for, as the C driver does, but a timeout only means the
+        // reset below finds the DMA still running.
+        let _ = self.poll_bit(RESET, RESET_MASTER_DISABLED, RESET_MASTER_DISABLED, 100);
+        self.clear_bits(GP_CNTRL, GP_INIT_DONE);
+    }
+
+    /// Stop the device and its firmware and leave it as a cold start finds
+    /// it, for the next driver: the system's after a reboot, which does not
+    /// power an integrated radio down (iwx_stop_device, less the rings,
+    /// which the caller throws away). Interrupts stay off but the kill
+    /// switch's.
+    pub fn stop_device(&mut self) {
+        self.disable_interrupts();
+        self.clear_bits(GP_CNTRL, GP_MAC_ACCESS_REQ);
+        self.apm_stop();
+        self.sw_reset();
+        // The reset erases the MSI-X routing: routed again, then quiet.
+        let _ = self.init_msix_hw();
+        self.disable_interrupts();
+        self.enable_rfkill_int();
+        let _ = self.prepare_card_hw();
+    }
+
     /// Prepare, reset and power the device up, its interrupt routed
     /// (iwx_start_hw).
     pub fn start_hw(&mut self) -> Result<(), HwError> {

@@ -164,6 +164,14 @@ impl Radio for Intel {
         }
     }
 
+    /// The network let go of first, then the firmware halted and the
+    /// device reset: a reboot keeps an integrated radio powered, and
+    /// Windows' driver took one left running for a broken device.
+    fn stop(&mut self) {
+        self.left();
+        self.dev.stop();
+    }
+
     /// The firmware's passive scan of every channel the regulatory domain
     /// allows: the frames heard until it says it is done.
     fn scan(&mut self) -> Option<Vec<Heard>> {

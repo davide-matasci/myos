@@ -59,6 +59,9 @@ pub trait Radio {
     fn tick(&mut self) {}
     /// The network left, or joining it given up.
     fn left(&mut self) {}
+    /// The daemon is ending (`SIGTERM`: a power off or a reboot): the
+    /// radio stopped and reset for the next driver, the next system's.
+    fn stop(&mut self) {}
     /// A scan the radio does by itself (its firmware's): what it heard;
     /// `None` when the daemon visits the channels itself.
     fn scan(&mut self) -> Option<Vec<Heard>> {
@@ -96,6 +99,8 @@ pub trait FullMac {
     fn fd(&self) -> Option<usize>;
     /// Frames are waiting that a `poll` would not show.
     fn pending(&self) -> bool;
+    /// The daemon is ending, as [`Radio::stop`].
+    fn stop(&mut self) {}
 }
 
 /// A frame a radio's own scan heard.
