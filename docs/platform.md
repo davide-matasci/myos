@@ -137,7 +137,10 @@ The interpreter is young and panics at what it does not implement, so it
 runs in a thread of its own, which a panic parks; the module's init
 waits for it 5 seconds at most. When it fails, nothing is routed (the
 drivers of functions without MSI poll), `_S5` comes from the scan below,
-and `/proc/acpi/aml` says why. The `source:` line of `/proc/acpi/s5`
+and `/proc/acpi/aml` says why: for a panic, its message, its place in
+the crate's source and what the AML was doing (`interpreter panicked:
+not yet implemented at src/aml/mod.rs:1270 (the devices' _STA and
+_INI)`), which says what the crate lacks for that firmware. The `source:` line of `/proc/acpi/s5`
 says which one gave `_S5` (`AML interpreter`, `AML _S5 scan`).
 
 ### Batteries

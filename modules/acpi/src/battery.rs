@@ -331,6 +331,7 @@ pub fn answer(interp: &Interpreter<Host>, power: &Power) -> ! {
         let seq = api.wait_seq();
         let asked = REQUEST.load(Ordering::Acquire);
         if asked != ANSWERED.load(Ordering::Acquire) {
+            crate::aml::step("reading /proc/acpi/battery");
             *TEXT.lock() = report(interp, &power.batteries, &power.adapters);
             ANSWERED.store(asked, Ordering::Release);
             api.wake(&ANSWERED as *const _ as usize);

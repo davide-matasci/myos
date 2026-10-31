@@ -43,6 +43,13 @@ static IN_THREAD: AtomicBool = AtomicBool::new(false);
 static S5: AtomicU32 = AtomicU32::new(0);
 /// What happened, for `/proc/acpi/aml`.
 static REPORT: Lock<String> = Lock::new(String::new());
+/// What the thread is doing, for the report of a panic.
+static STEP: Lock<String> = Lock::new(String::new());
+
+/// The thread is now doing `what` (a panic's report names it).
+pub(crate) fn step(what: impl Into<String>) {
+    *STEP.lock() = what.into();
+}
 
 /// How long the module's init waits for the interpreter.
 pub const DEADLINE_NS: u64 = 5_000_000_000;
@@ -229,8 +236,17 @@ pub fn panicked(info: &core::panic::PanicInfo) -> bool {
     if !IN_THREAD.load(Ordering::Acquire) {
         return false;
     }
+    // The crate's panics are mostly a bare `todo!()`: its place in the
+    // crate's source says which, the step what the AML was doing.
+    let step = STEP.lock().clone();
     let mut r = REPORT.lock();
-    let _ = write!(r, "interpreter panicked: {}\n", info.message());
+    let _ = write!(r, "interpreter panicked: {}", info.message());
+    if let Some(l) = info.location() {
+        // The crate's path from its root (`src/aml/mod.rs`).
+        let file = l.file().rsplit_once("acpi-myos/").map_or(l.file(), |(_, f)| f);
+        let _ = write!(r, " at {file}:{}", l.line());
+    }
+    let _ = write!(r, " ({step})\n");
     drop(r);
     STATE.store(PANICKED, Ordering::Release);
     true
@@ -291,21 +307,31 @@ pub fn wait(api: &KernelApi, deadline: u64) -> (Option<(u8, u8)>, String) {
 /// and `_S5` and find the batteries: what was found, for the report, the
 /// interpreter, and the batteries when there are any.
 fn run(rsdp: usize) -> Result<(String, Interpreter<Host>, Option<battery::Power>), String> {
+    step("loading the tables");
     let tables = unsafe { AcpiTables::from_rsdp(Host, rsdp) }.map_err(|e| alloc::format!("tables: {e:?}"))?;
     let platform = AcpiPlatform::new(tables, Host).map_err(|e| alloc::format!("platform: {e:?}"))?;
     let interp = Interpreter::new_from_platform(&platform).map_err(|e| alloc::format!("loading the AML: {e:?}"))?;
     // Laptops' `_INI`s and battery methods read the embedded controller.
-    let mut out = battery::install_ec(&interp);
+    // In the report at once: a panic below keeps it.
+    step("finding the embedded controller");
+    let ec = battery::install_ec(&interp);
+    REPORT.lock().push_str(&ec);
+    step("the devices' _STA and _INI");
     interp.initialize_namespace();
+    step("the embedded controller's _REG");
     battery::reg_ec(&interp);
+    step("\\_PIC");
     // The OS uses the APIC: the firmware's `_PRT` then gives GSIs, not
     // the 8259's IRQs.
     let pic = name("\\_PIC");
     if let Err(e) = interp.evaluate_if_present(pic, vec![Object::Integer(1).wrap()]) {
         return Err(alloc::format!("\\_PIC: {e:?}"));
     }
+    let mut out = String::new();
     let mut routes = 0;
+    step("finding the PCI bridges");
     for (path, root) in bridges(&interp) {
+        step(alloc::format!("{}._PRT", path.as_string()));
         let Some(bus) = bus_of(&interp, &path, root, 0) else {
             let _ = writeln!(out, "{}: no bus", path.as_string());
             continue;
@@ -340,6 +366,7 @@ fn run(rsdp: usize) -> Result<(String, Interpreter<Host>, Option<battery::Power>
         let _ = writeln!(out, "prt {} bus {bus} routes {n}", path.as_string());
     }
     let _ = writeln!(out, "routes {routes}");
+    step("\\_S5");
     match s5(&interp) {
         Some((a, b)) => {
             S5.store(1 << 16 | u32::from(b) << 8 | u32::from(a), Ordering::Release);
@@ -347,6 +374,7 @@ fn run(rsdp: usize) -> Result<(String, Interpreter<Host>, Option<battery::Power>
         }
         None => out.push_str("_S5 none\n"),
     }
+    step("finding the batteries");
     let power = battery::find(&interp, &mut out);
     Ok((out, interp, power))
 }
