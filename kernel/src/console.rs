@@ -322,6 +322,17 @@ pub fn status_warn(label: &str) {
     write_status("WARN", CONSOLE_STATUS_WARN, label);
 }
 
+/// `[ WARN ] label` from an interrupt that must not wait: false, and
+/// nothing written, while another writer holds the console (a stuck CPU
+/// may, `task::lockup_check`).
+pub fn status_warn_now(label: &str) -> bool {
+    let Some(_guard) = OUT.try_lock() else {
+        return false;
+    };
+    write_status_held("WARN", CONSOLE_STATUS_WARN, label);
+    true
+}
+
 /// `[ .. ] label` — in-progress boot step (blue tag on the screen).
 pub fn status_progress(label: &str) {
     write_status("..", CONSOLE_STATUS_INFO, label);
@@ -331,6 +342,11 @@ fn write_status(tag: &str, kind: u32, label: &str) {
     // Hold OUT across every serial fragment + the screen line so one
     // `[ TAG ] label\n` is atomic w.r.t. other console writers.
     let _guard = OUT.lock();
+    write_status_held(tag, kind, label);
+}
+
+/// [`write_status`] with `OUT` held.
+fn write_status_held(tag: &str, kind: u32, label: &str) {
     let mut serial = SerialPort::new();
     let _ = serial.write_str("[ ");
     let _ = serial.write_str(tag);

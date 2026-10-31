@@ -13,6 +13,27 @@ address space loaded on several CPUs are in `docs/threads.md`.
 and overall `blocked_tasks`, `clock_hz` and `uptime_ms`. An idle shell
 should show `idle_halts` climbing and `schedules` nearly flat.
 
+A CPU that stops scheduling while not idle is reported on the screen
+and the serial console (`kernel/src/task/lockup.rs`). Every CPU passes
+through the scheduler at each tick unless it halts idle; one that has
+not for 10 s is stuck in the kernel, its interrupts off or spinning on
+the task table, and the tasks queued on it never run again (the console
+input thread among them: the machine looks frozen, though CPU 0 still
+blinks the cursor). CPU 0's tick looks once a second and says, once per
+stall, which CPU and which task, and how long the stall lasted if the
+CPU goes on:
+
+```
+[ WARN ] cpu 3 stuck for 10 s in the kernel: pid 41 wifi (slot 43)
+[ WARN ] cpu 3 went on after 14 s
+```
+
+It allocates nothing and waits on no lock, since the stuck CPU may hold
+any: the task is named only when the task table is free, and a line the
+console is busy for waits for the next second. CPU 0 itself is not
+watched: its tick is the watcher. The boot tests fail on the report
+(`docs/testing.md`).
+
 QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,
 because Limine panics with `missing struct riscv_hart for BSP` at 4; the
 packed `boot/virt.dtb` is dumped with `-smp 2` too, so that OpenSBI's

@@ -285,8 +285,9 @@ const RPI3_MARKERS: [&str; 33] = [
 ];
 
 /// The kernel reporting a crash: a CPU exception, a user fault it printed,
-/// a panic. Ends the run at once instead of waiting out the budget.
-const FATAL_MARKERS: [&str; 3] = ["exception:", "user panic", "[ WARN ] user fault"];
+/// a panic, a CPU stuck in the kernel (`kernel/src/task/lockup.rs`). Ends
+/// the run at once instead of waiting out the budget.
+const FATAL_MARKERS: [&str; 4] = ["exception:", "user panic", "[ WARN ] user fault", "s in the kernel: "];
 
 /// Login never takes this long once init is up (OVMF alone can take 40 s
 /// before that, so the clock starts at `[ OK ] fork exec`).

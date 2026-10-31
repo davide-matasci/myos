@@ -204,8 +204,9 @@ The launcher logs in at `login: ` on the serial port, types the command,
 then watches:
 
 - the `TEST`, `HOST` and `TESTS DONE` lines;
-- the kernel's crash reports (`exception:`, `user panic`, a user fault),
-  which end the run at once;
+- the kernel's crash reports (`exception:`, `user panic`, a user fault,
+  a CPU stuck in the kernel, `docs/scheduler.md`), which end the run at
+  once;
 - the stall watchdog and the budget (above);
 - the kernel's **boot markers** (`[ OK ] heap`, `[ OK ] scheduler`, the
   drivers, the VFS checks of `/bin/custom/ok`), required whatever the
