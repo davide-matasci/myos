@@ -20,6 +20,8 @@ use myos_abi::{status_info, status_ok, status_warn, ApiCell, ABI_VERSION, Kernel
 
 #[cfg(target_arch = "x86_64")]
 mod aml;
+#[cfg(target_arch = "x86_64")]
+mod battery;
 mod power;
 
 static API: ApiCell = ApiCell::new();

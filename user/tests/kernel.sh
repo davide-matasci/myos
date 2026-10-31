@@ -598,6 +598,26 @@ acpi_aml() {
 }
 t -t smoke acpi acpi_aml
 
+# A battery through the firmware's AML (docs/platform.md "Batteries"):
+# the launcher's test boots give the PC an SSDT with one (src/acpi_battery.rs),
+# its methods evaluated at each read of /proc/acpi/battery, and battery
+# prints it.
+acpi_battery() {
+	grep -q '^intc apic ' /proc/platform || return 0
+	out=$(cat /proc/acpi/battery) &&
+		printf '%s\n' "$out" | grep -qx 'BAT0 present 1' &&
+		printf '%s\n' "$out" | grep -qx 'BAT0 state discharging' &&
+		printf '%s\n' "$out" | grep -qx 'BAT0 percent 75' &&
+		printf '%s\n' "$out" | grep -qx 'BAT0 remaining 30000 mWh' &&
+		printf '%s\n' "$out" | grep -qx 'BAT0 rate 10000 mW' &&
+		printf '%s\n' "$out" | grep -qx 'AC online 0' &&
+		battery > /tmp/battery.out &&
+		grep -qx 'BAT0: 75% discharging, 3:00 left' /tmp/battery.out &&
+		grep -qx 'AC: offline' /tmp/battery.out ||
+		{ cat /proc/acpi/battery /proc/acpi/aml /tmp/battery.out; return 1; }
+}
+t -t smoke,acpi battery acpi_battery
+
 # Interrupt domains (irqchip, docs/interrupts.md "Interrupt domains"):
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
 # their own, behind the controller's one. Its probe sets an idle input to
