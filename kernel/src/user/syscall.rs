@@ -1987,10 +1987,26 @@ pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
         return false;
     }
     let aspace = task::current_aspace();
-    for i in 0..pages {
-        let va = addr + i * PAGE;
-        if task::mmap_backing(va).is_some_and(|(prot, _, _)| prot & task::MMAP_DEVICE == 0) {
-            free_mapped_page(aspace, va as u64);
+    // The regions once, not a lookup (the task table, then a search) per
+    // page: an allocator gives back gigabytes at a time, and millions of
+    // lookups kept this CPU in the syscall, its interrupts off, for over ten
+    // seconds (PR #697's CI, surf on bios-pkg). The other CPUs' shootdowns
+    // are answered along the way, or they would wait for the end too.
+    let (lo, hi) = (addr as u64, (addr + pages * PAGE) as u64);
+    let mut freed = 0usize;
+    for r in task::mmap_regions() {
+        if r.prot & task::MMAP_DEVICE != 0 {
+            continue;
+        }
+        let end = r.va + u64::from(r.pages) * PAGE as u64;
+        let mut va = r.va.max(lo);
+        while va < end.min(hi) {
+            free_mapped_page(aspace, va);
+            va += PAGE as u64;
+            freed += 1;
+            if freed % 1024 == 0 {
+                crate::smp::tlb_service();
+            }
         }
     }
     flush_user_pages(addr, pages);
