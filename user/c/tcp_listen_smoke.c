@@ -108,6 +108,11 @@ static int send_bulk(int c) {
     return 0;
 }
 
+/* The peer port of each connection mute_probes accepted, the "done" one
+ * last: a failure names them (the host names its side's, so the record
+ * says which connection never came). */
+static unsigned short mute_peer[MUTE_PROBES + 1];
+
 /* The mute connections, up to the one that says "done": each must end
  * (readable, then the read says hangup or data) within 3 s of its accept. */
 static int mute_probes(int l) {
@@ -119,6 +124,7 @@ static int mute_probes(int l) {
             printf("[ FAIL ] mute accept (%d)\n", errno);
             return -1;
         }
+        mute_peer[k] = ntohs(peer.sin_port);
         fd_set r;
         FD_ZERO(&r);
         FD_SET(c, &r);
@@ -201,6 +207,31 @@ int main(void) {
     }
     if (mutes != MUTE_PROBES) {
         printf("[ FAIL ] listen: %d of %d mute connections accepted\n", mutes, MUTE_PROBES);
+        printf("    peers:");
+        for (int k = 0; k < mutes; k++) {
+            printf(" %u", mute_peer[k]);
+        }
+        printf(", done from %u\n", mute_peer[mutes]);
+        /* Lost, or late? A connection whose handshake finished after
+         * "done" landed (a packet of it lost and sent again) comes now. */
+        for (int late = 0; late < MUTE_PROBES; late++) {
+            fd_set r;
+            struct timeval tv = {2, 0};
+            struct sockaddr_in peer;
+            socklen_t plen = sizeof peer;
+            int c;
+            FD_ZERO(&r);
+            FD_SET(l, &r);
+            if (select(l + 1, &r, NULL, NULL, &tv) <= 0) {
+                break;
+            }
+            c = accept(l, (struct sockaddr *)&peer, &plen);
+            if (c < 0) {
+                break;
+            }
+            printf("    a connection from %u came after \"done\"\n", ntohs(peer.sin_port));
+            close(c);
+        }
         return 1;
     }
     close(l);

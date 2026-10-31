@@ -665,6 +665,21 @@ fn add_virtio_net(cmd: &mut Command) {
     }
     cmd.arg("-netdev").arg(netdev);
     cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
+    // `MYOS_NET_PCAP=<file>`: QEMU writes net0's frames, both ways, to that
+    // pcap file (its filter-dump), for an exchange with the host that went
+    // wrong: a handshake packet lost or late shows there and nowhere else
+    // (the listen smoke's mute connection nobody accepted, issue #656). CI
+    // keeps a failed boot's. The boots the launcher starts after the first
+    // (a full list's reboots) write `<file>.2`, `<file>.3`.
+    if let Ok(path) = std::env::var("MYOS_NET_PCAP") {
+        if !path.is_empty() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static BOOTS: AtomicUsize = AtomicUsize::new(0);
+            let n = BOOTS.fetch_add(1, Ordering::Relaxed) + 1;
+            let file = if n == 1 { path } else { format!("{path}.{n}") };
+            cmd.arg("-object").arg(format!("filter-dump,id=net0dump,netdev=net0,file={file}"));
+        }
+    }
 }
 
 fn run_bios(bios_path: &str) {

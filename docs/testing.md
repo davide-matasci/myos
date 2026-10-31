@@ -217,6 +217,11 @@ then watches:
 
 It exits 0 only when every test passed, every marker was seen and the
 machine powered off. The full serial output is in the log either way.
+`MYOS_NET_PCAP=<file>` makes QEMU write net0's frames, both ways, to that
+pcap file (the boots after the tests to `<file>.2`, `<file>.3`): the
+record of an exchange with the host that went wrong, a packet lost or
+late (issue #656's mute connection). CI's boot jobs write one and keep a
+failed boot's as the artifact `net0-pcap-<machine>`.
 
 After a full list that passed, the launcher boots twice more:
 
