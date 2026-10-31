@@ -64,8 +64,6 @@ const S_IFREG: u32 = 0o100000;
 const PAGE: usize = 4096;
 /// Functions listed (the first found, bus by bus).
 const MAX_DEV: usize = 32;
-/// Buses scanned, as `pci_enum` does.
-const MAX_BUS: u8 = 32;
 /// DMA buffers per function.
 const MAX_DMA: usize = 16;
 /// The configuration space the files reach.
@@ -735,11 +733,11 @@ unsafe extern "C" fn pci_poll(path: *const u8, len: usize, changes: *mut u64) ->
     if PENDING[i].load(Ordering::Relaxed) != 0 { MYOS_POLLIN } else { 0 }
 }
 
-/// The endpoints on the first [`MAX_BUS`] buses (header type 0).
+/// The endpoints (header type 0) on every bus, as `pci_enum` lists them.
 fn scan(devs: &mut [Option<Dev>; MAX_DEV]) -> usize {
     let api = api();
     let mut n = 0;
-    for bus in 0..MAX_BUS {
+    for bus in 0..=255u8 {
         for slot in 0..32u8 {
             if api.pci_cfg_read32(bus, slot, 0, 0) & 0xFFFF == 0xFFFF {
                 continue;

@@ -2,7 +2,13 @@
 //!
 //! Lines keep hex BDF / vendor:device / class:sub:prog, and append short
 //! human names when known (class/subclass + a small QEMU/virt ID table).
-//! Unknown IDs stay hex-only.
+//! Unknown IDs stay hex-only. A bridge's line ends with the buses behind
+//! it (`-> bus 3d-3d`, its secondary and subordinate numbers).
+//!
+//! Every bus is scanned, as the kernel's own `pci::find_class` does: a
+//! laptop's firmware numbers the buses behind a slot after the range it
+//! keeps for Thunderbolt's hot-plug, past the first 32. The kernel refuses
+//! a bus past its configuration window, so the scan reads nothing there.
 //!
 //! Write `rescan` (optionally with a trailing newline) to `/proc/pci` to
 //! re-enumerate config space and refresh the node. Devices that disappeared
@@ -131,7 +137,7 @@ fn publish(api: &KernelApi, buf: *mut u8) -> usize {
     );
 
     let mut found = 0usize;
-    for bus in 0u8..32 {
+    for bus in 0u8..=255 {
         for slot in 0u8..32 {
             let id0 = api.pci_cfg_read32(bus, slot, 0, 0);
             if id0 as u16 == 0xFFFF {
@@ -151,7 +157,12 @@ fn publish(api: &KernelApi, buf: *mut u8) -> usize {
                 let sub = (classw >> 16) as u8;
                 let prog = (classw >> 8) as u8;
                 let mut line = [0u8; LINE_CAP];
-                let n = format_dev(&mut line, bus, slot, func, vend, dev, class, sub, prog);
+                let mut n = format_dev(&mut line, bus, slot, func, vend, dev, class, sub, prog);
+                // A bridge (header type 1): the buses it leads to.
+                if (api.pci_cfg_read32(bus, slot, func, 0x0C) >> 16) & 0x7F == 1 {
+                    let buses = api.pci_cfg_read32(bus, slot, func, 0x18);
+                    n = push_bus_range(&mut line, n, (buses >> 8) as u8, (buses >> 16) as u8);
+                }
                 push_bytes(out, &mut len, &line[..n]);
                 push_str(out, &mut len, "\n");
                 found += 1;
@@ -583,6 +594,16 @@ fn format_dev(
 
     o = push_class_name(line, o, class, sub);
     o
+}
+
+/// ` -> bus SS-UU` at `o` of `line`.
+fn push_bus_range(line: &mut [u8], mut o: usize, secondary: u8, subordinate: u8) -> usize {
+    let s = *b" -> bus ";
+    line[o..o + s.len()].copy_from_slice(&s);
+    o += s.len();
+    o = hex_u8(line, o, secondary);
+    line[o] = b'-';
+    hex_u8(line, o + 1, subordinate)
 }
 
 fn format_count(msg: &mut [u8], n: usize) -> usize {

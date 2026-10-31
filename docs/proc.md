@@ -31,7 +31,7 @@ The hardware:
 | `/proc/platform` | the board description and where each part came from (`docs/platform.md`) |
 | `/proc/firmware` | on a Raspberry Pi, what the VideoCore firmware reports (`docs/raspberry-pi.md`) |
 | `/proc/usb` | the USB controllers and devices, and the driver that took each interface (`docs/usb.md`) |
-| `/proc/pci` | every PCI function `pci_enum` found; writing `rescan` re-enumerates the bus (`docs/pci.md`, `docs/modules.md`) |
+| `/proc/pci` | every PCI function `pci_enum` found on any bus, a bridge with the buses behind it (`-> bus 3d-3d`); writing `rescan` re-enumerates the bus (`docs/pci.md`, `docs/modules.md`) |
 | `/proc/acpi/info`, `tables`, `s5` | from the `acpi` module; stubs when there is no RSDP |
 
 `docs/fs.md` lists the other files (`/proc/mounts`, `/proc/partitions`,
