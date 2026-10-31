@@ -20,6 +20,12 @@ shell. `startx [program [arg...]] [-- server-arg...]` (`startx.c`) starts
 its parent once it listens (xinit's handshake), runs the program with
 `DISPLAY=:0`, and stops the server when the program exits.
 
+On a large screen startx adds `-dpi`, so the clients' fonts (Xft sizes
+them in points) are not tiny on a laptop's dense panel: 75 times the
+console's text scale (`docs/tty.md`), 150 at 1920x1080, 225 at
+2560x1600. QEMU's 1280x800 keeps the server's own 75. A `-dpi` among the
+server args wins: `startx dwm -- -dpi 120`.
+
 ## What it is built from
 
 | Component | Pin | |
