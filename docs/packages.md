@@ -51,7 +51,12 @@ into `ROOT/.<name>-<version>.new/`, never stored (in `/tmp` it would take
 the kernel heap a second time). Only when the SHA-256 matches the index
 does the directory become `ROOT/<name>-<version>/`. A failure leaves the
 current version as it was. An install, `-u` or `--sync` downloads four
-packages at once, each in a worker process.
+packages at once, each in a worker process. A failed download or unpack
+is tried three times, except a root without room: `get-myos: not enough
+space in /data/apps (3 MiB free; the archive alone is 11 MiB, unpacked
+several times that)`, once (the 64 MiB `/data` of a disk written from the
+image, `docs/install.md`, holds few large apps). A file that cannot be
+written for another reason is named with the error.
 
 **Dependencies.** A package's index line names the packages it needs on
 the running system (`PORT_RDEPS`, `docs/ports.md`), each at the version it

@@ -272,6 +272,30 @@ apps_data() {
 	[ "$(/bin/custom/clear -T linux)" = "$(printf '\033[H\033[J')" ]
 }
 
+# A root without room: the install says how much space there is instead
+# of "bad archive" (a T15's 64 MiB /data and Python's 29 MiB), tries once
+# (a full disk is not worth three downloads), and leaves no version
+# directory or record behind. The root is on an ext2 of the scratch
+# disk's 64 MiB p3, filled once clear is installed there.
+apps_full() {
+	d=/dev/nvme1n1/p3
+	mkdir -p /tmp/full && mkfs.ext2 $d > /dev/null && mount $d /tmp/full ext2 || return 1
+	r=1
+	if get-myos -r /tmp/full/apps -m $MIRROR clear > /tmp/apps-full.out 2>&1; then
+		dd if=/dev/zero of=/tmp/full/fill bs=65536 2> /dev/null
+		if ! get-myos -r /tmp/full/apps -m $MIRROR lua > /tmp/apps-full.out 2>&1 &&
+			grep -q '^get-myos: not enough space in /tmp/full/apps (0 MiB free' /tmp/apps-full.out &&
+			! grep -q 'bad archive\|retrying' /tmp/apps-full.out &&
+			[ ! -e /tmp/full/apps/.get-myos/pkgs/lua ] && ! ls -d /tmp/full/apps/.lua-* > /dev/null 2>&1; then
+			r=0
+		fi
+	fi
+	[ $r -eq 0 ] || cat /tmp/apps-full.out
+	rm -f /tmp/full/fill
+	umount /tmp/full || r=1
+	return $r
+}
+
 # Global apps (`--global`), in a root of their own: lua on PATH without
 # run-myos, x11-apps with x11-libs (what it needs) bound too; an app with
 # lua's files refused, naming lua; a rollback of lua binds the version it
@@ -305,6 +329,7 @@ apps_global() {
 
 t -t net,pkg,st get_myos_list get_myos_list
 t -t net,pkg apps_data apps_data
+t -t net,pkg apps_full apps_full
 t -t net,pkg,lua get_myos_versions get_myos_versions
 t -t net,pkg apps_set apps_set
 t -t net,pkg apps_global apps_global
