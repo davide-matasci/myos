@@ -13,6 +13,43 @@ address space loaded on several CPUs are in `docs/threads.md`.
 and overall `blocked_tasks`, `clock_hz` and `uptime_ms`. An idle shell
 should show `idle_halts` climbing and `schedules` nearly flat.
 
+A CPU that stops scheduling while not idle is reported on the screen
+and the serial console (`kernel/src/task/lockup.rs`). Every CPU passes
+through the scheduler at each tick unless it halts idle; one that has
+not for 10 s is stuck in the kernel, its interrupts off or spinning on
+the task table, and the tasks queued on it never run again (the console
+input thread among them: the machine looks frozen, though CPU 0 still
+blinks the cursor). CPU 0's tick looks once a second and says, once per
+stall, which CPU and which task, and how long the stall lasted if the
+CPU goes on:
+
+```
+[ WARN ] cpu 3 stuck for 10 s in the kernel: pid 41 wifi (slot 43)
+[ WARN ] cpu 3 went on after 14 s
+```
+
+On x86_64 a line before it says where the CPU is. CPU 0 sends it an NMI,
+which interrupts it even with its interrupts off. The NMI handler, on a
+stack of its own, notes the address the CPU was at and, in the kernel,
+the words on its stack that point into the kernel's code. The kernel
+keeps no frame pointers, so these are likely its callers, not a sure
+backtrace. `addr2line -e` on the build's kernel names the functions:
+
+```
+[ WARN ] cpu 3 at 0xffffffff8012a3f0 in the kernel, called from 0xffffffff80131c22 0xffffffff800f0a17
+```
+
+aarch64 and riscv64 have no such interrupt here, so their report names
+the task alone.
+
+It allocates nothing and waits on no lock, since the stuck CPU may hold
+any: the task is named only when the task table is free, and a line the
+console or its screen is busy for (the console module's non-blocking
+`status_line_try`, `docs/modules.md`) waits for the next second. CPU 0 itself is not
+watched: its tick is the watcher, so a freeze of every CPU, CPU 0's tick
+included, says nothing. The boot tests fail on the report
+(`docs/testing.md`).
+
 QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,
 because Limine panics with `missing struct riscv_hart for BSP` at 4; the
 packed `boot/virt.dtb` is dumped with `-smp 2` too, so that OpenSBI's
@@ -118,6 +155,10 @@ online CPUs and waits briefly for their acks.
   `tlb_service`.
 - No IPI is sent when no other CPU has the address space loaded
   (`task::aspace_loaded_elsewhere`).
+- It runs with interrupts off, whatever its caller's. Its lock is a spin
+  lock that other CPUs wait on with theirs off. A holder preempted with
+  the lock held, as the reclaim of an exiting process could be, never ran
+  again while they spun, each up to its spin cap.
 
 Do not paper over a slow shootdown path with a longer QEMU timeout.
 

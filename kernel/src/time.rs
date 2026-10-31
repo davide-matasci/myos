@@ -64,6 +64,7 @@ pub fn note_tick() {
         NEXT_BLINK_NS.store(now + BLINK_INTERVAL_NS, Ordering::Relaxed);
         crate::console::cursor_blink();
     }
+    crate::task::lockup_check(now);
 }
 
 /// When CPU 0's next tick blinks the cursor (an idle CPU 0 wakes for it).

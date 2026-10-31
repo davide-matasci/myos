@@ -322,6 +322,30 @@ pub fn status_warn(label: &str) {
     write_status("WARN", CONSOLE_STATUS_WARN, label);
 }
 
+/// `[ WARN ] label` from an interrupt that must not wait
+/// (`task::lockup_check`): false, and nothing written anywhere, while
+/// another writer holds the console or the module holds its screen (a
+/// stuck CPU may hold either; the caller tries again later). The screen
+/// goes first, through the module's non-blocking op; before the module
+/// is there, serial alone (the early buffer's lock is nobody's to wait on
+/// from an interrupt).
+pub fn status_warn_now(label: &str) -> bool {
+    let Some(_guard) = OUT.try_lock() else {
+        return false;
+    };
+    if let Some(ops) = OPS.get() {
+        let tag = "WARN";
+        let shown = unsafe {
+            (ops.status_line_try)(tag.as_ptr(), tag.len(), CONSOLE_STATUS_WARN, label.as_ptr(), label.len())
+        };
+        if shown == 0 {
+            return false;
+        }
+    }
+    serial_status("WARN", label);
+    true
+}
+
 /// `[ .. ] label` — in-progress boot step (blue tag on the screen).
 pub fn status_progress(label: &str) {
     write_status("..", CONSOLE_STATUS_INFO, label);
@@ -331,15 +355,12 @@ fn write_status(tag: &str, kind: u32, label: &str) {
     // Hold OUT across every serial fragment + the screen line so one
     // `[ TAG ] label\n` is atomic w.r.t. other console writers.
     let _guard = OUT.lock();
-    let mut serial = SerialPort::new();
-    let _ = serial.write_str("[ ");
-    let _ = serial.write_str(tag);
-    let _ = serial.write_str(" ]");
-    if !label.is_empty() {
-        let _ = serial.write_str(" ");
-        let _ = serial.write_str(label);
-    }
-    let _ = serial.write_str("\n");
+    write_status_held(tag, kind, label);
+}
+
+/// [`write_status`] with `OUT` held.
+fn write_status_held(tag: &str, kind: u32, label: &str) {
+    serial_status(tag, label);
     match OPS.get() {
         Some(ops) => unsafe {
             (ops.status_line)(tag.as_ptr(), tag.len(), kind, label.as_ptr(), label.len())
@@ -356,6 +377,19 @@ fn write_status(tag: &str, kind: u32, label: &str) {
             early_record(CONSOLE_TEXT, b"\n");
         }
     }
+}
+
+/// The status line's serial form, `[ TAG ] label`, with `OUT` held.
+fn serial_status(tag: &str, label: &str) {
+    let mut serial = SerialPort::new();
+    let _ = serial.write_str("[ ");
+    let _ = serial.write_str(tag);
+    let _ = serial.write_str(" ]");
+    if !label.is_empty() {
+        let _ = serial.write_str(" ");
+        let _ = serial.write_str(label);
+    }
+    let _ = serial.write_str("\n");
 }
 
 /// Formatted text without the heap: [`write_str`] for what is written

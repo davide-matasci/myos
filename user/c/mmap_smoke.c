@@ -13,7 +13,9 @@
  * PROT_WRITE. A 16-page pattern goes through and comes back whole.
  * madvise(MADV_DONTNEED) drops pages: an anonymous one reads zero, a
  * MAP_PRIVATE copy of a file reads the file again, the pages around them
- * keep what they had; other advice is taken.
+ * keep what they had; other advice is taken. A whole gigabyte goes in one
+ * call, as an allocator gives memory back (it once kept a CPU in the
+ * kernel for seconds, a lookup per page).
  *
  * `mmap_smoke [DIR]` works in DIR (default /tmp): the ext2 test runs it on
  * the scratch disk.
@@ -257,6 +259,17 @@ static void discard(void) {
     }
     close(fd);
     unlink(f);
+
+    size_t big = (size_t)1 << 30;
+    unsigned char *g = mmap(NULL, big, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    check(g != MAP_FAILED, "a gigabyte to discard");
+    if (g != MAP_FAILED) {
+        g[0] = 'G';
+        g[big - 1] = 'G';
+        check(madvise(g, big, MADV_DONTNEED) == 0, "madvise(MADV_DONTNEED) of a gigabyte");
+        check(g[0] == 0 && g[big - 1] == 0, "its pages read zero again");
+        munmap(g, big);
+    }
 }
 
 static void whole(void) {

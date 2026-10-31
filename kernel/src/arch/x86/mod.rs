@@ -112,6 +112,12 @@ pub fn timer_resume() {
     interrupts::timer_resume();
 }
 
+/// Ask `cpu` where it is, even with its interrupts off (an NMI): the answer
+/// comes through `task::lockup_sampled`. False when there is no way to.
+pub fn sample_cpu(cpu: usize) -> bool {
+    interrupts::sample_cpu(cpu)
+}
+
 /// A PCI function's interrupt: its MSI-X, else its MSI, else its INTx
 /// through the I/O APIC where the firmware's `_PRT` routes it
 /// ([`intx`]).

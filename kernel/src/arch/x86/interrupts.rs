@@ -212,6 +212,7 @@ pub fn init() {
             idt.double_fault
                 .set_handler_fn(double_fault)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+            idt.non_maskable_interrupt.set_handler_fn(nmi).set_stack_index(gdt::NMI_IST_INDEX);
         }
         // The timer and the reschedule IPI from ring 3 save the user
         // registers too: the signals a reschedule delivers need them.
@@ -552,6 +553,55 @@ fn read_cr2() -> u64 {
     cr2
 }
 
+/// An NMI: the stuck-CPU report's sample (`sample_cpu`). It says where
+/// the CPU was: the interrupted address and, in the kernel, the words on
+/// its stack that point into the kernel's code (likely return addresses:
+/// the kernel keeps no frame pointers). It takes no lock and touches no
+/// per-CPU state but the id register, since it may land anywhere.
+extern "x86-interrupt" fn nmi(frame: InterruptStackFrame) {
+    unsafe extern "C" {
+        static __etext: u8;
+    }
+    let cpu = super::cpu::cpu_id_reg();
+    let rip = frame.instruction_pointer.as_u64();
+    let user = frame.code_segment.0 & 3 == 3;
+    let mut calls = [0u64; crate::task::SAMPLE_CALLS];
+    let sp0 = frame.stack_pointer.as_u64() & !7;
+    // A kernel stack only: between `syscall` and the switch to it, and
+    // before `sysret`, the stack is still the user's while CS says
+    // kernel, and a page of it may be gone (another thread's munmap): a
+    // fault here would be the kernel's.
+    if !user && sp0 >= 0xffff_8000_0000_0000 {
+        let text = 0xffff_ffff_8000_0000u64..core::ptr::addr_of!(__etext) as u64;
+        let mut sp = sp0;
+        let mut n = 0;
+        // A short look: the words up to the end of the stack's page, at
+        // most 512, so the read stays inside the interrupted stack.
+        let end = (sp | 0xfff) + 1;
+        while sp < end && sp - sp0 < 512 * 8 && n < calls.len() {
+            let w = unsafe { core::ptr::read_volatile(sp as *const u64) };
+            if text.contains(&w) {
+                calls[n] = w;
+                n += 1;
+            }
+            sp += 8;
+        }
+    }
+    crate::task::lockup_sampled(cpu, rip, user, &calls);
+}
+
+/// Ask `cpu` where it is (an NMI, which interrupts it even with its
+/// interrupts off): `nmi` answers through `task::lockup_sampled`.
+pub fn sample_cpu(cpu: usize) -> bool {
+    if cpu >= crate::smp::MAX_CPUS || !crate::smp::cpu_online(cpu) {
+        return false;
+    }
+    let apic = crate::smp::cpu_hw_id(cpu) as u32;
+    // Delivery mode NMI (100b): the vector is ignored.
+    send_ipi_apic_mode(apic, 0, 0b100 << 8);
+    true
+}
+
 extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _code: u64) -> ! {
     super::exception::x86_double_fault(
         frame.instruction_pointer.as_u64(),
@@ -869,12 +919,18 @@ fn lapic_r(off: u32) -> u32 {
 const ICR_HIGH: u32 = 0x310;
 
 fn send_ipi_apic(apic_id: u32, vector: u8) {
+    send_ipi_apic_mode(apic_id, vector, 0);
+}
+
+/// [`send_ipi_apic`] with the ICR's delivery mode bits (10:8): 0 fixed,
+/// `0b100 << 8` NMI.
+fn send_ipi_apic_mode(apic_id: u32, vector: u8, mode: u32) {
     if X2APIC.load(Ordering::Relaxed) {
-        // One 64-bit ICR: the destination in bits 63:32, fixed delivery,
-        // physical mode, assert; no delivery-status bit to wait on.
+        // One 64-bit ICR: the destination in bits 63:32, the delivery
+        // mode, physical mode, assert; no delivery-status bit to wait on.
         wrmsr(
             X2APIC_MSR_BASE + ICR_LOW / 16,
-            (u64::from(apic_id) << 32) | u64::from(vector) | (1 << 14),
+            (u64::from(apic_id) << 32) | u64::from(mode) | u64::from(vector) | (1 << 14),
         );
         return;
     }
@@ -886,8 +942,8 @@ fn send_ipi_apic(apic_id: u32, vector: u8) {
     }
     // Destination in ICR high bits 31:24 (xAPIC).
     lapic_w(ICR_HIGH, apic_id << 24);
-    // Fixed delivery, physical mode, assert.
-    lapic_w(ICR_LOW, u32::from(vector) | (1 << 14));
+    // The delivery mode, physical mode, assert.
+    lapic_w(ICR_LOW, mode | u32::from(vector) | (1 << 14));
     while lapic_r(ICR_LOW) & (1 << 12) != 0 {
         core::hint::spin_loop();
     }

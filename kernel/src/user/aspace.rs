@@ -289,6 +289,29 @@ pub(super) fn release_mmap_range(aspace: u64, mmap: &[task::MmapRegion], va: u64
     }
 }
 
+/// `madvise(MADV_DONTNEED)`'s pages of `[lo, hi)` (`syscall::mmap_discard`):
+/// every mapped page freed, the empty page tables of a lazy mapping
+/// skipped as [`release_mmap_range`] skips them (an allocator gives back
+/// gigabytes it mostly never touched). The other CPUs' TLB shootdowns are
+/// answered along the way: the syscall runs with interrupts off, and they
+/// would wait for its end.
+pub(super) fn discard_range(aspace: u64, lo: u64, hi: u64) {
+    let mut va = lo;
+    let mut n = 0u32;
+    while va < hi {
+        if let Some(skip) = (va == lo || va % TABLE_SPAN == 0).then(|| unmapped_span_end(aspace, va)).flatten() {
+            va = skip;
+            continue;
+        }
+        free_mapped_page(aspace, va);
+        va += PAGE as u64;
+        n = n.wrapping_add(1);
+        if n % 1024 == 0 {
+            crate::smp::tlb_service();
+        }
+    }
+}
+
 fn release_mmap_page(aspace: u64, va: u64, device: bool) {
     if device {
         unmap_user_page(aspace, va);

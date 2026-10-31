@@ -285,8 +285,14 @@ const RPI3_MARKERS: [&str; 33] = [
 ];
 
 /// The kernel reporting a crash: a CPU exception, a user fault it printed,
-/// a panic. Ends the run at once instead of waiting out the budget.
+/// a panic. Ends the run at once instead of waiting out the budget; so does
+/// the stuck-CPU report (`STUCK_LINE`).
 const FATAL_MARKERS: [&str; 3] = ["exception:", "user panic", "[ WARN ] user fault"];
+/// The kernel's stuck-CPU report (`kernel/src/task/lockup.rs`): a line
+/// starting so, with `STUCK_WORDS` in it. The run ends with every CPU's
+/// registers, after a moment for the other stuck CPUs' lines.
+const STUCK_LINE: &str = "[ WARN ] cpu ";
+const STUCK_WORDS: &str = " stuck for ";
 
 /// Login never takes this long once init is up (OVMF alone can take 40 s
 /// before that, so the clock starts at `[ OK ] fork exec`).
@@ -736,6 +742,9 @@ pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow
                     handle_host_request(req, &ports);
                 } else if let Some(counts) = parse_done_line(line) {
                     done = Some(counts);
+                } else if line.starts_with(STUCK_LINE) && line.contains(STUCK_WORDS) {
+                    std::thread::sleep(Duration::from_secs(3));
+                    fail_stalled(&serial, &mut child, &format!("the kernel reported a stuck CPU: {line}"));
                 } else if FATAL_MARKERS.iter().any(|m| line.contains(m)) {
                     fail(&serial, &mut child, &format!("the kernel reported a crash: {line}"));
                 }
