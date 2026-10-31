@@ -106,8 +106,25 @@ myos_piece_is_current() {
 # path cut. tcc installs libtcc1.a into newlib's tree (its own output,
 # which the kernels hash covers): left out, so newlib's hash is the same
 # before and after.
+# The outputs of a port built for both C libraries come in two flavours: the
+# mlibc one is what lies under `target/<name>-mlibc-<arch>/` (its PORT_OUTPUTS
+# name the directories so), the newlib one the rest (the newlib libraries,
+# the smoke binaries, a `lib<x>-<triple>.a`). An mlibc port keys itself on
+# the mlibc flavour alone (`myos_dep_hash <dep> mlibc`): a libgloss change
+# rebuilds the dual ports, whose newlib flavour changes, and nothing in the
+# mlibc world (CI #2371 rebuilt WebKitGTK for the resolver fix of #680).
+myos_outputs_flavour_filter() {
+  case "${1:-}" in
+    mlibc) grep -E '^target/[^/]*-mlibc-' ;;
+    newlib) grep -v -E '^target/[^/]*-mlibc-' ;;
+    *) cat ;;
+  esac
+}
+
+# The output hash of a piece: its PORT_OUTPUTS files by path and content, the
+# stamps left out; of FLAVOUR's files alone (`newlib`, `mlibc`) when given.
 myos_outputs_hash_files() {
-  local name="${1%%:*}" arch=""
+  local name="${1%%:*}" arch="" flavour="${2:-}"
   [[ "$1" == *:* ]] && arch="${1#*:}"
   myos_ports_lib
   (
@@ -125,6 +142,7 @@ myos_outputs_hash_files() {
           fi
         done \
       | grep -v '^target/newlib-[^/]*/[^/]*/lib/libtcc1\.a$' \
+      | myos_outputs_flavour_filter "$flavour" \
       | LC_ALL=C sort \
       | while IFS= read -r f; do
           if [[ -L "$f" ]]; then
@@ -139,8 +157,21 @@ myos_outputs_hash_files() {
   )
 }
 
+# Whether a piece's outputs come in both flavours (files under a `-mlibc-`
+# directory and files elsewhere).
+myos_outputs_dual() {
+  local name="${1%%:*}" arch="" list
+  [[ "$1" == *:* ]] && arch="${1#*:}"
+  myos_ports_lib
+  # shellcheck disable=SC2086
+  list="$(cd "$MYOS_ROOT" && myos_port_outputs "$name" $arch | grep -v -e '/\.myos-[^/]*-version$' -e '/\.myos-[^/]*-outputs$')"
+  grep -q -E '^target/[^/]*-mlibc-' <<<"$list" && grep -q -v -E '^target/[^/]*-mlibc-' <<<"$list"
+}
+
 # Record a current piece's output hash in its outputs stamp (the registry
-# push, after a build): the hash.
+# push, after a build): the hash and, for a dual port, each flavour's
+# (`<hash> newlib=<hash> mlibc=<hash>`): what the stamp holds after the
+# input hash, and the registry's annotation.
 myos_outputs_record() {
   local piece="$1" fn h stamp
   fn="myos_${piece%%:*}_version_hash"
@@ -150,6 +181,9 @@ myos_outputs_record() {
     return 1
   fi
   h="$(myos_outputs_hash_files "$piece")"
+  if myos_outputs_dual "$piece"; then
+    h="$h newlib=$(myos_outputs_hash_files "$piece" newlib) mlibc=$(myos_outputs_hash_files "$piece" mlibc)"
+  fi
   stamp="$(myos_outputs_stamp "$piece")"
   mkdir -p "$(dirname "$stamp")"
   printf '%s %s\n' "$("$fn")" "$h" >"$stamp.tmp.$$"
@@ -157,11 +191,12 @@ myos_outputs_record() {
   printf '%s\n' "$h"
 }
 
-# A piece's output hash for input hash VH: the registry's record, else its
-# outputs stamp (either when it is VH's), else from its files when it is
-# current here (recorded then), else what myos_dep_hash_hook (the registry
-# script's, asking the registry) gives. Nothing, and 1, otherwise.
-myos_piece_output_hash() {
+# A piece's output record for input hash VH (the hash, then a dual port's
+# flavours, as myos_outputs_record writes it): the registry's record, else
+# its outputs stamp (either when it is VH's), else from its files when it
+# is current here (recorded then), else what myos_dep_hash_hook (the
+# registry script's, asking the registry) gives. Nothing, and 1, otherwise.
+myos_piece_output_record() {
   local piece="$1" vh="$2" rec rv rh h
   for rec in "$(myos_dep_hash_cache "$piece")" "$(myos_outputs_stamp "$piece")"; do
     if [[ -f "$rec" ]]; then
@@ -189,12 +224,39 @@ myos_piece_output_hash() {
   return 1
 }
 
+# A piece's output hash for input hash VH (myos_piece_output_record's first
+# word). Nothing, and 1, when there is none.
+myos_piece_output_hash() {
+  local rec
+  rec="$(myos_piece_output_record "$1" "$2")" || return 1
+  printf '%s\n' "${rec%% *}"
+}
+
+# The output hash of FLAVOUR (`newlib`, `mlibc`) of a piece at input hash
+# VH; nothing when its record has none (not a dual port, or recorded before
+# the flavours were).
+myos_piece_flavour_hash() {
+  local piece="$1" vh="$2" flavour="$3" rec word
+  rec="$(myos_piece_output_record "$piece" "$vh")" || return 1
+  for word in $rec; do
+    if [[ "$word" == "$flavour="* ]]; then
+      printf '%s\n' "${word#*=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # In a port's input hash: the output hash of port NAME it builds against,
 # as `outputs:<piece>:<hash>` lines (one per arch for a port built an arch
 # at a time), or the `dep-hash-unknown:` line myos_hash turns into an
-# undefined key.
+# undefined key. With FLAVOUR (`mlibc`: an mlibc port over a port built for
+# both libraries), that flavour's hash, `outputs-mlibc:<piece>:<hash>`, so
+# that the other flavour's files are not in the key; the whole hash as
+# before while the dependency's record has no flavours (one made before
+# they were recorded), which keeps the keys of the registry's artifacts.
 myos_dep_hash() {
-  local name="$1" fn vh piece h lines=""
+  local name="$1" flavour="${2:-}" fn vh piece h fh lines=""
   fn="myos_${name//-/_}_version_hash"
   if ! declare -F "$fn" >/dev/null; then
     echo "error: no function $fn (scripts/myos-c-userspace-lib.sh)" >&2
@@ -212,7 +274,11 @@ myos_dep_hash() {
       printf 'dep-hash-unknown:%s\n' "$name"
       return 0
     fi
-    lines="${lines}outputs:${piece}:${h}"$'\n'
+    if [[ -n "$flavour" ]] && fh="$(myos_piece_flavour_hash "$piece" "$vh" "$flavour")" && [[ -n "$fh" ]]; then
+      lines="${lines}outputs-${flavour}:${piece}:${fh}"$'\n'
+    else
+      lines="${lines}outputs:${piece}:${h}"$'\n'
+    fi
   done
   printf '%s' "$lines"
 }
@@ -1695,7 +1761,7 @@ myos_libedit_version_hash() {
   h="$(
     {
       myos_dep_hash mlibc
-      myos_dep_hash ncurses
+      myos_dep_hash ncurses mlibc
       find "$(myos_port_dir libedit)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1720,8 +1786,8 @@ myos_glib_version_hash() {
   h="$(
     {
       myos_dep_hash mlibc
-      myos_dep_hash zlib
-      myos_dep_hash pcre2
+      myos_dep_hash zlib mlibc
+      myos_dep_hash pcre2 mlibc
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags and the cc the build takes.
@@ -1754,8 +1820,8 @@ myos_image_libs_version_hash() {
   h="$(
     {
       myos_dep_hash mlibc
-      myos_dep_hash zlib
-      myos_dep_hash x11-libs
+      myos_dep_hash zlib mlibc
+      myos_dep_hash x11-libs mlibc
       find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
@@ -1786,7 +1852,7 @@ myos_cairo_pango_version_hash() {
       myos_dep_hash libcxx
       myos_dep_hash glib
       myos_dep_hash image-libs
-      myos_dep_hash x11-xft
+      myos_dep_hash x11-xft mlibc
       find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -1843,7 +1909,7 @@ myos_libsoup_version_hash() {
       myos_dep_hash mlibc
       myos_dep_hash libcxx
       myos_dep_hash glib
-      myos_dep_hash libressl
+      myos_dep_hash libressl mlibc
       myos_dep_hash sqlite
       find "$(myos_port_dir libsoup)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
@@ -1933,8 +1999,8 @@ myos_python_version_hash() {
     {
       myos_dep_hash mlibc
       sha256sum "$(myos_port_dir zlib)/versions.env"
-      myos_dep_hash libressl
-      myos_dep_hash ncurses
+      myos_dep_hash libressl mlibc
+      myos_dep_hash ncurses mlibc
       myos_dep_hash sqlite
       myos_dep_hash libedit
       find "$(myos_port_dir python)" -type f -print0 2>/dev/null \

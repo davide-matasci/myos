@@ -11,10 +11,12 @@ source "$HERE/versions.env"
 # shellcheck source=packages/cairo-pango/versions.env
 source "$ROOT/packages/cairo-pango/versions.env"
 
-# fetch NAME VERSION URL SHA256 TAR-FLAG DIR [PATCH...]: target/NAME-src
-# from the tarball's DIR, with the PATCHes applied.
+# fetch NAME VERSION URLS SHA256 TAR-FLAG DIR [PATCH...]: target/NAME-src
+# from the tarball's DIR, with the PATCHes applied. URLS is one or more,
+# space separated: the first that answers with the tarball of SHA256 is
+# taken (a mirror behind the upstream host).
 fetch() {
-  local name="$1" version="$2" url="$3" sha="$4" flag="$5" dir="$6"
+  local name="$1" version="$2" urls="$3" sha="$4" flag="$5" dir="$6"
   shift 6
   local src="$ROOT/target/$name-src" stamp="$ROOT/target/.$name-src-version"
   local want="$version" p
@@ -28,8 +30,20 @@ fetch() {
   local tmp
   tmp="$(mktemp -d "$ROOT/target/.fetch-$name.XXXXXX")"
   echo "fetch $name $version"
-  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp/src.tar"
-  echo "$sha  $tmp/src.tar" | sha256sum -c -
+  local url got=0
+  for url in $urls; do
+    if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 "$url" -o "$tmp/src.tar" \
+      && echo "$sha  $tmp/src.tar" | sha256sum -c - >/dev/null; then
+      got=1
+      break
+    fi
+    echo "fetch $name: $url failed, trying the next" >&2
+  done
+  if [[ "$got" != 1 ]]; then
+    echo "fetch $name: no URL gave the tarball of $sha" >&2
+    rm -rf "$tmp"
+    exit 1
+  fi
   mkdir -p "$tmp/extract"
   tar -x"$flag"f "$tmp/src.tar" -C "$tmp/extract"
   mv "$tmp/extract/$dir" "$src"

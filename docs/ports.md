@@ -145,11 +145,29 @@ the keys as below. The Rust sysroot, the kernels bundle and the Linux
 layer are keyed by their sources alone (nothing builds against them
 through `myos_dep_hash`).
 
+A port built for both C libraries (zlib, pcre2, libressl, ncurses,
+x11-libs, x11-xft) has its outputs in two **flavours**: the mlibc one is
+what lies under `target/<name>-mlibc-<arch>/`, the newlib one the rest
+(the newlib libraries, the smoke binaries). Its record carries each
+flavour's hash beside the whole one, and an mlibc port keys itself on the
+mlibc flavour alone (`myos_dep_hash <dep> mlibc`, an `outputs-mlibc:` line
+in its key): a libgloss change rebuilds the dual ports, whose newlib
+flavour changes, and nothing in the mlibc world, whose flavour is the same
+bytes (CI #2371 rebuilt gtk3 and WebKitGTK for a resolver fix, #680). A
+record made before the flavours were (the registry's artifacts of that
+time) has none; a dependent then takes the whole hash, as before, so no
+key changed when the flavours came, and the mlibc ports' keys move to the
+flavour the first time their dual dependency is rebuilt. The mlibc flavour
+must be reproducible for this: x11-libs's was not until xcb-proto's
+byte-compiled Python module (`__pycache__`, timestamps inside) was taken
+out of its stage.
+
 The output hash is recorded beside the stamp, in
 `target/.myos-<name>-outputs` (one per arch, `.myos-<name>-<arch>-outputs`,
-for a port built an arch at a time), as `<input hash> <output hash>`: the
+for a port built an arch at a time), as `<input hash> <output hash>`, with
+`newlib=<hash> mlibc=<hash>` after them for a dual port: the
 registry push writes it (`myos_outputs_record`) and packs it with the
-port, and puts the hash on the artifact's manifest as the annotation
+port, and puts the record on the artifact's manifest as the annotation
 `org.myos.ci.outputs`, which a pull and the CI plan read, without a
 download, into `target/.myos-dep-hash/<piece>` in the same form. A
 dependent's hash looks there first, then at the stamp, then (a build run
