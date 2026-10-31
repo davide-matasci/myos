@@ -188,6 +188,11 @@ t -t net,netfs,ipv6_dns ipv6_dns $SMOKES/ipv6_smoke dns
 # A answer came: a server of the test's own on the loopback interface drops
 # the first one (CI #2369 had an AF_UNSPEC lookup end with IPv4 alone).
 t -t netfs,ipv6,dns ipv6_dns_retry $SMOKES/ipv6_smoke dnsretry
+# A SERVFAIL is the server's trouble, not the name's: the query is sent
+# again (CI #2388 had one from the runner's resolver fail a lookup at once);
+# so is a query refused at the port, the server not up yet.
+t -t netfs,ipv6,dns ipv6_dns_servfail $SMOKES/ipv6_smoke dnsservfail
+t -t netfs,ipv6,dns ipv6_dns_refused $SMOKES/ipv6_smoke dnsrefused
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
 # setsid: its own session, no controlling terminal; SIGINT ends a child

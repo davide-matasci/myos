@@ -12,8 +12,11 @@
  * are asked for only while the host has an IPv6 address beyond ::1 and
  * the link-local ones (AI_ADDRCONFIG's rule). A query that goes
  * unanswered is sent again, the second of the two as well once the first
- * was answered (DNS_ATTEMPTS). `MYOS_DNS` in the environment names the
- * server to ask instead of /net/ndb's, `addr!port` (a test's own).
+ * was answered (DNS_ATTEMPTS); so is one a server could not answer for
+ * now (a SERVFAIL, a refused datagram): only its word on the name ends a
+ * lookup early, and a lookup no server answered fails with EAI_AGAIN.
+ * `MYOS_DNS` in the environment names the server to ask instead of
+ * /net/ndb's, `addr!port` (a test's own).
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -27,6 +30,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 /* How long one DNS server gets to answer. */
@@ -42,6 +46,14 @@
 #define DNS_ATTEMPTS 4
 /* The DNS port, unless `MYOS_DNS` names another. */
 #define DNS_PORT 53
+/* An answer's RCODE (its fourth byte's low nibble): the two that are the
+ * server's word on the name; the others say the server is in trouble. */
+#define RCODE_NOERROR  0
+#define RCODE_NXDOMAIN 3
+/* resolve()'s word: the name has no address (EAI_NONAME), or no server
+ * answered (EAI_AGAIN). */
+#define RESOLVE_NONE   1
+#define RESOLVE_AGAIN  -1
 #define DNS_BUF      1024
 #define MAX_DNS      3
 #define NDB_BUF      512
@@ -228,50 +240,48 @@ static long elapsed_ms(const struct timeval *start) {
     return (now.tv_sec - start->tv_sec) * 1000L + (now.tv_usec - start->tv_usec) / 1000L;
 }
 
-/* Query `server` for the `ntypes` record types of `types` about `name`, at
- * once, into `out` (one per type). The first answer to a query is the
- * server's word for it, records or none: 0 once each query had one, or
- * once one had and the others, sent again DNS_SECOND_MS after it and
- * after each DNS_SECOND_MS more, had none in DNS_ATTEMPTS sends; -1 when
- * none was answered. */
-static int query_server(const struct server *server, const char *name,
-    const unsigned *types, int ntypes, struct found *out) {
-    unsigned char query[2][300];
-    size_t qlen[2];
-    int answered[2] = {0, 0};
-    int got = 0;
-    unsigned char rbuf[DNS_BUF];
+/* One query of a lookup: its datagram, and whether a server answered it. */
+struct query {
+    unsigned char buf[300];
+    size_t len;
+    unsigned type;
+    int answered;
+};
+
+/* The queries for the `ntypes` record types of `types` about `name`, in
+ * `q`; 0 for a name that does not encode. */
+static int make_queries(const char *name, const unsigned *types, int ntypes, struct query *q) {
+    int k;
+    for (k = 0; k < ntypes; k++) {
+        int name_len;
+        unsigned char *b = q[k].buf;
+        memset(&q[k], 0, sizeof q[k]);
+        b[0] = 0x12;
+        b[1] = (unsigned char)(0x34 + k); /* the id: which query an answer is */
+        b[2] = 0x01;
+        b[5] = 0x01;
+        name_len = encode_name(b + 12, sizeof q[k].buf - 16, name);
+        if (name_len == 0) {
+            return 0;
+        }
+        q[k].len = 12 + (size_t)name_len;
+        b[q[k].len++] = (unsigned char)(types[k] >> 8);
+        b[q[k].len++] = (unsigned char)types[k];
+        b[q[k].len++] = 0x00;
+        b[q[k].len++] = 0x01; /* IN */
+        q[k].type = types[k];
+    }
+    return 1;
+}
+
+/* A non-blocking UDP socket connected to `server`, or -1. */
+static int server_socket(const struct server *server) {
     union {
         struct sockaddr_in in;
         struct sockaddr_in6 in6;
     } dest;
     socklen_t destlen;
-    struct timeval start;
-    ssize_t nr;
-    int sock;
-    int attempt;
-    int k;
-
-    for (k = 0; k < ntypes; k++) {
-        int name_len;
-        unsigned char *q = query[k];
-        memset(q, 0, sizeof query[k]);
-        q[0] = 0x12;
-        q[1] = (unsigned char)(0x34 + k); /* the id: which query an answer is */
-        q[2] = 0x01;
-        q[5] = 0x01;
-        name_len = encode_name(q + 12, sizeof query[k] - 16, name);
-        if (name_len == 0) {
-            return -1;
-        }
-        qlen[k] = 12 + (size_t)name_len;
-        q[qlen[k]++] = (unsigned char)(types[k] >> 8);
-        q[qlen[k]++] = (unsigned char)types[k];
-        q[qlen[k]++] = 0x00;
-        q[qlen[k]++] = 0x01; /* IN */
-        out[k].n = 0;
-    }
-    sock = socket(server->v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+    int sock = socket(server->v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
         return -1;
     }
@@ -291,72 +301,109 @@ static int query_server(const struct server *server, const char *name,
         close(sock);
         return -1;
     }
-    /* Wait for the answers in the kernel's poll (DNS_TIMEOUT_MS at most per
-     * attempt), not by reading the socket again and again: that spun for
-     * minutes, hogging a CPU and netd, when the server had nothing to say. */
     (void)fcntl(sock, F_SETFL, O_NONBLOCK);
-    for (attempt = 0; attempt < DNS_ATTEMPTS && got < ntypes; attempt++) {
-        /* An answered query's companions are sent again, each attempt
-         * giving them DNS_SECOND_MS: a lost datagram must not leave the
-         * lookup with one version of the two. */
-        long limit = got > 0 ? DNS_SECOND_MS : DNS_TIMEOUT_MS;
-        for (k = 0; k < ntypes; k++) {
-            if (!answered[k] && send(sock, query[k], qlen[k], 0) < 0) {
-                close(sock);
-                return -1;
-            }
-        }
-        if (gettimeofday(&start, NULL) != 0) {
+    return sock;
+}
+
+static void sleep_ms(long ms) {
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+    }
+}
+
+/* One attempt at the queries of `q` (`nq`) not yet answered, to `server`:
+ * sent together, their answers awaited in the kernel's poll (not by
+ * reading the socket again and again: that spun for minutes, hogging a
+ * CPU and netd, when the server had nothing to say) for DNS_TIMEOUT_MS,
+ * or DNS_SECOND_MS when `done` of them were answered before and these are
+ * the companions sent again (a lost datagram must not leave the lookup
+ * with one version of the two); once one answer of the attempt is in, the
+ * others get DNS_SECOND_MS more.
+ *
+ * A server's answer, records or none (NXDOMAIN, a name without the type),
+ * is its word: it goes into `out` and the query is done. A SERVFAIL or
+ * REFUSED is no word, the server's trouble for now, not the name's (musl's
+ * resolver ignores those too; CI #2388: one SERVFAIL from the runner's
+ * resolver, after ten answers for the same name, failed a lookup at once);
+ * nor is a refused datagram (an ICMP error: nobody at the port now; the
+ * socket is given up). Both end the attempt DNS_SECOND_MS on, and the
+ * query is sent again in the next. Returns how many queries this attempt
+ * answered. */
+static int query_attempt(const struct server *server, struct query *q, int nq, int done,
+    struct found *out) {
+    unsigned char rbuf[DNS_BUF];
+    struct timeval start;
+    long limit = done > 0 ? DNS_SECOND_MS : DNS_TIMEOUT_MS;
+    int got = 0;
+    int k;
+    int sock = server_socket(server);
+    if (sock < 0 || gettimeofday(&start, NULL) != 0) {
+        if (sock >= 0) {
             close(sock);
-            return -1;
         }
-        while (got < ntypes) {
-            struct pollfd p;
-            long left = limit - elapsed_ms(&start);
-            int r;
-            if (left <= 0) {
-                break;
-            }
-            p.fd = sock;
-            p.events = POLLIN;
-            p.revents = 0;
-            r = poll(&p, 1, (int)left);
-            if (r < 0 && errno == EINTR) {
-                continue;
-            }
-            if (r < 0) {
-                close(sock);
-                return -1;
-            }
-            if (r == 0) {
-                break;
-            }
-            nr = recv(sock, rbuf, sizeof rbuf, 0);
-            if (nr < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    continue;
-                }
-                close(sock);
-                return -1;
-            }
-            if (nr < 12 || rbuf[0] != 0x12) {
-                continue;
-            }
-            k = rbuf[1] - 0x34;
-            if (k < 0 || k >= ntypes || answered[k]) {
-                continue;
-            }
-            if (parse_records(rbuf, (size_t)nr, types[k], &out[k]) < 0) {
-                out[k].n = 0;
-            }
-            answered[k] = 1;
-            got++;
-            /* The other one gets a little longer in this attempt. */
-            limit = elapsed_ms(&start) + DNS_SECOND_MS;
+        return 0;
+    }
+    for (k = 0; k < nq; k++) {
+        if (!q[k].answered && send(sock, q[k].buf, q[k].len, 0) < 0) {
+            close(sock);
+            sleep_ms(DNS_SECOND_MS);
+            return 0;
         }
     }
+    while (done + got < nq) {
+        struct pollfd p;
+        long left = limit - elapsed_ms(&start);
+        long soon;
+        ssize_t nr;
+        int r;
+        if (left <= 0) {
+            break;
+        }
+        p.fd = sock;
+        p.events = POLLIN;
+        p.revents = 0;
+        r = poll(&p, 1, (int)left);
+        if (r < 0 && errno == EINTR) {
+            continue;
+        }
+        if (r <= 0) {
+            break;
+        }
+        nr = recv(sock, rbuf, sizeof rbuf, 0);
+        if (nr < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            close(sock);
+            sleep_ms(DNS_SECOND_MS);
+            return got;
+        }
+        if (nr < 12 || rbuf[0] != 0x12) {
+            continue;
+        }
+        k = rbuf[1] - 0x34;
+        if (k < 0 || k >= nq || q[k].answered) {
+            continue;
+        }
+        soon = elapsed_ms(&start) + DNS_SECOND_MS;
+        if ((rbuf[3] & 0x0f) != RCODE_NOERROR && (rbuf[3] & 0x0f) != RCODE_NXDOMAIN) {
+            if (soon < limit) {
+                limit = soon;
+            }
+            continue;
+        }
+        if (parse_records(rbuf, (size_t)nr, q[k].type, &out[k]) < 0) {
+            out[k].n = 0;
+        }
+        q[k].answered = 1;
+        got++;
+        /* The others get a little longer in this attempt. */
+        limit = soon;
+    }
     close(sock);
-    return got > 0 ? 0 : -1;
+    return got;
 }
 
 /* Whether the host has an IPv6 address beyond ::1 and the link-local ones
@@ -385,24 +432,29 @@ static int have_ipv6(void) {
  * localhost (the loopback address, as /etc/hosts says elsewhere: no DNS
  * server knows the name, and an X client that found no unix socket tries
  * localhost:6000 next, and waited on that lookup), or the A and AAAA
- * records of the first server that answers. 0 when one was found. */
+ * records of the first server that answers. 0 when one was found,
+ * RESOLVE_NONE when the servers' word is that there is none, RESOLVE_AGAIN
+ * when none answered in DNS_ATTEMPTS. */
 static int resolve(const char *host, int v4, int v6, struct found *out4, struct found *out6) {
     struct server servers[MAX_DNS];
     unsigned types[2];
+    struct query q[2];
     struct found found[2];
     int ntypes = 0;
     int nservers;
+    int done = 0;
+    int attempt;
     int i;
 
     out4->n = 0;
     out6->n = 0;
     if (inet_pton(AF_INET, host, out4->addr[0]) == 1) {
         out4->n = v4;
-        return v4 ? 0 : -1;
+        return v4 ? 0 : RESOLVE_NONE;
     }
     if (inet_pton(AF_INET6, host, out6->addr[0]) == 1) {
         out6->n = v6;
-        return v6 ? 0 : -1;
+        return v6 ? 0 : RESOLVE_NONE;
     }
     if (strcmp(host, "localhost") == 0) {
         static const unsigned char lo4[4] = {127, 0, 0, 1};
@@ -419,16 +471,26 @@ static int resolve(const char *host, int v4, int v6, struct found *out4, struct 
     if (v6) {
         types[ntypes++] = TYPE_AAAA;
     }
+    if (!make_queries(host, types, ntypes, q)) {
+        return RESOLVE_NONE;
+    }
+    found[0].n = 0;
+    found[1].n = 0;
     nservers = dns_servers(servers, MAX_DNS);
-    for (i = 0; i < nservers; i++) {
-        if (query_server(&servers[i], host, types, ntypes, found) == 0) {
-            for (int k = 0; k < ntypes; k++) {
-                *(types[k] == TYPE_A ? out4 : out6) = found[k];
-            }
-            return out4->n + out6->n > 0 ? 0 : -1;
+    /* The servers in turn, each attempt (glibc's and musl's order too):
+     * the first to answer a query has the word on it. */
+    for (attempt = 0; attempt < DNS_ATTEMPTS && done < ntypes; attempt++) {
+        for (i = 0; i < nservers && done < ntypes; i++) {
+            done += query_attempt(&servers[i], q, ntypes, done, found);
         }
     }
-    return -1;
+    if (done == 0) {
+        return RESOLVE_AGAIN;
+    }
+    for (i = 0; i < ntypes; i++) {
+        *(types[i] == TYPE_A ? out4 : out6) = found[i];
+    }
+    return out4->n + out6->n > 0 ? 0 : RESOLVE_NONE;
 }
 
 static int parse_port(const char *service, unsigned short *port) {
@@ -559,8 +621,9 @@ int getaddrinfo(const char *node, const char *service,
         if (numeric && inet_pton(AF_INET, node, &tmp) != 1 && inet_pton(AF_INET6, node, &tmp) != 1) {
             return EAI_NONAME;
         }
-        if (resolve(node, v4, v6, &found4, &found6) < 0) {
-            return EAI_NONAME;
+        int r = resolve(node, v4, v6, &found4, &found6);
+        if (r != 0) {
+            return r == RESOLVE_AGAIN ? EAI_AGAIN : EAI_NONAME;
         }
     }
 
@@ -640,7 +703,14 @@ struct hostent *gethostbyname(const char *name) {
     static char hostname[256];
 
     struct found found4, found6;
-    if (name == NULL || resolve(name, 1, 0, &found4, &found6) < 0 || found4.n == 0) {
+    int r;
+    if (name == NULL) {
+        h_errno = HOST_NOT_FOUND;
+        return NULL;
+    }
+    r = resolve(name, 1, 0, &found4, &found6);
+    if (r != 0 || found4.n == 0) {
+        h_errno = r == RESOLVE_AGAIN ? TRY_AGAIN : HOST_NOT_FOUND;
         return NULL;
     }
     memcpy(addr, found4.addr[0], 4);
