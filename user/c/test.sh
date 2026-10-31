@@ -184,6 +184,10 @@ t -t netfs,ipv6 ipv6 $SMOKES/ipv6_smoke
 # The same over the network: DNS over IPv6 to QEMU's resolver, an AAAA
 # lookup.
 t -t net,netfs,ipv6_dns ipv6_dns $SMOKES/ipv6_smoke dns
+# The resolver sends the AAAA query again when it goes unanswered after the
+# A answer came: a server of the test's own on the loopback interface drops
+# the first one (CI #2369 had an AF_UNSPEC lookup end with IPv4 alone).
+t -t netfs,ipv6,dns ipv6_dns_retry $SMOKES/ipv6_smoke dnsretry
 # kill(pid, 0); no zombies with SA_NOCLDWAIT or SIGCHLD ignored, ECHILD from
 # the wait; setpgid on a child before its exec, EACCES after; a child's
 # setsid: its own session, no controlling terminal; SIGINT ends a child

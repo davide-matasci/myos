@@ -10,7 +10,10 @@
  * and a program that tries the first address alone would try IPv6 first
  * (RFC 6724 too prefers IPv4 to a site-local IPv6 source). AAAA records
  * are asked for only while the host has an IPv6 address beyond ::1 and
- * the link-local ones (AI_ADDRCONFIG's rule).
+ * the link-local ones (AI_ADDRCONFIG's rule). A query that goes
+ * unanswered is sent again, the second of the two as well once the first
+ * was answered (DNS_ATTEMPTS). `MYOS_DNS` in the environment names the
+ * server to ask instead of /net/ndb's, `addr!port` (a test's own).
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -28,12 +31,17 @@
 
 /* How long one DNS server gets to answer. */
 #define DNS_TIMEOUT_MS 5000
-/* Once one of two queries is answered, how long the other one may take. */
+/* Once one of two queries is answered, how long the other one may take
+ * before it is sent again. */
 #define DNS_SECOND_MS 1000
 /* A query is one datagram, lost at times, and the CI runner's resolver has
  * taken over 5 s for a name's first lookup: an unanswered query is sent
- * again, this many times in all (musl's resolver retransmits too). */
+ * again, this many times in all (musl's resolver retransmits too). The
+ * second of two queries as well: the A answer in hand, an AAAA query lost
+ * once left an AF_UNSPEC lookup with IPv4 alone (CI #2369). */
 #define DNS_ATTEMPTS 4
+/* The DNS port, unless `MYOS_DNS` names another. */
+#define DNS_PORT 53
 #define DNS_BUF      1024
 #define MAX_DNS      3
 #define NDB_BUF      512
@@ -42,9 +50,10 @@
 /* Addresses one lookup keeps of each version. */
 #define MAX_ADDRS    4
 
-/* A DNS server's address. */
+/* A DNS server's address and port. */
 struct server {
     int v6;
+    unsigned short port;
     unsigned char addr[16];
 };
 
@@ -147,37 +156,65 @@ static int parse_records(const unsigned char *buf, size_t len, unsigned type, st
     return 0;
 }
 
-/* The `dns=` servers of /net/ndb (at most `max`), or QEMU's 10.0.2.3. */
+/* `addr` (a literal, with `!port` after it as Plan 9 writes a dial
+ * string, else DNS_PORT) into `out`: 1, or 0 for a bad one. */
+static int parse_server(const char *addr, size_t len, struct server *out) {
+    char text[INET6_ADDRSTRLEN + 8];
+    char *bang;
+    if (len >= sizeof text) {
+        return 0;
+    }
+    memcpy(text, addr, len);
+    text[len] = '\0';
+    memset(out, 0, sizeof *out);
+    out->port = DNS_PORT;
+    bang = strchr(text, '!');
+    if (bang != NULL) {
+        char *end;
+        unsigned long port = strtoul(bang + 1, &end, 10);
+        if (end == bang + 1 || *end != '\0' || port == 0 || port > 65535) {
+            return 0;
+        }
+        out->port = (unsigned short)port;
+        *bang = '\0';
+    }
+    if (inet_pton(AF_INET, text, out->addr) == 1) {
+        return 1;
+    }
+    if (inet_pton(AF_INET6, text, out->addr) == 1) {
+        out->v6 = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* The DNS servers (at most `max`): the one `MYOS_DNS` names (a test's own,
+ * on the loopback interface), else the `dns=` servers of /net/ndb, else
+ * QEMU's 10.0.2.3. */
 static int dns_servers(struct server *out, int max) {
     char ndb[NDB_BUF + 1];
     ssize_t n = 0;
-    int fd = open("/net/ndb", O_RDONLY);
+    const char *env = getenv("MYOS_DNS");
+    int fd;
     int count = 0;
     char *p;
+    if (env != NULL && parse_server(env, strlen(env), &out[0])) {
+        return 1;
+    }
+    fd = open("/net/ndb", O_RDONLY);
     if (fd >= 0) {
         n = read(fd, ndb, NDB_BUF);
         close(fd);
     }
     ndb[n > 0 ? n : 0] = '\0';
     for (p = strstr(ndb, "dns="); p != NULL && count < max; p = strstr(p, "dns=")) {
-        char addr[INET6_ADDRSTRLEN];
-        size_t len;
         p += 4;
-        len = strcspn(p, " \t\n");
-        if (len < sizeof addr) {
-            memcpy(addr, p, len);
-            addr[len] = '\0';
-            memset(&out[count], 0, sizeof out[count]);
-            if (inet_pton(AF_INET, addr, out[count].addr) == 1) {
-                count++;
-            } else if (inet_pton(AF_INET6, addr, out[count].addr) == 1) {
-                out[count++].v6 = 1;
-            }
+        if (parse_server(p, strcspn(p, " \t\n"), &out[count])) {
+            count++;
         }
     }
     if (count == 0) {
-        memset(&out[0], 0, sizeof out[0]);
-        inet_pton(AF_INET, "10.0.2.3", out[0].addr);
+        parse_server("10.0.2.3", 8, &out[0]);
         count = 1;
     }
     return count;
@@ -194,8 +231,9 @@ static long elapsed_ms(const struct timeval *start) {
 /* Query `server` for the `ntypes` record types of `types` about `name`, at
  * once, into `out` (one per type). The first answer to a query is the
  * server's word for it, records or none: 0 once each query had one, or
- * once one had and the others had DNS_SECOND_MS more; -1 when none was
- * answered. */
+ * once one had and the others, sent again DNS_SECOND_MS after it and
+ * after each DNS_SECOND_MS more, had none in DNS_ATTEMPTS sends; -1 when
+ * none was answered. */
 static int query_server(const struct server *server, const char *name,
     const unsigned *types, int ntypes, struct found *out) {
     unsigned char query[2][300];
@@ -240,12 +278,12 @@ static int query_server(const struct server *server, const char *name,
     memset(&dest, 0, sizeof dest);
     if (server->v6) {
         dest.in6.sin6_family = AF_INET6;
-        dest.in6.sin6_port = htons(53);
+        dest.in6.sin6_port = htons(server->port);
         memcpy(dest.in6.sin6_addr.s6_addr, server->addr, 16);
         destlen = sizeof dest.in6;
     } else {
         dest.in.sin_family = AF_INET;
-        dest.in.sin_port = htons(53);
+        dest.in.sin_port = htons(server->port);
         memcpy(&dest.in.sin_addr, server->addr, 4);
         destlen = sizeof dest.in;
     }
@@ -258,7 +296,10 @@ static int query_server(const struct server *server, const char *name,
      * minutes, hogging a CPU and netd, when the server had nothing to say. */
     (void)fcntl(sock, F_SETFL, O_NONBLOCK);
     for (attempt = 0; attempt < DNS_ATTEMPTS && got < ntypes; attempt++) {
-        long limit = DNS_TIMEOUT_MS;
+        /* An answered query's companions are sent again, each attempt
+         * giving them DNS_SECOND_MS: a lost datagram must not leave the
+         * lookup with one version of the two. */
+        long limit = got > 0 ? DNS_SECOND_MS : DNS_TIMEOUT_MS;
         for (k = 0; k < ntypes; k++) {
             if (!answered[k] && send(sock, query[k], qlen[k], 0) < 0) {
                 close(sock);
@@ -310,11 +351,8 @@ static int query_server(const struct server *server, const char *name,
             }
             answered[k] = 1;
             got++;
-            /* The other one gets a little longer, no more. */
+            /* The other one gets a little longer in this attempt. */
             limit = elapsed_ms(&start) + DNS_SECOND_MS;
-        }
-        if (got > 0) {
-            break;
         }
     }
     close(sock);

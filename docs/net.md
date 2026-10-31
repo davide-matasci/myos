@@ -127,7 +127,12 @@ libgloss's `getaddrinfo` (`netdb.c`) resolves `localhost` to `127.0.0.1`
 and `::1` and a literal address to itself, without a lookup. Anything
 else is a DNS query over `/net/udp` to the `dns=` servers of `/net/ndb` in
 turn, or QEMU's `10.0.2.3` when there are none. Each server is asked up
-to four times, 5 s apart; its first answer is final.
+to four times, 5 s apart; its first answer to a query is final. Of two
+queries sent together, one left unanswered a second after the other's
+answer is sent again, up to the same four times: a lost AAAA datagram
+left an `AF_UNSPEC` lookup with IPv4 alone once (CI #2369). `MYOS_DNS` in
+the environment, `addr!port`, names the server to ask instead of the
+lease's (a test's own on the loopback interface).
 
 - `AF_INET` asks for A records, `AF_INET6` for AAAA.
 - `AF_UNSPEC` asks for both, but only when the host has a global IPv6
