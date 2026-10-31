@@ -9,7 +9,8 @@
  * since boot, not moved by setting the wall clock, clock_getres, an unknown
  * clock refused); on mlibc, getauxval over the kernel's auxiliary vector
  * (the page size, the entry, AT_SECURE 0), getrlimit and the main thread's
- * stack from pthread_attr_get_np.
+ * stack from pthread_attr_get_np; a 64 MiB malloc, which newlib takes from
+ * the brk heap (256 MiB: an X server's screen-sized pixmaps).
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
 #define _GNU_SOURCE /* CLOCK_BOOTTIME */
@@ -482,10 +483,31 @@ static int check_limits(void) {
 }
 #endif
 
+/* 64 MiB, more than the 16 MiB brk heap there used to be: written whole,
+ * read back, freed. */
+static int check_big_malloc(void) {
+    size_t n = 64u << 20;
+    unsigned char *p = malloc(n);
+    if (p == NULL) {
+        return fail("malloc 64 MiB");
+    }
+    for (size_t i = 0; i < n; i += 4096) {
+        p[i] = (unsigned char)(i >> 12);
+    }
+    for (size_t i = 0; i < n; i += 4096) {
+        if (p[i] != (unsigned char)(i >> 12)) {
+            free(p);
+            return fail("malloc 64 MiB contents");
+        }
+    }
+    free(p);
+    return 0;
+}
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
         || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()
-        || check_auxv() || check_limits()) {
+        || check_auxv() || check_limits() || check_big_malloc()) {
         return 1;
     }
     printf("[ OK ] libc\n");

@@ -16,9 +16,8 @@ pub const MMAP_AREA_PAGES: usize = 1 << 24;
 /// User stack below the heap: 512 KiB (user maps spill into L2[1+] when
 /// code+stack+heap exceed 512 pages).
 pub const USER_STACK_PAGES: usize = 128;
-/// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
-/// and zstd's 4 MiB window in get-alpine needs more than 3 MiB; 16 MiB.
-pub const HEAP_PAGES: usize = 4096;
+/// Per-process brk heap capacity, see x86: 256 MiB.
+pub const HEAP_PAGES: usize = 65536;
 /// Image, stack, heap and the mmap window must fit the window above
 /// `DEFAULT_USER_BASE` (65 GiB).
 pub const USER_SPAN_PAGES: usize = ((USER_WINDOW - DEFAULT_USER_BASE) / 4096) as usize;

@@ -17,10 +17,8 @@ pub const USER_WINDOW: u64 = (super::upaging::USER_ROOT_SLOTS as u64) << 30;
 pub const MMAP_AREA_PAGES: usize = 1 << 24;
 /// User stack below the heap: 1 MiB.
 pub const USER_STACK_PAGES: usize = 256;
-/// Per-process brk heap capacity: the TLS arena is a 2 MiB brk allocation,
-/// and GNU make's report over the curated os-test lists needs more than
-/// 4 MiB; 16 MiB, as on the other arches.
-pub const HEAP_PAGES: usize = 4096;
+/// Per-process brk heap capacity, see x86: 256 MiB.
+pub const HEAP_PAGES: usize = 65536;
 /// Image, stack, heap and the mmap window must fit the window above
 /// `DEFAULT_USER_BASE` (65 GiB).
 pub const USER_SPAN_PAGES: usize = ((USER_WINDOW - DEFAULT_USER_BASE) / 4096) as usize;

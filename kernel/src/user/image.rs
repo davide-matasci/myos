@@ -281,10 +281,24 @@ pub(super) fn reload_user_elf(
     Some((entry as usize, n_pages * PAGE, stack_off))
 }
 
+/// The end of the exec'ing program's brk pages in the heap window for
+/// `stack_off`: they exist only below its break (`sys_brk` frees what a
+/// shrink gives back), so the walks that free them stop there instead of
+/// at the end of the window (256 MiB).
+fn heap_end_va(base: u64, stack_off: u64) -> u64 {
+    let heap_base = heap_base_va(base, stack_off);
+    let brk = crate::task::current_brk();
+    if brk > heap_base {
+        (align_up_usize(brk as usize, PAGE) as u64).min(heap_limit_va(base, stack_off))
+    } else {
+        heap_base
+    }
+}
+
 /// Unmap+free every mapped page in the brk window for `stack_off`.
 fn free_heap_window(aspace: u64, base: u64, stack_off: u64) {
     let mut va = heap_base_va(base, stack_off);
-    let lim = heap_limit_va(base, stack_off);
+    let lim = heap_end_va(base, stack_off);
     while va < lim {
         free_mapped_page(aspace, va);
         va += PAGE as u64;
@@ -333,7 +347,7 @@ fn free_abandoned_stack_heap(aspace: u64, base: u64, old_stack_off: u64, new_sta
         }
     }
     let mut va = heap_base_va(base, old_stack_off);
-    let lim = heap_limit_va(base, old_stack_off);
+    let lim = heap_end_va(base, old_stack_off);
     while va < lim {
         if va >= new_code_end {
             free_mapped_page(aspace, va);
