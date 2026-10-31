@@ -58,6 +58,17 @@ The radio is a trait (`user/wifi/src/radio.rs`). There are three kinds:
 - **A FullMAC radio** (Broadcom's, `FullMac`) scans, joins and encrypts in
   its firmware and carries Ethernet frames (`daemon_fullmac` in `main.rs`).
 
+The daemon ends on `SIGTERM`, which a power off and a reboot send to
+every process (`docs/power.md`): it takes the signal through a signal fd
+in its poll loop (`myos_user::signal_fd`), leaves the network, and stops
+the radio (`Radio::stop`). An Intel radio's firmware is halted and the
+device reset (`iwx::dev::Dev::stop`, OpenBSD's `iwx_stop_device`): a
+reboot does not power an integrated radio down, and Windows' driver took
+one left running for a broken device (Device Manager's warning sign, no
+Wi-Fi) until the laptop was drained of power. A `SIGTERM` that comes
+during a scan or a join waits for it: one longer than the power off's 2
+seconds ends with `SIGKILL` and the radio running.
+
 For the first two, the daemon does the 802.11 work itself:
 
 - **Scanning** (`main.rs`, frames in `frame.rs`): each channel in turn, a

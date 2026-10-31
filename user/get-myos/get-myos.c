@@ -71,6 +71,7 @@
  * aarch64 and riscv64.
  */
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -78,6 +79,7 @@
 #include <string.h>
 #include <sys/myos_extra.h> /* lstat, mount */
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -292,12 +294,26 @@ static const char *app;
 typedef struct {
     int fd;
     int failed;
+    /* The first file that could not be written and why (errno), for the
+     * message: a full disk said only "bad archive" (a T15's 64 MiB /data
+     * and Python's 29 MiB). */
+    int err;
+    char where[PATH_MAX_GV];
     /* The directory the last entry went into, which exists: the archive
      * lists a directory's files together, and each of them would otherwise
      * make every directory of its path again (a mkdir per component, each
      * looking the whole path up). */
     char dir[PATH_MAX_GV];
 } unpack;
+
+/* The first write that failed: its path and errno. */
+static void unpack_failed(unpack *u, const char *path, int err) {
+    if (!u->failed) {
+        u->err = err;
+        copy_field(u->where, sizeof u->where, path, strlen(path));
+    }
+    u->failed = 1;
+}
 
 static int unpack_entry(tar *t, char type, const char *name, const char *link, uint64_t size) {
     unpack *u = t->ctx;
@@ -313,14 +329,14 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
     }
     char rel[PATH_MAX_GV], path[PATH_MAX_GV];
     if (strlen(app) + 1 + strlen(name) >= sizeof rel) {
-        u->failed = 1;
+        unpack_failed(u, name, ENAMETOOLONG);
         return 0;
     }
     strcpy(rel, app);
     strcat(rel, "/");
     strcat(rel, name);
     if (under_root(path, rel) != 0) {
-        u->failed = 1;
+        unpack_failed(u, name, ENAMETOOLONG);
         return 0;
     }
     size_t pl = strlen(path);
@@ -348,18 +364,17 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
         char target[PATH_MAX_GV];
         copy_field(target, sizeof target, link, strlen(link));
         if (symlink(target, path) != 0) {
-            say("cannot create symlink ", path, NULL);
-            u->failed = 1;
+            unpack_failed(u, path, errno);
             return 0;
         }
         return 0;
     }
     u->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (u->fd < 0) {
-        say("cannot write ", path, NULL);
-        u->failed = 1;
+        unpack_failed(u, path, errno);
         return 0;
     }
+    copy_field(u->where, sizeof u->where, path, strlen(path));
     return 1;
 }
 
@@ -368,7 +383,11 @@ static void unpack_data(tar *t, const uint8_t *p, size_t n) {
     while (n > 0 && u->fd >= 0) {
         ssize_t w = write(u->fd, p, n);
         if (w <= 0) {
-            u->failed = 1;
+            /* `where` is this file's (unpack_entry). */
+            int err = w < 0 ? errno : ENOSPC;
+            unpack_failed(u, u->where, err);
+            close(u->fd);
+            u->fd = -1;
             break;
         }
         p += w, n -= (size_t)w;
@@ -401,10 +420,39 @@ static void stream_out(void *ctx, int member, const uint8_t *p, size_t n) {
     tar_feed(&((stream *)ctx)->t, p, n);
 }
 
+/* `v` (not negative) in decimal into out[24]. */
+static void mib_text(char *out, long long v) {
+    char digits[24];
+    int n = 0;
+    do {
+        digits[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v > 0 && n < 23);
+    for (int i = 0; i < n; i++) {
+        out[i] = digits[n - 1 - i];
+    }
+    out[n] = '\0';
+}
+
+/* Free space under ROOT in KiB, -1 when unknown. */
+static long long root_free_kib(void) {
+    struct statvfs v;
+    if (statvfs(pkg_root, &v) != 0) {
+        return -1;
+    }
+    return (long long)v.f_bavail * (long long)v.f_frsize / 1024;
+}
+
+/* What fetch_unpack returns for a root without room: no use retrying. */
+#define NO_SPACE (-2)
+
 /* Download and unpack `url` into ROOT/<dir>/ in one pass; 0 when curl,
  * the gzip and the tar all ended well, with the stream's SHA-256 in
- * hex[65]. */
-static int fetch_unpack(const char *url, const char *dir, char *hex) {
+ * hex[65]; NO_SPACE when the root ran out of room (said with how much
+ * there is, `size` the archive's bytes). A full disk shows as ENOSPC,
+ * or as a directory that could not be made (mkdirs says nothing, the
+ * open then finds no directory): the free space under ROOT tells. */
+static int fetch_unpack(const char *url, const char *dir, char *hex, long long size) {
     int pid = 0;
     int fd = download_open(url, &pid);
     if (fd < 0) {
@@ -428,7 +476,27 @@ static int fetch_unpack(const char *url, const char *dir, char *hex) {
         say("download failed: ", url, NULL);
         return -1;
     }
-    if (members < 1 || s.t.failed || s.u.failed) {
+    if (s.u.failed) {
+        long long free_kib = root_free_kib();
+        if (s.u.err == ENOSPC || (free_kib >= 0 && free_kib < 1024)) {
+            /* Not snprintf: newlib's printf core needs the 128-bit float
+             * helpers aarch64's link does not carry. */
+            char line[160], free_mib[24], size_mib[24];
+            mib_text(free_mib, free_kib < 0 ? 0 : free_kib / 1024);
+            mib_text(size_mib, (size + (1 << 20) - 1) >> 20);
+            strcpy(line, " (");
+            strcat(line, free_mib);
+            strcat(line, " MiB free; the archive alone is ");
+            strcat(line, size_mib);
+            strcat(line, " MiB, unpacked several times that)");
+            say("not enough space in ", pkg_root, line);
+            return NO_SPACE;
+        }
+        say("cannot write ", s.u.where, NULL);
+        say(strerror(s.u.err), "", NULL);
+        return -1;
+    }
+    if (members < 1 || s.t.failed) {
         say("bad archive: ", url, NULL);
         return -1;
     }
@@ -1423,8 +1491,12 @@ static int fetch_version(const package *pkg) {
      * starts over in an empty directory. */
     int attempt = 1;
     remove_tree(tmp);
-    while (fetch_unpack(url, tmp + strlen(pkg_root) + 1, hex) != 0) {
+    int rc;
+    while ((rc = fetch_unpack(url, tmp + strlen(pkg_root) + 1, hex, atoll(pkg->size))) != 0) {
         remove_tree(tmp);
+        if (rc == NO_SPACE) {
+            return die("not installed: ", pkg->name);
+        }
         if (attempt++ == 3) {
             return die("download failed: ", url);
         }

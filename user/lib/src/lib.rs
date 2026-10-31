@@ -511,6 +511,71 @@ pub fn kill(pid: usize, sig: u32) -> bool {
     unsafe { sys3(34, pid, sig as usize, 0) != usize::MAX }
 }
 
+/// A signal fd for `sigs` (`/dev/sig`, docs/events.md): the signals
+/// blocked (SYS_SIGPROCMASK = 37, newlib's SIG_BLOCK, bit N for signal N),
+/// so that they wait for a read of the fd instead of acting; the fd polls
+/// readable while one is pending, and a 16-byte read takes it. `None` when
+/// the fd cannot be made (the signals then stay as they were).
+pub fn signal_fd(sigs: &[u32]) -> Option<usize> {
+    let fd = open_flags(b"/dev/sig/clone", O_RDWR)?;
+    // The fd's directory, through its link (`/dev/sig/N/data`).
+    let mut link = [0u8; 48];
+    let mut path = *b"/proc/self/fd/\0\0\0";
+    let digits = if fd >= 10 { 2 } else { 1 };
+    if fd >= 100 {
+        close(fd);
+        return None;
+    }
+    if digits == 2 {
+        path[14] = b'0' + (fd / 10) as u8;
+    }
+    path[13 + digits] = b'0' + (fd % 10) as u8;
+    let ok = readlink(&path[..14 + digits], &mut link).and_then(|n| link[..n].strip_suffix(b"/data").map(|d| d.len()));
+    let Some(dir) = ok else {
+        close(fd);
+        return None;
+    };
+    let mut ctl = [0u8; 56];
+    ctl[..dir].copy_from_slice(&link[..dir]);
+    ctl[dir..dir + 4].copy_from_slice(b"/ctl");
+    let mut cmd = [0u8; 64];
+    let mut n = 5;
+    cmd[..5].copy_from_slice(b"mask ");
+    let mut mask = 0u32;
+    for (i, &sig) in sigs.iter().enumerate() {
+        if sig == 0 || sig > 31 || n + 4 > cmd.len() {
+            close(fd);
+            return None;
+        }
+        mask |= 1 << sig;
+        if i > 0 {
+            cmd[n] = b',';
+            n += 1;
+        }
+        if sig >= 10 {
+            cmd[n] = b'0' + (sig / 10) as u8;
+            n += 1;
+        }
+        cmd[n] = b'0' + (sig % 10) as u8;
+        n += 1;
+    }
+    cmd[n] = b'\n';
+    n += 1;
+    let set = match open_flags(&ctl[..dir + 4], O_WRONLY) {
+        Some(c) => {
+            let w = write_fd(c, &cmd[..n]);
+            close(c);
+            w == n
+        }
+        None => false,
+    };
+    if !set || unsafe { sys3(37, 1, &mask as *const u32 as usize, 0) } == usize::MAX {
+        close(fd);
+        return None;
+    }
+    Some(fd)
+}
+
 /// `raise(sig)` via kill(getpid(), sig).
 pub fn raise(sig: u32) -> bool {
     kill(getpid(), sig)

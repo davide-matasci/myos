@@ -146,6 +146,9 @@ fn open_radio(nic: Option<&[u8]>) -> Option<Found> {
 }
 
 fn daemon(nic: Option<&[u8]>) -> ! {
+    // SIGTERM (a power off's, a reboot's) waits for the loop, which stops
+    // the radio before the daemon ends (Radio::stop).
+    let term = myos_user::signal_fd(&[myos_user::SIGTERM]);
     let Some(radio) = open_radio(nic) else {
         write(b"wifi: no radio\n");
         exit_code(1);
@@ -157,8 +160,8 @@ fn daemon(nic: Option<&[u8]>) -> ! {
         exit_code(1);
     };
     match radio {
-        Found::Soft(mut r) => daemon_softmac(&mut *r, listener),
-        Found::Full(mut r) => daemon_fullmac(&mut *r, listener),
+        Found::Soft(mut r) => daemon_softmac(&mut *r, listener, term),
+        Found::Full(mut r) => daemon_fullmac(&mut *r, listener, term),
     }
 }
 
@@ -192,8 +195,29 @@ fn keep_tap(tap: &mut Option<Tap>, linked: bool, mac: [u8; 6]) {
     }
 }
 
+/// Whether `term`, the daemon's SIGTERM fd, polled readable: the
+/// signal taken.
+fn terminated(term: Option<usize>, fds: &[PollFd]) -> bool {
+    let Some(t) = term else {
+        return false;
+    };
+    if !fds.iter().any(|p| p.fd == t as i32 && p.revents & POLLIN != 0) {
+        return false;
+    }
+    let mut info = [0u8; 16];
+    myos_user::read(t, &mut info);
+    true
+}
+
+/// The poll entry of the daemon's SIGTERM fd, when it has one.
+fn term_poll(term: Option<usize>, fds: &mut Vec<PollFd>) {
+    if let Some(t) = term {
+        fds.push(PollFd { fd: t as i32, events: POLLIN, revents: 0 });
+    }
+}
+
 /// The daemon on a radio it scans and joins with.
-fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
+fn daemon_softmac(radio: &mut dyn Radio, listener: Conv, term: Option<usize>) -> ! {
     let mut seen: Vec<Seen> = Vec::new();
     let mut link: Option<Link> = None;
     // The link's NIC, there while `link` is.
@@ -208,6 +232,7 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
         if let Some(t) = &tap {
             fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
         }
+        term_poll(term, &mut fds);
         // A link wakes the loop every second for the radio's tick.
         let wait = if radio.pending() {
             0
@@ -217,6 +242,13 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
             -1
         };
         poll(&mut fds, wait);
+        if terminated(term, &fds) {
+            if let Some(l) = link.take() {
+                mlme::leave(radio, &l);
+            }
+            radio.stop();
+            exit_code(0);
+        }
         if link.is_some() && monotonic_ns() >= tick + 1_000_000_000 {
             tick = monotonic_ns();
             radio.tick();
@@ -316,7 +348,7 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv) -> ! {
 
 /// The daemon on a radio whose firmware scans, joins and encrypts: the
 /// link's Ethernet frames go between it and the NIC as they are.
-fn daemon_fullmac(radio: &mut dyn FullMac, listener: Conv) -> ! {
+fn daemon_fullmac(radio: &mut dyn FullMac, listener: Conv, term: Option<usize>) -> ! {
     let mut seen: Vec<Seen> = Vec::new();
     let mut link: Option<Bss> = None;
     let mut tap: Option<Tap> = None;
@@ -329,7 +361,15 @@ fn daemon_fullmac(radio: &mut dyn FullMac, listener: Conv) -> ! {
         if let Some(t) = &tap {
             fds.push(PollFd { fd: t.fd() as i32, events: POLLIN, revents: 0 });
         }
+        term_poll(term, &mut fds);
         poll(&mut fds, if radio.pending() { 0 } else if radio.fd().is_some() { -1 } else { LOOK_MS });
+        if terminated(term, &fds) {
+            if link.take().is_some() {
+                radio.leave();
+            }
+            radio.stop();
+            exit_code(0);
+        }
         radio.service();
         // The access point letting the station go ends the link.
         if link.is_some() && !radio.up() {

@@ -41,6 +41,7 @@ pub const HW_IF_PHY_STEP: u32 = 0xc000;
 pub const HW_IF_HAP_WAKE_L1A: u32 = 0x0008_0000;
 pub const HW_IF_NIC_READY: u32 = 0x0040_0000;
 pub const HW_IF_PREPARE: u32 = 0x0800_0000;
+pub const HW_IF_ENABLE_PME: u32 = 0x1000_0000;
 
 // INT (MSI) causes.
 pub const INT_FH_RX: u32 = 1 << 31;
@@ -67,6 +68,8 @@ pub const INT_PERIODIC_DIS: u8 = 0x00;
 pub const INT_PERIODIC_ENA: u8 = 0xff;
 
 // RESET, GP_CNTRL, the rest.
+pub const RESET_STOP_MASTER: u32 = 0x200;
+pub const RESET_MASTER_DISABLED: u32 = 0x100;
 pub const RESET_SW: u32 = 0x80;
 pub const RESET_LINK_PWR_MGMT_DISABLED: u32 = 0x8000_0000;
 pub const GP_MAC_CLOCK_READY: u32 = 0x1;

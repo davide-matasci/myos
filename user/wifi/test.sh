@@ -64,6 +64,29 @@ wifi_connect() {
 }
 t -t wifi wifi_connect wifi_connect
 
+# A power off's SIGTERM: the daemon, associated, takes it in its loop,
+# leaves the network and stops the radio (an Intel one's firmware halted,
+# docs/wifi.md), then exits by itself with status 0, within the power
+# off's 2 seconds; dying of the signal (status 143) leaves the radio
+# running.
+wifi_term() {
+	/bin/custom/wifi daemon /dev/net1 &
+	wifi_pid=$!
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		/bin/custom/wifi status > /dev/null 2>&1 && break
+		sleep 1
+	done
+	/bin/custom/wifi connect myos-open > /tmp/wifi.term 2>&1
+	start=$(date +%s)
+	kill -TERM $wifi_pid
+	wait $wifi_pid
+	wifi_rc=$?
+	took=$(($(date +%s) - start))
+	echo "connect: $(cat /tmp/wifi.term); exit status $wifi_rc after ${took} s"
+	[ $wifi_rc -eq 0 ] && [ $took -le 2 ] && grep -q '^associated ' /tmp/wifi.term
+}
+t -t wifi wifi_term wifi_term
+
 # The link's data path: associated to SSID (with PASSPHRASE on a WPA2
 # network), the daemon holds a virtual NIC (/dev/tap) that netd takes,
 # leasing 10.0.8.x from the access point's router (src/wifi_net.rs); a
