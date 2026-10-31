@@ -77,6 +77,12 @@ build_arch() {
 
   export CC="$cc" CC_FOR_BUILD=gcc CFLAGS="-O2" AR="$AR_BIN" RANLIB="$RANLIB_BIN" NM="$NM_BIN"
   export PYTHON=python3
+  # xcb-proto installs its Python module (xcbgen, libxcb's generator)
+  # into the stage, byte-compiled: the .pyc files carry the sources'
+  # timestamps, another value each fetch, and made the outputs differ from
+  # one build of the same sources to the next (docs/ports.md "Cache
+  # keys"), so they are removed below.
+  export PYTHONDONTWRITEBYTECODE=1
   export PKG_CONFIG_SYSROOT_DIR="$STAGE"
   export PKG_CONFIG_LIBDIR="$STAGE$PREFIX/lib/pkgconfig:$STAGE$PREFIX/share/pkgconfig"
   unset PKG_CONFIG_PATH
@@ -125,6 +131,8 @@ build_arch() {
       -o "$ROOT/target/x11-smoke-${arch}-unknown-none" \
       -L"$STAGE$PREFIX/lib" -lX11 -lxcb -lXau
   fi
+  # xcb-proto's install byte-compiles xcbgen whatever the environment says.
+  find "$STAGE" -name __pycache__ -type d -prune -exec rm -rf {} +
   echo "x11 libraries ($libc) -> $STAGE"
 }
 
