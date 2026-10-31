@@ -141,14 +141,16 @@ impl Mode {
     /// quick list takes 330 s on x86 and 360 on aarch64 on a 4-core host
     /// with nothing else running, 6 minutes once ended it there.
     /// riscv64 (`slow`), the slowest under TCG, gets half as much again,
-    /// as in CI.
+    /// as in CI. The boots after the tests (`Reboot`, `Installed`) run
+    /// little but go through the firmware again: riscv64's EDK2 alone
+    /// takes 4 to 5 minutes of TCG there.
     pub fn budget(&self, linux_compat: bool, slow: bool) -> Duration {
         let scale = |s: u64| Duration::from_secs(if slow { s * 3 / 2 } else { s });
         match self {
             Mode::Tests(sel) if sel.budget.is_some() => sel.budget.unwrap(),
             Mode::Tests(sel) if sel.quick() => scale(if linux_compat { 540 } else { 480 }),
             Mode::Tests(_) => Duration::from_secs(3000),
-            Mode::Reboot { .. } | Mode::Installed => Duration::from_secs(300),
+            Mode::Reboot { .. } | Mode::Installed => scale(300),
         }
     }
 
