@@ -83,7 +83,7 @@ enum AnsiState {
 const CSI_MAX_PARAMS: usize = 16;
 
 /// What one character cell shows: its glyph and colors.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Cell {
     glyph: [u8; 8],
     fg: (u8, u8, u8),
@@ -690,42 +690,16 @@ impl FrameBufferWriter {
         }
     }
 
-    /// XOR-invert every pixel of the cell at (row, col). Self-inverse, so the
-    /// same op paints and unpaints the block cursor — but only valid while the
-    /// cell is untouched since the last inversion (any overwrite must go
-    /// through [`Self::cursor_out`] first).
-    fn invert_cell(&mut self, row: usize, col: usize) {
-        let cols = self.cols();
-        let rows = self.rows();
-        if !self.visible || row >= rows || col >= cols {
+    /// Paint the cell at (row, col) from what it holds, its colors inverted
+    /// for the block cursor. The pixels are never inverted in place: a read
+    /// of a real framebuffer is uncached ([`Self::move_rows`]).
+    fn paint_cursor_cell(&mut self, row: usize, col: usize, inverted: bool) {
+        let Some(&mut c) = self.cell(row, col) else {
             return;
-        }
-        let mut mask = 0u32;
-        mask |= (((1u32 << self.r_size) - 1) & 0xff) << self.r_shift;
-        mask |= (((1u32 << self.g_size) - 1) & 0xff) << self.g_shift;
-        mask |= (((1u32 << self.b_size) - 1) & 0xff) << self.b_shift;
-        let x0 = col * self.cell_w();
-        let y0 = row * self.cell_h();
-        for dy in 0..self.cell_h() {
-            for dx in 0..self.cell_w() {
-                let x = x0 + dx;
-                let y = y0 + dy;
-                if x >= self.width || y >= self.height {
-                    continue;
-                }
-                let offset = y * self.pitch + x * self.bytes_per_pixel;
-                let bpp = self.bytes_per_pixel;
-                let Some(pixel) = self.pixels().get_mut(offset..offset + bpp) else {
-                    continue;
-                };
-                let n = pixel.len().min(4);
-                let mut tmp = [0u8; 4];
-                tmp[..n].copy_from_slice(&pixel[..n]);
-                let val = u32::from_le_bytes(tmp) ^ mask;
-                let out = val.to_le_bytes();
-                pixel[..n].copy_from_slice(&out[..n]);
-            }
-        }
+        };
+        let invert = |(r, g, b): (u8, u8, u8)| (!r, !g, !b);
+        let c = if inverted { Cell { glyph: c.glyph, fg: invert(c.fg), bg: invert(c.bg) } } else { c };
+        self.paint_cell(row, col, c);
     }
 
     /// Unpaint the block cursor if painted (must precede any pixel mutation).
@@ -733,7 +707,7 @@ impl FrameBufferWriter {
         if self.cursor_on {
             let (r, c) = (self.row, self.col);
             self.cursor_on = false;
-            self.invert_cell(r, c);
+            self.paint_cursor_cell(r, c, false);
         }
     }
 
@@ -754,7 +728,7 @@ impl FrameBufferWriter {
         if self.visible && self.cursor_visible && !self.cursor_on {
             let (r, c) = (self.row, self.col);
             self.cursor_on = true;
-            self.invert_cell(r, c);
+            self.paint_cursor_cell(r, c, true);
         }
     }
 
@@ -1104,23 +1078,29 @@ impl FrameBufferWriter {
 
     /// `n` text rows from row `src` to row `dst`, cells and (when visible)
     /// pixels.
+    ///
+    /// The pixels are painted from the cells, never copied on the screen:
+    /// a real machine's framebuffer is write-combining memory (Limine maps
+    /// it so), where every read is uncached, and copying a 1920x1080
+    /// screen onto itself for each new line made the console crawl. Only
+    /// the cells whose content changes are painted, so the blank part of
+    /// the screen costs nothing.
     fn move_rows(&mut self, src: usize, dst: usize, n: usize) {
         let cols = self.cols();
         if n == 0 || src.max(dst) + n > self.rows() {
             return;
         }
-        // SAFETY: both ranges are inside the `rows() * cols()` cells;
-        // `copy` handles the overlap.
-        unsafe { core::ptr::copy(self.cells.add(src * cols), self.cells.add(dst * cols), n * cols) };
-        if !self.visible {
-            return;
-        }
-        let pitch = self.pitch;
-        let row_len = self.cell_h() * pitch;
-        let (src_off, dst_off, len) = (src * row_len, dst * row_len, n * row_len);
-        let px = self.pixels();
-        if src_off + len <= px.len() && dst_off + len <= px.len() {
-            px.copy_within(src_off..src_off + len, dst_off);
+        let len = n * cols;
+        // In the direction that reads each source cell before it is
+        // overwritten, as a memmove does.
+        for i in 0..len {
+            let k = if dst < src { i } else { len - 1 - i };
+            // SAFETY: both ranges are inside the `rows() * cols()` cells.
+            let (new, old) = unsafe { (*self.cells.add(src * cols + k), &mut *self.cells.add(dst * cols + k)) };
+            if *old != new {
+                *old = new;
+                self.paint_cell(dst + k / cols, k % cols, new);
+            }
         }
     }
 
@@ -1138,34 +1118,36 @@ impl FrameBufferWriter {
         if !self.visible {
             return;
         }
-        let s = self.scale;
+        let (s, bpp, pitch) = (self.scale, self.bytes_per_pixel, self.pitch);
+        let (fg, bg) = (self.encode(cell.fg), self.encode(cell.bg));
         let x0 = col * self.cell_w();
         let y0 = row * self.cell_h();
-        for y in 0..self.cell_h() {
+        // The part of the cell on the screen: a cell at the right or bottom
+        // edge may be cut.
+        let w = self.cell_w().min(self.width.saturating_sub(x0));
+        let h = self.cell_h().min(self.height.saturating_sub(y0));
+        let n = bpp.min(4);
+        let px = self.pixels();
+        for y in 0..h {
             let bits = cell.glyph[y / s];
-            for x in 0..self.cell_w() {
-                let on = bits & (1 << (x / s)) != 0;
-                self.put_pixel(x0 + x, y0 + y, if on { cell.fg } else { cell.bg });
+            let start = (y0 + y) * pitch + x0 * bpp;
+            let Some(line) = px.get_mut(start..start + w * bpp) else {
+                return;
+            };
+            for (x, pixel) in line.chunks_exact_mut(bpp).enumerate() {
+                let v = if bits & (1 << (x / s)) != 0 { &fg } else { &bg };
+                pixel[..n].copy_from_slice(&v[..n]);
             }
         }
     }
 
-    fn put_pixel(&mut self, x: usize, y: usize, (r, g, b): (u8, u8, u8)) {
-        if x >= self.width || y >= self.height {
-            return;
-        }
-        let offset = y * self.pitch + x * self.bytes_per_pixel;
-        let bpp = self.bytes_per_pixel;
-        let Some(pixel) = self.pixels().get_mut(offset..offset + bpp) else {
-            return;
-        };
+    /// `rgb` as the framebuffer's pixel bytes.
+    fn encode(&self, (r, g, b): (u8, u8, u8)) -> [u8; 4] {
         let mut val = 0u32;
         val |= (scale(r, self.r_size) as u32) << self.r_shift;
         val |= (scale(g, self.g_size) as u32) << self.g_shift;
         val |= (scale(b, self.b_size) as u32) << self.b_shift;
-        let bytes = val.to_le_bytes();
-        let n = pixel.len().min(4);
-        pixel[..n].copy_from_slice(&bytes[..n]);
+        val.to_le_bytes()
     }
 }
 
