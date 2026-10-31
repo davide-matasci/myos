@@ -10,7 +10,7 @@
 //! read-only `/mnt` so mount points can be made there, then mounts what
 //! `/boot/fstab` lists that is not mounted yet.
 
-use myos_user::{close, exit, mkdir, mount, open, read, stat_mode, write, write_fd};
+use myos_user::{close, exit, mkdir, mount, open, read, sleep_ns, stat_mode, write, write_fd};
 
 myos_user::x86_start!(main);
 
@@ -110,7 +110,7 @@ fn mount_all() -> ! {
         let guid = trim(&guid[..n]);
         let mounts = read_mounts(&mut mounts_buf);
         if !mounted_at(mounts, b"boot") {
-            match partuuid_dev(guid, &mut dev) {
+            match boot_partition_dev(guid, &mut dev) {
                 Some(n) if mount(&dev[..n], b"/boot", b"fat") => {}
                 _ => {
                     say(&[b"cannot mount the boot partition PARTUUID=", guid, b" on /boot"]);
@@ -187,6 +187,24 @@ fn fstab_line(line: &[u8], no: usize, dev: &mut [u8; 80]) -> bool {
     }
     say(&[b"/boot/fstab:", no, b": cannot mount ", dev, b" (", fs, b") on ", dir]);
     false
+}
+
+/// How long `mount -a` waits for the partition the system booted from.
+const BOOT_WAIT_MS: u64 = 10_000;
+
+/// [`partuuid_dev`] for the boot partition, waiting up to [`BOOT_WAIT_MS`]
+/// for it to appear: a USB stick's disk is there only once the USB driver
+/// has found it, which can be after init starts. Without the wait a system
+/// booted from a stick came up without `/boot`, and without the fstab's
+/// partitions on the same disk (`/data`), which are skipped when missing.
+fn boot_partition_dev(guid: &[u8], out: &mut [u8; 80]) -> Option<usize> {
+    for _ in 0..BOOT_WAIT_MS / 100 {
+        if let Some(n) = partuuid_dev(guid, out) {
+            return Some(n);
+        }
+        sleep_ns(100_000_000, false);
+    }
+    partuuid_dev(guid, out)
 }
 
 /// `/dev/<partition>` into `out` for the partition whose unique GUID (the

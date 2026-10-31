@@ -139,7 +139,9 @@ init runs `mount -a` (`user/mount`) before anything else:
 
 1. The ESP the system booted from is mounted at `/boot`. Limine tells the
    kernel which partition it loaded from: `/proc/boot/partuuid`. Booted
-   from the ISO there is none, and nothing below happens.
+   from the ISO there is none, and nothing below happens. `mount -a`
+   waits up to 10 seconds for that partition, since a USB stick's disk
+   appears only once the USB driver has found it.
 2. `/tmp/mnt` is bound over `/mnt`, since the root (the initramfs) is
    read-only. A disk at `/mnt/disk` shows as `/tmp/mnt/disk` in
    `/proc/mounts`.
