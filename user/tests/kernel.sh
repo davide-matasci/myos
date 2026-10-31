@@ -1059,18 +1059,23 @@ t -t mm mem_exec_no_leak mem_exec_no_leak
 # the hog dies (SIGSEGV). Either way the kernel stays up and the live frame
 # count returns to its baseline.
 #
-# A dying process is reaped by its parent (SIGCHLD) *before* it frees its
-# address space: `reclaim_user_aspace` runs afterwards on the exiting task,
-# a walk of the hog's 65536 pages that can be preempted, so when the shell
-# gets the exit the hog's pages are still live. The count is sampled every
-# second until it is back within the limit, ten times at most: one sample
-# a second after the exit found the walk still running, 17650 frames to go
-# (CI #2395, bios-amd under KVM). A leak would stay; the samples say which
-# it was.
+# The baseline is taken once the count holds still (frames_quiet), as the
+# leak tests take theirs: sampled as the test began, it read 60 to 105
+# frames under the level the system settles at, in a third of the local
+# boots (the test before still taking its memory), and the test failed on
+# a hog that had given everything back. A dying process is reaped by its
+# parent (SIGCHLD) *before* it frees its address space: `reclaim_user_aspace`
+# runs afterwards on the exiting task, a walk of the hog's 65536 pages that
+# can be preempted, so when the shell gets the exit the hog's pages are
+# still live. The count is sampled every second until it is back within
+# the limit, ten times at most: one sample a second after the exit found
+# the walk still running, 17650 frames to go (CI #2395, bios-amd under
+# KVM). A leak would stay across the samples; the line names them all. A
+# failure also prints the kernel's allocation sites, caches and deferred
+# frees before and after, and each process's size, as the leak tests do.
 mem_hog_survives() {
-	frames_live > /dev/null
-	before=$(frames_live)
-	sites_before=$(grep -e '^Site' -e 'Cache' /proc/meminfo | tr '\n' ' ')
+	frames_quiet
+	sites_before=$(grep -e '^Site' -e 'Cache' -e '^Deferred' -e '^Retired' /proc/meminfo | tr '\n' ' ')
 	/bin/etc/memhog 256 || true # may be SIGSEGV-killed under pressure
 	samples=
 	n=0
@@ -1084,10 +1089,8 @@ mem_hog_survives() {
 	done
 	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)), samples$samples)"
 	[ -n "$after" ] && [ "$((after - before))" -le 64 ] && return 0
-	# What the kernel knows: the allocation sites and caches before and
-	# after (which site holds the frames), each process's size.
 	echo "before: $sites_before"
-	echo "after:  $(grep -e '^Site' -e 'Cache' /proc/meminfo | tr '\n' ' ')"
+	echo "after:  $(grep -e '^Site' -e 'Cache' -e '^Deferred' -e '^Retired' /proc/meminfo | tr '\n' ' ')"
 	for f in /proc/[0-9]*/status; do cat "$f"; done 2> /dev/null
 	return 1
 }
