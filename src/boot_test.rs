@@ -285,9 +285,13 @@ const RPI3_MARKERS: [&str; 33] = [
 ];
 
 /// The kernel reporting a crash: a CPU exception, a user fault it printed,
-/// a panic, a CPU stuck in the kernel (`kernel/src/task/lockup.rs`). Ends
-/// the run at once instead of waiting out the budget.
-const FATAL_MARKERS: [&str; 4] = ["exception:", "user panic", "[ WARN ] user fault", "s in the kernel: "];
+/// a panic, a CPU stuck in the kernel (`STUCK_MARKER`). Ends the run at
+/// once instead of waiting out the budget.
+const FATAL_MARKERS: [&str; 4] = ["exception:", "user panic", "[ WARN ] user fault", STUCK_MARKER];
+/// The kernel's stuck-CPU report (`kernel/src/task/lockup.rs`). The run
+/// ends with every CPU's registers, after a moment for the other stuck
+/// CPUs' lines.
+const STUCK_MARKER: &str = "s in the kernel: ";
 
 /// Login never takes this long once init is up (OVMF alone can take 40 s
 /// before that, so the clock starts at `[ OK ] fork exec`).
@@ -737,6 +741,9 @@ pub fn run(mut child: Child, board: Board, mode: &Mode, linux_compat: bool, slow
                     handle_host_request(req, &ports);
                 } else if let Some(counts) = parse_done_line(line) {
                     done = Some(counts);
+                } else if line.contains(STUCK_MARKER) {
+                    std::thread::sleep(Duration::from_secs(3));
+                    fail_stalled(&serial, &mut child, &format!("the kernel reported a stuck CPU: {line}"));
                 } else if FATAL_MARKERS.iter().any(|m| line.contains(m)) {
                     fail(&serial, &mut child, &format!("the kernel reported a crash: {line}"));
                 }

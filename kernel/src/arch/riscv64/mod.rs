@@ -189,6 +189,12 @@ pub fn idle_wait() {
     }
 }
 
+/// Ask `cpu` where it is (the stuck-CPU report, `task::lockup_check`): no
+/// way to here without an interrupt that interrupts with interrupts off, so the report names the task alone.
+pub fn sample_cpu(_cpu: usize) -> bool {
+    false
+}
+
 /// Power off (SBI `SRST` shutdown): QEMU exits. The code is not passed on.
 pub fn exit_qemu(_code: u32) {
     power::system_reset(power::SHUTDOWN);

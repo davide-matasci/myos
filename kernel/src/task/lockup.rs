@@ -13,9 +13,19 @@
 //! [ WARN ] cpu 3 stuck for 10 s in the kernel: pid 41 wifi (slot 43)
 //! ```
 //!
-//! and how long the stall lasted if the CPU comes back. The report is
-//! made in the timer interrupt, so it allocates nothing and takes no lock
-//! it could wait on: the stuck CPU may hold any of them.
+//! and how long the stall lasted if the CPU comes back. Where the arch
+//! can interrupt a CPU whose interrupts are off (x86's NMI,
+//! `arch::sample_cpu`), a line before it says where the CPU is: the
+//! address it was at and, in the kernel, the code addresses on its stack
+//! (likely its callers; `addr2line -e` the build's kernel turns them into
+//! functions):
+//!
+//! ```text
+//! [ WARN ] cpu 3 at 0xffffffff8012a3f0 in the kernel, called from 0xffffffff80131c22 0xffffffff800f0a17
+//! ```
+//!
+//! The report is made in the timer interrupt, so it allocates nothing and
+//! takes no lock it could wait on: the stuck CPU may hold any of them.
 
 use super::*;
 use core::fmt::Write;
@@ -34,6 +44,69 @@ static SEEN: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; c
 static SINCE: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
 /// Per CPU: the stall was reported (said again when it ends).
 static REPORTED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+
+/// How many code addresses a sample keeps from the stack.
+pub const SAMPLE_CALLS: usize = 8;
+/// Per CPU: a sample was asked for (`arch::sample_cpu`); the NMI of any
+/// other cause is not one.
+static WANTED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+/// Per CPU: the sample came (`lockup_sampled`), and what it found.
+static SAMPLED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+static SAMPLE_PC: [AtomicU64; crate::smp::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+static SAMPLE_USER: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
+static SAMPLE_CALL: [[AtomicU64; SAMPLE_CALLS]; crate::smp::MAX_CPUS] =
+    [const { [const { AtomicU64::new(0) }; SAMPLE_CALLS] }; crate::smp::MAX_CPUS];
+/// How long CPU 0 waits for a sample (an NMI arrives in microseconds).
+const SAMPLE_WAIT_NS: u64 = 5_000_000;
+
+/// The arch's NMI handler on a stuck CPU: where it was. Atomics only.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+pub fn lockup_sampled(cpu: usize, pc: u64, user: bool, calls: &[u64; SAMPLE_CALLS]) {
+    if cpu >= crate::smp::MAX_CPUS || !WANTED[cpu].swap(false, Ordering::SeqCst) {
+        return;
+    }
+    SAMPLE_PC[cpu].store(pc, Ordering::Relaxed);
+    SAMPLE_USER[cpu].store(user, Ordering::Relaxed);
+    for (slot, &c) in SAMPLE_CALL[cpu].iter().zip(calls) {
+        slot.store(c, Ordering::Relaxed);
+    }
+    SAMPLED[cpu].store(true, Ordering::SeqCst);
+}
+
+/// Ask a stuck CPU where it is and wait a moment for the answer: the line
+/// that says it, or `None` (no way to ask on this arch, or no answer).
+fn sample(cpu: usize) -> Option<Line> {
+    SAMPLED[cpu].store(false, Ordering::SeqCst);
+    WANTED[cpu].store(true, Ordering::SeqCst);
+    if !crate::arch::sample_cpu(cpu) {
+        WANTED[cpu].store(false, Ordering::SeqCst);
+        return None;
+    }
+    let end = crate::time::monotonic_ns() + SAMPLE_WAIT_NS;
+    while !SAMPLED[cpu].load(Ordering::SeqCst) {
+        if crate::time::monotonic_ns() > end {
+            WANTED[cpu].store(false, Ordering::SeqCst);
+            let mut line = Line::new();
+            let _ = write!(line, "cpu {cpu} did not answer the NMI");
+            return Some(line);
+        }
+        core::hint::spin_loop();
+    }
+    let mut line = Line::new();
+    let pc = SAMPLE_PC[cpu].load(Ordering::Relaxed);
+    if SAMPLE_USER[cpu].load(Ordering::Relaxed) {
+        let _ = write!(line, "cpu {cpu} at {pc:#x} in user mode");
+        return Some(line);
+    }
+    let _ = write!(line, "cpu {cpu} at {pc:#x} in the kernel, called from");
+    for c in &SAMPLE_CALL[cpu] {
+        let c = c.load(Ordering::Relaxed);
+        if c != 0 {
+            let _ = write!(line, " {c:#x}");
+        }
+    }
+    Some(line)
+}
 
 /// From CPU 0's timer interrupt (`time::note_tick`).
 pub fn lockup_check(now: u64) {
@@ -61,6 +134,12 @@ pub fn lockup_check(now: u64) {
         let stuck = now.saturating_sub(SINCE[cpu].load(Ordering::Relaxed));
         if stuck < STUCK_NS || REPORTED[cpu].load(Ordering::Relaxed) {
             continue;
+        }
+        // Where first: the stuck line ends a boot test at once.
+        if let Some(at) = sample(cpu) {
+            if !crate::console::status_warn_now(at.as_str()) {
+                continue;
+            }
         }
         let mut line = Line::new();
         let _ = write!(line, "cpu {cpu} stuck for {} s in the kernel: ", stuck / 1_000_000_000);
@@ -90,13 +169,13 @@ fn describe(line: &mut Line, slot: usize) {
 
 /// A report line on the stack: the heap's lock may be the stuck CPU's.
 struct Line {
-    buf: [u8; 120],
+    buf: [u8; 240],
     len: usize,
 }
 
 impl Line {
     fn new() -> Self {
-        Line { buf: [0; 120], len: 0 }
+        Line { buf: [0; 240], len: 0 }
     }
 
     fn as_str(&self) -> &str {

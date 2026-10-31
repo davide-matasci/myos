@@ -199,6 +199,12 @@ pub fn idle_wait() {
     }
 }
 
+/// Ask `cpu` where it is (the stuck-CPU report, `task::lockup_check`): no
+/// way to here without an FIQ or GICv3 pseudo-NMI, so the report names the task alone.
+pub fn sample_cpu(_cpu: usize) -> bool {
+    false
+}
+
 /// Power off (PSCI `SYSTEM_OFF`): QEMU exits. The code is not passed on.
 pub fn exit_qemu(_code: u32) {
     power::psci(power::SYSTEM_OFF);

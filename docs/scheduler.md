@@ -28,10 +28,25 @@ CPU goes on:
 [ WARN ] cpu 3 went on after 14 s
 ```
 
+On x86_64 a line before it says where the CPU is. CPU 0 sends it an NMI,
+which interrupts it even with its interrupts off. The NMI handler, on a
+stack of its own, notes the address the CPU was at and, in the kernel,
+the words on its stack that point into the kernel's code. The kernel
+keeps no frame pointers, so these are likely its callers, not a sure
+backtrace. `addr2line -e` on the build's kernel names the functions:
+
+```
+[ WARN ] cpu 3 at 0xffffffff8012a3f0 in the kernel, called from 0xffffffff80131c22 0xffffffff800f0a17
+```
+
+aarch64 and riscv64 have no such interrupt here, so their report names
+the task alone.
+
 It allocates nothing and waits on no lock, since the stuck CPU may hold
 any: the task is named only when the task table is free, and a line the
 console is busy for waits for the next second. CPU 0 itself is not
-watched: its tick is the watcher. The boot tests fail on the report
+watched: its tick is the watcher, so a freeze of every CPU, CPU 0's tick
+included, says nothing. The boot tests fail on the report
 (`docs/testing.md`).
 
 QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,

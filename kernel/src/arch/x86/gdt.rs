@@ -11,6 +11,9 @@ use x86_64::VirtAddr;
 use crate::smp;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+/// The NMI's stack: an NMI can land between `syscall` and the switch to
+/// the kernel stack, still on the user's.
+pub const NMI_IST_INDEX: u16 = 1;
 
 #[derive(Clone, Copy)]
 struct Selectors {
@@ -28,6 +31,7 @@ static mut TSS: [MaybeUninit<TaskStateSegment>; smp::MAX_CPUS] =
 static mut SEL: [MaybeUninit<Selectors>; smp::MAX_CPUS] =
     [const { MaybeUninit::uninit() }; smp::MAX_CPUS];
 static mut DF_STACKS: [[u8; 4096 * 5]; smp::MAX_CPUS] = [[0; 4096 * 5]; smp::MAX_CPUS];
+static mut NMI_STACKS: [[u8; 4096 * 2]; smp::MAX_CPUS] = [[0; 4096 * 2]; smp::MAX_CPUS];
 static READY: [AtomicBool; smp::MAX_CPUS] = [const { AtomicBool::new(false) }; smp::MAX_CPUS];
 static SHARED_SEL: spin::Once<Selectors> = spin::Once::new();
 
@@ -43,6 +47,10 @@ fn init_for_cpu(cpu: usize) {
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             let start = VirtAddr::from_ptr(core::ptr::addr_of!(DF_STACKS[cpu]));
             start + 4096 * 5
+        };
+        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = {
+            let start = VirtAddr::from_ptr(core::ptr::addr_of!(NMI_STACKS[cpu]));
+            start + 4096 * 2
         };
         tss as *const TaskStateSegment
     };
