@@ -778,3 +778,10 @@ pub fn procfs_set_writer(
 ) -> bool {
     procfs::set_writer(name, writer)
 }
+
+pub fn procfs_set_reader(
+    name: &str,
+    reader: Option<unsafe extern "C" fn(*mut u8, usize) -> i32>,
+) -> bool {
+    procfs::set_reader(name, reader)
+}

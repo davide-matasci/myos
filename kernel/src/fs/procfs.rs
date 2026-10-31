@@ -25,6 +25,9 @@ const MAX_DYNAMIC: usize = 16;
 const MAX_NAME: usize = 32;
 
 type ProcWriter = unsafe extern "C" fn(*const u8, usize) -> i32;
+/// A module's text for a node, made at each read (`proc_set_reader`):
+/// writes it into the buffer (cut at the capacity), returns its length.
+type ProcReader = unsafe extern "C" fn(*mut u8, usize) -> i32;
 
 struct DynNode {
     name: [u8; MAX_NAME],
@@ -32,6 +35,7 @@ struct DynNode {
     data: &'static [u8],
     ino: u32,
     writer: Option<ProcWriter>,
+    reader: Option<ProcReader>,
 }
 
 static DYN: Mutex<[Option<DynNode>; MAX_DYNAMIC]> = Mutex::new([const { None }; MAX_DYNAMIC]);
@@ -108,6 +112,38 @@ pub fn set_writer(name: &str, writer: Option<ProcWriter>) -> bool {
     false
 }
 
+/// Attach or clear a reader for an existing dynamic `/proc/<name>`.
+pub fn set_reader(name: &str, reader: Option<ProcReader>) -> bool {
+    let mut nodes = DYN.lock();
+    for n in nodes.iter_mut().flatten() {
+        if n.name_len == name.len() && &n.name[..n.name_len] == name.as_bytes() {
+            n.reader = reader;
+            return true;
+        }
+    }
+    false
+}
+
+/// The text of a node with a reader, made now (`None` for a node without
+/// one, or when the reader fails). The reader runs without the lock.
+fn dyn_read(name: &str) -> Option<alloc::vec::Vec<u8>> {
+    let reader = {
+        let nodes = DYN.lock();
+        nodes.iter().flatten().find(|n| n.name_len == name.len() && &n.name[..n.name_len] == name.as_bytes())?.reader?
+    };
+    let mut cap = 1024;
+    loop {
+        let mut buf = alloc::vec![0u8; cap];
+        let n = unsafe { reader(buf.as_mut_ptr(), cap) };
+        let n = usize::try_from(n).ok()?;
+        if n <= cap {
+            buf.truncate(n);
+            return Some(buf);
+        }
+        cap = n;
+    }
+}
+
 fn dyn_writable(name: &str) -> bool {
     let nodes = DYN.lock();
     for n in nodes.iter().flatten() {
@@ -151,6 +187,7 @@ pub fn register_dynamic(name: &str, data: &'static [u8]) -> bool {
                 data,
                 ino,
                 writer: None,
+                reader: None,
             });
             return true;
         }
@@ -545,6 +582,9 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     }
     if let Some(text) = overflow_id(name) {
         return copy_at(text, pos, out);
+    }
+    if let Some(text) = dyn_read(name) {
+        return copy_at(&text, pos, out);
     }
     if let Some((_, data)) = dyn_get(name) {
         return copy_at(data, pos, out);

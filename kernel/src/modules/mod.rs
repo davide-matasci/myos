@@ -156,6 +156,7 @@ static API: KernelApi = KernelApi {
     pci_irq_disable: api_pci_irq_disable,
     irq_disable: api_irq_disable,
     pci_io_map: api_pci_io_map,
+    proc_set_reader: api_proc_set_reader,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -744,6 +745,26 @@ unsafe extern "C" fn api_proc_set_writer(
     // Clearing a writer provides nothing; setting one does.
     let ok = crate::fs::procfs_set_writer(name, writer);
     if ok && writer.is_some() {
+        registry::note_registration();
+    }
+    if ok { 0 } else { -1 }
+}
+
+unsafe extern "C" fn api_proc_set_reader(
+    name: *const u8,
+    name_len: usize,
+    reader: Option<unsafe extern "C" fn(*mut u8, usize) -> i32>,
+) -> i32 {
+    if name.is_null() || name_len == 0 {
+        return -1;
+    }
+    let name_bytes = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+    // As a writer: setting one is a registration, clearing one is not.
+    let ok = crate::fs::procfs_set_reader(name, reader);
+    if ok && reader.is_some() {
         registry::note_registration();
     }
     if ok { 0 } else { -1 }
