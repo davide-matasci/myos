@@ -13,7 +13,7 @@ use core::fmt::Write;
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use myos_abi::{
-    ABI_VERSION, ApiCell, DMA_FROM_DEVICE, DMA_TO_DEVICE, DiskInfo, DmaDevice, KernelApi, Lock, ModuleBlkOps, status_ok,
+    ABI_VERSION, ApiCell, DMA_FROM_DEVICE, DMA_TO_DEVICE, DiskInfo, DmaDevice, KernelApi, Lock, ModuleBlkOps, status_fail, status_ok,
 };
 
 const SECTOR: usize = 512;
@@ -292,28 +292,31 @@ fn disable(bar: usize) -> bool {
     wait_csts(bar, false)
 }
 
-fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
+/// Bring the controller at `bar` up, or say which step failed (the
+/// controller's line on the console names it).
+fn setup(bar: usize, dma: i32) -> Result<Ctrl, &'static str> {
     w32(bar, REG_INTMS, 0xFFFF_FFFF);
     if !disable(bar) {
-        return None;
+        return Err("does not reset (CSTS.RDY stays set)");
     }
 
     let cap = r64(bar, REG_CAP);
     let dstrd = ((cap >> 32) & 0xF) as u32;
     let mqes = (cap as u16).wrapping_add(1);
     if mqes < ADMIN_QD || mqes < IO_QD {
-        return None;
+        return Err("queues shorter than the driver's");
     }
     let mpsmin = ((cap >> 48) & 0xF) as u32;
     if mpsmin != 0 {
-        return None;
+        return Err("no 4 KiB memory pages (CAP.MPSMIN)");
     }
 
-    let (admin_sq_bus, admin_sq) = dma_page(dma)?;
-    let (admin_cq_bus, admin_cq) = dma_page(dma)?;
-    let (io_sq_bus, io_sq) = dma_page(dma)?;
-    let (io_cq_bus, io_cq) = dma_page(dma)?;
-    let (dma_bus, dma_va) = dma_page(dma)?;
+    let page = || dma_page(dma).ok_or("no DMA memory");
+    let (admin_sq_bus, admin_sq) = page()?;
+    let (admin_cq_bus, admin_cq) = page()?;
+    let (io_sq_bus, io_sq) = page()?;
+    let (io_cq_bus, io_cq) = page()?;
+    let (dma_bus, dma_va) = page()?;
 
     w32(
         bar,
@@ -327,7 +330,7 @@ fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
     w32(bar, REG_CC, CC_EN | CC_IOSQES | CC_IOCQES);
     w32(bar, REG_INTMS, 0xFFFF_FFFF);
     if !wait_csts(bar, true) {
-        return None;
+        return Err("does not become ready (CSTS.RDY)");
     }
 
     let mut c = Ctrl {
@@ -360,7 +363,7 @@ fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
     id[7] = (c.dma_bus >> 32) as u32;
     id[10] = CNS_CTRL;
     sync(c.dma, c.dma_va, 4096, DMA_TO_DEVICE);
-    admin(&mut c, id).ok()?;
+    admin(&mut c, id).map_err(|()| "identify controller failed")?;
     sync(c.dma, c.dma_va, 4096, DMA_FROM_DEVICE);
     // SAFETY: the DMA page holds the controller's identify data now.
     let ident = unsafe { core::slice::from_raw_parts(c.dma_va, 64) };
@@ -374,18 +377,18 @@ fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
     idn[7] = (c.dma_bus >> 32) as u32;
     idn[10] = CNS_NS;
     sync(c.dma, c.dma_va, 4096, DMA_TO_DEVICE);
-    admin(&mut c, idn).ok()?;
+    admin(&mut c, idn).map_err(|()| "identify namespace 1 failed")?;
     sync(c.dma, c.dma_va, 4096, DMA_FROM_DEVICE);
     let nsze = unsafe { core::ptr::read_unaligned(c.dma_va as *const u64) };
     if nsze == 0 {
-        return None;
+        return Err("namespace 1 is empty");
     }
     let flbas = unsafe { core::ptr::read_volatile(c.dma_va.add(26)) } & 0xF;
     let lbaf_off = 128 + flbas as usize * 4;
     let lbaf = unsafe { core::ptr::read_unaligned(c.dma_va.add(lbaf_off) as *const u32) };
     let lbads = (lbaf >> 16) & 0xFF;
     if lbads != 9 {
-        return None;
+        return Err("namespace 1's sectors are not 512 bytes");
     }
     // NSZE is namespace size in LBAs (LBA 0 through n-1).
     c.capacity = nsze;
@@ -396,7 +399,7 @@ fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
     ccq[7] = (c.io_cq_bus >> 32) as u32;
     ccq[10] = 1 | (u32::from(IO_QD - 1) << 16);
     ccq[11] = 1;
-    admin(&mut c, ccq).ok()?;
+    admin(&mut c, ccq).map_err(|()| "creating the I/O completion queue failed")?;
 
     let mut csq = [0u32; 16];
     csq[0] = u32::from(OPC_CREATE_SQ);
@@ -404,9 +407,9 @@ fn setup(bar: usize, dma: i32) -> Option<Ctrl> {
     csq[7] = (c.io_sq_bus >> 32) as u32;
     csq[10] = 1 | (u32::from(IO_QD - 1) << 16);
     csq[11] = 1 | (1 << 16);
-    admin(&mut c, csq).ok()?;
+    admin(&mut c, csq).map_err(|()| "creating the I/O submission queue failed")?;
 
-    Some(c)
+    Ok(c)
 }
 
 
@@ -416,38 +419,60 @@ fn known(bar_va: usize) -> bool {
     CTRLS.iter().any(|s| s.lock().as_ref().is_some_and(|c| c.bar == bar_va))
 }
 
-/// Bring up the controller at `bar_va` into a free slot; its index, or
-/// `None` when it is already attached, fails to come up or the table is full.
-fn attach(bar_va: usize, dma: i32) -> Option<usize> {
-    if known(bar_va) || dma < 0 {
-        return None;
+/// Bring up the controller at `bar_va` into a free slot: its index,
+/// `None` when it is already attached, or why it did not come up.
+fn attach(bar_va: usize, dma: i32) -> Result<Option<usize>, &'static str> {
+    if known(bar_va) {
+        return Ok(None);
+    }
+    if dma < 0 {
+        return Err("no DMA (dma_attach)");
     }
     let c = setup(bar_va, dma)?;
-    let (slot, mut free) = CTRLS.iter().enumerate().find_map(|(i, s)| {
-        let s = s.lock();
-        s.is_none().then_some((i, s))
-    })?;
+    let (slot, mut free) = CTRLS
+        .iter()
+        .enumerate()
+        .find_map(|(i, s)| {
+            let s = s.lock();
+            s.is_none().then_some((i, s))
+        })
+        .ok_or("too many controllers")?;
     *free = Some(c);
-    Some(slot)
+    Ok(Some(slot))
+}
+
+/// `[ FAIL ] nvme BB:SS.F: why` on the console.
+fn report(api: &KernelApi, bus: u8, slot: u8, func: u8, why: &str) {
+    // DiskInfo is a small text buffer that takes `write!`.
+    let mut line = DiskInfo::new();
+    let _ = write!(line, "nvme {bus:02x}:{slot:02x}.{func:x}: {why}");
+    status_fail(api, core::str::from_utf8(line.as_bytes()).unwrap_or("nvme"));
 }
 
 /// Every NVMe controller on the bus: the new ones come up and register as
 /// `/dev/nvme<slot>n1`, the ones already attached are left alone. The
-/// number of controllers attached by this call.
-fn probe(api: &KernelApi) -> usize {
-    let mut new = 0;
+/// number of controllers attached by this call, and how many were found.
+fn probe(api: &KernelApi) -> (usize, usize) {
+    let (mut new, mut found) = (0, 0);
     for i in 0..MAX_CTRL as u32 {
         let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
         if api.pci_find_class(CLASS_MASS, SUBCLASS_NVME, i, &mut bus, &mut slot, &mut func) != 0 {
             break;
         }
+        found += 1;
         api.pci_enable(bus, slot, func);
         let (mut va, mut size) = (0usize, 0u64);
         if api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size) != 0 {
+            report(api, bus, slot, func, "BAR0 does not map");
             continue;
         }
-        let Some(n) = attach(va, api.dma_attach(&DmaDevice::pci(bus, slot, func))) else {
-            continue;
+        let n = match attach(va, api.dma_attach(&DmaDevice::pci(bus, slot, func))) {
+            Ok(Some(n)) => n,
+            Ok(None) => continue,
+            Err(why) => {
+                report(api, bus, slot, func, why);
+                continue;
+            }
         };
         let mut info = DiskInfo::new();
         let _ = write!(info, "nvme pci {bus:02x}:{slot:02x}.{func:x}");
@@ -462,7 +487,7 @@ fn probe(api: &KernelApi) -> usize {
         }
         new += 1;
     }
-    new
+    (new, found)
 }
 
 /// One read or write command: `buf` (whole sectors, at most the DMA
@@ -541,10 +566,11 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         return -2;
     }
     unsafe { API.set(api) };
-    if probe(api) == 0 {
-        api.write_str("nvme none\n");
-    } else {
-        status_ok(api, "nvme");
+    // A controller that failed has said why on its own line.
+    match probe(api) {
+        (0, 0) => api.write_str("nvme none\n"),
+        (0, _) => {}
+        _ => status_ok(api, "nvme"),
     }
     0
 }
