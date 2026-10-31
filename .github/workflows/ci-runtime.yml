@@ -239,9 +239,14 @@ jobs:
             || { apt-get update -q && apt-get install -y -q --no-install-recommends device-tree-compiler; }
 
       - name: Boot and test in QEMU
+        id: boot
         continue-on-error: ${{ !matrix.required }}
         env:
           MYOS_SKIP_KERNEL_REBUILD: "1"
+          # The boot's network traffic (QEMU's filter-dump), kept below
+          # when the boot fails: a packet lost or late in an exchange with
+          # the host shows there (issue #656's mute connection).
+          MYOS_NET_PCAP: target/net0-${{ matrix.id }}.pcap
           # The aarch64 boots' GIC version (2 when unset): the launcher
           # dumps the matching device tree into the ESP before each boot.
           MYOS_AARCH64_GIC: ${{ matrix.gic }}
@@ -254,6 +259,15 @@ jobs:
           # `plic` on the riscv64-plic machine).
           MYOS_RISCV_INTC: ${{ matrix.intc }}
         run: ./target/debug/myos ${{ matrix.args }}
+
+      - name: Upload the packet capture of a failed boot
+        if: steps.boot.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: net0-pcap-${{ matrix.id }}
+          path: target/net0-${{ matrix.id }}.pcap*
+          if-no-files-found: ignore
+          retention-days: 7
 
   iso:
     # x86_64 hybrid ISO from the build outputs, on master only: the image

@@ -106,10 +106,12 @@ tcp_mute() {
 import socket, sys, time
 port = int(sys.argv[1])
 failed = []
+ports = []
 for i in range(40):
     s = socket.socket()
     try:
         s.connect(("127.0.0.1", port))
+        ports.append(str(s.getsockname()[1]))
         time.sleep(i * 0.0005)
         s.close()
     except OSError as e:
@@ -117,10 +119,13 @@ for i in range(40):
     time.sleep(0.3)
 s = socket.socket()
 s.connect(("127.0.0.1", port))
+done_port = s.getsockname()[1]
 s.sendall(b"done")
 time.sleep(1)
 s.close()
-print(f"boot test: tcp-mute {port}: 40 mute connections ({len(failed)} failed on the host{': ' + ', '.join(failed) if failed else ''}), then done")
+# The ports are what the guest sees as the peers' (QEMU keeps them): a
+# connection the smoke never got is named by the one missing from its list.
+print(f"boot test: tcp-mute {port}: 40 mute connections ({len(failed)} failed on the host{': ' + ', '.join(failed) if failed else ''}), then done; ports {' '.join(ports)}, done {done_port}")
 PY
 }
 

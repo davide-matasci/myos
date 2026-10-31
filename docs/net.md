@@ -253,9 +253,11 @@ it itself (issue #480).
 the status files cannot: connections still closing after their process
 let go, ones not yet accepted, handshakes in progress. A line per index
 in use reads `N tcp|udp|icmp [STATE] flags`, then lines starting with `-`
-for handshakes and orphaned closes. The flags (`listen`, `peer`, `held`,
-`released`, `tx`, `sendq`, `recvq`, ...) are explained where netd writes
-them (`user/netd/src/main.rs`).
+for handshakes (with their age in milliseconds) and orphaned closes. The
+flags (`listen`, `peer`, `held`, `released`, `queue` with a listener's
+offered connection, the one behind it and the offer's sequence, `tx`,
+`sendq`, `recvq`, ...) are explained where netd writes them
+(`user/netd/src/main.rs`).
 
 ## curl
 

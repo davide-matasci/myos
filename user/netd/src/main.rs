@@ -560,8 +560,10 @@ fn build_loopback(dev: &mut LoopDevice, now: Instant) -> Interface {
 /// `hungup`, `closing Ns` (closing for N seconds). netfs's view
 /// (`/net/tcp/N/status`) ends at the close's acknowledgement, netd's at the
 /// socket's end: this is where the indices went when the table is full.
+/// `queue H P seq N` on a listener names the connection its user is
+/// offered, the one behind it (`-` for none) and the offer's sequence.
 /// Then a line per handshake not done, `- tcp STATE peer a.b.c.d!p port P
-/// handshake Ns`: not a conversation yet, nobody's.
+/// handshake Nms`: not a conversation yet, nobody's.
 fn convs_text(
     convs: &[Conv; MAX_CONV],
     sockets: &SocketSet<'_>,
@@ -602,6 +604,20 @@ fn convs_text(
         }
         if c.have_remote {
             let _ = write!(s, " peer {}!{}", c.remote, c.remote_port);
+        }
+        // The listener's queue: the connection its user is offered and
+        // the one behind it (`queue_full`), and the offer's sequence.
+        if c.listen_port != 0 && (c.accepted.is_some() || c.accepted_pending.is_some()) {
+            let _ = write!(s, " queue");
+            for q in [c.accepted, c.accepted_pending] {
+                match q {
+                    Some(n) => {
+                        let _ = write!(s, " {n}");
+                    }
+                    None => s.push_str(" -"),
+                }
+            }
+            let _ = write!(s, " seq {}", c.accept_seq);
         }
         for (flag, on) in [
             ("accept", c.from_accept),
@@ -645,7 +661,7 @@ fn convs_text(
             let _ = write!(s, " peer {addr}!{port}");
         }
         let l = hs.listener as usize;
-        let _ = writeln!(s, " port {} handshake {}s", convs[l].listen_port, (now - hs.since).secs());
+        let _ = writeln!(s, " port {} handshake {}ms", convs[l].listen_port, (now - hs.since).total_millis());
     }
     for l in lingering {
         let sock = sockets.get::<tcp::Socket>(l.handle);
