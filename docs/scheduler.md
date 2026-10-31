@@ -154,6 +154,10 @@ online CPUs and waits briefly for their acks.
   `tlb_service`.
 - No IPI is sent when no other CPU has the address space loaded
   (`task::aspace_loaded_elsewhere`).
+- It runs with interrupts off, whatever its caller's. Its lock is a spin
+  lock that other CPUs wait on with theirs off. A holder preempted with
+  the lock held, as the reclaim of an exiting process could be, never ran
+  again while they spun, each up to its spin cap.
 
 Do not paper over a slow shootdown path with a longer QEMU timeout.
 

@@ -194,7 +194,23 @@ pub fn tlb_take_stale(cpu: usize) -> bool {
 /// then (`TLB_STALE`). Waiting for it cost the ack's latency per shootdown
 /// (a wake from the halt, under TCG the host's) for nothing, and a shell
 /// forks and exits for every command with the other CPU idle.
+///
+/// Interrupts are off across it, whatever the caller's. `TLB_LOCK` is a spin
+/// lock the other CPUs wait on with theirs off (a fork's, a page fault's): a
+/// holder preempted with it (the reclaim of an exiting process runs with
+/// interrupts on) was queued on one of those CPUs and never ran again while
+/// they spun, each to its spin cap, seconds under KVM (PR #697's CI: three
+/// CPUs in this wait, the fourth idle). Off, the local flush and the acks
+/// are this CPU's too: a task moved to another CPU half way would leave the
+/// first one's TLB unflushed.
 pub fn tlb_shootdown() {
+    let flags = arch::irq_save();
+    arch::irq_off();
+    shootdown();
+    arch::irq_restore(flags);
+}
+
+fn shootdown() {
     TLB_SHOOTDOWNS.fetch_add(1, Ordering::Relaxed);
     let others = online_count().saturating_sub(1);
     if others == 0 {
