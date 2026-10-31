@@ -1059,18 +1059,37 @@ t -t mm mem_exec_no_leak mem_exec_no_leak
 # the hog dies (SIGSEGV). Either way the kernel stays up and the live frame
 # count returns to its baseline.
 #
-# The sleep is load-bearing: a dying process is reaped by its parent (SIGCHLD)
-# *before* it frees its address space — `reclaim_user_aspace` runs afterwards on
-# the exiting task and the big mmap walk can be preempted, so for a moment after
-# the shell returns the hog's pages are still live. Sample after it settles.
+# A dying process is reaped by its parent (SIGCHLD) *before* it frees its
+# address space: `reclaim_user_aspace` runs afterwards on the exiting task,
+# a walk of the hog's 65536 pages that can be preempted, so when the shell
+# gets the exit the hog's pages are still live. The count is sampled every
+# second until it is back within the limit, ten times at most: one sample
+# a second after the exit found the walk still running, 17650 frames to go
+# (CI #2395, bios-amd under KVM). A leak would stay; the samples say which
+# it was.
 mem_hog_survives() {
 	frames_live > /dev/null
 	before=$(frames_live)
+	sites_before=$(grep -e '^Site' -e 'Cache' /proc/meminfo | tr '\n' ' ')
 	/bin/etc/memhog 256 || true # may be SIGSEGV-killed under pressure
-	sleep 1                     # let the exiting hog finish reclaiming
-	after=$(frames_live)
-	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)))"
-	[ -n "$after" ] && [ "$((after - before))" -le 64 ]
+	samples=
+	n=0
+	while :; do
+		sleep 1
+		after=$(frames_live)
+		samples="$samples $after"
+		n=$((n + 1))
+		[ -n "$after" ] && [ "$((after - before))" -le 64 ] && break
+		[ $n -ge 10 ] && break
+	done
+	echo "mem: hog 256MiB FramesLive $before -> $after (delta $((after - before)), samples$samples)"
+	[ -n "$after" ] && [ "$((after - before))" -le 64 ] && return 0
+	# What the kernel knows: the allocation sites and caches before and
+	# after (which site holds the frames), each process's size.
+	echo "before: $sites_before"
+	echo "after:  $(grep -e '^Site' -e 'Cache' /proc/meminfo | tr '\n' ' ')"
+	for f in /proc/[0-9]*/status; do cat "$f"; done 2> /dev/null
+	return 1
 }
 t -t mm mem_hog_survives mem_hog_survives
 
