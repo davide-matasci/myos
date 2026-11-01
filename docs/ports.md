@@ -73,7 +73,7 @@ minimal port needs only `PORT_FILES`.
 | `PORT_ARCH_JOBS` | `0` | `1` for a port too long to build in one CI job (below) |
 | `PORT_TIMEOUT` | `45` | the CI ports job's limit for the port, in minutes; at most 360 |
 | `PORT_OUTPUTS` | | what the script leaves under `target/` (what the registry caches); globs are allowed |
-| `PORT_READY` | the first file output | a `target/` file whose presence means the port was built |
+| `PORT_READY` | every output but the globs | the `target/` files whose presence means the port was built |
 | `PORT_FILES` | | what the image (or the package) gets, below |
 | `PORT_TEST_FILES` | | what the tests module gets instead (`docs/testing.md`), same syntax |
 | `PORT_BIN`, `PORT_WATCH`, `PORT_PREPARE` | | `user` only: the binary name, extra watched sources, a script run before the build (netd's patched smoltcp) |
@@ -208,8 +208,8 @@ GIO TLS backend and LibreSSL it only links are in the hash too).
 
 ## What reads the descriptors
 
-`build.rs` runs the build script of every image port whose `PORT_READY`
-is missing, `kernel/build.rs` builds the `user` ports, and
+`build.rs` runs the build script of every image port that lacks one of
+its `PORT_READY` files, `kernel/build.rs` builds the `user` ports, and
 `src/initramfs.rs` packs the `PORT_FILES`. On the shell side,
 `scripts/ports.sh` (`--list`, `--build-list`, `--matrix`, ..., or
 `myos_port_load NAME` as a library) serves the CI registry, the CI jobs

@@ -231,17 +231,22 @@ fn check_rdeps(all: &[ports::Port]) {
     }
 }
 
-/// Run a port's build script when its ready file for `arch` is missing: a
+/// Run a port's build script when a ready file for `arch` is missing: a
 /// package (`packages/`) is not built by `build.rs` like the image's ports,
 /// so a local `cargo run -- packages` builds it here (the scripts skip
 /// themselves when current; CI has them from the registry).
 fn ensure_built(manifest_dir: &Path, port: &ports::Port, arch: &str) {
-    let (Some(script), Some(ready)) = (&port.build, port.ready_file(arch)) else {
+    let Some(script) = &port.build else {
         return;
     };
-    if port.kind == ports::Kind::User || manifest_dir.join("target").join(&ready).exists() {
+    if port.kind == ports::Kind::User {
         return;
     }
+    let Some(ready) =
+        port.ready_files(arch).into_iter().find(|f| !manifest_dir.join("target").join(f).exists())
+    else {
+        return;
+    };
     eprintln!("==> packages: {ready} missing; running {script}");
     let status = Command::new("bash")
         .arg(manifest_dir.join(script))

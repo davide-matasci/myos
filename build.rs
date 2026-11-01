@@ -101,10 +101,13 @@ fn main() {
         let Some(script) = &port.build else {
             continue;
         };
-        let Some(ready) = port.ready_file("x86_64") else {
-            continue;
-        };
-        ensure_artifact(&manifest, &format!("target/{ready}"), script);
+        if let Some(missing) = port
+            .ready_files("x86_64")
+            .into_iter()
+            .find(|f| !manifest.join("target").join(f).exists())
+        {
+            ensure_artifact(&manifest, &format!("target/{missing}"), script);
+        }
     }
     // Userspace ships as a newc cpio module. The kernel rebuilds whenever any
     // user ELF changes (its build.rs rerun-if-changed on every stable copy), so

@@ -68,7 +68,7 @@ pub struct Port {
     pub stamp: String,
     pub outputs: Vec<String>,
     /// A `target/`-relative file whose presence means the outputs exist
-    /// (default: the first output).
+    /// (default: every output that is no glob).
     pub ready: Option<String>,
     pub files: Vec<FileSpec>,
     /// What the port ships in the tests module instead of the image
@@ -90,10 +90,19 @@ pub struct Port {
 }
 
 impl Port {
-    /// The `target/`-relative file that says the outputs exist (for `arch`).
-    pub fn ready_file(&self, arch: &str) -> Option<String> {
-        let r = self.ready.clone().or_else(|| self.outputs.first().cloned())?;
-        Some(expand(&r, arch))
+    /// The `target/`-relative files that say the outputs exist (for `arch`):
+    /// `PORT_READY`, or else every output but the globs, so an output added
+    /// to a built port still runs its script.
+    pub fn ready_files(&self, arch: &str) -> Vec<String> {
+        match &self.ready {
+            Some(r) => vec![expand(r, arch)],
+            None => self
+                .outputs
+                .iter()
+                .filter(|o| !o.contains(['*', '?', '[']))
+                .map(|o| expand(o, arch))
+                .collect(),
+        }
     }
 }
 
