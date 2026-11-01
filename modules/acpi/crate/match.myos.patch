@@ -1,0 +1,146 @@
+acpi: implement Match
+
+The interpreter left DefMatch a todo!(): the firmware of a ThinkPad T15
+uses it in a device's _STA or _INI, so the interpreter panicked before
+the namespace was set up. Match interleaves its operands with two
+bytes, the match opcodes, so it is in flight in stages, each reading
+the next byte once the operand before it is done; the last compares
+each element from the start index with both operands (the element on
+the left, the operand taking its type: integers, strings, buffers) and
+gives the first index for which both hold, or Ones.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -944,6 +944,7 @@
+                     }
+                     Opcode::SizeOf => self.do_size_of(&mut context, op)?,
+                     Opcode::Index => self.do_index(&mut context, op)?,
++                    Opcode::Match => self.do_match(&mut context, op)?,
+                     Opcode::BankField => {
+                         let [
+                             Argument::TrackedPc(start_pc),
+@@ -1589,13 +1590,11 @@
+                     &[ResolveBehaviour::TermArg, ResolveBehaviour::TermArg, ResolveBehaviour::Target],
+                 )),
+                 /*
+-                 * TODO
+-                 * Match is a difficult opcode to parse, as it interleaves dynamic arguments and
+-                 * random bytes that need to be extracted as you go. I think we'll need to use 1+
+-                 * internal in-flight ops to parse the static bytedatas as we go, and then retire
+-                 * the real op at the end.
++                 * Match interleaves its operands with two bytes (the match opcodes): it is in
++                 * flight in stages, each reading the next byte when the operand before it is
++                 * done (`do_match`).
+                  */
+-                Opcode::Match => todo!(),
++                Opcode::Match => context.start(OpInFlight::new(Opcode::Match, &[ResolveBehaviour::TermArg])),
+ 
+                 Opcode::CreateBitField
+                 | Opcode::CreateByteField
+@@ -2212,6 +2211,104 @@
+         context.retire_op(op);
+         Ok(())
+     }
++
++    /// `Match (SearchPkg, MatchOp1, Operand1, MatchOp2, Operand2, StartIndex)`, in three stages:
++    /// the package, then the first opcode byte and its operand, then the second and its operand
++    /// and the start index. The result is the index of the first element from `StartIndex` for
++    /// which both comparisons hold (the element on the left), or Ones.
++    fn do_match(&self, context: &mut MethodContext, op: OpInFlight) -> Result<(), AmlError> {
++        const STAGE_2: &[ResolveBehaviour] =
++            &[ResolveBehaviour::Placeholder, ResolveBehaviour::Placeholder, ResolveBehaviour::TermArg];
++        const STAGE_3: &[ResolveBehaviour] = &[
++            ResolveBehaviour::Placeholder,
++            ResolveBehaviour::Placeholder,
++            ResolveBehaviour::Placeholder,
++            ResolveBehaviour::Placeholder,
++            ResolveBehaviour::TermArg,
++            ResolveBehaviour::TermArg,
++        ];
++        match op.arguments.len() {
++            1 => {
++                let first = context.next()?;
++                let mut arguments = op.arguments;
++                arguments.push(Argument::ByteData(first));
++                context.start(OpInFlight::new_with(Opcode::Match, arguments, STAGE_2));
++                return Ok(());
++            }
++            3 => {
++                let second = context.next()?;
++                let mut arguments = op.arguments;
++                arguments.push(Argument::ByteData(second));
++                context.start(OpInFlight::new_with(Opcode::Match, arguments, STAGE_3));
++                return Ok(());
++            }
++            _ => (),
++        }
++        let [
++            Argument::Object(package),
++            Argument::ByteData(op1),
++            Argument::Object(operand1),
++            Argument::ByteData(op2),
++            Argument::Object(operand2),
++            Argument::Object(start),
++        ] = &op.arguments[..]
++        else {
++            panic!()
++        };
++        let package = package.clone().unwrap_transparent_reference();
++        let Object::Package(ref elements) = *package else {
++            Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::Package, got: package.typ() })?
++        };
++        let operand1 = operand1.clone().unwrap_transparent_reference();
++        let operand2 = operand2.clone().unwrap_transparent_reference();
++        let start = start.clone().unwrap_transparent_reference().as_integer()? as usize;
++
++        /*
++         * One comparison of an element with an operand (MTR, MEQ, MLE, MLT, MGE, MGT). The operand
++         * takes the element's type; an element that is not an integer, a string or a buffer, or an
++         * operand that cannot be converted, does not match.
++         */
++        fn holds(element: &Object, op: u8, operand: &Object) -> bool {
++            use core::cmp::Ordering;
++            let ordering = match element {
++                Object::Integer(e) => match operand.as_integer() {
++                    Ok(o) => e.cmp(&o),
++                    Err(_) => return false,
++                },
++                Object::String(e) => match operand.as_string() {
++                    Ok(o) => e.as_str().cmp(&*o),
++                    Err(_) => return false,
++                },
++                Object::Buffer(e) => match operand.as_buffer() {
++                    Ok(o) => e.as_slice().cmp(o),
++                    Err(_) => return false,
++                },
++                _ => return false,
++            };
++            match op {
++                0 => true,
++                1 => ordering == Ordering::Equal,
++                2 => ordering != Ordering::Greater,
++                3 => ordering == Ordering::Less,
++                4 => ordering != Ordering::Less,
++                5 => ordering == Ordering::Greater,
++                _ => false,
++            }
++        }
++
++        let found = elements
++            .iter()
++            .enumerate()
++            .skip(start)
++            .find(|(_, element)| {
++                let element = (*element).clone().unwrap_transparent_reference();
++                holds(&element, *op1, &operand1) && holds(&element, *op2, &operand2)
++            })
++            .map_or(u64::MAX, |(i, _)| i as u64);
++        context.contribute_arg(Argument::Object(Object::Integer(found).wrap()));
++        context.retire_op(op);
++        Ok(())
++    }
+ 
+     fn do_index(&self, context: &mut MethodContext, op: OpInFlight) -> Result<(), AmlError> {
+         let [Argument::Object(object), Argument::Object(index_value), target] = &op.arguments[..] else {
