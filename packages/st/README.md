@@ -9,7 +9,10 @@ run-myos tinyx,dwm:startx          # then Alt+Shift+Return in dwm
 run-myos tinyx,st:startx st        # or st alone, without a window manager
 ```
 
-The stock configuration (`config.def.h`): the font asked for is
+The stock configuration (`config.def.h`), but for the font's size: 11.5
+points instead of 12 pixels, so it follows the X server's DPI like dwm's
+(12 pixels at the server's 75 DPI, twice that at the 150 `startx` gives a
+1920x1080 screen, `packages/tinyx`). The font asked for is
 `Liberation Mono`, and fontconfig, which has no such font, gives the closest
 it has, DejaVu Sans Mono (the `x11-fonts` package); Ctrl+Shift+PageUp and
 PageDown zoom. st runs `$SHELL` (oksh) on a
