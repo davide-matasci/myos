@@ -43,18 +43,39 @@ BULK_LINES=40000
 
 # The file `tcp-ping-stop PORT TOKEN` leaves for `tcp-ping PORT TOKEN`,
 # next to this boot's QEMU monitor socket (one launcher, one boot at a
-# time); the latter removes it when it ends.
+# time), and the one the latter keeps beside it while it runs: a stop that
+# finds no peer running is dropped, or it would stop the next one with the
+# same token (the guest's tokens are the smokes' pids, which it reuses: a
+# stop left behind sent the next listen test's peer away at once, "the
+# smoke is gone", and that test failed on it).
 stop_flag() {
   echo "${MYOS_QEMU_MONITOR:-${TMPDIR:-/tmp}/myos-monitor}.tcp-ping-stop-$1-$2"
 }
 
 tcp_ping() {
+  local stop rc
+  stop="$(stop_flag "$1" "${2:-0}")"
+  : > "$stop.peer"
+  tcp_ping_run "$@"
+  rc=$?
+  rm -f "$stop.peer" "$stop"
+  return $rc
+}
+
+tcp_ping_stop() {
+  local stop
+  stop="$(stop_flag "$1" "${2:-0}")"
+  : > "$stop"
+  [[ -e "$stop.peer" ]] || rm -f "$stop"
+}
+
+tcp_ping_run() {
   local port="$1" stop got verdict deadline=$((SECONDS + 180))
   stop="$(stop_flag "$port" "${2:-0}")"
   got="$(mktemp)"
   while (( SECONDS < deadline )); do
     if [[ -e "$stop" ]]; then
-      rm -f "$got" "$stop"
+      rm -f "$got"
       echo "boot test: tcp-ping $port: the smoke is gone, not retrying" >&2
       return 1
     fi
@@ -80,7 +101,7 @@ tcp_ping() {
           sleep 1
           exec 3>&-
         fi
-        rm -f "$got" "$stop"
+        rm -f "$got"
         [[ "$verdict" == good ]] || return 1
         tcp_mute "$port"
         return
@@ -88,13 +109,9 @@ tcp_ping() {
     fi
     sleep 0.25
   done
-  rm -f "$got" "$stop"
+  rm -f "$got"
   echo "boot test: tcp-ping $port: no pong within the bound" >&2
   return 1
-}
-
-tcp_ping_stop() {
-  : > "$(stop_flag "$1" "${2:-0}")"
 }
 
 # The mute connections (see the header), 0.3 s apart so the smoke's accept
