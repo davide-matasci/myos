@@ -179,6 +179,26 @@ fn eval(interp: &Interpreter<Host>, path: &AmlName, n: &str) -> Option<acpi::aml
     interp.evaluate_if_present(name(n).resolve(path).ok()?, vec![]).ok()?
 }
 
+/// The same for `/proc/acpi/battery`, where a method that fails says so on
+/// a line of its own (`BAT0 error _BST: ...`), its error the interpreter's:
+/// an unknown state with no reason told nothing (a ThinkPad T15's `_BST`
+/// and `_PSR`).
+fn eval_said(
+    interp: &Interpreter<Host>,
+    path: &AmlName,
+    n: &str,
+    out: &mut String,
+) -> Option<acpi::aml::object::WrappedObject> {
+    let resolved = name(n).resolve(path).ok()?;
+    match interp.evaluate_if_present(resolved, vec![]) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(out, "{} error {n}: {e:?}", short(path));
+            None
+        }
+    }
+}
+
 /// Find the embedded controller and handle its operation regions: its
 /// ports from its `_CRS`, before the namespace's `_INI`s, which may read
 /// it. A note for the report.
@@ -229,7 +249,7 @@ fn int(items: &[acpi::aml::object::WrappedObject], i: usize) -> Option<u64> {
 /// The battery at `path`, as lines of `/proc/acpi/battery`.
 fn battery(interp: &Interpreter<Host>, path: &AmlName, out: &mut String) {
     let n = short(path);
-    let sta = eval(interp, path, "_STA").and_then(|v| v.as_integer().ok()).unwrap_or(0x1f);
+    let sta = eval_said(interp, path, "_STA", out).and_then(|v| v.as_integer().ok()).unwrap_or(0x1f);
     if sta & 0x10 == 0 {
         let _ = writeln!(out, "{n} present 0");
         return;
@@ -237,15 +257,15 @@ fn battery(interp: &Interpreter<Host>, path: &AmlName, out: &mut String) {
     let _ = writeln!(out, "{n} present 1");
     // `_BIX` (revision, unit, design, full, ...) or `_BIF` (unit, design,
     // full, ...): the unit 0 is mWh (rates mW), 1 mAh (mA).
-    let (unit, design, full) = match eval(interp, path, "_BIX").as_deref() {
+    let (unit, design, full) = match eval_said(interp, path, "_BIX", out).as_deref() {
         Some(Object::Package(p)) => (int(p, 1), int(p, 2), int(p, 3)),
-        _ => match eval(interp, path, "_BIF").as_deref() {
+        _ => match eval_said(interp, path, "_BIF", out).as_deref() {
             Some(Object::Package(p)) => (int(p, 0), int(p, 1), int(p, 2)),
             _ => (None, None, None),
         },
     };
     let (energy, power) = if unit == Some(1) { ("mAh", "mA") } else { ("mWh", "mW") };
-    let Some(Object::Package(bst)) = eval(interp, path, "_BST").as_deref().cloned() else {
+    let Some(Object::Package(bst)) = eval_said(interp, path, "_BST", out).as_deref().cloned() else {
         let _ = writeln!(out, "{n} state unknown");
         return;
     };
@@ -288,7 +308,7 @@ fn report(interp: &Interpreter<Host>, batteries: &[AmlName], adapters: &[AmlName
         battery(interp, b, &mut out);
     }
     for a in adapters {
-        let online = eval(interp, a, "_PSR").and_then(|v| v.as_integer().ok());
+        let online = eval_said(interp, a, "_PSR", &mut out).and_then(|v| v.as_integer().ok());
         match online {
             Some(v) => {
                 let _ = writeln!(out, "{} online {}", short(a), u64::from(v != 0));

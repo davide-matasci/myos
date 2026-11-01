@@ -31,6 +31,12 @@
 //!             Method (_STA) { If (Zero) { Return (0x0F) } }
 //!             Name (_PSR, Zero)
 //!         }
+//!         // An adapter whose _PSR fails (a name nothing defines): its
+//!         // line says why.
+//!         Device (AC2) {
+//!             Name (_HID, "ACPI0003")
+//!             Method (_PSR) { Return (NONE) }
+//!         }
 //!     }
 //! }
 //! ```
@@ -193,7 +199,11 @@ fn ssdt() -> Vec<u8> {
             name(b"_PSR", int(0)),
         ],
     );
-    let aml = [vec![SCOPE_OP], pkg([b"\\_SB_".to_vec(), bat, ac].concat())].concat();
+    let ac2 = device(
+        b"AC2_",
+        vec![name(b"_HID", string("ACPI0003")), method(b"_PSR", vec![[&[RETURN_OP][..], b"NONE"].concat()])],
+    );
+    let aml = [vec![SCOPE_OP], pkg([b"\\_SB_".to_vec(), bat, ac, ac2].concat())].concat();
 
     let mut t = Vec::new();
     t.extend(b"SSDT");
