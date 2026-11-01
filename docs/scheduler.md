@@ -182,9 +182,24 @@ loop {
   `key_pipe(id)`, `key_child(parent)`, `KEY_CONSOLE`). A signal wakes its
   target whatever it waits on.
 - `wake` bumps a global sequence, and `block_until` refuses to block when
-  it moved, so a wake between the check and the block is never lost.
+  it moved, so a wake between the check and the block is never lost. It
+  first runs a task that wake queued for this CPU, if any: a caller that
+  wakes a waiter of its own on every pass (a `poll` whose scan takes and
+  lets go of a module's `SleepLock`, as sndd's does) would otherwise see
+  its own wake, look again and never sleep, and with interrupts masked in
+  its syscall nothing would preempt it for the waiter.
 - Spurious wakes are fine: every caller re-checks its condition.
   `wait_addr` builds on this (`docs/threads.md`, "Waiting on an address").
+- A lock whose holder may block (the VFS tree lock, a filesystem module's
+  mount, a USB disk) is waited for the same way, never by spinning or by
+  yielding in a loop. A syscall runs with interrupts masked, and
+  `yield_now` keeps them so when nothing else is runnable; a device's
+  interrupt goes to one CPU (CPU 0 on x86). A waiter looping on that CPU,
+  the only one or one that runs user tasks, kept the holder's completion
+  interrupt from arriving: the holder never woke, and the machine was
+  dead, with CPU 0's cursor and keyboard (`get-myos` writing a USB stick
+  on a laptop; `usb_fs_parallel` is the test). `block_until` halts with
+  interrupts on when nothing else can run, so the wake arrives.
 
 ### Waiting for any event
 

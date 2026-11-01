@@ -659,6 +659,17 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
                 ANY_WAITERS.fetch_sub(1, Ordering::SeqCst);
             }
             drop(tasks);
+            // The wake that ends this wait before it began may have made a
+            // task of this CPU runnable: it runs now. Otherwise a caller
+            // that wakes the waiter of a lock it takes and lets go on every
+            // pass (`poll` over a module's `SleepLock`, sndd's) sees its
+            // own wake here, looks again, and never sleeps: interrupts are
+            // masked in a syscall, so no tick preempts it, and the waiter
+            // it woke never ran (the one CPU of a machine was dead).
+            let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+            if queued_for(cpu) {
+                pick_and_switch();
+            }
             irq_restore(flags);
             return;
         }
