@@ -43,7 +43,12 @@ then the arch's own (`kernel/src/arch/*/power.rs`).
 
 - **ACPI** (`modules/acpi/src/power.rs`) takes the `_S5` sleep types from
   the DSDT through the AML interpreter (`/proc/acpi/s5`,
-  `docs/platform.md` "AML"). It uses only registers in system I/O space,
+  `docs/platform.md` "AML"). Before it writes them it clears and
+  disables the wake events, as ACPICA does (every GPE disabled and its
+  status cleared, the PM1 status cleared, the RTC alarm off), and it
+  writes the sleep type first and the sleep enable after: a wake event
+  the firmware left pending brings a machine straight back up, which
+  looks like a reboot. It uses only registers in system I/O space,
   which is what a PC has. A hardware-reduced platform (aarch64 under EDK2)
   uses PSCI.
 - **PSCI** is called through the conduit the device tree or the FADT
