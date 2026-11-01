@@ -55,6 +55,19 @@ struct Ec {
     command: u16,
 }
 
+/// The controller's steps that ran out of time, and its status when the
+/// last one did: `/proc/acpi/aml` and a failed read of the battery say so.
+static EC_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+static EC_LAST_STATUS: AtomicU32 = AtomicU32::new(0);
+
+/// A line on the controller's timeouts, empty when there were none.
+pub fn ec_note() -> String {
+    match EC_TIMEOUTS.load(Ordering::Relaxed) {
+        0 => String::new(),
+        n => format!("ec timeouts {n} (last status {:#04x})\n", EC_LAST_STATUS.load(Ordering::Relaxed)),
+    }
+}
+
 impl Ec {
     /// Wait until the status says `ready`.
     fn wait(&self, ready: impl Fn(u8) -> bool) -> Result<(), AmlError> {
@@ -64,6 +77,8 @@ impl Ec {
                 return Ok(());
             }
             if api().monotonic_ns() > end {
+                EC_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+                EC_LAST_STATUS.store(u32::from(inb(self.command)), Ordering::Relaxed);
                 return Err(AmlError::LibUnimplemented);
             }
             core::hint::spin_loop();
@@ -347,8 +362,14 @@ pub fn answer(interp: &Interpreter<Host>, power: &Power) -> ! {
 unsafe extern "C" fn read(buf: *mut u8, cap: usize) -> i32 {
     let api = api();
     let _one = READING.lock();
+    // An error names why, on one line: the panic that stopped the
+    // interpreter, or the controller's timeouts behind a slow answer.
+    let stopped = || {
+        let why = crate::aml::panic_line().unwrap_or_default();
+        format!("error interpreter stopped: {why} {}\n", ec_note().trim_end())
+    };
     let text = if crate::aml::stopped() {
-        String::from("error interpreter stopped\n")
+        stopped()
     } else {
         let asked = REQUEST.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
         api.wake(&REQUEST as *const _ as usize);
@@ -358,8 +379,11 @@ unsafe extern "C" fn read(buf: *mut u8, cap: usize) -> i32 {
             if ANSWERED.load(Ordering::Acquire) == asked {
                 break TEXT.lock().clone();
             }
-            if api.monotonic_ns() >= deadline || crate::aml::stopped() {
-                break String::from("error no answer from the interpreter\n");
+            if crate::aml::stopped() {
+                break stopped();
+            }
+            if api.monotonic_ns() >= deadline {
+                break format!("error no answer from the interpreter in {} s {}\n", ANSWER_NS / 1_000_000_000, ec_note().trim_end());
             }
             api.block_until(&ANSWERED as *const _ as usize, seq, deadline);
         }

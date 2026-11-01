@@ -179,7 +179,10 @@ as it is). As the interpreter may still panic, only its thread runs AML:
 it stays after the boot's work to answer the reads (`KernelApi::proc_set_reader`
 calls the module in the reading task, which asks the thread and waits 5
 seconds at most), and a read after a panic says `error interpreter
-stopped`. QEMU's PCs have no battery: the x86 test boots add an SSDT with
+stopped:` with the panic's line; a slow answer or a panic names the
+embedded controller's timed-out steps too (`ec timeouts N`).
+`/proc/acpi/aml` is read live, so a panic after the boot's work shows
+there as well. QEMU's PCs have no battery: the x86 test boots add an SSDT with
 one (`src/acpi_battery.rs`, test `battery`). The embedded controller
 path runs only on real laptops.
 

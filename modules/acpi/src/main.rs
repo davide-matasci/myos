@@ -204,6 +204,8 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
             source = b"AML interpreter";
         }
         publish_alloc(api, "acpi/aml", report.1.as_bytes());
+        // Read live from here on: what happens after the boot's work too.
+        let _ = api.proc_set_reader("acpi/aml", Some(aml::read_report));
     }
     if aml_ok {
         push(&mut s5_buf, &mut s5_len, b"slp_typa: ");
