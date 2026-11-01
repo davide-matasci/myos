@@ -7,22 +7,24 @@
 # Each session writes its PATH to a file in /tmp when it gets in: myos's
 # directories (DEFAULT_ROOT_PATH in localoptions.h; the shell keeps what it
 # inherits). Then a login on a pty: the pair is its session's controlling
-# terminal, /proc/self/tty names it and /dev/tty opens. The host needs an
-# ssh client (the CI container has one).
+# terminal, /proc/self/tty names it and /dev/tty opens; then a one-shot
+# command on a pty, and the host's /tmp/ssh-done once it saw all of that
+# pass (the key stays until then). The host needs an ssh client (the CI
+# container has one).
 
 ssh_two_clients() {
-	rm -f /tmp/ssh-ok-a /tmp/ssh-ok-b /tmp/ssh-tty
+	rm -f /tmp/ssh-ok-a /tmp/ssh-ok-b /tmp/ssh-tty /tmp/ssh-done
 	# The image has no key: the test's own, for this test only.
 	cp /lib/myos-tests/dropbear-testkey.pub /etc/dropbear/authorized_keys || return 1
 	echo "HOST dropbear 2222" >&3
 	i=0
-	while [ $i -lt 300 ] && ! { [ -f /tmp/ssh-ok-a ] && [ -f /tmp/ssh-ok-b ] && [ -f /tmp/ssh-tty ]; }; do
+	while [ $i -lt 300 ] && ! [ -f /tmp/ssh-done ]; do
 		sleep 1
 		i=$((i + 1))
 	done
 	rm /etc/dropbear/authorized_keys
 	ls /etc/dropbear
-	[ -f /tmp/ssh-ok-a ] && [ -f /tmp/ssh-ok-b ] && [ -f /tmp/ssh-tty ] || { ps; return 1; }
+	[ -f /tmp/ssh-done ] && [ -f /tmp/ssh-ok-a ] && [ -f /tmp/ssh-ok-b ] && [ -f /tmp/ssh-tty ] || { ps; return 1; }
 	[ -s /etc/dropbear/dropbear_ed25519_host_key ] || return 1
 	cat /tmp/ssh-ok-a /tmp/ssh-tty
 	[ "$(cat /tmp/ssh-ok-a)" = /bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc ] || return 1

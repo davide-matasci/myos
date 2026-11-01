@@ -6,8 +6,9 @@
 # (a parked accept plus the listen hold). Each session echoes its tag and
 # writes its PATH to /tmp/ssh-ok-<tag>, which the guest test waits for.
 # Then a login on a pty (`-tt`, commands on its input) writes its
-# controlling terminal and whether /dev/tty opens to /tmp/ssh-tty, and a
-# one-shot command on a pty must print its output (issue #304).
+# controlling terminal and whether /dev/tty opens to /tmp/ssh-tty, a
+# one-shot command on a pty must print its output (issue #304), and a last
+# session writes /tmp/ssh-done: everything passed.
 set -u
 port="${1:?port}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,6 +66,20 @@ tty_command() {
   return 1
 }
 
+# The host's last word, once every check above passed: the guest test
+# waits for /tmp/ssh-done before it takes the test key away. It used to
+# wait for the login's files only and remove the key while the one-shot
+# command's session was still to come, which then failed every time
+# ("Permission denied (publickey)") and the script retried it for its
+# five minutes.
+done_mark() {
+  local out
+  out="$(timeout 20 ssh "${ssh_opts[@]}" "root@127.0.0.1" ': > /tmp/ssh-done' 2>&1)" \
+    && return 0
+  echo "$out" > "$dir/err-done"
+  return 1
+}
+
 # Early SYNs before dropbear has armed accept leave half-open sessions on
 # slow arches: give it time, and never probe the port. B starts a second
 # after A so both are live together while the second SYN usually meets a
@@ -81,7 +96,9 @@ while (( SECONDS < deadline )); do
       echo "boot test: ssh $port: pty login ok" >&2
       if tty_command; then
         echo "boot test: ssh $port: pty command ok" >&2
-        exit 0
+        if done_mark; then
+          exit 0
+        fi
       fi
     fi
   fi
