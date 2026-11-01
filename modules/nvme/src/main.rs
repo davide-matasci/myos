@@ -302,8 +302,11 @@ fn setup(bar: usize, dma: i32) -> Result<Ctrl, &'static str> {
 
     let cap = r64(bar, REG_CAP);
     let dstrd = ((cap >> 32) & 0xF) as u32;
-    let mqes = (cap as u16).wrapping_add(1);
-    if mqes < ADMIN_QD || mqes < IO_QD {
+    // CAP.MQES counts from 0: 0xFFFF is the largest queue, 65536 entries,
+    // which a u16 sum wrapped to 0, refusing the controller that allows the
+    // most (a ThinkPad T15's Toshiba SSD, 1179:011a).
+    let mqes = (cap & 0xFFFF) as u32 + 1;
+    if mqes < u32::from(ADMIN_QD) || mqes < u32::from(IO_QD) {
         return Err("queues shorter than the driver's");
     }
     let mpsmin = ((cap >> 48) & 0xF) as u32;
