@@ -291,6 +291,12 @@ pub fn map_user_nocache_page(aspace: u64, va: u64, pa: u64, w: bool) {
     unsafe { (*l3)[l3_idx] = ent };
 }
 
+/// A framebuffer page at `pa` (`MYOS_MMAP_WRITE_COMBINE`): ordinary
+/// memory, as the framebuffers here are RAM, never executable.
+pub fn map_user_wc_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    map_user_page_prot(aspace, va, pa, w, false);
+}
+
 pub fn unmap_user_page(aspace: u64, va: u64) {
     let page = aarch64_user_page_idx(va);
     let l3_idx = page % USER_L3_PAGES;

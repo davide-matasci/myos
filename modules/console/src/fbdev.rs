@@ -15,7 +15,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use myos_abi::{FramebufferInfo, Lock, ModuleVfsOps, VfsStatInfo};
+use myos_abi::{FramebufferInfo, Lock, MYOS_MMAP_WRITE_COMBINE, ModuleVfsOps, VfsStatInfo};
 
 use crate::{FB, api};
 
@@ -265,8 +265,9 @@ unsafe extern "C" fn fb_release(path: *const u8, len: usize) -> i32 {
     0
 }
 
-/// `mmap` of `data`: the framebuffer page at `offset` (its physical address).
-unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize, _attrs: *mut u32) -> u64 {
+/// `mmap` of `data`: the framebuffer page at `offset` (its physical
+/// address), mapped write-combining.
+unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize, attrs: *mut u32) -> u64 {
     let (Some(Node::Data), Some(fb)) = (node(path, len), info()) else {
         return 0;
     };
@@ -275,6 +276,9 @@ unsafe extern "C" fn fb_mmap(path: *const u8, len: usize, offset: usize, _attrs:
     };
     if base % PAGE as u64 != 0 || offset % PAGE != 0 || offset >= fb_len(&fb).next_multiple_of(PAGE) {
         return 0;
+    }
+    if !attrs.is_null() {
+        unsafe { *attrs = MYOS_MMAP_WRITE_COMBINE };
     }
     base + offset as u64
 }

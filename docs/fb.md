@@ -55,10 +55,13 @@ way; nothing in the kernel knows about framebuffers.
 
 ## Limits
 
-- The user mapping is normal write-back memory. That is right for `ramfb`
-  (guest RAM). A framebuffer in a PCI BAR on real hardware would want
-  write-combining, which there is no type for (a hook can ask for uncached,
-  `MYOS_MMAP_UNCACHED`).
+- On x86_64 the user mapping is write-combining (`MYOS_MMAP_WRITE_COMBINE`,
+  PAT entry 5, which Limine sets to WC): a PC's framebuffer is the graphics
+  device's memory, which the firmware's MTRRs leave uncached under a
+  write-back mapping. Writes are fast; reads still go to the device, so a
+  program that reads pixels back keeps a copy in RAM (TinyX's shadow
+  framebuffer). On aarch64 and riscv64 it is ordinary memory: the
+  framebuffer is RAM there (`ramfb`, the Raspberry Pi's).
 - The framebuffer must fit in the process's mmap window (64 GiB,
   `docs/linux-compat.md`).
 - Programs written for Linux's `/dev/fb0` ioctls need a shim over these

@@ -13,6 +13,8 @@ const USER: u64 = 1 << 2;
 const PWT: u64 = 1 << 3;
 const PCD: u64 = 1 << 4;
 const HUGE: u64 = 1 << 7;
+/// A 4 KiB entry's PAT bit (the same bit as a directory's [`HUGE`]).
+const PAT_4K: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
 
 /// Physical address of `va` in `aspace`, if mapped.
@@ -228,6 +230,18 @@ pub fn map_user_device_page(aspace: u64, va: u64, pa: u64, w: bool) {
 /// DMA buffer of such a device): uncached like registers (PAT UC).
 pub fn map_user_nocache_page(aspace: u64, va: u64, pa: u64, w: bool) {
     map_user_device_page(aspace, va, pa, w);
+}
+
+/// A framebuffer page at `pa`, write-combining (PAT|PWT: PAT entry 5,
+/// which Limine sets to WC on every CPU), never executable. Ordinary
+/// write-back would come out uncached through the firmware's MTRRs for
+/// the device's memory, every pixel X draws a bus round trip.
+pub fn map_user_wc_page(aspace: u64, va: u64, pa: u64, w: bool) {
+    let mut flags = PRESENT | USER | PAT_4K | PWT | NX;
+    if w {
+        flags |= WRITE;
+    }
+    map_page_x86(aspace, va, pa, flags);
 }
 
 pub fn unmap_user_page(aspace: u64, va: u64) {

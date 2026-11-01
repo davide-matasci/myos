@@ -1899,7 +1899,8 @@ pub(crate) fn do_mmap(hint: usize, len: usize, prot: usize, flags: usize, fd: is
         let first = fs::device_frame(node, offset);
         let kind = task::MMAP_DEVICE
             | if first.is_some_and(|f| f.uncached) { task::MMAP_UNCACHED } else { 0 }
-            | if first.is_some_and(|f| f.nocache) { task::MMAP_NOCACHE } else { 0 };
+            | if first.is_some_and(|f| f.nocache) { task::MMAP_NOCACHE } else { 0 }
+            | if first.is_some_and(|f| f.write_combine) { task::MMAP_WRITE_COMBINE } else { 0 };
         let Some(va) = record(prot as u32 | kind, None) else {
             return SYSERR;
         };
