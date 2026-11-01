@@ -56,6 +56,7 @@ static NEXT_BLINK_NS: AtomicU64 = AtomicU64::new(0);
 #[inline]
 pub fn note_tick() {
     if crate::smp::cpu_id() != 0 {
+        crate::task::bsp_check(monotonic_ns());
         return;
     }
     TICKS.fetch_add(1, Ordering::Relaxed);

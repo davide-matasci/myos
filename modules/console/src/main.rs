@@ -164,6 +164,31 @@ unsafe extern "C" fn status_line_try(
     1
 }
 
+/// [`status_line_try`] whatever holds the screen: the kernel's report of a
+/// dead CPU 0, which may be the holder. A live holder's drawing and this
+/// line interleave on the screen, which the report is worth.
+unsafe extern "C" fn status_line_force(
+    tag: *const u8,
+    tag_len: usize,
+    kind: u32,
+    label: *const u8,
+    label_len: usize,
+) -> i32 {
+    let color = match kind {
+        CONSOLE_STATUS_OK => fb::OK,
+        CONSOLE_STATUS_FAIL => fb::FAIL,
+        CONSOLE_STATUS_WARN => fb::WARN,
+        _ => fb::INFO,
+    };
+    // SAFETY: the screen stays usable torn; the holder, if alive, draws
+    // on from its own state.
+    let screens = unsafe { FB.force() };
+    if let Some(w) = screens.get(0) {
+        w.put_status_line(text(tag, tag_len), color, text(label, label_len));
+    }
+    1
+}
+
 /// Put screen `n` on the framebuffer, the one shown before kept in its
 /// cells. While a program has the screen ([`fbdev`]) it only becomes the
 /// one shown when the program gives the screen back.
@@ -277,6 +302,7 @@ static OPS: ModuleConsoleOps = ModuleConsoleOps {
     write_kind,
     status_line,
     status_line_try,
+    status_line_force,
     show,
     winsize,
     blink,

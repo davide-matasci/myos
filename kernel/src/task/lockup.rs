@@ -29,6 +29,17 @@
 //! console module's screen included (`console::status_warn_now` tries the
 //! screen through `ModuleConsoleOps::status_line_try` and the serial port
 //! only once that took).
+//!
+//! CPU 0 is watched the other way round ([`bsp_check`]): it counts the
+//! ticks, every device's interrupt goes to it on x86 and its tick blinks
+//! the cursor, so when it stops the machine is dead at once, cursor,
+//! keyboard and ^C with it (the freeze a laptop showed during `get-myos`
+//! on a USB stick). Every other CPU's tick looks at CPU 0's tick count:
+//! unmoved for 10 s (its idle halts last a second at most), CPU 0 is
+//! reported the same way, by the first CPU to see it, and since CPU 0 may
+//! hold the console's locks the lines go out whatever is held
+//! (`console::status_force`): the last words of a machine, not a report
+//! to keep tidy.
 
 use super::*;
 use core::fmt::Write;
@@ -151,6 +162,46 @@ pub fn lockup_check(now: u64) {
             REPORTED[cpu].store(true, Ordering::Relaxed);
         }
     }
+}
+
+/// CPU 0's tick count as the other CPUs last saw it, when it last moved
+/// (0: never looked), whether its stall was reported, and which CPU is
+/// reporting it (one at a time).
+static BSP_TICKS: AtomicU64 = AtomicU64::new(0);
+static BSP_SINCE: AtomicU64 = AtomicU64::new(0);
+static BSP_REPORTED: AtomicBool = AtomicBool::new(false);
+static BSP_REPORTING: AtomicBool = AtomicBool::new(false);
+
+/// From the timer interrupt of every CPU but 0 (`time::note_tick`): CPU
+/// 0's ticks must move.
+pub fn bsp_check(now: u64) {
+    if !PREEMPT_ON.load(Ordering::SeqCst) {
+        return;
+    }
+    let ticks = crate::time::ticks();
+    if ticks != BSP_TICKS.load(Ordering::Relaxed) || BSP_SINCE.load(Ordering::Relaxed) == 0 {
+        BSP_TICKS.store(ticks, Ordering::Relaxed);
+        let since = BSP_SINCE.swap(now, Ordering::Relaxed);
+        if BSP_REPORTED.swap(false, Ordering::Relaxed) {
+            let mut line = Line::new();
+            let _ = write!(line, "cpu 0 went on after {} s", now.saturating_sub(since) / 1_000_000_000);
+            crate::console::status_force(line.as_str());
+        }
+        return;
+    }
+    let stuck = now.saturating_sub(BSP_SINCE.load(Ordering::Relaxed));
+    if stuck < STUCK_NS || BSP_REPORTED.load(Ordering::Relaxed) || BSP_REPORTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(at) = sample(0) {
+        crate::console::status_force(at.as_str());
+    }
+    let mut line = Line::new();
+    let _ = write!(line, "cpu 0 stuck for {} s, no ticks: ", stuck / 1_000_000_000);
+    describe(&mut line, CURRENT[0].load(Ordering::Relaxed));
+    crate::console::status_force(line.as_str());
+    BSP_REPORTED.store(true, Ordering::Relaxed);
+    BSP_REPORTING.store(false, Ordering::SeqCst);
 }
 
 /// `pid P NAME (slot S)`, or the slot alone when the task table is held

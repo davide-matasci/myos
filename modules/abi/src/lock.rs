@@ -42,6 +42,18 @@ impl<T> Lock<T> {
         LockGuard { lock: self }
     }
 
+    /// The value whoever holds the lock: for the last words of a machine
+    /// whose holder is dead (the console's screen, a dead CPU 0's).
+    ///
+    /// # Safety
+    ///
+    /// A live holder's changes and the caller's are interleaved: the
+    /// caller must accept the value torn, and leave it usable.
+    pub unsafe fn force(&self) -> &mut T {
+        // SAFETY: the caller's, above.
+        unsafe { &mut *self.value.get() }
+    }
+
     /// The lock if nobody holds it (interrupt context).
     pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
         self.held

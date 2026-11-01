@@ -346,6 +346,21 @@ pub fn status_warn_now(label: &str) -> bool {
     true
 }
 
+/// `[ WARN ] label` whatever is held: the report of a dead CPU 0
+/// (`task::bsp_check`), which may hold the console and the module's
+/// screen itself and never let go. Straight to the serial port, and to the
+/// screen through `ModuleConsoleOps::status_line_force`; a live holder's
+/// line may come out garbled, which the report is worth.
+pub fn status_force(label: &str) {
+    serial_status("WARN", label);
+    if let Some(ops) = OPS.get() {
+        let tag = "WARN";
+        unsafe {
+            (ops.status_line_force)(tag.as_ptr(), tag.len(), CONSOLE_STATUS_WARN, label.as_ptr(), label.len())
+        };
+    }
+}
+
 /// `[ .. ] label` — in-progress boot step (blue tag on the screen).
 pub fn status_progress(label: &str) {
     write_status("..", CONSOLE_STATUS_INFO, label);
