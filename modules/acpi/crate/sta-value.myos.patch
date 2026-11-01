@@ -1,0 +1,64 @@
+acpi: a _STA's value read out of a field, not a panic
+
+The namespace initialisation took a device's _STA result for an integer
+and panicked otherwise (`let Object::Integer(result) = *result else {
+panic!() }`). A ThinkPad T15's firmware has a _STA whose result is not
+one: most likely a _STA method that ends without a Return on some path
+(the interpreter then gives an uninitialized object), or one returning a
+field or a reference to one rather than its value. The result is now read
+out of a field (or a buffer field), a buffer or a string converts, and
+anything else counts as no _STA (the device present, as ACPICA takes a
+_STA it cannot evaluate), with a warning.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -210,6 +210,24 @@
+         handlers.insert(space, Box::new(handler));
+     }
+ 
++    /// The integer a `_STA` returned: firmware returns a field or a reference to one as often as
++    /// an integer (the object, not its value, when the method returns a name), and a buffer or a
++    /// string converts. `None` for anything else.
++    fn status_value(&self, result: WrappedObject) -> Option<u64> {
++        let result = result.unwrap_reference();
++        match *result {
++            Object::Integer(value) => Some(value),
++            Object::FieldUnit(ref field) => self.do_field_read(field).ok()?.to_integer(8).ok(),
++            Object::BufferField { length, .. } if length <= 64 => {
++                let mut bytes = [0u8; 8];
++                result.read_buffer_field(&mut bytes).ok()?;
++                Some(u64::from_le_bytes(bytes))
++            }
++            Object::Buffer(_) | Object::String(_) => result.to_integer(8).ok(),
++            _ => None,
++        }
++    }
++
+     /// Initialize the namespace - this should be called after all tables have been loaded and
+     /// operation region handlers registered. Specifically, it will call relevant `_STA`, `_INI`,
+     /// and `_REG` methods.
+@@ -252,11 +270,17 @@
+                     let should_initialize = match self
+                         .evaluate_if_present(AmlName::from_str("_STA").unwrap().resolve(path)?, vec![])
+                     {
+-                        Ok(Some(result)) => {
+-                            let Object::Integer(result) = *result else { panic!() };
+-                            let status = DeviceStatus(result);
+-                            status.present() && status.functioning()
+-                        }
++                        Ok(Some(result)) => match self.status_value(result) {
++                            Some(result) => {
++                                let status = DeviceStatus(result);
++                                status.present() && status.functioning()
++                            }
++                            // Not a value at all: as if the device had no `_STA`.
++                            None => {
++                                warn!("_STA for device {} returned no integer", path);
++                                true
++                            }
++                        },
+                         Ok(None) => true,
+                         Err(err) => {
+                             warn!("Failed to evaluate _STA for device {}: {:?}", path, err);
