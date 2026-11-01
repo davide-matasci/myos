@@ -1,0 +1,64 @@
+acpi: LNot takes one operand; Not, FindSetLeftBit and FindSetRightBit store their result
+
+LNot was put in flight for two operands, like the comparisons it is
+listed with: it took the next term of the method as its second, and the
+logical op then panicked on the count (a ThinkPad T15's battery methods
+use LNot). Not, FindSetLeftBit and FindSetRightBit are in flight for an
+operand and a target, but their op took only the operand (a panic on
+the count again) and never stored the result in the target; Not gave a
+logical not, not the bitwise complement. Now LNot takes one operand, and
+the three take both, store their result and Not complements in the
+DSDT revision's integer width.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -1608,9 +1608,11 @@
+                     context.start(OpInFlight::new(Opcode::CreateField, &[ResolveBehaviour::TermArg; 3]))
+                 }
+ 
++                // `LNot (Operand)` takes one operand: in flight for two, it took the next term as
++                // its second and then panicked on the count.
++                Opcode::LNot => context.start(OpInFlight::new(opcode, &[ResolveBehaviour::TermArg])),
+                 Opcode::LAnd
+                 | Opcode::LOr
+-                | Opcode::LNot
+                 | Opcode::LNotEqual
+                 | Opcode::LLessEqual
+                 | Opcode::LGreaterEqual
+@@ -1801,7 +1803,9 @@
+     }
+ 
+     fn do_unary_maths(&self, context: &mut MethodContext, op: OpInFlight) -> Result<(), AmlError> {
+-        let [Argument::Object(operand)] = &op.arguments[..] else { panic!() };
++        // `Not`, `FindSetLeftBit` and `FindSetRightBit` take an operand and a target (they are
++        // in flight for both), and store their result in it.
++        let [Argument::Object(operand), target] = &op.arguments[..] else { panic!() };
+         let operand = operand.clone().unwrap_transparent_reference().as_integer()?;
+ 
+         let result = match op.op {
+@@ -1827,17 +1831,19 @@
+                     (operand.trailing_zeros() + 1) as u64
+                 }
+             }
++            // The bitwise complement, in the DSDT revision's integer width.
+             Opcode::Not => {
+-                if operand == 0 {
+-                    u64::MAX
++                if self.dsdt_revision >= 2 {
++                    !operand
+                 } else {
+-                    0
++                    u64::from(!(operand as u32))
+                 }
+             }
+             _ => panic!(),
+         };
+ 
+-        context.contribute_arg(Argument::Object(Object::Integer(result).wrap()));
++        let result = self.do_store(target, Object::Integer(result).wrap())?;
++        context.contribute_arg(Argument::Object(result));
+         context.retire_op(op);
+         Ok(())
+     }
