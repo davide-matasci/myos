@@ -9,9 +9,11 @@
 //!     Scope (\_SB) {
 //!         Device (BAT0) {
 //!             Name (_HID, EisaId ("PNP0C0A"))
-//!             // Present when Match finds 2 at index 1 (the step where a
-//!             // ThinkPad T15's AML uses it: the devices' _STA and _INI).
+//!             // Present when Match finds 2 at index 1; the Notify is
+//!             // dropped (both at the step where a ThinkPad T15's AML
+//!             // uses them: the devices' _STA and _INI).
 //!             Method (_STA) {
+//!                 Notify (BAT0, 0x80)
 //!                 If (Match (Package () { 1, 2, 3 }, MEQ, 2, MTR, 0, 0) == 1) {
 //!                     Return (0x1F)
 //!                 }
@@ -48,6 +50,7 @@ const IF_OP: u8 = 0xa0;
 const RETURN_OP: u8 = 0xa4;
 const LEQUAL_OP: u8 = 0x93;
 const MATCH_OP: u8 = 0x89;
+const NOTIFY_OP: u8 = 0x86;
 /// Match's comparisons: equal, always true.
 const MEQ: u8 = 1;
 const MTR: u8 = 0;
@@ -127,6 +130,7 @@ fn ssdt() -> Vec<u8> {
             method(
                 b"_STA",
                 vec![
+                    [&[NOTIFY_OP][..], b"BAT0", &int(0x80)].concat(),
                     [
                         vec![IF_OP],
                         pkg([

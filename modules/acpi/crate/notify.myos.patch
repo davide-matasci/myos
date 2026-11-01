@@ -1,0 +1,27 @@
+acpi: retire Notify
+
+The interpreter puts Notify (Object, Value) in flight but has no case
+for it when its operands are done, so it panicked with "Unexpected
+operation has created in-flight op!": a ThinkPad T15's _INIs notify.
+The handler has no notification hook and nothing in myos listens for
+them, so the op only retires.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -983,6 +983,14 @@
+                             context.retire_op(op);
+                         }
+                     }
++                    Opcode::Notify => {
++                        /*
++                         * The firmware tells the OS about an event on a device (a battery's
++                         * status changed, a dock, a thermal trip). The handler is not asked:
++                         * nothing here listens for notifications, so the op only retires.
++                         */
++                        context.retire_op(op);
++                    }
+                     _ => panic!("Unexpected operation has created in-flight op!"),
+                 }
+             }

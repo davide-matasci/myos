@@ -38,6 +38,9 @@ tar -xzf "$crate" -C "$tmp"
 for p in "$HERE"/*.myos.patch; do
   patch -d "$tmp/acpi-$ACPI_VERSION" -p1 --batch -s <"$p"
 done
+# Each patch is made against the crate alone, so the later ones apply
+# with an offset, which leaves the file before them as *.orig.
+find "$tmp/acpi-$ACPI_VERSION/src" -name '*.orig' -delete
 rm -rf "$DEST"
 mv "$tmp/acpi-$ACPI_VERSION" "$DEST"
 printf '%s\n' "$want" >"$STAMP"
