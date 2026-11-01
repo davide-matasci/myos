@@ -252,6 +252,29 @@ pub fn panicked(info: &core::panic::PanicInfo) -> bool {
     true
 }
 
+/// The line the panic that stopped the interpreter left in the report.
+pub fn panic_line() -> Option<String> {
+    let r = REPORT.lock();
+    let line = r.lines().rev().find(|l| l.starts_with("interpreter panicked"))?;
+    Some(String::from(line.trim_start_matches("interpreter panicked: ")))
+}
+
+/// `/proc/acpi/aml`'s reader: the report as it is now, a panic after the
+/// boot's work (in a read of `/proc/acpi/battery`) and the controller's
+/// timeouts included; it used to be the text at the boot, which showed
+/// none of that.
+pub unsafe extern "C" fn read_report(buf: *mut u8, cap: usize) -> i32 {
+    let mut text = REPORT.lock().clone();
+    if STATE.load(Ordering::Acquire) == RUNNING {
+        text.push_str("interpreter: still running (its boot work past the deadline)\n");
+    }
+    text.push_str(&battery::ec_note());
+    let n = text.len().min(cap);
+    // SAFETY: the kernel gave `buf` with room for `cap` bytes.
+    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, n) };
+    text.len() as i32
+}
+
 /// The interpreter's thread stopped on a panic.
 pub fn stopped() -> bool {
     STATE.load(Ordering::Acquire) == PANICKED
