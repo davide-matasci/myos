@@ -618,6 +618,20 @@ acpi_battery() {
 }
 t -t smoke,acpi battery acpi_battery
 
+# The firmware's tables in one file for a disassembler elsewhere
+# (docs/platform.md "The tables"): the DSDT first, then every table the
+# root lists, each whole; on a PC the test boots' SSDT (src/acpi_battery.rs,
+# OEM table id BATTERY) among them.
+acpi_dump() {
+	[ -e /proc/acpi/dump ] || return 0
+	[ "$(dd if=/proc/acpi/dump bs=4 count=1 2> /dev/null)" = DSDT ] || { echo "starts with:"; dd if=/proc/acpi/dump bs=16 count=1 2> /dev/null | od -c; return 1; }
+	grep -q '^intc apic ' /proc/platform || return 0
+	tr -c 'A-Z' '\n' < /proc/acpi/dump | grep -qx FACP &&
+		tr -c 'A-Z' '\n' < /proc/acpi/dump | grep -qx BATTERY ||
+		{ echo "no FACP or BATTERY SSDT in /proc/acpi/dump"; cat /proc/acpi/tables; return 1; }
+}
+t -t smoke,acpi acpi_dump acpi_dump
+
 # Interrupt domains (irqchip, docs/interrupts.md "Interrupt domains"):
 # the pl061 module makes the PL061 GPIO controller's lines interrupts of
 # their own, behind the controller's one. Its probe sets an idle input to

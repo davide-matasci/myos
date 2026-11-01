@@ -183,6 +183,31 @@ stopped`. QEMU's PCs have no battery: the x86 test boots add an SSDT with
 one (`src/acpi_battery.rs`, test `battery`). The embedded controller
 path runs only on real laptops.
 
+### The tables
+
+`/proc/acpi/dump` holds the firmware's tables, each whole (header and
+all): the DSDT, then every table the XSDT (or RSDT) lists, in its
+order. Each one's length is in its header (bytes 4 to 7), which is how
+they are told apart. It is for reading a machine's AML on another one,
+when the interpreter stops on something it lacks (`/proc/acpi/aml`):
+copy it off (a FAT USB stick, `scp`), split it and disassemble it with
+ACPICA's `iasl`:
+
+```sh
+python3 - dump <<'PY'
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+i = n = 0
+while i + 8 <= len(d):
+    sig, size = d[i:i + 4].decode(), struct.unpack_from("<I", d, i + 4)[0]
+    open(f"{n:02d}-{sig}.dat", "wb").write(d[i:i + size])
+    i, n = i + size, n + 1
+PY
+iasl -e *-SSDT.dat -d 00-DSDT.dat   # 00-DSDT.dsl
+```
+
+Test `acpi_dump`.
+
 ### The `_S5` scan
 
 The other arches, and x86_64 when the interpreter failed, find

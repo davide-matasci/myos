@@ -115,6 +115,8 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
 
     let mut dsdt_phys = 0u64;
     let mut fadt: &[u8] = &[];
+    // Every table the root lists, for `/proc/acpi/dump`.
+    let mut listed: alloc::vec::Vec<(usize, usize)> = alloc::vec::Vec::new();
     let mut madt_cpus = 0u32;
     let mut mcfg_base = 0u64;
 
@@ -140,6 +142,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
                 let Some(th) = (unsafe { read_va(va, 8) }) else { continue };
                 let sig = &th[0..4];
                 let tlen = u32::from_le_bytes(th[4..8].try_into().unwrap_or([0; 4]));
+                listed.push((va, tlen as usize));
                 push(&mut tables_buf, &mut tables_len, sig);
                 push(&mut tables_buf, &mut tables_len, b"  0x");
                 hex_u64(&mut tables_buf, &mut tables_len, phys);
@@ -221,6 +224,8 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     power::register(api, fadt, aml_ok.then_some((typa, typb)));
 
     // Leak buffers into procfs.
+    let dsdt = (dsdt_phys != 0).then(|| phys_to_va(dsdt_phys, hhdm));
+    publish_alloc(api, "acpi/dump", &dump(dsdt, &listed));
     publish_alloc(api, "acpi/info", &info_buf[..info_len]);
     publish_alloc(api, "acpi/tables", &tables_buf[..tables_len]);
     publish_alloc(api, "acpi/s5", &s5_buf[..s5_len]);
@@ -314,6 +319,34 @@ fn count_madt_cpus(va: usize, len: usize) -> u32 {
         off += entry_len;
     }
     n
+}
+
+/// The largest table `/proc/acpi/dump` takes (a laptop's DSDT is a few
+/// hundred KiB).
+const DUMP_TABLE_MAX: usize = 4 << 20;
+
+/// `/proc/acpi/dump`: the DSDT (at `dsdt`) and every table the root lists
+/// (`listed`: address, length), each whole, header and all, one after the
+/// other: the firmware's AML for a disassembler on another machine
+/// (`docs/platform.md` "The tables"). Each table's length is in its
+/// header, which is how they are told apart.
+fn dump(dsdt: Option<usize>, listed: &[(usize, usize)]) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::new();
+    let table_len = |va: usize| -> Option<usize> {
+        let hdr = unsafe { read_va(va, 8) }?;
+        let len = u32::from_le_bytes(hdr[4..8].try_into().ok()?) as usize;
+        (36..=DUMP_TABLE_MAX).contains(&len).then_some(len)
+    };
+    let dsdt = dsdt.and_then(|va| Some((va, table_len(va)?)));
+    for (va, len) in dsdt.into_iter().chain(listed.iter().copied()) {
+        if !(36..=DUMP_TABLE_MAX).contains(&len) {
+            continue;
+        }
+        if let Some(table) = unsafe { read_va(va, len) } {
+            out.extend_from_slice(table);
+        }
+    }
+    out
 }
 
 /// Scan DSDT AML for `Name (_S5, Package (N) { … })` and read first two integers.
