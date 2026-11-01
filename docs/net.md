@@ -95,6 +95,7 @@ applied into `target/smoltcp-myos` by `prepare.sh` (`PORT_PREPARE`):
 | `local-pair` | `lo` and the NIC send only their own traffic, without blocking each other |
 | `multi-home` | each interface sends only from its own addresses; each DHCP socket gets its own NIC's answers |
 | `syn-to-connection` | a segment goes to an existing connection before the listeners, as on Linux (see "Listening") |
+| `time-wait-reopen` | a SYN to a connection in TIME-WAIT, from after what the peer sent on it, opens a new connection in its place (RFC 1122 4.2.2.13), as on Linux |
 | `listen-family` | a listener or UDP socket on no address takes one IP version only (see "Listening") |
 
 ## The socket library
@@ -212,6 +213,12 @@ on an index a process still holds.
   answer, as Linux does for an orphaned connection.
 - At most 16 sockets wait out TIME-WAIT (10 s); past that the oldest go,
   so a burst of loopback connections does not outgrow netd's 16 MiB heap.
+  A SYN to one of them from the same peer port, with a sequence number
+  after what the peer sent on it, opens a new connection in its place,
+  its sequence numbers above the old one's (`time-wait-reopen`): Linux
+  hands a loopback port out again within seconds, and a SYN dropped for
+  the TIME-WAIT came again only on the peer's timer (QEMU's after 6 s),
+  or never.
 - A listener is freed with its socket when its last holder closes it, and
   its unaccepted connections are reset, so a restarted server does not
   share its port with its old listener.
@@ -313,3 +320,7 @@ multi-NIC and loopback tests are in `user/c/test.sh` (tag `netfs`).
 - **`syn-to-connection`.** A retransmitted SYN reached a fresh listener
   and reset the first connection; QEMU retransmits on the host's clock,
   which made this common.
+- **`time-wait-reopen`** (issue #656). A SYN to a connection in TIME-WAIT
+  was dropped without an answer for the 10 s; the host had handed the
+  port of a connection the test had just closed out again, and the
+  listen test was one connection short.

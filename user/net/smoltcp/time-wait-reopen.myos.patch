@@ -1,0 +1,198 @@
+smoltcp: a SYN reopens a connection in TIME-WAIT
+
+A SYN to a connection in TIME-WAIT was dropped without an answer ("every
+packet after the initial SYN must be an acknowledgement") for the 10 s
+of the TIME-WAIT. The peer has the port again: Linux hands a loopback
+port out again within seconds, and the host of the boot tests did, for
+the connection the listen test had just closed; QEMU then sent the SYN
+again only on its timer, 6 s and 18 s later, and the smoke was one
+connection short (issue #656). RFC 1122 4.2.2.13 lets a SYN from after
+what the peer sent on the old connection (so no old duplicate) open a
+new connection from TIME-WAIT, with sequence numbers above the old
+one's, and Linux does so. Now the interface ends the TIME-WAIT for such
+a SYN and gives it to a listener, whose new connection starts 65537
+above the old one's last sequence number, as Linux's does. With a test
+(tests/ipv4.rs). Derived from smoltcp, so under smoltcp's license
+(0BSD).
+
+diff --git a/src/iface/interface/tcp.rs b/src/iface/interface/tcp.rs
+--- a/src/iface/interface/tcp.rs
++++ b/src/iface/interface/tcp.rs
+@@ -20,7 +20,11 @@ impl InterfaceInner {
+ 
+         // A connection's own socket first, then the listeners: a SYN its
+         // peer sent again belongs to the connection it opened, whichever
+-        // slot a listener on the port has (myos).
++        // slot a listener on the port has (myos). A SYN reopening a
++        // connection in TIME-WAIT ends that one and goes on to a listener,
++        // where the new connection starts above the old one's sequence
++        // numbers (myos, `reopened_from_time_wait`).
++        let mut reopened = None;
+         for listeners in [false, true] {
+             for tcp_socket in sockets
+                 .items_mut()
+@@ -29,9 +33,15 @@ impl InterfaceInner {
+                 if (tcp_socket.state() == State::Listen) == listeners
+                     && tcp_socket.accepts(self, &ip_repr, &tcp_repr)
+                 {
+-                    return tcp_socket
+-                        .process(self, &ip_repr, &tcp_repr)
+-                        .map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
++                    if tcp_socket.reopened_from_time_wait(&tcp_repr) {
++                        reopened = Some(tcp_socket.end_time_wait());
++                        continue;
++                    }
++                    let reply = tcp_socket.process(self, &ip_repr, &tcp_repr);
++                    if let Some(last) = reopened {
++                        tcp_socket.sequence_above(last);
++                    }
++                    return reply.map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
+                 }
+             }
+         }
+diff --git a/src/iface/interface/tests/ipv4.rs b/src/iface/interface/tests/ipv4.rs
+--- a/src/iface/interface/tests/ipv4.rs
++++ b/src/iface/interface/tests/ipv4.rs
+@@ -1307,3 +1307,99 @@ fn test_tcp_syn_retransmit_not_to_listener() {
+     assert_eq!(sockets.get::<tcp::Socket>(fresh).state(), tcp::State::Listen);
+     assert_eq!(sockets.get::<tcp::Socket>(conn).state(), tcp::State::SynReceived);
+ }
++
++/// myos: a SYN to a connection in TIME-WAIT, from the same peer port and
++/// after what the peer sent on it, opens a new connection in its place
++/// (RFC 1122 4.2.2.13, as Linux does): the TIME-WAIT ends, a listener takes
++/// the SYN, and the new connection's sequence numbers start above the old
++/// one's. An old duplicate SYN (from before) is still dropped. Linux hands
++/// a loopback port out again within seconds; dropped for the 10 s of the
++/// TIME-WAIT, the SYN came again on the peer's timer or never (a listen
++/// test's connection lost, issue #656).
++#[test]
++#[cfg(all(feature = "medium-ip", feature = "socket-tcp"))]
++fn test_tcp_syn_reopens_time_wait() {
++    use crate::socket::tcp;
++
++    let (mut iface, mut sockets, mut device) = setup(Medium::Ip);
++    let new_socket = || {
++        tcp::Socket::new(
++            tcp::SocketBuffer::new(vec![0; 64]),
++            tcp::SocketBuffer::new(vec![0; 64]),
++        )
++    };
++    let peer = Ipv4Address::new(192, 168, 1, 2);
++    let own = Ipv4Address::new(192, 168, 1, 1);
++    let segment = |control, seq: i32, ack: Option<i32>| {
++        let repr = TcpRepr {
++            src_port: 4242,
++            dst_port: 80,
++            control,
++            seq_number: TcpSeqNumber(seq),
++            ack_number: ack.map(TcpSeqNumber),
++            window_len: 256,
++            window_scale: None,
++            max_seg_size: None,
++            sack_permitted: false,
++            sack_ranges: [None, None, None],
++            timestamp: None,
++            payload: &[],
++        };
++        let mut bytes = vec![0u8; repr.buffer_len()];
++        repr.emit(
++            &mut TcpPacket::new_unchecked(&mut bytes),
++            &peer.into(),
++            &own.into(),
++            &ChecksumCapabilities::default(),
++        );
++        let ip = IpRepr::Ipv4(Ipv4Repr {
++            src_addr: peer,
++            dst_addr: own,
++            next_header: IpProtocol::Tcp,
++            payload_len: repr.buffer_len(),
++            hop_limit: 64,
++        });
++        (ip, bytes)
++    };
++    let state = |sockets: &SocketSet<'_>, h| sockets.get::<tcp::Socket>(h).state();
++
++    // A connection, closed by this side first (the peer's SYN, its ACK of
++    // the SYN-ACK, this side's close, the peer's ACK of the FIN with its own
++    // FIN): this side waits in TIME-WAIT. The test ISN is 10000, so the
++    // peer's ACKs are 10001 and, after the FIN, 10002.
++    let conn = sockets.add(new_socket());
++    sockets.get_mut::<tcp::Socket>(conn).listen(80).unwrap();
++    let (ip, bytes) = segment(TcpControl::Syn, 1000, None);
++    iface.inner.process_tcp(&mut sockets, ip, &bytes);
++    let (ip, bytes) = segment(TcpControl::None, 1001, Some(10001));
++    iface.inner.process_tcp(&mut sockets, ip, &bytes);
++    assert_eq!(state(&sockets, conn), tcp::State::Established);
++    sockets.get_mut::<tcp::Socket>(conn).close();
++    let (ip, bytes) = segment(TcpControl::Fin, 1001, Some(10002));
++    iface.inner.process_tcp(&mut sockets, ip, &bytes);
++    assert_eq!(state(&sockets, conn), tcp::State::TimeWait);
++    device.tx_queue.clear();
++
++    // A listener on the port again, in a later slot; a SYN from before what
++    // the peer sent (an old duplicate) is dropped.
++    let fresh = sockets.add(new_socket());
++    sockets.get_mut::<tcp::Socket>(fresh).listen(80).unwrap();
++    let (ip, bytes) = segment(TcpControl::Syn, 900, None);
++    assert_eq!(iface.inner.process_tcp(&mut sockets, ip, &bytes), None);
++    assert_eq!(state(&sockets, conn), tcp::State::TimeWait);
++    assert_eq!(state(&sockets, fresh), tcp::State::Listen);
++
++    // A SYN from after it reopens: the TIME-WAIT ends, the listener takes
++    // the SYN, and its SYN-ACK starts above the old connection's 10002.
++    let (ip, bytes) = segment(TcpControl::Syn, 5000, None);
++    assert_eq!(iface.inner.process_tcp(&mut sockets, ip, &bytes), None);
++    assert_eq!(state(&sockets, conn), tcp::State::Closed);
++    assert_eq!(state(&sockets, fresh), tcp::State::SynReceived);
++    iface.poll(Instant::ZERO, &mut device, &mut sockets);
++    let frame = device.tx_queue.pop_front().expect("the SYN-ACK");
++    let packet = Ipv4Packet::new_checked(&frame[..]).unwrap();
++    let syn_ack = TcpPacket::new_checked(packet.payload()).unwrap();
++    assert!(syn_ack.syn() && syn_ack.ack());
++    assert_eq!(syn_ack.ack_number(), TcpSeqNumber(5001));
++    assert!(syn_ack.seq_number() > TcpSeqNumber(10002 + 65535));
++}
+diff --git a/src/socket/tcp.rs b/src/socket/tcp.rs
+--- a/src/socket/tcp.rs
++++ b/src/socket/tcp.rs
+@@ -1487,6 +1487,39 @@ impl<'a> Socket<'a> {
+         }
+     }
+ 
++    /// myos: whether `repr`, which this socket accepts, is a SYN reopening the
++    /// connection from TIME-WAIT: the peer has the port again (Linux hands a
++    /// loopback port out again within seconds) and starts after what it sent
++    /// on the old connection, so it is no old duplicate. RFC 1122 4.2.2.13
++    /// allows the new connection, and Linux opens it; the interface then ends
++    /// this socket's TIME-WAIT and gives the SYN to a listener. Dropped, as
++    /// before, the SYN came again only on the peer's timer (QEMU's after 6 s,
++    /// then 18 s), or never.
++    pub(crate) fn reopened_from_time_wait(&self, repr: &TcpRepr) -> bool {
++        self.state == State::TimeWait
++            && repr.control == TcpControl::Syn
++            && repr.ack_number.is_none()
++            && repr.seq_number > self.remote_seq_no + self.rx_buffer.len()
++    }
++
++    /// myos: end the TIME-WAIT for a reopening SYN: the last sequence number
++    /// this connection sent, which the new connection's must start above.
++    pub(crate) fn end_time_wait(&mut self) -> TcpSeqNumber {
++        let last = self.local_seq_no;
++        self.reset();
++        last
++    }
++
++    /// myos: this connection just opened in a TIME-WAIT's place: its sequence
++    /// numbers start above the old connection's `last`, as Linux's do, so the
++    /// peer takes no late segment of the old connection for one of this one.
++    pub(crate) fn sequence_above(&mut self, last: TcpSeqNumber) {
++        if self.state == State::SynReceived {
++            self.local_seq_no = last + 65535 + 2;
++            self.remote_last_seq = self.local_seq_no;
++        }
++    }
++
+     pub(crate) fn process(
+         &mut self,
+         cx: &mut Context,
