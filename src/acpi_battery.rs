@@ -9,7 +9,14 @@
 //!     Scope (\_SB) {
 //!         Device (BAT0) {
 //!             Name (_HID, EisaId ("PNP0C0A"))
-//!             Name (_STA, 0x1F)
+//!             // Present when Match finds 2 at index 1 (the step where a
+//!             // ThinkPad T15's AML uses it: the devices' _STA and _INI).
+//!             Method (_STA) {
+//!                 If (Match (Package () { 1, 2, 3 }, MEQ, 2, MTR, 0, 0) == 1) {
+//!                     Return (0x1F)
+//!                 }
+//!                 Return (0)
+//!             }
 //!             Name (_BIF, Package () { 0, 50000, 40000, 1, 11100, 2000, 500,
 //!                                      1, 1, "MYOS", "1", "LION", "myos" })
 //!             Name (_BST, Package () { 1, 10000, 30000, 11100 })
@@ -36,6 +43,14 @@ const WORD_PREFIX: u8 = 0x0b;
 const DWORD_PREFIX: u8 = 0x0c;
 const STRING_PREFIX: u8 = 0x0d;
 const DEVICE_OP: [u8; 2] = [0x5b, 0x82];
+const METHOD_OP: u8 = 0x14;
+const IF_OP: u8 = 0xa0;
+const RETURN_OP: u8 = 0xa4;
+const LEQUAL_OP: u8 = 0x93;
+const MATCH_OP: u8 = 0x89;
+/// Match's comparisons: equal, always true.
+const MEQ: u8 = 1;
+const MTR: u8 = 0;
 
 /// `body` after its PkgLength, which counts itself: one byte up to 63,
 /// else the low nibble in the lead byte and the rest in the next ones.
@@ -92,6 +107,11 @@ fn package(items: Vec<Vec<u8>>) -> Vec<u8> {
     [vec![PACKAGE_OP], pkg(body)].concat()
 }
 
+/// A method of no arguments, not serialized.
+fn method(seg: &[u8; 4], body: Vec<Vec<u8>>) -> Vec<u8> {
+    [vec![METHOD_OP], pkg([seg.to_vec(), vec![0], body.concat()].concat())].concat()
+}
+
 fn device(seg: &[u8; 4], body: Vec<Vec<u8>>) -> Vec<u8> {
     [DEVICE_OP.to_vec(), pkg([seg.to_vec(), body.concat()].concat())].concat()
 }
@@ -104,7 +124,29 @@ fn ssdt() -> Vec<u8> {
         b"BAT0",
         vec![
             name(b"_HID", int(PNP0C0A)),
-            name(b"_STA", int(0x1f)),
+            method(
+                b"_STA",
+                vec![
+                    [
+                        vec![IF_OP],
+                        pkg([
+                            vec![LEQUAL_OP, MATCH_OP],
+                            package(vec![int(1), int(2), int(3)]),
+                            vec![MEQ],
+                            int(2),
+                            vec![MTR],
+                            int(0),
+                            int(0),
+                            int(1),
+                            vec![RETURN_OP],
+                            int(0x1f),
+                        ]
+                        .concat()),
+                    ]
+                    .concat(),
+                    [vec![RETURN_OP], int(0)].concat(),
+                ],
+            ),
             name(
                 b"_BIF",
                 package(vec![

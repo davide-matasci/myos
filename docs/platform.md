@@ -120,7 +120,8 @@ interpreter over the module ABI (`modules/acpi/src/aml.rs`). The crate
 is patched (`modules/acpi/crate/*.myos.patch`, laid out in
 `target/acpi-myos` by `crate/prepare.sh` before kernel/build.rs builds
 the module): its embedded controller accesses go to the region handler
-the module installs, which 6.1.1 leaves unimplemented. It calls `\_PIC(1)`, runs the devices' `_STA` and `_INI`, hands every PCI
+the module installs, and it runs `Match` (a ThinkPad T15's `_STA`s or
+`_INI`s use it), both of which 6.1.1 leaves unimplemented. It calls `\_PIC(1)`, runs the devices' `_STA` and `_INI`, hands every PCI
 bridge's `_PRT` routes to the kernel (`KernelApi::pci_intx_route`), and
 evaluates `\_S5` for the power-off. A function behind a bridge with no
 `_PRT` is routed through the PCI-to-PCI swizzle
