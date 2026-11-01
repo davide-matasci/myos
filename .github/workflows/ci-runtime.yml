@@ -260,8 +260,11 @@ jobs:
           MYOS_RISCV_INTC: ${{ matrix.intc }}
         run: ./target/debug/myos ${{ matrix.args }}
 
+      # `always()`: without a status function the condition gets `success()`
+      # too, and a required boot's failure had failed the job already, so
+      # the capture of exactly the boots it was for never went up.
       - name: Upload the packet capture of a failed boot
-        if: steps.boot.outcome == 'failure'
+        if: always() && steps.boot.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
           name: net0-pcap-${{ matrix.id }}
