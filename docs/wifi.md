@@ -119,10 +119,43 @@ URL; when it names a directory holding a copy of linux-firmware's tree (a
 USB stick), `wifi-firmware` copies from it. The tests are
 `wifi_firmware_check` and `wifi_firmware_fetch` (tag `net`).
 
-On a machine whose only network is the radio, the one file it needs can
-also come on the boot stick: copied from another computer onto the
-stick's FAT partition (`/boot` on myos, `docs/install.md`), then into
-`/data/firmware`. `wifi-firmware list` says whether its SHA-256 matches.
+### Without a network: the firmware on the boot stick
+
+On a machine whose only network is the radio, the file it needs comes on
+the boot stick. On another computer, download it from linux-firmware at
+the commit `wifi-firmware` pins (`COMMIT` in `user/wifi/wifi-firmware`,
+which also lists each file's path and SHA-256). An AX201 needs
+`iwlwifi-QuZ-a0-hr-b0-77.ucode`, an AX200 `iwlwifi-cc-a0-77.ucode`:
+
+```sh
+base=https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/intel/iwlwifi
+id=a2dcb924f0897368b0b4f305cbf9808cdda90ce0
+curl -fL -o iwlwifi-QuZ-a0-hr-b0-77.ucode "$base/iwlwifi-QuZ-a0-hr-b0-77.ucode?id=$id"
+shasum -a 256 iwlwifi-QuZ-a0-hr-b0-77.ucode    # compare with wifi-firmware's list
+```
+
+Copy it onto the stick's FAT partition, the ESP named `MYOS`. macOS does
+not mount an EFI partition by itself:
+
+```sh
+diskutil list external           # the stick's EFI partition MYOS, e.g. disk4s2
+sudo diskutil mount disk4s2      # /Volumes/MYOS
+cp iwlwifi-*.ucode /Volumes/MYOS/
+dot_clean /Volumes/MYOS          # drop the ._ files macOS leaves on FAT
+diskutil eject disk4
+```
+
+On myos the partition is `/boot`. As root, copy the file where the daemon
+reads it:
+
+```sh
+mkdir -p /data/firmware
+cp /boot/iwlwifi-*.ucode /data/firmware/
+wifi-firmware list               # ok: the SHA-256 matches
+```
+
+`/data` survives `get-myos --upgrade` but not writing a new image onto
+the stick (`docs/running.md`), which leaves the file to copy again.
 
 ## Intel's radios
 

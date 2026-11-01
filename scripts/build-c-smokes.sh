@@ -74,4 +74,4 @@ if [[ "$libc" == newlib ]]; then
 else
   myos_c_smokes_mlibc_version_hash > "$MYOS_C_SMOKES_MLIBC_VERSION"
 fi
-echo "c smokes ($libc) -> target/{$(printf '%s\n' "${smokes[@]}" | cut -d' ' -f1 | paste -sd,)}${suffix}-<arch>-unknown-none"
+echo "c smokes ($libc) -> target/{$(printf '%s\n' "${smokes[@]}" | cut -d' ' -f1 | paste -sd, -)}${suffix}-<arch>-unknown-none"
