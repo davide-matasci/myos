@@ -25,6 +25,9 @@
 //!         }
 //!         Device (AC) {
 //!             Name (_HID, "ACPI0003")
+//!             // A _STA that returns nothing (falls off its end), as a
+//!             // ThinkPad T15's has one: the device counts as present.
+//!             Method (_STA) { If (Zero) { Return (0x0F) } }
 //!             Name (_PSR, Zero)
 //!         }
 //!     }
@@ -172,7 +175,14 @@ fn ssdt() -> Vec<u8> {
             name(b"_BST", package(vec![int(1), int(10000), int(30000), int(11100)])),
         ],
     );
-    let ac = device(b"AC__", vec![name(b"_HID", string("ACPI0003")), name(b"_PSR", int(0))]);
+    let ac = device(
+        b"AC__",
+        vec![
+            name(b"_HID", string("ACPI0003")),
+            method(b"_STA", vec![[vec![IF_OP], pkg([int(0), vec![RETURN_OP], int(0x0f)].concat())].concat()]),
+            name(b"_PSR", int(0)),
+        ],
+    );
     let aml = [vec![SCOPE_OP], pkg([b"\\_SB_".to_vec(), bat, ac].concat())].concat();
 
     let mut t = Vec::new();
