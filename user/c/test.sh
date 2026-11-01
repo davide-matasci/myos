@@ -574,8 +574,11 @@ net_listen() {
 	fi
 	# netd's table: what became of the connections (a mute one lost on
 	# the way to accept, issue #630's class, leaves a handshake or a
-	# conversation nobody took).
+	# conversation nobody took); netfs's slots beside it (a socket() that
+	# failed with EIO had none left, issue #574).
 	cat /net/convs
+	echo "netfs slots:"
+	cat /net/slots
 	# The smoke is gone: its peer on the host stops waiting for it.
 	[ -z "$asked" ] || echo "HOST c-smokes tcp-ping-stop 2323 $pid" >&3
 	return 1

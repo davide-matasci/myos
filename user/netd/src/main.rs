@@ -60,6 +60,10 @@ const REP_IFADDRS: u8 = 8;
 /// later ones are here.
 const REP_PEER: u8 = 9;
 /// netd's conversation table as `/net/convs` text, see [`convs_text`].
+/// In a `REP_CONVS` status (the piece's offset): the table's last piece.
+const CONVS_LAST: i32 = 1 << 30;
+/// How often the table goes to netfs when it did not change.
+const CONVS_RESEND: Duration = Duration::from_secs(5);
 const REP_CONVS: u8 = 10;
 
 /// The per-datagram header on a UDP conv's REQ_SEND and REP_DATA (Plan 9's
@@ -2133,6 +2137,7 @@ fn main() -> ! {
     // /net/convs: netd's table, pushed to netfs once a second when it changed.
     let mut convs_text_last = String::new();
     let mut convs_text_at = Instant::from_millis(0);
+    let mut convs_text_sent_at = Instant::from_millis(0);
     let mut lodev = LoopDevice::new();
     let mut lo = build_loopback(&mut lodev, clock.now());
     let mut sockets = SocketSet::new(Vec::new());
@@ -2303,21 +2308,27 @@ fn main() -> ! {
         if now - convs_text_at >= Duration::from_secs(1) {
             convs_text_at = now;
             let text = convs_text(&convs, &sockets, &handshakes, &lingering, now);
-            if text != convs_text_last {
+            // Sent when it changed, and every CONVS_RESEND regardless: netfs
+            // counts the tables it got whole, and takes back a slot two of
+            // them did not list (its `alloc_conv`), which a table that never
+            // changes must not keep from it.
+            if text != convs_text_last || now - convs_text_sent_at >= CONVS_RESEND {
                 // In pieces of what one reply carries, `status` the piece's
-                // offset: netfs starts the table over at 0 (a full table's
-                // text is 14 KiB).
+                // offset, CONVS_LAST on the last: netfs starts the table
+                // over at 0 (a full table's text is 14 KiB).
                 let b = text.as_bytes();
                 let mut off = 0;
                 loop {
                     let n = (b.len() - off).min(REP_CAP - REP_HDR);
-                    reply(chan, REP_CONVS, 0, off as i32, &b[off..off + n]);
+                    let last = off + n >= b.len();
+                    reply(chan, REP_CONVS, 0, off as i32 | if last { CONVS_LAST } else { 0 }, &b[off..off + n]);
                     off += n;
-                    if off >= b.len() {
+                    if last {
                         break;
                     }
                 }
                 convs_text_last = text;
+                convs_text_sent_at = now;
             }
         }
 

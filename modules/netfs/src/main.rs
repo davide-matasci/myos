@@ -78,6 +78,8 @@ const REP_IFADDRS: u8 = 8;
 const REP_PEER: u8 = 9;
 /// netd's conversation table as `/net/convs` text (docs/net.md).
 const REP_CONVS: u8 = 10;
+/// In a `REP_CONVS` status (the piece's offset): the table's last piece.
+const CONVS_LAST: i32 = 1 << 30;
 
 /// The header of a udp conv's datagrams to and from netd: remote address,
 /// local address (16 bytes each, an IPv4 one as `::ffff:a.b.c.d`), remote
@@ -254,6 +256,9 @@ struct Conv {
     /// udp: the error netd reported, for the next read or write (empty:
     /// none).
     soerr: &'static [u8],
+    /// `State::table_gen` when the slot was taken: a slot two generations
+    /// of netd's table have not listed is one netd has freed (`alloc_conv`).
+    table: u32,
 }
 
 /// [`Conv::owner`] of a conversation nobody may open yet.
@@ -285,6 +290,7 @@ impl Conv {
         tx_room: TX_CAP,
         owner: NO_OWNER,
         soerr: b"",
+        table: 0,
     };
 }
 
@@ -302,6 +308,13 @@ struct State {
     ifaddrs: [u8; IFADDRS_CAP],
     table_len: u16,
     table: [u8; CONVS_CAP],
+    /// How many tables netd sent whole (`REP_CONVS`'s last piece), and
+    /// whether the current one is whole yet.
+    table_gen: u32,
+    table_complete: bool,
+    /// The slots `alloc_conv` took back from conversations netd no longer
+    /// listed (`/net/slots`).
+    reclaimed: u32,
 }
 
 /// The request ring, the tcp, udp and icmp conversations and the lease.
@@ -315,6 +328,9 @@ static STATE: Lock<State> = Lock::new(State {
     ifaddrs: [0; IFADDRS_CAP],
     table_len: 0,
     table: [0; CONVS_CAP],
+    table_gen: 0,
+    table_complete: false,
+    reclaimed: 0,
 });
 
 static API: ApiCell = ApiCell::new();
@@ -422,6 +438,8 @@ enum Node {
     Ifaddrs,
     /// `/net/convs`: netd's conversation table.
     Convs,
+    /// `/net/slots`: this module's own table of the conversation slots.
+    Slots,
     Proto(u8),
     Clone(u8),
     ConvDir(u8, u16),
@@ -445,7 +463,7 @@ enum Node {
 impl Node {
     fn proto(self) -> Option<u8> {
         match self {
-            Node::Root | Node::Ndb | Node::Ifaddrs | Node::Convs => None,
+            Node::Root | Node::Ndb | Node::Ifaddrs | Node::Convs | Node::Slots => None,
             Node::Proto(p) | Node::Clone(p) => Some(p),
             Node::ConvDir(p, _)
             | Node::Ctl(p, _)
@@ -472,6 +490,9 @@ fn parse_path(path: &str) -> Option<Node> {
     }
     if path == "convs" {
         return Some(Node::Convs);
+    }
+    if path == "slots" {
+        return Some(Node::Slots);
     }
     let mut it = path.split('/');
     let a = it.next()?;
@@ -565,6 +586,78 @@ fn enqueue_req(req: &mut RingBuf, typ: u8, conv: u16, proto: u8, payload: &[u8])
     req.push(&tmp[..n])
 }
 
+/// `/net/slots`: this module's side of the conversations: a first line
+/// `table gen G whole|partial reclaimed R` (netd's tables so far, whether
+/// the current one is whole, the slots taken back from conversations netd
+/// no longer listed), then a line per slot in use, `N tcp|udp|icmp FLAGS
+/// status "..." data D tx T gen G owner U`. The
+/// flags: `cloning` (netd's CLONE_OK still to come), `closing` (its
+/// REQ_CLOSE went to netd, its hangup still to come), `close-pending`
+/// (its REQ_CLOSE waits for room in the ring), `stale-hangup` (the next
+/// hangup is the previous occupant's). netd's `/net/convs` is the other
+/// side: a slot in use here that netd does not list is one nobody can
+/// clone again, and 128 of them refuse every socket() with EIO (issue
+/// #574).
+fn slots_text(st: &State) -> Vec<u8> {
+    let mut s = Vec::new();
+    let mut line = [0u8; 160];
+    let mut n = 0;
+    // put_bytes and put_dec end what they put with a newline: dropped
+    // between the fields of a line.
+    let put = |line: &mut [u8; 160], n: &mut usize, b: &[u8]| {
+        if put_bytes(line, n, b) {
+            *n -= 1;
+        }
+    };
+    let dec = |line: &mut [u8; 160], n: &mut usize, v: u16| {
+        if put_dec(line, n, v) {
+            *n -= 1;
+        }
+    };
+    put(&mut line, &mut n, b"table gen ");
+    dec(&mut line, &mut n, st.table_gen.min(u16::MAX as u32) as u16);
+    put(&mut line, &mut n, if st.table_complete { b" whole reclaimed " } else { b" partial reclaimed " });
+    dec(&mut line, &mut n, st.reclaimed.min(u16::MAX as u32) as u16);
+    put(&mut line, &mut n, b"\n");
+    s.extend_from_slice(&line[..n]);
+    for (i, c) in st.convs.iter().enumerate() {
+        if !c.used {
+            continue;
+        }
+        n = 0;
+        dec(&mut line, &mut n, i as u16);
+        put(&mut line, &mut n, b" ");
+        put(&mut line, &mut n, proto_name(c.proto).unwrap_or("?").as_bytes());
+        for (flag, on) in [
+            (" cloning", c.cloning),
+            (" closing", c.closing),
+            (" close-pending", c.close_pending),
+            (" stale-hangup", c.suppress_stale_hangup),
+        ] {
+            if on {
+                put(&mut line, &mut n, flag.as_bytes());
+            }
+        }
+        put(&mut line, &mut n, b" status \"");
+        put(&mut line, &mut n, &c.status[..(c.status_len as usize).min(48)]);
+        put(&mut line, &mut n, b"\" data ");
+        dec(&mut line, &mut n, c.data_len);
+        put(&mut line, &mut n, b" tx ");
+        dec(&mut line, &mut n, c.tx_room);
+        put(&mut line, &mut n, b" gen ");
+        dec(&mut line, &mut n, c.table.min(u16::MAX as u32) as u16);
+        put(&mut line, &mut n, b" owner ");
+        if c.owner == NO_OWNER {
+            put(&mut line, &mut n, b"-");
+        } else {
+            dec(&mut line, &mut n, c.owner.min(u16::MAX as u32) as u16);
+        }
+        put(&mut line, &mut n, b"\n");
+        s.extend_from_slice(&line[..n]);
+    }
+    s
+}
+
 fn status_is(c: &Conv, needle: &[u8]) -> bool {
     let s = &c.status[..c.status_len as usize];
     s.windows(needle.len()).any(|w| w == needle)
@@ -595,7 +688,8 @@ fn accept_ready(c: &Conv) -> bool {
     seq.is_some_and(|seq| seq != c.taken)
 }
 
-fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
+fn alloc_conv(st: &mut State, proto: u8) -> Option<u16> {
+    let convs = &mut st.convs;
     // First pass: truly free slots.
     for i in 0..MAX_CONV {
         if !convs[i].used {
@@ -616,6 +710,7 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 tx_room: TX_CAP,
                 owner: uid(),
                         soerr: b"",
+                table: st.table_gen,
             };
             return Some(i as u16);
         }
@@ -647,11 +742,74 @@ fn alloc_conv(convs: &mut [Conv; MAX_CONV], proto: u8) -> Option<u16> {
                 tx_room: TX_CAP,
                 owner: uid(),
                         soerr: b"",
+                table: st.table_gen,
+            };
+            return Some(i as u16);
+        }
+    }
+    // Third pass: slots netd no longer has. netd frees an index on its
+    // holder's REQ_CLOSE and lists every other one in its table, held
+    // tombstones included; a slot in use here that two whole tables since
+    // its creation did not list is one nobody can reach any more, leaked
+    // by whatever path (issue #574: with 128 of them, every socket() failed
+    // with EIO while netd had two conversations). Not one still waiting on
+    // netd (cloning, closing).
+    if st.table_complete {
+        let listed = listed_indices(&st.table[..st.table_len as usize]);
+        for i in 0..MAX_CONV {
+            let c = &convs[i];
+            if !c.used
+                || c.cloning
+                || c.closing
+                || c.close_pending
+                || listed[i]
+                || st.table_gen.wrapping_sub(c.table) < 2
+            {
+                continue;
+            }
+            st.reclaimed = st.reclaimed.wrapping_add(1);
+            convs[i] = Conv {
+                used: true,
+                closing: false,
+                suppress_stale_hangup: false,
+                cloning: true,
+                close_pending: false,
+                proto,
+                data_off: 0,
+                data_len: 0,
+                data: Vec::new(),
+                credit: 0,
+                status_len: 0,
+                status: [0; STATUS_CAP],
+                taken: NO_SEQ,
+                tx_room: TX_CAP,
+                owner: uid(),
+                soerr: b"",
+                table: st.table_gen,
             };
             return Some(i as u16);
         }
     }
     None
+}
+
+/// The conversation indices netd's table `text` lists: its lines that
+/// start with a number (`N tcp ...`), not the `-` ones of handshakes and
+/// orphaned closes.
+fn listed_indices(text: &[u8]) -> [bool; MAX_CONV] {
+    let mut listed = [false; MAX_CONV];
+    for line in text.split(|&b| b == b'\n') {
+        let digits = line.iter().take_while(|b| b.is_ascii_digit()).count();
+        if digits == 0 || line.get(digits) != Some(&b' ') {
+            continue;
+        }
+        if let Some(i) = core::str::from_utf8(&line[..digits]).ok().and_then(|s| s.parse::<usize>().ok()) {
+            if i < MAX_CONV {
+                listed[i] = true;
+            }
+        }
+    }
+    listed
 }
 
 /// Conversation `id` is one of `proto`'s and the caller's user's (the
@@ -788,11 +946,20 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
     }
     if typ == REP_CONVS {
         // netd's table in pieces of up to one reply, `status` the piece's
-        // offset; the one at 0 starts the table over.
-        let off = (status.max(0) as usize).min(CONVS_CAP);
+        // offset, with `CONVS_LAST` on the last; the one at 0 starts the
+        // table over.
+        let last = status & CONVS_LAST != 0;
+        let off = ((status & !CONVS_LAST).max(0) as usize).min(CONVS_CAP);
         let n = payload.len().min(CONVS_CAP - off);
+        if off == 0 {
+            st.table_complete = false;
+        }
         st.table[off..off + n].copy_from_slice(&payload[..n]);
         st.table_len = (off + n) as u16;
+        if last {
+            st.table_complete = true;
+            st.table_gen = st.table_gen.wrapping_add(1);
+        }
         return;
     }
     // Whatever netd says about a conversation may change its readiness.
@@ -855,6 +1022,7 @@ fn apply_reply(st: &mut State, buf: &[u8]) {
                 tx_room: TX_CAP,
                 owner,
                         soerr: b"",
+                table: st.table_gen,
             };
             set_status(slot, b"cloned");
         } else {
@@ -1008,6 +1176,7 @@ unsafe extern "C" fn net_stat(path: *const u8, path_len: usize, out: *mut VfsSta
         Node::Ndb => (S_IFREG | 0o444, st.ndb_len as u32, 2),
         Node::Ifaddrs => (S_IFREG | 0o444, st.ifaddrs_len as u32, 3),
         Node::Convs => (S_IFREG | 0o444, st.table_len as u32, 4),
+        Node::Slots => (S_IFREG | 0o444, slots_text(st).len() as u32, 5),
         Node::Proto(p) => (S_IFDIR | 0o755, 0, 10 + p as u32),
         Node::Clone(p) => (S_IFCHR | 0o666, 0, 20 + p as u32),
         Node::ConvDir(p, id) => {
@@ -1088,6 +1257,7 @@ unsafe extern "C" fn net_listdir(
             let _ = put_bytes(dst, &mut n, b"ndb");
             let _ = put_bytes(dst, &mut n, b"ifaddrs");
             let _ = put_bytes(dst, &mut n, b"convs");
+            let _ = put_bytes(dst, &mut n, b"slots");
         }
         Node::Proto(p) => {
             let _ = put_bytes(dst, &mut n, b"clone");
@@ -1160,7 +1330,7 @@ unsafe extern "C" fn net_open(path: *const u8, path_len: usize, out: *mut u8, ou
 /// A new conversation of `proto` (tcp, udp, icmp), netd asked for its
 /// socket: its number.
 fn clone_locked(st: &mut State, proto: u8) -> Option<u16> {
-    let id = alloc_conv(&mut st.convs, proto)?;
+    let id = alloc_conv(st, proto)?;
     // Never asked, netd would never answer: the slot would wait for its
     // CLONE_OK forever (`cloning`).
     if !enqueue_req(&mut st.req, REQ_CLONE, id, proto, &[]) {
@@ -1213,6 +1383,7 @@ fn read_locked(st: &mut State, node: Node, pos: usize, out: &mut [u8]) -> i32 {
         Node::Ndb => copy_at(&st.ndb[..st.ndb_len as usize], pos, out),
         Node::Ifaddrs => copy_at(&st.ifaddrs[..st.ifaddrs_len as usize], pos, out),
         Node::Convs => copy_at(&st.table[..st.table_len as usize], pos, out),
+        Node::Slots => copy_at(&slots_text(st), pos, out),
         Node::Data(p, id) => {
             let Some(c) = conv_mut(&mut st.convs, id) else {
                 return -1;
