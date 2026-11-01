@@ -9,13 +9,14 @@
 //!     Scope (\_SB) {
 //!         Device (BAT0) {
 //!             Name (_HID, EisaId ("PNP0C0A"))
-//!             // Present when Match finds 2 at index 1; the Notify is
+//!             // Present when Match finds 2 at index 1 (through LNot and
+//!             // Not, which the crate got wrong); the Notify is
 //!             // dropped (both at the step where a ThinkPad T15's AML
 //!             // uses them: the devices' _STA and _INI).
 //!             Method (_STA) {
 //!                 Notify (BAT0, 0x80)
-//!                 If (Match (Package () { 1, 2, 3 }, MEQ, 2, MTR, 0, 0) == 1) {
-//!                     Return (0x1F)
+//!                 If (LNot (Match (Package () { 1, 2, 3 }, MEQ, 2, MTR, 0, 0) != 1)) {
+//!                     Return (And (Not (0xFFFFFFE0), 0x1F))
 //!                 }
 //!                 Return (0)
 //!             }
@@ -54,6 +55,11 @@ const RETURN_OP: u8 = 0xa4;
 const LEQUAL_OP: u8 = 0x93;
 const MATCH_OP: u8 = 0x89;
 const NOTIFY_OP: u8 = 0x86;
+const LNOT_OP: u8 = 0x92;
+const NOT_OP: u8 = 0x80;
+const AND_OP: u8 = 0x7b;
+/// A target that discards: an op's result only goes to its caller.
+const NULL_NAME: u8 = 0x00;
 /// Match's comparisons: equal, always true.
 const MEQ: u8 = 1;
 const MTR: u8 = 0;
@@ -137,7 +143,8 @@ fn ssdt() -> Vec<u8> {
                     [
                         vec![IF_OP],
                         pkg([
-                            vec![LEQUAL_OP, MATCH_OP],
+                            // LNot (LNotEqual (...)), LNotEqual being LNot (LEqual).
+                            vec![LNOT_OP, LNOT_OP, LEQUAL_OP, MATCH_OP],
                             package(vec![int(1), int(2), int(3)]),
                             vec![MEQ],
                             int(2),
@@ -145,8 +152,11 @@ fn ssdt() -> Vec<u8> {
                             int(0),
                             int(0),
                             int(1),
-                            vec![RETURN_OP],
+                            vec![RETURN_OP, AND_OP, NOT_OP],
+                            int(0xffff_ffe0),
+                            vec![NULL_NAME],
                             int(0x1f),
+                            vec![NULL_NAME],
                         ]
                         .concat()),
                     ]
