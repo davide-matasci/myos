@@ -13,8 +13,10 @@
 #                   says the smoke is gone; the guest test bounds its own
 #                   wait. Then 40 connections that close without a word,
 #                   the close 0 to 20 ms after the connect (the FIN with or
-#                   right after the handshake's last ACK), and one that
-#                   says "done": the smoke's accepts must all end.
+#                   right after the handshake's last ACK), the fifth from
+#                   the port the verdict's connection had, which the guest
+#                   holds in TIME-WAIT (its SYN must open a new one), and
+#                   one that says "done": the smoke's accepts must all end.
 #   tcp-ping-stop PORT TOKEN  the smoke `tcp-ping PORT TOKEN` was the peer
 #                   of failed: its peer stops retrying (it kept on for its
 #                   three minutes once, onto the next listen test's smoke,
@@ -43,18 +45,39 @@ BULK_LINES=40000
 
 # The file `tcp-ping-stop PORT TOKEN` leaves for `tcp-ping PORT TOKEN`,
 # next to this boot's QEMU monitor socket (one launcher, one boot at a
-# time); the latter removes it when it ends.
+# time), and the one the latter keeps beside it while it runs: a stop that
+# finds no peer running is dropped, or it would stop the next one with the
+# same token (the guest's tokens are the smokes' pids, which it reuses: a
+# stop left behind sent the next listen test's peer away at once, "the
+# smoke is gone", and that test failed on it).
 stop_flag() {
   echo "${MYOS_QEMU_MONITOR:-${TMPDIR:-/tmp}/myos-monitor}.tcp-ping-stop-$1-$2"
 }
 
 tcp_ping() {
+  local stop rc
+  stop="$(stop_flag "$1" "${2:-0}")"
+  : > "$stop.peer"
+  tcp_ping_run "$@"
+  rc=$?
+  rm -f "$stop.peer" "$stop"
+  return $rc
+}
+
+tcp_ping_stop() {
+  local stop
+  stop="$(stop_flag "$1" "${2:-0}")"
+  : > "$stop"
+  [[ -e "$stop.peer" ]] || rm -f "$stop"
+}
+
+tcp_ping_run() {
   local port="$1" stop got verdict deadline=$((SECONDS + 180))
   stop="$(stop_flag "$port" "${2:-0}")"
   got="$(mktemp)"
   while (( SECONDS < deadline )); do
     if [[ -e "$stop" ]]; then
-      rm -f "$got" "$stop"
+      rm -f "$got"
       echo "boot test: tcp-ping $port: the smoke is gone, not retrying" >&2
       return 1
     fi
@@ -75,41 +98,55 @@ tcp_ping() {
           verdict="bad $(($(wc -c < "$got") - 5)): ${diff#*: }"
         fi
         echo "boot test: tcp-ping $port: pong, bulk $verdict" >&2
-        if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
-          printf '%s\n' "$verdict" >&3
-          sleep 1
-          exec 3>&-
-        fi
-        rm -f "$got" "$stop"
-        [[ "$verdict" == good ]] || return 1
-        tcp_mute "$port"
+        rm -f "$got"
+        tcp_mute "$port" "$verdict"
         return
       fi
     fi
     sleep 0.25
   done
-  rm -f "$got" "$stop"
+  rm -f "$got"
   echo "boot test: tcp-ping $port: no pong within the bound" >&2
   return 1
 }
 
-tcp_ping_stop() {
-  : > "$(stop_flag "$1" "${2:-0}")"
-}
-
-# The mute connections (see the header), 0.3 s apart so the smoke's accept
-# keeps up with netd's two parked handoffs, then "done".
+# The verdict, on a connection of its own, then (for "good") the mute
+# connections (see the header), 0.3 s apart so the smoke's accept keeps up
+# with netd's two parked handoffs, then "done".
+# The smoke closes the verdict's connection first, so this side's port is
+# free again at once while the guest holds the connection in TIME-WAIT for
+# 10 s; the fifth mute connection comes from that port again, as the host's
+# own allocation did in CI (Linux hands a loopback port out again within
+# seconds): its SYN must open a new connection in the TIME-WAIT's place
+# (RFC 1122 4.2.2.13, netd's smoltcp patch `time-wait-reopen`). Dropped,
+# QEMU sent it again 6 s later and then 18 s later, past the test's end,
+# and the smoke was one connection short (issue #656's "39 of 40").
 # A connect or close that fails on the host is said (the smoke counts the
 # connections it accepted: one lost tells little without the host's side).
 tcp_mute() {
-  python3 - "$1" <<'PY' >&2
+  python3 - "$1" "$2" <<'PY' >&2
 import socket, sys, time
-port = int(sys.argv[1])
+port, verdict = int(sys.argv[1]), sys.argv[2]
+s = socket.socket()
+s.connect(("127.0.0.1", port))
+reuse = s.getsockname()[1]
+s.sendall(verdict.encode() + b"\n")
+time.sleep(1)
+s.close()
+if verdict != "good":
+    sys.exit(1)
 failed = []
 ports = []
+again = f"{reuse} again at 4"
 for i in range(40):
     s = socket.socket()
     try:
+        if i == 4:
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", reuse))
+            except OSError as e:
+                again = f"{reuse} not free again at 4 ({e})"
         s.connect(("127.0.0.1", port))
         ports.append(str(s.getsockname()[1]))
         time.sleep(i * 0.0005)
@@ -125,7 +162,7 @@ time.sleep(1)
 s.close()
 # The ports are what the guest sees as the peers' (QEMU keeps them): a
 # connection the smoke never got is named by the one missing from its list.
-print(f"boot test: tcp-mute {port}: 40 mute connections ({len(failed)} failed on the host{': ' + ', '.join(failed) if failed else ''}), then done; ports {' '.join(ports)}, done {done_port}")
+print(f"boot test: tcp-mute {port}: 40 mute connections ({len(failed)} failed on the host{': ' + ', '.join(failed) if failed else ''}), then done; ports {' '.join(ports)}, done {done_port}, the verdict's {again}")
 PY
 }
 
