@@ -101,8 +101,12 @@ registers, the FP/SIMD save area) have no method.
 
 A module keeps the table in a `static API: ApiCell` and its own state
 behind a `myos_abi::Lock`: a spin lock, or a `SleepLock` when the lock is
-held across a wait (a disk request, a USB transfer). No module has a
-`static mut`. What stays `unsafe` is hardware access (MMIO, DMA rings,
+held across a wait (a disk request, a USB transfer). The waiter of such a
+lock must sleep too, never spin or yield in a loop: a syscall runs with
+interrupts masked, and a device's interrupt goes to one CPU (CPU 0 on
+x86), so a waiter looping there keeps the wake the holder needs from
+arriving (the filesystem modules on a USB stick froze the machine that
+way). No module has a `static mut`. What stays `unsafe` is hardware access (MMIO, DMA rings,
 cache maintenance) and the C ABI's raw callback pointers, in short helpers
 with `SAFETY:` comments. Every module crate denies
 `unsafe_op_in_unsafe_fn`.
