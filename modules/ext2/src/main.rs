@@ -13,11 +13,9 @@
 extern crate alloc;
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use ext2fs::{Device, Fs, Kind};
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT, VFS_ENOSPC};
+use myos_abi::{ApiCell, SleepLock, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT, VFS_ENOSPC};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
@@ -60,28 +58,17 @@ impl Device for Blk {
 /// every slot has a hook set of its own (`ops::<S>()`).
 const SLOTS: usize = 4;
 
-struct Slot {
-    held: AtomicBool,
-    fs: UnsafeCell<Option<Fs<Blk>>>,
-}
+/// The mounts: a waiter sleeps, as the holder may (a call on a USB disk
+/// waits for its transfer's interrupt, which x86 takes on CPU 0 alone):
+/// spinning on the lock from a syscall, interrupts masked, on the CPU the
+/// holder's wake needs, froze the machine (the yield of issue #348 did not
+/// help, nothing else being runnable there).
+static MOUNTS: [SleepLock<Option<Fs<Blk>>>; SLOTS] = [const { SleepLock::new(&API, None) }; SLOTS];
 
-unsafe impl Sync for Slot {}
-
-static MOUNTS: [Slot; SLOTS] = [const { Slot { held: AtomicBool::new(false), fs: UnsafeCell::new(None) } }; SLOTS];
-
-/// Run `f` on the filesystem in slot `s` (`None` if there is none), with
-/// the slot locked. A waiter yields rather than spins: the holder may have
-/// been preempted on this very CPU (a user task runs on its home CPU only),
-/// and a syscall waits with IRQs masked, so a spin would never see it let
-/// go (issue #348).
+/// Run `f` on the filesystem in slot `s` (`None` if there is none), with the
+/// slot locked.
 fn with_slot<T>(s: usize, f: impl FnOnce(&mut Option<Fs<Blk>>) -> T) -> T {
-    let slot = &MOUNTS[s];
-    while slot.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        api().task_yield();
-    }
-    let r = f(unsafe { &mut *slot.fs.get() });
-    slot.held.store(false, Ordering::Release);
-    r
+    f(&mut MOUNTS[s].lock())
 }
 
 fn with_fs<const S: usize, T>(f: impl FnOnce(&mut Fs<Blk>) -> T) -> Option<T> {

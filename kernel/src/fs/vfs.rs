@@ -1055,33 +1055,72 @@ pub fn anon_file(size: usize) -> Option<Vnode> {
 /// old name. A syscall holds it across resolving its paths and acting on
 /// them ([`hold_read`], [`hold_write`]), so a path relative to a directory
 /// fd is relative to that directory whatever moves meanwhile. A waiter
-/// yields rather than spins: a holder may be waiting for a disk (USB
-/// storage blocks) with the waiter's CPU its only one.
+/// sleeps ([`tree_wait`]): a holder may be waiting for a disk (USB storage
+/// blocks for its interrupt), and a syscall runs with interrupts masked,
+/// so a waiter spinning or yielding on the CPU that interrupt goes to
+/// (the only one, or CPU 0 where user tasks run there) kept it from ever
+/// arriving: the holder never woke, and the machine was dead.
 static TREE: spin::RwLock<()> = spin::RwLock::new(());
 
 /// The task holding [`TREE`] to write (`usize::MAX`: none): the calls it
 /// makes while it does go through without taking it again.
 static TREE_WRITER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
 
+/// Tasks between announcing their wait for [`TREE`] and giving it up: a
+/// release wakes them only when there are any (the `SleepLock` protocol
+/// of `modules/abi`).
+static TREE_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// What a waiter for [`TREE`] blocks on.
+fn tree_key() -> usize {
+    core::ptr::addr_of!(TREE) as usize
+}
+
 /// [`TREE`] held, or nothing for the task that holds it to write already.
 /// The guards are held for their drop, never read.
 #[allow(dead_code)]
 pub enum TreeGuard {
-    Read(spin::RwLockReadGuard<'static, ()>),
-    Write(spin::RwLockWriteGuard<'static, ()>),
+    Read(Option<spin::RwLockReadGuard<'static, ()>>),
+    Write(Option<spin::RwLockWriteGuard<'static, ()>>),
     Nested,
 }
 
 impl Drop for TreeGuard {
     fn drop(&mut self) {
-        if let TreeGuard::Write(_) = self {
-            TREE_WRITER.store(usize::MAX, core::sync::atomic::Ordering::Release);
+        // Let go first, then wake: a waiter woken before the release would
+        // find the lock held, sleep again, and be woken by nobody.
+        match self {
+            TreeGuard::Read(guard) => drop(guard.take()),
+            TreeGuard::Write(guard) => {
+                TREE_WRITER.store(usize::MAX, core::sync::atomic::Ordering::Release);
+                drop(guard.take());
+            }
+            TreeGuard::Nested => return,
+        }
+        if TREE_WAITERS.load(core::sync::atomic::Ordering::SeqCst) != 0 {
+            crate::task::wake(tree_key());
         }
     }
 }
 
 fn writing() -> bool {
     TREE_WRITER.load(core::sync::atomic::Ordering::Acquire) == crate::task::current_id()
+}
+
+/// Sleep until a holder of [`TREE`] lets go, unless `take` gets it first:
+/// the wait is announced before the last try, so a release between the
+/// try and the sleep either is seen by that try or wakes the key (or bumps
+/// the wait sequence), and `block_until` returns.
+fn tree_wait<G>(take: impl Fn() -> Option<G>) -> Option<G> {
+    use core::sync::atomic::Ordering;
+    TREE_WAITERS.fetch_add(1, Ordering::SeqCst);
+    let seq = crate::task::wait_seq();
+    let got = take();
+    if got.is_none() {
+        crate::task::block_until(tree_key(), seq, 0);
+    }
+    TREE_WAITERS.fetch_sub(1, Ordering::SeqCst);
+    got
 }
 
 /// Hold the tree to read: a syscall that resolves a path and uses the file
@@ -1092,10 +1131,9 @@ pub fn hold_read() -> TreeGuard {
         return TreeGuard::Nested;
     }
     loop {
-        if let Some(guard) = TREE.try_read() {
-            return TreeGuard::Read(guard);
+        if let Some(guard) = TREE.try_read().or_else(|| tree_wait(|| TREE.try_read())) {
+            return TreeGuard::Read(Some(guard));
         }
-        crate::task::yield_now();
     }
 }
 
@@ -1105,11 +1143,10 @@ pub fn hold_write() -> TreeGuard {
         return TreeGuard::Nested;
     }
     loop {
-        if let Some(guard) = TREE.try_write() {
+        if let Some(guard) = TREE.try_write().or_else(|| tree_wait(|| TREE.try_write())) {
             TREE_WRITER.store(crate::task::current_id(), core::sync::atomic::Ordering::Release);
-            return TreeGuard::Write(guard);
+            return TreeGuard::Write(Some(guard));
         }
-        crate::task::yield_now();
     }
 }
 

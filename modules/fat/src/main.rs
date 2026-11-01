@@ -17,11 +17,9 @@
 extern crate alloc;
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use fatvol::{Fat, Kind, SectorDriver};
-use myos_abi::{ApiCell, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT};
+use myos_abi::{ApiCell, SleepLock, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
@@ -72,29 +70,19 @@ impl SectorDriver for Blk {
 /// every slot has a hook set of its own (`ops::<S>()`).
 const SLOTS: usize = 4;
 
-struct Slot {
-    held: AtomicBool,
-    fs: UnsafeCell<Option<Fat<Blk>>>,
-}
-
-unsafe impl Sync for Slot {}
-
-static MOUNTS: [Slot; SLOTS] = [const { Slot { held: AtomicBool::new(false), fs: UnsafeCell::new(None) } }; SLOTS];
+/// The mounts: a waiter sleeps, as the holder may (a call on a USB disk
+/// waits for its transfer's interrupt, which x86 takes on CPU 0 alone):
+/// spinning on the lock from a syscall, interrupts masked, on the CPU the
+/// holder's wake needs, froze the machine (the yield of issue #348 did not
+/// help, nothing else being runnable there).
+static MOUNTS: [SleepLock<Option<Fat<Blk>>>; SLOTS] = [const { SleepLock::new(&API, None) }; SLOTS];
 
 /// Run `f` on the volume in slot `s` (`None` if there is none), with the
-/// slot locked. A waiter yields rather than spins: the holder may have been
-/// preempted on this very CPU (see the ext2 module, issue #348).
+/// slot locked.
 fn with_slot<T>(s: usize, f: impl FnOnce(&mut Option<Fat<Blk>>) -> T) -> T {
-    let slot = &MOUNTS[s];
-    while slot.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        api().task_yield();
-    }
-    let r = f(unsafe { &mut *slot.fs.get() });
-    slot.held.store(false, Ordering::Release);
-    r
+    f(&mut MOUNTS[s].lock())
 }
 
-/// Run `f` on the volume of slot `S`, what it changes stamped with the time now.
 fn with_fs<const S: usize, T>(f: impl FnOnce(&mut Fat<Blk>) -> T) -> Option<T> {
     with_slot(S, |fs| {
         fs.as_mut().map(|fs| {

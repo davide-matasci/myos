@@ -507,8 +507,12 @@ fn add_usb_devices(cmd: &mut Command, bus: UsbBus) {
         std::fs::copy(&fat, &dest).unwrap_or_else(|e| panic!("copy {} to {}: {e}", fat.display(), dest.display()));
     }
     cmd.arg("-device").arg(format!("usb-hub,bus={},port=1,id=usbhub", bus.name));
+    // The stick answers a command in a few milliseconds, as a real one does
+    // (QEMU alone completes it before the driver can wait for it): the
+    // drivers then sleep for the completion interrupt during a filesystem
+    // call, which `usb_fs_parallel` needs.
     cmd.arg("-drive")
-        .arg(format!("if=none,id=usb0,format=raw,file={}", usb_img_path().display()));
+        .arg(format!("if=none,id=usb0,format=raw,throttling.iops-total=400,file={}", usb_img_path().display()));
     cmd.arg("-device").arg(format!("usb-storage,bus={},port=1.1,drive=usb0,id=usbdisk", bus.name));
     cmd.arg("-drive")
         .arg(format!("if=none,id=usbhot,format=raw,file={}", usb_hot_img_path().display()));

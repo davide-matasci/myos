@@ -739,6 +739,38 @@ usb_disk() {
 }
 t -t usb,blk usb_disk usb_disk
 
+# Several processes using the stick's filesystem at once: eight writers and
+# one renaming and removing names. A filesystem module serializes its
+# calls, and the kernel's tree lock is held across a syscall's use of a
+# path: a call on a USB disk sleeps for the transfer's completion interrupt,
+# and a waiter that spun on either lock from its syscall, interrupts masked,
+# froze a machine whose one CPU (or whose CPU 0, where the user tasks run
+# too) was the one that interrupt went to: the holder never woke (a stick
+# holding /data on a laptop). The launcher throttles the stick so QEMU too
+# completes a transfer after the driver started waiting for it.
+usb_fs_parallel() {
+	mkdir -p /tmp/usb
+	grep -q " /tmp/usb fat " /proc/mounts || mount /dev/$USB_DISK/data /tmp/usb fat || return 1
+	pids=
+	for i in 1 2 3 4 5 6 7 8; do
+		/bin/sbase/dd if=/dev/zero of=/tmp/usb/par$i bs=4096 count=24 2>/dev/null &
+		pids="$pids $!"
+	done
+	(
+		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+			echo $i > /tmp/usb/parn && mv /tmp/usb/parn /tmp/usb/parm && rm /tmp/usb/parm || exit 1
+		done
+	) &
+	pids="$pids $!"
+	wait $pids
+	! [ -e /tmp/usb/parn ] && ! [ -e /tmp/usb/parm ] || { ls -l /tmp/usb; return 1; }
+	for i in 1 2 3 4 5 6 7 8; do
+		[ "$(/bin/sbase/wc -c < /tmp/usb/par$i)" -eq 98304 ] || { ls -l /tmp/usb; return 1; }
+		rm /tmp/usb/par$i
+	done
+}
+t -t usb,blk,fs,fat usb_fs_parallel usb_fs_parallel
+
 # /dev/usb (docs/usb.md): the USB serial adapter the launcher puts on the
 # hub (QEMU's FTDI, vendor class) is no kernel driver's, so usbdev lists it.
 # Holding its ctl brings the endpoint files; a control transfer through ep0
