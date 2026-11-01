@@ -564,27 +564,76 @@ fn fail(serial: &Shared, child: &mut Child, why: &str) -> ! {
 
 /// A guest that went silent is asked where its CPUs are before it is
 /// killed: the QEMU monitor's `info registers -a`, every CPU's registers
-/// (the PC of a spin or a halt, by `addr2line` on the kernel). `None` when
-/// the monitor does not answer within a few seconds (QEMU itself stuck).
+/// (the PC of a spin or a halt, by `addr2line` on the kernel), the words
+/// at each CPU's stack pointer (its callers, the same way), and the
+/// registers again two seconds later (a CPU that moved is busy, not
+/// stuck). `None` when the monitor does not answer within a few seconds
+/// (QEMU itself stuck).
 fn cpu_registers() -> Option<String> {
+    let regs = monitor(&["info registers -a".to_string()])?;
+    let mut out = regs.clone();
+    // "CPU#n" heads each CPU's block; its stack pointer is `RSP=` (x86),
+    // `SP=` (aarch64) or ` sp ` (riscv64).
+    let mut cmds = Vec::new();
+    for (i, block) in regs.split("CPU#").skip(1).enumerate() {
+        let sp = ["RSP=", " SP=", " sp "].iter().find_map(|k| {
+            let rest = block.split_once(k)?.1.trim_start();
+            let hex: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            u64::from_str_radix(&hex, 16).ok()
+        });
+        if let Some(sp) = sp {
+            cmds.push(format!("cpu {i}"));
+            cmds.push(format!("x /48gx {sp:#x}"));
+        }
+    }
+    if !cmds.is_empty() {
+        if let Some(stacks) = monitor(&cmds) {
+            out.push_str("\n--- stacks (48 words at each CPU's stack pointer) ---\n");
+            out.push_str(&stacks);
+        }
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    if let Some(again) = monitor(&["info registers -a".to_string()]) {
+        out.push_str("\n--- cpu registers 2 s later ---\n");
+        out.push_str(&again);
+    }
+    Some(out)
+}
+
+/// Run `cmds` on the QEMU monitor, their output without the echoes and
+/// the prompts; `None` when the monitor does not answer.
+fn monitor(cmds: &[String]) -> Option<String> {
     let mut mon = UnixStream::connect(monitor_socket()).ok()?;
     mon.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
     let mut buf = [0u8; 4096];
     // The banner and the prompt.
     let _ = mon.read(&mut buf);
-    mon.write_all(b"info registers -a\n").ok()?;
     let mut out = String::new();
-    loop {
-        match mon.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => out.push_str(&String::from_utf8_lossy(&buf[..n])),
+    for cmd in cmds {
+        mon.write_all(format!("{cmd}\n").as_bytes()).ok()?;
+        let mut answer = String::new();
+        loop {
+            match mon.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    answer.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if answer.trim_end().ends_with("(qemu)") {
+                        break;
+                    }
+                }
+            }
+        }
+        // The first line is the monitor echoing the command (with its line
+        // editor's escape codes), the last its prompt again.
+        let body = answer.split_once('\n').map_or("", |(_, rest)| rest);
+        let body = body.trim().trim_end_matches("(qemu)").trim();
+        if !body.is_empty() {
+            out.push_str(body);
+            out.push('\n');
         }
     }
-    // The first line is the monitor echoing the command (with its line
-    // editor's escape codes), the last its prompt again.
-    let body = out.split_once('\n').map_or("", |(_, rest)| rest);
-    let body = body.trim().trim_end_matches("(qemu)").trim();
-    (!body.is_empty()).then(|| body.to_string())
+    let out = out.trim().to_string();
+    (!out.is_empty()).then_some(out)
 }
 
 /// A stall: the console stopped, nothing else says why (a riscv64 boot

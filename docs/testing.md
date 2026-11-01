@@ -56,8 +56,13 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 - Any other run has a budget of 50 minutes and a stall limit of 10.
 - `--budget MINUTES` sets the budget.
 - A stall (nothing on the console within the limit) ends the run with
-  every CPU's registers from the QEMU monitor (`info registers -a`);
-  `addr2line` on the kernel shows where the guest spins or halts.
+  every CPU's registers from the QEMU monitor (`info registers -a`), the
+  48 words at each CPU's stack pointer, and the registers again two
+  seconds later: `addr2line` on the kernel turns the PC and the stack's
+  code addresses into where the guest spins or halts (a module's address
+  is its load base, `/proc/modules` order, plus the offset into its ELF
+  under `target/`), and a PC that moved between the two samples is a loop,
+  not a halt.
 - A test still running after 2 minutes (5 when `heavy` is not skipped)
   gets a `HUNG <name>` line on the console. After it, once, come every
   thread's `/proc/<pid>/task/<tid>/status` line and every process's
