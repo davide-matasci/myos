@@ -109,9 +109,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 61: x86's FP/SIMD image is XSAVE's (`MYOS_FP_BYTES` 832, ymm0-15's
 /// upper halves included), and the save area of `fpu_save` /
 /// `fpu_restore` is 64-byte aligned on every arch.
+/// 64: [`ModuleConsoleOps::status_line_force`]: a status line whatever
+///     holds the screen, the report of a dead CPU 0.
 /// 63: [`ModuleConsoleOps::status_line_try`]: a status line from an
 /// interrupt, or nothing while the screen is held.
-pub const ABI_VERSION: u32 = 63;
+pub const ABI_VERSION: u32 = 64;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -456,7 +458,7 @@ pub const CONSOLE_KEY_SCREEN: i32 = 0x100;
 
 /// The module-provided console (`KernelApi::console_register`): the
 /// framebuffer's text screens and the local keyboards. Serial stays in the
-/// kernel. `blink` and `status_line_try` run from the timer interrupt and
+/// kernel. `blink`, `status_line_try` and `status_line_force` run from the timer interrupt and
 /// must never spin on a lock.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -479,6 +481,16 @@ pub struct ModuleConsoleOps {
     /// stuck-CPU report): 1 once written, 0 when the screen is held, with
     /// nothing written. Must not block.
     pub status_line_try: unsafe extern "C" fn(
+        tag: *const u8,
+        tag_len: usize,
+        kind: u32,
+        label: *const u8,
+        label_len: usize,
+    ) -> i32,
+    /// [`ModuleConsoleOps::status_line`] whatever holds the screen: the
+    /// kernel's report of a dead CPU 0, which may be the holder. Written
+    /// over whoever is drawing; must not block.
+    pub status_line_force: unsafe extern "C" fn(
         tag: *const u8,
         tag_len: usize,
         kind: u32,

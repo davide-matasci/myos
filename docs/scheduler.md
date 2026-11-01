@@ -45,9 +45,26 @@ the task alone.
 It allocates nothing and waits on no lock, since the stuck CPU may hold
 any: the task is named only when the task table is free, and a line the
 console or its screen is busy for (the console module's non-blocking
-`status_line_try`, `docs/modules.md`) waits for the next second. CPU 0 itself is not
-watched: its tick is the watcher, so a freeze of every CPU, CPU 0's tick
-included, says nothing. The boot tests fail on the report
+`status_line_try`, `docs/modules.md`) waits for the next second.
+
+CPU 0 is watched the other way round (`task::bsp_check`): it counts the
+ticks, on x86 every device's interrupt goes to it, and its tick blinks the
+cursor, so when it stops the machine is dead at once, cursor, keyboard
+and ^C with it (a laptop's freeze during `get-myos` on a USB stick). The
+tick of every other CPU looks at CPU 0's tick count; unmoved for 10 s (an
+idle halt of CPU 0 lasts a second at most), the first CPU to see it
+reports CPU 0 the same way, with the sample on x86:
+
+```text
+[ WARN ] cpu 0 at 0xffffffff80031f10 in the kernel, called from 0xffffffff8002e0a4
+[ WARN ] cpu 0 stuck for 10 s, no ticks: pid 0 idle (slot 0)
+```
+
+Since CPU 0 may hold the console and the module's screen itself and never
+let go, these lines are written whatever is held (`console::status_force`,
+the module's `status_line_force`): a live holder's output may interleave,
+which the last words of a machine are worth. A freeze of every CPU at once
+still says nothing: some CPU has to tick. The boot tests fail on the report
 (`docs/testing.md`).
 
 QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,

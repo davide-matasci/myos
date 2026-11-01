@@ -28,7 +28,7 @@ pub use fd::*;
 pub use jobs::*;
 pub use lifecycle::*;
 use process::*;
-pub use lockup::lockup_check;
+pub use lockup::{bsp_check, lockup_check};
 #[cfg(target_arch = "x86_64")]
 pub use lockup::{lockup_sampled, SAMPLE_CALLS};
 pub use sched::*;
