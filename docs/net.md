@@ -259,6 +259,24 @@ offered connection, the one behind it and the offer's sequence, `tx`,
 `sendq`, `recvq`, ...) are explained where netd writes them
 (`user/netd/src/main.rs`).
 
+### `/net/slots`
+
+`/net/slots` is netfs's side: a line per conversation slot in use,
+`N tcp|udp|icmp FLAGS status "..." data D tx T owner U`, the flags saying
+what the slot waits for from netd (`cloning`: its clone's answer;
+`closing`: the hangup that answers its close; `close-pending`: room in the
+request ring for that close; `stale-hangup`: the next hangup is the
+previous occupant's), and `gen`, which of netd's tables was current when
+the slot was taken; the first line counts those tables and the slots
+netfs took back. netd frees an index on its holder's close and lists every
+other one, held tombstones included, so a slot in use here that two whole
+tables since its creation did not list is one nobody can reach any more:
+netfs takes it back when it runs out of free ones (issue #574: with all
+128 gone, every `socket()` failed with `EIO` while netd had two
+conversations). netd resends its table every 5 s when it did not change,
+so those generations advance. The test runner prints how many slots are
+in use at the end of every boot, and lists them past a few.
+
 ## curl
 
 `ports/curl` builds a trimmed static curl 8.11.1 (`/bin/etc/curl`):

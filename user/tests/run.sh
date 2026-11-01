@@ -364,3 +364,11 @@ source_tests
 
 echo "TESTS DONE $passed/$total"
 echo "TESTS SKIPPED $skipped"
+# netfs's conversation slots still in use once the tests are over: the
+# boot's own processes (dropbear's listener) and what a test left behind,
+# or a slot netfs lost track of (128 of those, and socket() fails with
+# EIO: issue #574, the listen smoke's second socket twice). A few lines.
+if [ -r /net/slots ]; then
+	echo "netfs slots in use: $(grep -c '^[0-9]' /net/slots)"
+	cat /net/slots
+fi
