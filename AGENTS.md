@@ -210,6 +210,15 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   and uefi boots carry the same files, and the tests module beside them
   (`docs/testing.md`), which the ISO and the release do not.
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
+- **A red CI job blocks its pull request until the root cause is found and
+  fixed in that same pull request**, whatever the failure looks like: a
+  test that passes on a re-run, a timeout, a network error, a race in a
+  test the change never touched. There are no flakes to wave through; a
+  re-run can confirm a diagnosis, never replace one, and "intermittent" is
+  not a cause (the loop under "Fast local setup" is how one is found). The
+  only exception is a cause a pull request with a potential fix is already
+  open for: say so in a comment, naming it, and wait for it. A cause
+  outside the change gets its own commit in the pull request.
 - Changing a port's pin or build script changes its cache key; CI rebuilds
   it. The ports matrix of `ci-ports.yml` and the pack/assert lists of the
   build and boot jobs come from the descriptors. Adding a port touches
