@@ -157,5 +157,8 @@ map.
 - User space starts at VA 0: `[0, 512 GiB)` on x86_64, `[0, 66 GiB)` on
   aarch64 and riscv64. A position-independent image loads at 1 GiB, an
   `ET_EXEC` one at its link address. The stack, heap and the 64 GiB mmap
-  window lie above the image.
+  window lie above the image. A dynamically linked Linux program's image
+  is its dynamic linker; the program itself is mapped from its file, at
+  the start of the mmap window, or below the image at its link address
+  when it is not position-independent.
 - Modules run from the kernel heap (rwx, in the HHDM).
