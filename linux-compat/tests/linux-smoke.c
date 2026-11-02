@@ -874,6 +874,48 @@ static void check_epoll(void) {
 /* signalfd (docs/events.md): a blocked signal makes the fd readable and a
  * read takes it as a struct signalfd_siginfo; an empty nonblocking read is
  * EAGAIN; a child's kill ends a blocked read; the mask changes. */
+/* Every signal's disposition can be read and set, the ones myos has no
+ * native number for (SIGSTKFLT, SIGPWR, the real-time ones) too: Node resets
+ * 1 to 31 at startup and aborts on the first failure, Go installs a handler
+ * on all of them. A handler and an ignore stick; exec keeps the ignore and
+ * drops the handler (the child execs this program, which reports). */
+static void on_extra(int sig) { (void)sig; }
+
+static void check_sigaction_all(char *self) {
+    struct sigaction sa, old;
+    for (int sig = 1; sig < 32; sig++) {
+        check(sigaction(sig, NULL, &old) == 0, "sigaction: read every signal 1..31");
+    }
+    for (int sig = SIGRTMIN; sig <= SIGRTMAX; sig++) {
+        check(sigaction(sig, NULL, &old) == 0 && old.sa_handler == SIG_DFL,
+              "sigaction: read the real-time signals");
+    }
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_extra;
+    sa.sa_flags = SA_RESTART;
+    sigaddset(&sa.sa_mask, SIGUSR1);
+    check(sigaction(SIGPWR, &sa, NULL) == 0 && sigaction(SIGPWR, NULL, &old) == 0 && old.sa_handler == on_extra &&
+              (old.sa_flags & SA_RESTART) && sigismember(&old.sa_mask, SIGUSR1),
+          "sigaction: SIGPWR's handler, flags and mask stick");
+    sa.sa_handler = SIG_IGN;
+    check(sigaction(SIGSTKFLT, &sa, NULL) == 0 && sigaction(SIGRTMIN + 1, &sa, NULL) == 0,
+          "sigaction: ignore SIGSTKFLT and a real-time signal");
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(self, self, "extra-signals", (char *)NULL);
+        _exit(9);
+    }
+    int status = 0;
+    check(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "sigaction: exec keeps an ignore and drops a handler");
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGPWR, &sa, NULL);
+    sigaction(SIGSTKFLT, &sa, NULL);
+    sigaction(SIGRTMIN + 1, &sa, NULL);
+}
+
 static void check_signalfd(void) {
     struct signalfd_siginfo si;
     sigset_t set;
@@ -1300,6 +1342,7 @@ static void check_toolchain_calls(char *self) {
     check_evfd();
     check_epoll();
     check_signalfd();
+    check_sigaction_all(self);
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;
@@ -1663,6 +1706,11 @@ static void check_faults(void) {
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
+    }
+    if (argc > 1 && strcmp(argv[1], "extra-signals") == 0) {
+        struct sigaction a, b, c;
+        return sigaction(SIGPWR, NULL, &a) || sigaction(SIGSTKFLT, NULL, &b) || sigaction(SIGRTMIN + 1, NULL, &c) ||
+               a.sa_handler != SIG_DFL || b.sa_handler != SIG_IGN || c.sa_handler != SIG_IGN;
     }
     /* `mtime FILE`: the file's modification time is a real date (after
      * 2001), as a filesystem that keeps times reports it. */
