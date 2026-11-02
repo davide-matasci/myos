@@ -20,8 +20,16 @@
 //!                 }
 //!                 Return (0)
 //!             }
-//!             Name (_BIF, Package () { 0, 50000, 40000, 1, 11100, 2000, 500,
+//!             // The unit (mWh: 0) through a loop's Increment (Local0)
+//!             // and a store through Index, the package's 1 (mAh) else.
+//!             Name (BIFP, Package () { 1, 50000, 40000, 1, 11100, 2000, 500,
 //!                                      1, 1, "MYOS", "1", "LION", "myos" })
+//!             Method (_BIF) {
+//!                 Store (Zero, Local0)
+//!                 While (LLess (Local0, 3)) { Increment (Local0) }
+//!                 Store (Subtract (Local0, 3), Index (BIFP, 0))
+//!                 Return (BIFP)
+//!             }
 //!             Name (_BST, Package () { 1, 10000, 30000, 11100 })
 //!         }
 //!         Device (AC) {
@@ -79,6 +87,11 @@ const ADD_OP: u8 = 0x72;
 const DEREF_OF_OP: u8 = 0x83;
 const INDEX_OP: u8 = 0x88;
 const STORE_OP: u8 = 0x70;
+const WHILE_OP: u8 = 0xa2;
+const LLESS_OP: u8 = 0x95;
+const INCREMENT_OP: u8 = 0x75;
+const SUBTRACT_OP: u8 = 0x74;
+const LOCAL0: u8 = 0x60;
 /// Match's comparisons: equal, always true.
 const MEQ: u8 = 1;
 const MTR: u8 = 0;
@@ -184,9 +197,9 @@ fn ssdt() -> Vec<u8> {
                 ],
             ),
             name(
-                b"_BIF",
+                b"BIFP",
                 package(vec![
-                    int(0),
+                    int(1),
                     int(50000),
                     int(40000),
                     int(1),
@@ -200,6 +213,24 @@ fn ssdt() -> Vec<u8> {
                     string("LION"),
                     string("myos"),
                 ]),
+            ),
+            method(
+                b"_BIF",
+                vec![
+                    [vec![STORE_OP], int(0), vec![LOCAL0]].concat(),
+                    [vec![WHILE_OP], pkg([vec![LLESS_OP, LOCAL0], int(3), vec![INCREMENT_OP, LOCAL0]].concat())]
+                        .concat(),
+                    [
+                        vec![STORE_OP, SUBTRACT_OP, LOCAL0],
+                        int(3),
+                        vec![NULL_NAME, INDEX_OP],
+                        b"BIFP".to_vec(),
+                        int(0),
+                        vec![NULL_NAME],
+                    ]
+                    .concat(),
+                    [&[RETURN_OP][..], b"BIFP"].concat(),
+                ],
             ),
             name(b"_BST", package(vec![int(1), int(10000), int(30000), int(11100)])),
         ],
