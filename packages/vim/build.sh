@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cross-build Vim (FEAT_TINY) with newlib + myos libgloss + ncurses termcap.
+# Cross-build Vim (FEAT_NORMAL) with newlib + myos libgloss + ncurses termcap,
+# and stage its runtime files.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -19,8 +20,8 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 WORK="$ROOT/target/vim-myos-build/src"
 MYOS="$HERE"
 
-# BASIC_SRC from upstream Makefile (FEAT_TINY still compiles these; most become
-# empty stubs via #ifdef). No GUI / libvterm / xdiff / interpreters.
+# BASIC_SRC and XDIFF_SRC from upstream Makefile (FEAT_NORMAL's diff needs
+# xdiff). No GUI / libvterm / interpreters.
 VIM_SRCS=(
   alloc.c arabic.c arglist.c autocmd.c beval.c blob.c blowfish.c buffer.c
   change.c charset.c cindent.c clientserver.c clipboard.c cmdexpand.c cmdhist.c
@@ -41,6 +42,8 @@ VIM_SRCS=(
   vim9class.c vim9cmds.c vim9compile.c vim9execute.c vim9expr.c
   vim9generics.c vim9instr.c vim9script.c vim9type.c
   viminfo.c window.c bufwrite.c
+  xdiff/xdiffi.c xdiff/xemit.c xdiff/xprepare.c xdiff/xutils.c
+  xdiff/xhistogram.c xdiff/xpatience.c
 )
 
 link_prog() {
@@ -80,7 +83,7 @@ build_arch() {
   local objs=()
   local cppflags=(
     -DHAVE_CONFIG_H
-    -DFEAT_TINY
+    -DFEAT_NORMAL
     -D_DEFAULT_SOURCE
     -D_GNU_SOURCE
     -D_BSD_SOURCE
@@ -120,5 +123,18 @@ build_arch() {
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"
 done
+
+# The runtime files :syntax on and :filetype on read, at /lib/vim/runtime
+# (Vim's $VIM is /lib/vim, pathdef.c; it takes a "runtime" directory there
+# that holds defaults.vim): the syntax files, filetype detection, the
+# ftplugin and indent scripts, the autoload scripts they call and the color
+# schemes. Not the help, spell files, tutor or the syntax tests.
+RT="$ROOT/target/vim-runtime"
+rm -rf "$RT"
+mkdir -p "$RT"
+rsync -a --exclude='testdir' \
+  "$ROOT/target/vim-myos-build/runtime/"{syntax,colors,ftplugin,indent,autoload} \
+  "$ROOT/target/vim-myos-build/runtime/"{defaults,filetype,ftoff,ftplugin,ftplugof,indent,indoff,scripts}.vim \
+  "$RT/"
 
 echo "$(myos_vim_version_hash)" >"$MYOS_VIM_VERSION"

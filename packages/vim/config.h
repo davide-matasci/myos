@@ -1,8 +1,8 @@
-/* auto/config.h — myos FEAT_TINY freestanding port.
+/* auto/config.h — myos FEAT_NORMAL freestanding port.
  *
  * Choice: hand-written minimal config (not host `./configure`). Host configure
  * probes Linux/glibc/ncurses and enables TERMINFO/TGETENT/select/sysinfo/etc.
- * that myos newlib+libgloss do not provide. We keep FEAT_TINY + UNIX and only
+ * that myos newlib+libgloss do not provide. We keep FEAT_NORMAL + UNIX and only
  * the HAVE_* flags that match available newlib/libgloss + ncurses symbols.
  * HAVE_TGETENT uses packages/ncurses (static lib); no TERMINFO database.
  */
@@ -159,8 +159,8 @@
 #define HAVE_STDLIB_H 1
 #define HAVE_STRING_H 1
 
-#define FEAT_TINY 1
-/* #undef FEAT_NORMAL */
+/* #undef FEAT_TINY */
+#define FEAT_NORMAL 1
 /* #undef FEAT_HUGE */
 
 /* #undef FEAT_LUA */
