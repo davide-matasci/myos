@@ -1,20 +1,23 @@
 --- a/kdrive/fbdev/fbdev.c
 +++ b/kdrive/fbdev/fbdev.c
-@@ -317,11 +317,12 @@
+@@ -317,11 +317,19 @@
  	KdMouseMatrix m;
  	FbdevPriv *priv = screen->card->driver;
  
--	if (scrpriv->randr != RR_Rotate_0 ||
--		priv->fix.type != FB_TYPE_PACKED_PIXELS)
--		scrpriv->shadow = TRUE;
--	else
++	/* myos: draw into a shadow in RAM and copy the damaged parts to the
++	   framebuffer. A PC's framebuffer is the graphics device's memory,
++	   where every read is uncached (/dev/fb maps it write-combining):
++	   drawing in place, antialiased text read each pixel back from the
++	   device, and st took a second per key. Not at 24 bits per pixel:
++	   the shadow's pixmap is 32 there (kdrive's format for depth 24) and
++	   shadowUpdatePacked copies it as it is, which striped the screen
++	   of QEMU in UTM (1024x768, 24 bits). */
+ 	if (scrpriv->randr != RR_Rotate_0 ||
+ 		priv->fix.type != FB_TYPE_PACKED_PIXELS)
+ 		scrpriv->shadow = TRUE;
+ 	else
 -		scrpriv->shadow = FALSE;
-+	/* myos: always draw into a shadow in RAM and copy the damaged parts
-+	   to the framebuffer. A PC's framebuffer is the graphics device's
-+	   memory, where every read is uncached (/dev/fb maps it
-+	   write-combining): drawing in place, antialiased text read each
-+	   pixel back from the device, and st took a second per key. */
-+	scrpriv->shadow = TRUE;
++		scrpriv->shadow = priv->var.bits_per_pixel != 24;
  
  	KdComputeMouseMatrix(&m, scrpriv->randr, screen->width, screen->height);
  

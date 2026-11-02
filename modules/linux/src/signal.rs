@@ -7,8 +7,21 @@
 //! for a Linux task: the arch module writes a Linux `rt_sigframe` (siginfo,
 //! ucontext with the interrupted registers, FP state) and `rt_sigreturn`
 //! undoes it.
+//!
+//! The Linux signals the core has no number for (`SIGSTKFLT`, `SIGPWR`,
+//! the real-time ones from 32) keep their dispositions here ([`EXTRA`]):
+//! `sigaction` sets and reports them as Linux does, though nothing sends
+//! them. Runtimes walk every signal at startup and stop at the first
+//! refusal: Node resets 1 to 31 and aborts on a failed `sigaction`, Go
+//! installs its handler on all 64.
+//!
+//! Lock order: the core calls `on_fork` and `on_spawn` with its task lock
+//! held, so nothing may enter the core while holding [`EXTRA`].
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use myos_abi::Lock;
 
 use super::abi::*;
 use super::arch;
@@ -29,15 +42,64 @@ static TRAMP: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 /// Per process: the `sa_restorer` last registered (reported in `oact`).
 static RESTORER: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 
+/// The highest Linux signal number (`_NSIG - 1`).
+const LINUX_SIGMAX: usize = 64;
+/// Per process: the Linux `struct sigaction` words (handler, flags,
+/// restorer, mask) of each signal the core has no number for and that is
+/// not at its default; a signal absent is `SIG_DFL` with nothing else set.
+static EXTRA: Lock<[Vec<(u8, [u64; 4])>; MAX_TASKS]> = Lock::new([const { Vec::new() }; MAX_TASKS]);
+
+/// `exec` (and a fresh task, `on_spawn`): caught handlers go back to the
+/// default, ignored signals stay ignored, as on Linux.
 pub fn on_exec(slot: usize) {
     // exec unmapped the trampoline page with the rest of the image.
     TRAMP[slot].store(0, Ordering::Relaxed);
     RESTORER[slot].store(0, Ordering::Relaxed);
+    let ign = crate::k::signal::HANDLER_IGN as u64;
+    EXTRA.lock()[slot].retain_mut(|(_, w)| {
+        *w = [w[0], 0, 0, 0];
+        w[0] == ign
+    });
 }
 
 pub fn on_fork(parent: usize, child: usize) {
     TRAMP[child].store(TRAMP[parent].load(Ordering::Relaxed), Ordering::Relaxed);
     RESTORER[child].store(RESTORER[parent].load(Ordering::Relaxed), Ordering::Relaxed);
+    let mut extra = EXTRA.lock();
+    extra[child] = extra[parent].clone();
+}
+
+/// `rt_sigaction` of a Linux signal the core has no number for: the words
+/// stored in [`EXTRA`], swapped for the new ones. Such a signal is never
+/// delivered, so a handler needs no trampoline.
+fn extra_sigaction(id: usize, sig: usize, new: Option<[u64; 4]>, oact: usize, words: usize) -> R {
+    let old = {
+        let mut extra = EXTRA.lock();
+        let list = &mut extra[id];
+        let at = list.iter().position(|&(n, _)| usize::from(n) == sig);
+        let old = at.map_or([0; 4], |i| list[i].1);
+        if let Some(w) = new {
+            match (at, w == [0; 4]) {
+                (Some(i), true) => {
+                    list.swap_remove(i);
+                }
+                (Some(i), false) => list[i].1 = w,
+                (None, false) => list.push((sig as u8, w)),
+                (None, true) => {}
+            }
+        }
+        old
+    };
+    if oact != 0 {
+        // The words in the arch's order: the restorer only where it has one.
+        let mut b = [0u8; 32];
+        let order: &[usize] = if words == 4 { &[0, 1, 2, 3] } else { &[0, 1, 3] };
+        for (i, &k) in order.iter().enumerate() {
+            b[i * 8..i * 8 + 8].copy_from_slice(&old[k].to_le_bytes());
+        }
+        put(oact, &b[..words * 8])?;
+    }
+    Ok(0)
 }
 
 /// The interrupted context and handler for one delivery, in Linux terms.
@@ -145,10 +207,10 @@ fn flags_to_linux(flags: u32) -> u32 {
 /// `rt_sigaction(sig, act, oact, sigsetsize)` with the arch's
 /// `struct sigaction` (`{handler, flags, [restorer,] mask}`).
 pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
-    let n = sig_from_linux(sig);
-    if n == 0 {
+    if sig == 0 || sig > LINUX_SIGMAX {
         return Err(EINVAL);
     }
+    let n = sig_from_linux(sig);
     let id = task::current_pid();
     let words = if arch::SIGACTION_HAS_RESTORER { 4 } else { 3 };
     let mask_word = words - 1;
@@ -162,6 +224,14 @@ pub fn rt_sigaction(sig: usize, act: usize, oact: usize) -> R {
     } else {
         None
     };
+    if n == 0 {
+        // Stored as handler, flags, restorer, mask whatever the arch's order.
+        let new = new.map(|w| {
+            let restorer = if words == 4 { w[2] } else { 0 };
+            [w[0], w[1], restorer, w[mask_word]]
+        });
+        return extra_sigaction(id, sig, new, oact, words);
+    }
     if oact != 0 {
         let (handler, flags, mask) = task::signal_get_action(id, n);
         let caught = handler > crate::k::signal::HANDLER_IGN;

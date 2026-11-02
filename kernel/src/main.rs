@@ -208,17 +208,12 @@ pub(crate) fn kernel_main() -> ! {
     sec::init();
     user::init();
     input::init();
+    // Where the console's input comes from (docs/running.md has the
+    // serial ports and their settings).
     if input::keyboard_present() {
-        console::write_info(&alloc::format!(
-            "\nstdin: {} + serial. Output is mirrored to the screen.\n\n",
-            crate::arch::KEYBOARD_NAME
-        ));
+        console::status_info(&alloc::format!("input: {} and serial", crate::arch::KEYBOARD_NAME));
     } else {
-        console::write_info(
-            "\nstdin: serial (x86 COM1 38400 8N1, AArch64 PL011). \
-             Output is mirrored to the screen when a framebuffer exists.\n\
-             A USB keyboard types too once the USB bus found it.\n\n",
-        );
+        console::status_info("input: serial; USB keyboards when found");
     }
     user::spawn_init();
     // kernel_main is the BSP's idle task from here on: run whatever is Ready

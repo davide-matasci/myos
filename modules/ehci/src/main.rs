@@ -880,7 +880,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     }
     CORE.store(table.cast_mut(), Ordering::Release);
     if probe(api) == 0 {
-        api.write_str("ehci none\n");
+        myos_abi::status_info(api, "ehci none");
         return 0;
     }
     let mut buf = [0u8; 64];

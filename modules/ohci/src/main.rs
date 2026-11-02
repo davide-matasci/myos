@@ -787,7 +787,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     CORE.store(table.cast_mut(), Ordering::Release);
     let n = probe(api);
     if n == 0 {
-        api.write_str("ohci none\n");
+        myos_abi::status_info(api, "ohci none");
         return 0;
     }
     let mut buf = [0u8; 64];
