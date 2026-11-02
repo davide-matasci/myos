@@ -176,6 +176,9 @@ t -t netfs loopback $SMOKES/loopback_smoke
 # 200 short connections back to back over 127.0.0.1, then one that talks:
 # netd keeps the closed ones in TIME-WAIT within its heap (loopback_smoke.c).
 t -t netfs,heavy loopback_burst $SMOKES/loopback_smoke burst
+# A TCP sender under a stream of caught signals, resending what a write
+# reported interrupted: the reader gets every byte once (loopback_smoke.c).
+t -t netfs,signal loopback_signals $SMOKES/loopback_smoke signals
 # IPv6: the interfaces' addresses (SLAAC from QEMU's router), the text
 # forms and lookups, TCP and UDP over ::1, an AF_INET6 socket on :: with
 # IPv4 peers and with IPV6_V6ONLY beside an AF_INET one, ICMPv6's port

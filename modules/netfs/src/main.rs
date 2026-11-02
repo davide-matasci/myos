@@ -369,21 +369,29 @@ fn wake_any() {
 /// request, or after [`RING_WAIT_NS`] without (`f` then finds it full and
 /// fails as netd gone). netd's reads drain the ring and wake the waiters
 /// (`chr_read`). Not with the lock held: netd takes it to read. Returns
-/// `f`'s result and whether netd is owed a wake (`RingBuf::take_wake`).
-fn with_ring_room<R>(mut f: impl FnMut(&mut State) -> R) -> (R, bool) {
+/// `f`'s result and whether netd is owed a wake (`RingBuf::take_wake`), or
+/// `None` when a signal ended the wait.
+///
+/// A signal is looked at only when the call is about to wait, and `f` does
+/// not run after one: a call marked interrupted has its result replaced by
+/// EINTR or a restart (`signal::on_syscall_exit`), so a send queued after
+/// the mark was reported failed and the sender sent it again (dropbear: a
+/// duplicated packet, the client's "Integrity error (bad packet size)").
+fn with_ring_room<R>(mut f: impl FnMut(&mut State) -> R) -> Option<(R, bool)> {
     let api = api();
     let deadline = api.monotonic_ns() + RING_WAIT_NS;
     loop {
         let seq = api.wait_seq();
-        // A signal that ends the wait (the caller's `read`/`write` fails as
-        // it would with netd gone) counts as the deadline.
-        let now = if api.signal_interrupt_wait() { deadline } else { api.monotonic_ns() };
+        let timed_out = api.monotonic_ns() >= deadline;
         {
             let st = &mut *lock();
-            if !st.req.full() || now >= deadline {
+            if !st.req.full() || timed_out {
                 let r = f(st);
-                return (r, st.req.take_wake());
+                return Some((r, st.req.take_wake()));
             }
+        }
+        if api.signal_interrupt_wait() {
+            return None;
         }
         api.block_until(MYOS_WAIT_ANY, seq, deadline);
     }
@@ -1304,7 +1312,9 @@ unsafe extern "C" fn net_open(path: *const u8, path_len: usize, out: *mut u8, ou
     let id = if p == PROTO_UNIX {
         unix::clone()
     } else {
-        let (id, wake) = with_ring_room(|st| clone_locked(st, p));
+        let Some((id, wake)) = with_ring_room(|st| clone_locked(st, p)) else {
+            return -1;
+        };
         if wake {
             wake_any();
         }
@@ -1568,7 +1578,9 @@ unsafe extern "C" fn net_write(
         return unix::write(node, src);
     }
     // A ctl command or a send waits for room in the ring (`RING_WAIT_NS`).
-    let (n, wake) = with_ring_room(|st| write_locked(st, node, src));
+    let Some((n, wake)) = with_ring_room(|st| write_locked(st, node, src)) else {
+        return -1;
+    };
     if wake {
         wake_any();
     }

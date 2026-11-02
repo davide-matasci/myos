@@ -1054,6 +1054,20 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
 /// the write goes to the end (as on Linux; an `append`-only grant could not
 /// hold otherwise).
 pub fn fd_write(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
+    let n = write_chunks(fd, buf, len, at);
+    // Bytes went out: a later chunk's wait (a module file's, such as
+    // netfs's for room in its ring) may have marked the call interrupted,
+    // and a call marked so has its result replaced by EINTR or a restart
+    // (`signal::on_syscall_exit`), the bytes then sent again. The count
+    // stands; a signal's handler runs after the call returns it, as on
+    // Linux.
+    if n != 0 && n <= len {
+        signal_take_interrupted(current_id());
+    }
+    n
+}
+
+fn write_chunks(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
     if len == 0 {
         return 0;
     }

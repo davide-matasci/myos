@@ -186,7 +186,9 @@ an *active* and a *pending* bit per task slot and calls the module's
 spawn/fork/thread/exec (so the module can keep per-task state), and the
 delivery of a caught signal (the module writes the foreign frame). On
 exec the kernel also gives every image the SysV auxv ids, without which
-musl acts as setuid and ignores `LD_LIBRARY_PATH`. Everything else the
+musl acts as setuid and ignores `LD_LIBRARY_PATH`, and lays out the
+argument and environment strings as Linux does, one ascending block (libuv
+takes the arguments' bytes as room for the process title). Everything else the
 module needs is plain `KernelApi` services (`modules/abi/src/lib.rs`).
 
 ### Pieces
