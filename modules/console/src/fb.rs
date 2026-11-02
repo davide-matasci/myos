@@ -13,6 +13,7 @@
 //! taking text into its cells and is painted whole when it is shown again.
 
 use core::fmt;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use myos_abi::FramebufferInfo;
 
@@ -90,6 +91,10 @@ struct Cell {
     bg: (u8, u8, u8),
 }
 
+/// The shadow of the framebuffer the screens share (see
+/// [`FrameBufferWriter::move_rows`]), allocated with the first screen.
+static SHADOW: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+
 const BLANK: Cell = Cell { glyph: [0; 8], fg: TEXT, bg: BG };
 
 pub struct FrameBufferWriter {
@@ -97,6 +102,8 @@ pub struct FrameBufferWriter {
     /// visible one touches them.
     fb: *mut u8,
     fb_len: usize,
+    /// A copy of the framebuffer in RAM ([`SHADOW`]), null without one.
+    shadow: *mut u8,
     /// The cells, row by row (`rows() * cols()`), from the kernel's heap.
     cells: *mut Cell,
     /// Pixels per font dot, each way ([`scale_for`]).
@@ -165,6 +172,19 @@ impl FrameBufferWriter {
         if cells.is_null() {
             return None;
         }
+        // The screens share one shadow, made with the first of them (under
+        // the screen lock); without the heap room for it they draw on the
+        // framebuffer itself.
+        let mut shadow = SHADOW.load(Ordering::Acquire);
+        if shadow.is_null() {
+            shadow = crate::api().alloc(len, 16);
+            if !shadow.is_null() {
+                // SAFETY: `shadow` holds `len` bytes; the framebuffer is
+                // `len` bytes, what the screen shows now.
+                unsafe { core::ptr::copy_nonoverlapping(info.addr as *const u8, shadow, len) };
+                SHADOW.store(shadow, Ordering::Release);
+            }
+        }
         for i in 0..ncells {
             // SAFETY: `cells` holds `ncells` cells.
             unsafe { cells.add(i).write(BLANK) };
@@ -172,6 +192,7 @@ impl FrameBufferWriter {
         Some(Self {
             fb: info.addr as *mut u8,
             fb_len: len,
+            shadow,
             cells,
             scale,
             visible: false,
@@ -218,6 +239,15 @@ impl FrameBufferWriter {
         // life; only the visible screen takes this slice, for one drawing
         // step, under the module's screen lock.
         unsafe { core::slice::from_raw_parts_mut(self.fb, self.fb_len) }
+    }
+
+    /// The shadow's bytes, the same layout as [`Self::pixels`]; `None`
+    /// without one.
+    #[allow(clippy::mut_from_ref)]
+    fn shadow(&self) -> Option<&'static mut [u8]> {
+        // SAFETY: as `pixels`: `fb_len` bytes from the heap, never freed,
+        // drawn on by the visible screen under the screen lock.
+        (!self.shadow.is_null()).then(|| unsafe { core::slice::from_raw_parts_mut(self.shadow, self.fb_len) })
     }
 
     fn cell(&mut self, row: usize, col: usize) -> Option<&mut Cell> {
@@ -1079,15 +1109,31 @@ impl FrameBufferWriter {
     /// `n` text rows from row `src` to row `dst`, cells and (when visible)
     /// pixels.
     ///
-    /// The pixels are painted from the cells, never copied on the screen:
-    /// a real machine's framebuffer is write-combining memory (Limine maps
-    /// it so), where every read is uncached, and copying a 1920x1080
-    /// screen onto itself for each new line made the console crawl. Only
-    /// the cells whose content changes are painted, so the blank part of
-    /// the screen costs nothing.
+    /// The framebuffer is never read: on a real machine it is
+    /// write-combining memory (Limine maps it so), where every read is
+    /// uncached, and copying a 1920x1080 screen onto itself for each new
+    /// line made the console crawl. With the shadow the rows move there
+    /// and the moved part is copied out: two memmoves, fast in a debug
+    /// build too. Without it the cells whose content changes are painted
+    /// again, so the blank part of the screen costs nothing.
     fn move_rows(&mut self, src: usize, dst: usize, n: usize) {
         let cols = self.cols();
         if n == 0 || src.max(dst) + n > self.rows() {
+            return;
+        }
+        if let Some(shadow) = self.shadow() {
+            // SAFETY: both ranges are inside the `rows() * cols()` cells;
+            // `copy` handles the overlap.
+            unsafe { core::ptr::copy(self.cells.add(src * cols), self.cells.add(dst * cols), n * cols) };
+            if !self.visible {
+                return;
+            }
+            let row_len = self.cell_h() * self.pitch;
+            let (src_off, dst_off, len) = (src * row_len, dst * row_len, n * row_len);
+            if src_off + len <= shadow.len() && dst_off + len <= shadow.len() {
+                shadow.copy_within(src_off..src_off + len, dst_off);
+                self.pixels()[dst_off..dst_off + len].copy_from_slice(&shadow[dst_off..dst_off + len]);
+            }
             return;
         }
         let len = n * cols;
@@ -1127,16 +1173,26 @@ impl FrameBufferWriter {
         let w = self.cell_w().min(self.width.saturating_sub(x0));
         let h = self.cell_h().min(self.height.saturating_sub(y0));
         let n = bpp.min(4);
-        let px = self.pixels();
+        // Drawn in the shadow and each row copied out, or on the
+        // framebuffer itself without one.
+        let fb = self.pixels();
+        let mut shadow = self.shadow();
         for y in 0..h {
             let bits = cell.glyph[y / s];
             let start = (y0 + y) * pitch + x0 * bpp;
-            let Some(line) = px.get_mut(start..start + w * bpp) else {
+            let span = start..start + w * bpp;
+            let Some(line) = (match shadow.as_deref_mut() {
+                Some(sh) => sh.get_mut(span.clone()),
+                None => fb.get_mut(span.clone()),
+            }) else {
                 return;
             };
             for (x, pixel) in line.chunks_exact_mut(bpp).enumerate() {
                 let v = if bits & (1 << (x / s)) != 0 { &fg } else { &bg };
                 pixel[..n].copy_from_slice(&v[..n]);
+            }
+            if let (Some(sh), Some(out)) = (shadow.as_deref(), fb.get_mut(span.clone())) {
+                out.copy_from_slice(&sh[span]);
             }
         }
     }
