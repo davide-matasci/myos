@@ -433,6 +433,18 @@ int __myos_sethostname(const char *name, size_t len) {
     return 0;
 }
 
+/* `uname -m`: the architecture the library was built for, under the
+ * names Linux and the GNU triples use. */
+#if defined(__x86_64__)
+#define MYOS_MACHINE "x86_64"
+#elif defined(__aarch64__)
+#define MYOS_MACHINE "aarch64"
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MYOS_MACHINE "riscv64"
+#else
+#error "unknown architecture"
+#endif
+
 int __myos_uname(struct utsname *buf) {
     if (buf == NULL) {
         errno = EFAULT;
@@ -444,7 +456,7 @@ int __myos_uname(struct utsname *buf) {
     }
     strncpy(buf->release, "0.1", sizeof(buf->release));
     strncpy(buf->version, "myos", sizeof(buf->version));
-    strncpy(buf->machine, "myos", sizeof(buf->machine));
+    strncpy(buf->machine, MYOS_MACHINE, sizeof(buf->machine));
     return 0;
 }
 
