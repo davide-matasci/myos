@@ -874,6 +874,7 @@ pub fn device_frame(node: &Vnode, offset: usize) -> Option<DeviceFrame> {
         phys,
         uncached: attrs & myos_abi::MYOS_MMAP_UNCACHED != 0,
         nocache: attrs & myos_abi::MYOS_MMAP_NOCACHE != 0,
+        write_combine: attrs & myos_abi::MYOS_MMAP_WRITE_COMBINE != 0,
     })
 }
 
@@ -886,6 +887,8 @@ pub struct DeviceFrame {
     /// Memory a device reads and writes without seeing the caches: mapped
     /// non-cacheable.
     pub nocache: bool,
+    /// A framebuffer: mapped write-combining.
+    pub write_combine: bool,
 }
 
 /// The `poll` bits (`myos_abi::MYOS_POLL*`) that hold now for `node` and

@@ -839,6 +839,8 @@ pub(super) fn map_user_page_kind(aspace: u64, va: u64, pa: u64, prot: usize, kin
         crate::arch::upaging::map_user_device_page(aspace, va, pa, prot & PROT_WRITE != 0);
     } else if kind & task::MMAP_NOCACHE != 0 {
         crate::arch::upaging::map_user_nocache_page(aspace, va, pa, prot & PROT_WRITE != 0);
+    } else if kind & task::MMAP_WRITE_COMBINE != 0 {
+        crate::arch::upaging::map_user_wc_page(aspace, va, pa, prot & PROT_WRITE != 0);
     } else {
         map_user_page_prot(aspace, va, pa, prot);
     }

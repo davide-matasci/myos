@@ -113,7 +113,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 ///     holds the screen, the report of a dead CPU 0.
 /// 63: [`ModuleConsoleOps::status_line_try`]: a status line from an
 /// interrupt, or nothing while the screen is held.
-pub const ABI_VERSION: u32 = 64;
+/// 65: [`ModuleVfsOps::mmap`] can ask for a write-combining mapping
+/// ([`MYOS_MMAP_WRITE_COMBINE`]: a framebuffer).
+pub const ABI_VERSION: u32 = 65;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -124,6 +126,11 @@ pub const MYOS_MMAP_UNCACHED: u32 = 1;
 /// needs no cache maintenance (x86 PCD|PWT, aarch64 Normal non-cacheable;
 /// riscv64 cached, its DMA being coherent).
 pub const MYOS_MMAP_NOCACHE: u32 = 2;
+/// [`ModuleVfsOps::mmap`]: map the page write-combining, a framebuffer in
+/// a device's memory (x86 PAT entry 5, which Limine sets to WC on every
+/// CPU; aarch64 and riscv64 map it as ordinary memory, as before: their
+/// framebuffers are RAM, QEMU's `ramfb` or the Raspberry Pi's).
+pub const MYOS_MMAP_WRITE_COMBINE: u32 = 4;
 
 /// A time argument of [`ModuleVfsOps::set_times`] / [`KernelApi::vfs_set_times`]
 /// that keeps the current value.
@@ -259,8 +266,9 @@ pub struct ModuleVfsOps {
     /// when that page cannot be mapped. The page stays the module's: the
     /// kernel maps it shared into every process that asks, never copies it
     /// on fork and never frees it. `*attrs` (0 on entry) takes
-    /// [`MYOS_MMAP_UNCACHED`] for a page of registers (a PCI BAR); the
-    /// others are mapped as memory.
+    /// [`MYOS_MMAP_UNCACHED`] for a page of registers (a PCI BAR),
+    /// [`MYOS_MMAP_WRITE_COMBINE`] for a framebuffer's; the others are
+    /// mapped as memory.
     pub mmap: Option<unsafe extern "C" fn(path: *const u8, path_len: usize, offset: usize, attrs: *mut u32) -> u64>,
     // --- ABI 17: readiness ---
     /// Optional: the `poll(2)` bits ([`MYOS_POLLIN`], [`MYOS_POLLOUT`],
