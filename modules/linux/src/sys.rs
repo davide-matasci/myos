@@ -1429,6 +1429,69 @@ pub fn pwritev(fd: usize, iov: usize, cnt: usize, off: usize) -> R {
     Ok(total)
 }
 
+// ---- scheduling policy -------------------------------------------------------
+
+const SCHED_OTHER: usize = 0;
+const SCHED_FIFO: usize = 1;
+const SCHED_RR: usize = 2;
+const SCHED_BATCH: usize = 3;
+const SCHED_IDLE: usize = 5;
+/// `sched_setscheduler`'s flag for a policy that forks back to the default.
+const SCHED_RESET_ON_FORK: usize = 0x4000_0000;
+
+/// A policy's priority range, as Linux has it: 1 to 99 for the real-time
+/// ones, 0 for the others; `None` for no policy.
+fn sched_priorities(policy: usize) -> Option<(usize, usize)> {
+    match policy {
+        SCHED_FIFO | SCHED_RR => Some((1, 99)),
+        SCHED_OTHER | SCHED_BATCH | SCHED_IDLE => Some((0, 0)),
+        _ => None,
+    }
+}
+
+/// `sched_get_priority_max` / `_min`.
+pub fn sched_priority(policy: usize, max: bool) -> R {
+    let (lo, hi) = sched_priorities(policy).ok_or(EINVAL)?;
+    Ok(if max { hi } else { lo })
+}
+
+/// `sched_getparam(pid, param)`: priority 0, every task being under the
+/// time-sharing policy (`sched_getscheduler` answers `SCHED_OTHER`). musl's
+/// `pthread_getschedparam` asks for both, and V8 and abseil's mutexes
+/// report each failure on stderr.
+pub fn sched_getparam(param: usize) -> R {
+    put(param, &0i32.to_le_bytes())?;
+    Ok(0)
+}
+
+/// `sched_setparam(pid, param)`: priority 0 is the only one there is.
+pub fn sched_setparam(param: usize) -> R {
+    let mut p = [0u8; 4];
+    get(param, &mut p)?;
+    if i32::from_le_bytes(p) != 0 {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
+/// `sched_setscheduler(pid, policy, param)`: the time-sharing policies
+/// with priority 0 are accepted (the core schedules every task the same);
+/// a real-time one is refused as for an unprivileged Linux process.
+pub fn sched_setscheduler(policy: usize, param: usize) -> R {
+    const EPERM: usize = 1;
+    let mut p = [0u8; 4];
+    get(param, &mut p)?;
+    let prio = i32::from_le_bytes(p);
+    let (lo, hi) = sched_priorities(policy & !SCHED_RESET_ON_FORK).ok_or(EINVAL)?;
+    if prio < lo as i32 || prio > hi as i32 {
+        return Err(EINVAL);
+    }
+    if hi != 0 {
+        return Err(EPERM);
+    }
+    Ok(0)
+}
+
 // ---- processes ------------------------------------------------------------
 
 pub fn fork(regs: &SyscallRegs) -> R {

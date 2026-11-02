@@ -129,6 +129,12 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         118 | 120 => ret(sys::getresid(a[0], a[1], a[2])), // getresuid, getresgid
         140 => 20, // getpriority: nice 0 (the result is 20 - nice)
         141 => 0,  // setpriority: accepted; the core schedules
+        142 => ret(sys::sched_setparam(a[1])),
+        143 => ret(sys::sched_getparam(a[1])),
+        144 => ret(sys::sched_setscheduler(a[1], a[2])),
+        145 => 0, // sched_getscheduler: SCHED_OTHER
+        146 => ret(sys::sched_priority(a[0], true)),
+        147 => ret(sys::sched_priority(a[0], false)),
         157 => ret(sys::prctl(a[0], a[1])),
         272 => ret(sys::unshare(a[0])),
         125 => ret(sys::capget(a[0], a[1])),
