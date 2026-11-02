@@ -1027,6 +1027,7 @@ myos_vim_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/vim-${arch}-unknown-none" ]] || return 1
   done
+  [[ -f "$MYOS_ROOT/target/vim-runtime/defaults.vim" ]] || return 1
 }
 
 

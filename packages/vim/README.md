@@ -1,4 +1,4 @@
-# Vim (FEAT_TINY) for myos
+# Vim (FEAT_NORMAL) for myos
 
 Upstream Vim pinned in `versions.env` (not vendored). Cross-built with newlib +
 myos libgloss + static ncurses termcap for `x86_64` / `aarch64` / `riscv64`.
@@ -26,6 +26,16 @@ with `TERM=linux`. No full TERMINFO database.
 `<termios.h>` and `tcgetattr`/`tcsetattr` stubs live in
 `toolchain/newlib/libgloss/myos/` (installed into the newlib sysroot) — not
 under `packages/vim/`.
+
+## Features and runtime files
+
+Built with FEAT_NORMAL: syntax highlighting, filetype detection, Vim script,
+autocommands, `:diffthis` (upstream's xdiff). The package carries the
+runtime files these read at `/lib/vim/runtime` (`$VIM` is `/lib/vim`,
+`pathdef.c`): `syntax/`, `ftplugin/`, `indent/`, `autoload/`, `colors/` and
+`filetype.vim` with its companions and `defaults.vim`; not the help,
+spell files or tutor. The system vimrc turns on `syntax on` and
+`filetype plugin indent on`.
 
 ## Image path
 

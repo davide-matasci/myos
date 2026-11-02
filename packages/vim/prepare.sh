@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare a myos build tree from fetched upstream Vim (config.h + stubs + patches).
 #
-# Config choice: hand-written ports/vim/config.h for FEAT_TINY freestanding
+# Config choice: hand-written packages/vim/config.h for FEAT_NORMAL freestanding
 # (documented in that file). Host configure is NOT used — it enables
 # terminfo/ncurses and Linux-only APIs myos lacks.
 set -euo pipefail
