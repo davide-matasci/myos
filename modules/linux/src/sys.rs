@@ -1429,6 +1429,108 @@ pub fn pwritev(fd: usize, iov: usize, cnt: usize, off: usize) -> R {
     Ok(total)
 }
 
+/// `sendfile(out, in, offset, count)`: up to `count` bytes of `in` (at
+/// `*offset` when given, which then moves and the file position does not)
+/// written to `out`, through [`copy_fds`].
+pub fn sendfile(out: usize, input: usize, offset: usize, count: usize) -> R {
+    let mut off = if offset != 0 { Some(get_u64(offset)? as usize) } else { None };
+    let n = copy_fds(input, off.as_mut(), out, None, count)?;
+    if let Some(o) = off {
+        put(offset, &(o as u64).to_le_bytes())?;
+    }
+    Ok(n)
+}
+
+/// `copy_file_range(in, in_off, out, out_off, len, flags)`: [`sendfile`]
+/// with an optional offset on either side (no flags are defined).
+pub fn copy_file_range(input: usize, in_off: usize, out: usize, out_off: usize, len: usize, flags: usize) -> R {
+    if flags != 0 {
+        return Err(EINVAL);
+    }
+    let mut a = if in_off != 0 { Some(get_u64(in_off)? as usize) } else { None };
+    let mut b = if out_off != 0 { Some(get_u64(out_off)? as usize) } else { None };
+    let n = copy_fds(input, a.as_mut(), out, b.as_mut(), len)?;
+    for (ptr, o) in [(in_off, a), (out_off, b)] {
+        if let Some(o) = o {
+            put(ptr, &(o as u64).to_le_bytes())?;
+        }
+    }
+    Ok(n)
+}
+
+/// Copy up to `len` bytes from `input` to `out`, each at its offset when
+/// one is given (moved by what was copied) or at the fd's position, the
+/// way `read`/`pread` and `write`/`pwrite` do for any kind of fd: through
+/// a scratch mapping in the caller, as those take user buffers. libuv's
+/// `fs.copyFile` (Node, npm's install scripts) starts with these. Returns
+/// what was written; bytes read from a file position and not written are
+/// given back to it.
+fn copy_fds(input: usize, mut in_off: Option<&mut usize>, out: usize, mut out_off: Option<&mut usize>, len: usize) -> R {
+    const CHUNK: usize = 64 * 1024;
+    const PROT_READ: usize = 1;
+    const PROT_WRITE: usize = 2;
+    const MAP_PRIVATE: usize = 2;
+    const MAP_ANON: usize = 0x20;
+    const SEEK_CUR: usize = 1;
+    if len == 0 {
+        return Ok(0);
+    }
+    let buf = user::do_mmap(0, CHUNK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if buf >= crate::k::signal::SYSERR_LOWEST {
+        return Err(ENOMEM);
+    }
+    let mut total = 0;
+    let mut failed = None;
+    while total < len {
+        let want = (len - total).min(CHUNK);
+        let got = match in_off.as_deref() {
+            Some(&o) => pread(input, buf, want, o),
+            None => read(input, buf, want),
+        };
+        let got = match got {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        };
+        let mut done = 0;
+        while done < got {
+            let w = match out_off.as_deref() {
+                Some(&o) => pwrite(out, buf + done, got - done, o + done),
+                None => write(out, buf + done, got - done),
+            };
+            match w {
+                Ok(0) => break,
+                Ok(n) => done += n,
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+        }
+        total += done;
+        if let Some(o) = in_off.as_deref_mut() {
+            *o += done;
+        } else if done < got {
+            let back = (done as isize - got as isize) as usize;
+            lseek(input, back, SEEK_CUR).ok();
+        }
+        if let Some(o) = out_off.as_deref_mut() {
+            *o += done;
+        }
+        if done < got || got < want {
+            break;
+        }
+    }
+    user::sys_munmap(buf, CHUNK);
+    match failed {
+        Some(e) if total == 0 => Err(e),
+        _ => Ok(total),
+    }
+}
+
 // ---- processes ------------------------------------------------------------
 
 pub fn fork(regs: &SyscallRegs) -> R {

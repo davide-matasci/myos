@@ -71,6 +71,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         115 => ret(sys::nanosleep(a[0], a[2], a[1] & 1 != 0)), // clock_nanosleep
         122 => 0, // sched_setaffinity: the core places tasks
         123 => ret(sys::sched_getaffinity(a[1], a[2])),
+        71 => ret(sys::sendfile(a[0], a[1], a[2], a[3])),
+        285 => ret(sys::copy_file_range(a[0], a[1], a[2], a[3], a[4], a[5])),
         124 => {
             task::yield_now();
             0

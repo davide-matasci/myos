@@ -289,7 +289,9 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 
 - **Files**: the usual file, directory, fd and `poll` calls. `ioctl`
   covers the tty requests (`docs/tty.md`) and `FIONBIO`. `getdents64`
-  reads a snapshot of the directory. `fallocate` takes mode 0 only. The
+  reads a snapshot of the directory. `sendfile` and `copy_file_range`
+  copy through the layer's `read` and `write` (libuv's `fs.copyFile`
+  starts with them). `fallocate` takes mode 0 only. The
   xattr calls behave as on a filesystem without attributes (`ENODATA`,
   `EOPNOTSUPP`). `statfs` has no filesystem magic.
 - **Memory**: `brk`, `mmap`, `munmap`, `mprotect`, `msync`;
