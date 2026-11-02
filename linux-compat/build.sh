@@ -110,7 +110,7 @@ for arch in "${ARCHES[@]}"; do
   if [[ ! -f "$prefix/lib/libc.so" ]]; then
     mkdir -p "$ROOT/target/linux-compat"
     if [[ ! -f "$tarball" ]]; then
-      curl -sSfL --retry 3 -o "$tarball.tmp" "https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz"
+      curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 -o "$tarball.tmp" "https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz"
       mv "$tarball.tmp" "$tarball"
     fi
     echo "$MUSL_SHA256  $tarball" | sha256sum -c -
