@@ -57,6 +57,14 @@ sbase_hostname() {
 }
 t sbase_hostname sbase_hostname
 
+# uname -m names the architecture (libmyos's uname), not the system.
+sbase_uname_m() {
+	m=$(/bin/sbase/uname -m)
+	echo "uname -m: $m"
+	case $m in x86_64|aarch64|riscv64) ;; *) return 1 ;; esac
+}
+t sbase_uname_m sbase_uname_m
+
 # syslog: logger's message is a line on the console, and with -s on stderr.
 sbase_logger() {
 	out=$(/bin/sbase/logger -s -t tag hello 2>&1)
