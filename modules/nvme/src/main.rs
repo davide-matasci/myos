@@ -571,7 +571,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     unsafe { API.set(api) };
     // A controller that failed has said why on its own line.
     match probe(api) {
-        (0, 0) => api.write_str("nvme none\n"),
+        (0, 0) => myos_abi::status_info(api, "nvme none"),
         (0, _) => {}
         _ => status_ok(api, "nvme"),
     }

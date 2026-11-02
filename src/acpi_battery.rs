@@ -29,10 +29,14 @@
 //!             // A _STA that returns nothing (falls off its end), as a
 //!             // ThinkPad T15's has one: the device counts as present.
 //!             Method (_STA) { If (Zero) { Return (0x0F) } }
-//!             // Offline (0) through DerefOf and an Index used as an
-//!             // integer, both of which the crate got wrong.
+//!             // DerefOf, an Index used as an integer and a store through
+//!             // an Index, all of which the crate got wrong.
+//!             // _INI (run at boot, as a T15's are) stores through Index;
+//!             // _PSR reads it back: offline (0) only if the store landed.
+//!             Name (PKG, Package () { 5 })
+//!             Method (_INI) { Store (Zero, Index (PKG, 0)) }
 //!             Method (_PSR) {
-//!                 Return (Add (DerefOf (Index (Package () { 0, 5 }, 0)),
+//!                 Return (Add (DerefOf (Index (PKG, 0)),
 //!                              Index (Package () { 0 }, 0)))
 //!             }
 //!         }
@@ -74,6 +78,7 @@ const NULL_NAME: u8 = 0x00;
 const ADD_OP: u8 = 0x72;
 const DEREF_OF_OP: u8 = 0x83;
 const INDEX_OP: u8 = 0x88;
+const STORE_OP: u8 = 0x70;
 /// Match's comparisons: equal, always true.
 const MEQ: u8 = 1;
 const MTR: u8 = 0;
@@ -204,11 +209,13 @@ fn ssdt() -> Vec<u8> {
         vec![
             name(b"_HID", string("ACPI0003")),
             method(b"_STA", vec![[vec![IF_OP], pkg([int(0), vec![RETURN_OP], int(0x0f)].concat())].concat()]),
+            name(b"PKG_", package(vec![int(5)])),
+            method(b"_INI", vec![[&[STORE_OP][..], &int(0), &[INDEX_OP], b"PKG_", &int(0), &[NULL_NAME]].concat()]),
             method(
                 b"_PSR",
                 vec![[
                     vec![RETURN_OP, ADD_OP, DEREF_OF_OP, INDEX_OP],
-                    package(vec![int(0), int(5)]),
+                    b"PKG_".to_vec(),
                     int(0),
                     vec![NULL_NAME, INDEX_OP],
                     package(vec![int(0)]),

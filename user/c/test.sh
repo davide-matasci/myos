@@ -33,7 +33,7 @@ t -t netfs,unix unix_seqpacket $SMOKES/unix_smoke seqpacket
 t -t console,fb fb $SMOKES/fb_smoke
 # The text console's UTF-8: box-drawing, block and braille characters drawn
 # in one cell each, one without a glyph a single '?', a wide one two cells,
-# a combining mark none; 256 colors and RGB (fb_smoke.c).
+# a combining mark none; 256 colors and RGB; reverse video (fb_smoke.c).
 t -t console,fb fb_text $SMOKES/fb_smoke text
 # poll: timeouts, waking on pipe and unix socket events (not before),
 # POLLHUP/POLLERR/POLLNVAL, EAGAIN, EINTR (poll_smoke.c).
