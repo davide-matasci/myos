@@ -1,0 +1,44 @@
+acpi: store through a reference (Store into an Index or RefOf)
+
+A store whose target is a reference RefOf or Index made was a todo!()
+in do_store: a ThinkPad T15's AML stores into a package's elements
+through Index in a device's _INI, which panicked the interpreter once
+DerefOf worked (the AML before it no longer failed). The store now goes
+into what the reference names: a buffer field's bits, a field unit (a
+write to its region), or the element itself, replaced.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -2315,7 +2315,29 @@
+                 Object::FieldUnit(field) => self.do_field_write(field, object)?,
+                 Object::Reference { kind, inner } => {
+                     match kind {
+-                        ReferenceKind::RefOf => todo!(),
++                        // A store through a reference `RefOf` or `Index` made: into the element
++                        // or byte it names (`Store (Local0, Index (PKG, 2))`).
++                        ReferenceKind::RefOf => match unsafe { inner.gain_mut(&token) } {
++                            Object::BufferField { .. } => match unsafe { object.gain_mut(&token) } {
++                                Object::Integer(value) => {
++                                    unsafe { inner.gain_mut(&token) }.write_buffer_field(&value.to_le_bytes(), &token)?;
++                                }
++                                Object::Buffer(value) => {
++                                    unsafe { inner.gain_mut(&token) }.write_buffer_field(value.as_slice(), &token)?;
++                                }
++                                _ => Err(AmlError::ObjectNotOfExpectedType {
++                                    expected: ObjectType::Integer,
++                                    got: object.typ(),
++                                })?,
++                            },
++                            Object::FieldUnit(field) => {
++                                let field = field.clone();
++                                self.do_field_write(&field, object)?
++                            }
++                            element => {
++                                *element = unsafe { object.gain_mut(&token) }.clone();
++                            }
++                        },
+                         ReferenceKind::LocalOrArg => {
+                             if let Object::Reference { kind: _inner_kind, inner: inner_inner } = &**inner {
+                                 // TODO: this should store into the reference, potentially doing an
