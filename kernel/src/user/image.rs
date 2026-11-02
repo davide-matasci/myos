@@ -468,6 +468,10 @@ impl AuxV {
 
 /// SysV-style user stack at process entry (`rsp % 16 == 0`):
 /// `[argc][argv…][NULL][envp…][NULL][auxv…][AT_NULL][gap][strings…]`.
+/// The strings are one block in Linux's order, ascending: argv's, then
+/// envp's. Programs count on it: libuv (Node) takes the bytes from
+/// `argv[0]` to the end of the last argument as room for the process
+/// title, and clears all of them when one is set (npm sets it first).
 pub(super) fn build_argv_stack(
     aspace: u64,
     user_base: u64,
@@ -486,24 +490,26 @@ pub(super) fn build_argv_stack(
     let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
     // Leave bytes below stack_top: argv strings must not end at stack_top (unmapped).
-    let mut sp = stack_top.checked_sub(64)?;
-    // Each string with its NUL, highest first; returns where each landed.
-    let mut push_strings = |list: &[&[u8]]| -> Option<Vec<usize>> {
+    let mut sp = stack_top.checked_sub(64)?.checked_sub(total)?;
+    if sp < stack_bot {
+        return None;
+    }
+    // Each string with its NUL, one after the other from `sp` up; returns
+    // where each landed.
+    let mut at = sp;
+    let mut put_strings = |list: &[&[u8]]| -> Option<Vec<usize>> {
         let mut ptrs = Vec::with_capacity(list.len());
         for item in list {
-            sp = sp.checked_sub(item.len() + 1)?;
-            if sp < stack_bot {
+            if !write_user_bytes(aspace, at, item) || !write_user_bytes(aspace, at + item.len(), &[0]) {
                 return None;
             }
-            if !write_user_bytes(aspace, sp, item) || !write_user_bytes(aspace, sp + item.len(), &[0]) {
-                return None;
-            }
-            ptrs.push(sp);
+            ptrs.push(at);
+            at += item.len() + 1;
         }
         Some(ptrs)
     };
-    let arg_ptrs = push_strings(args)?;
-    let env_ptrs = push_strings(env)?;
+    let arg_ptrs = put_strings(args)?;
+    let env_ptrs = put_strings(env)?;
     // Gap so the argv pointer table cannot overlap the copied strings (x86 std
     // `_start` reads argv[] immediately; a tight layout can alias string bytes).
     sp = sp.checked_sub(16)?;

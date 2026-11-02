@@ -1233,6 +1233,19 @@ static void check_fork_vs_fds(void) {
     check(ok, "fork while a thread sets fd flags");
 }
 
+static void check_argv_layout(char *self) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        char *args[] = {self, "argv-layout", "a", "bb", "ccc", NULL};
+        char *env[] = {"A=1", "B=22", NULL};
+        execve(self, args, env);
+        _exit(9);
+    }
+    int status = 0;
+    check(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "exec: argv's then envp's strings in one ascending block");
+}
+
 static void check_toolchain_calls(char *self) {
     /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
     pid_t c;
@@ -1300,6 +1313,7 @@ static void check_toolchain_calls(char *self) {
     check_evfd();
     check_epoll();
     check_signalfd();
+    check_argv_layout(self);
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;
@@ -1663,6 +1677,19 @@ static void check_faults(void) {
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
+    }
+    /* The exec strings are one ascending block, argv's then envp's, as on
+     * Linux: libuv (Node) takes argv[0] to the end of the last argument as
+     * the process title's room and clears it all (npm segfaulted). */
+    if (argc > 1 && strcmp(argv[1], "argv-layout") == 0) {
+        char *next = argv[0];
+        for (int i = 0; i < argc; i++) {
+            if (argv[i] != next) {
+                return 1;
+            }
+            next = argv[i] + strlen(argv[i]) + 1;
+        }
+        return environ[0] && environ[0] != next ? 2 : 0;
     }
     /* `mtime FILE`: the file's modification time is a real date (after
      * 2001), as a filesystem that keeps times reports it. */
