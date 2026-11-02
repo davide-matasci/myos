@@ -147,7 +147,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     unsafe { API.set(api) };
     let mut dev = MmioDevice::default();
     if api.dt_mmio_find("arm,pl061", 0, &mut dev) != 0 {
-        api.write_str("pl061: none\n");
+        myos_abi::status_info(api, "pl061: none");
         return 0;
     }
     if dev.irq == 0 {
