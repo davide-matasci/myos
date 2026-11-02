@@ -37,15 +37,23 @@
 //!             // A _STA that returns nothing (falls off its end), as a
 //!             // ThinkPad T15's has one: the device counts as present.
 //!             Method (_STA) { If (Zero) { Return (0x0F) } }
-//!             // DerefOf, an Index used as an integer and a store through
-//!             // an Index, all of which the crate got wrong.
-//!             // _INI (run at boot, as a T15's are) stores through Index;
-//!             // _PSR reads it back: offline (0) only if the store landed.
+//!             // DerefOf, an Index used as an integer, a store through an
+//!             // Index and stores into a named buffer and string, all of
+//!             // which the crate got wrong.
+//!             // _INI (run at boot, as a T15's are) stores; _PSR reads
+//!             // back: offline (0) only if the stores landed.
 //!             Name (PKG, Package () { 5 })
-//!             Method (_INI) { Store (Zero, Index (PKG, 0)) }
+//!             Name (BUF, Buffer () { 5, 6 })
+//!             Name (STR, "AC")
+//!             Method (_INI) {
+//!                 Store (Zero, Index (PKG, 0))
+//!                 Store (0x0700, BUF)
+//!                 Store (BUF, STR)
+//!             }
 //!             Method (_PSR) {
-//!                 Return (Add (DerefOf (Index (PKG, 0)),
-//!                              Index (Package () { 0 }, 0)))
+//!                 Return (Add (Add (DerefOf (Index (PKG, 0)),
+//!                                   Index (Package () { 0 }, 0)),
+//!                              DerefOf (Index (BUF, 0))))
 //!             }
 //!         }
 //!         // An adapter whose _PSR fails (a name nothing defines): its
@@ -67,6 +75,7 @@ use std::process::Command;
 const NAME_OP: u8 = 0x08;
 const SCOPE_OP: u8 = 0x10;
 const PACKAGE_OP: u8 = 0x12;
+const BUFFER_OP: u8 = 0x11;
 const BYTE_PREFIX: u8 = 0x0a;
 const WORD_PREFIX: u8 = 0x0b;
 const DWORD_PREFIX: u8 = 0x0c;
@@ -139,6 +148,11 @@ fn int(v: u32) -> Vec<u8> {
 
 fn string(s: &str) -> Vec<u8> {
     [&[STRING_PREFIX], s.as_bytes(), &[0]].concat()
+}
+
+/// A buffer of these bytes, its size their count.
+fn buffer(bytes: &[u8]) -> Vec<u8> {
+    [vec![BUFFER_OP], pkg([int(bytes.len() as u32), bytes.to_vec()].concat())].concat()
 }
 
 fn name(seg: &[u8; 4], value: Vec<u8>) -> Vec<u8> {
@@ -241,15 +255,27 @@ fn ssdt() -> Vec<u8> {
             name(b"_HID", string("ACPI0003")),
             method(b"_STA", vec![[vec![IF_OP], pkg([int(0), vec![RETURN_OP], int(0x0f)].concat())].concat()]),
             name(b"PKG_", package(vec![int(5)])),
-            method(b"_INI", vec![[&[STORE_OP][..], &int(0), &[INDEX_OP], b"PKG_", &int(0), &[NULL_NAME]].concat()]),
+            name(b"BUF_", buffer(&[5, 6])),
+            name(b"STR_", string("AC")),
+            method(
+                b"_INI",
+                vec![
+                    [&[STORE_OP][..], &int(0), &[INDEX_OP], b"PKG_", &int(0), &[NULL_NAME]].concat(),
+                    [&[STORE_OP][..], &int(0x0700), b"BUF_"].concat(),
+                    [&[STORE_OP][..], b"BUF_", b"STR_"].concat(),
+                ],
+            ),
             method(
                 b"_PSR",
                 vec![[
-                    vec![RETURN_OP, ADD_OP, DEREF_OF_OP, INDEX_OP],
+                    vec![RETURN_OP, ADD_OP, ADD_OP, DEREF_OF_OP, INDEX_OP],
                     b"PKG_".to_vec(),
                     int(0),
                     vec![NULL_NAME, INDEX_OP],
                     package(vec![int(0)]),
+                    int(0),
+                    vec![NULL_NAME, NULL_NAME, DEREF_OF_OP, INDEX_OP],
+                    b"BUF_".to_vec(),
                     int(0),
                     vec![NULL_NAME, NULL_NAME],
                 ]
