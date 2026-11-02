@@ -125,6 +125,9 @@ pub struct FrameBufferWriter {
     fg: (u8, u8, u8),
     bg: (u8, u8, u8),
     bold: bool,
+    /// SGR 7: glyphs drawn with the colors swapped (Vim's selection, a
+    /// pager's status line).
+    reverse: bool,
     /// True when the next byte starts a logical line (after newline / clear).
     line_start: bool,
     /// Buffered bytes while matching a `[ TAG ] ` status prefix across writes.
@@ -211,6 +214,7 @@ impl FrameBufferWriter {
             fg: TEXT,
             bg: BG,
             bold: false,
+            reverse: false,
             line_start: true,
             prefix_buf: [0; 9],
             prefix_len: 0,
@@ -453,6 +457,7 @@ impl FrameBufferWriter {
                 self.fg = TEXT;
                 self.bg = BG;
                 self.bold = false;
+                self.reverse = false;
                 self.reset_scroll_region();
                 self.clear();
                 self.ansi_state = AnsiState::Normal;
@@ -859,12 +864,19 @@ impl FrameBufferWriter {
                     self.fg = TEXT;
                     self.bg = BG;
                     self.bold = false;
+                    self.reverse = false;
                 }
                 1 => {
                     self.bold = true;
                 }
+                7 => {
+                    self.reverse = true;
+                }
                 22 => {
                     self.bold = false;
+                }
+                27 => {
+                    self.reverse = false;
                 }
                 30..=37 => {
                     let idx = (p - 30) as usize;
@@ -1151,7 +1163,8 @@ impl FrameBufferWriter {
     }
 
     fn draw_glyph(&mut self, col: usize, row: usize, glyph: [u8; 8], fg: (u8, u8, u8)) {
-        let cell = Cell { glyph, fg, bg: self.bg };
+        let (fg, bg) = if self.reverse { (self.bg, fg) } else { (fg, self.bg) };
+        let cell = Cell { glyph, fg, bg };
         if let Some(c) = self.cell(row, col) {
             *c = cell;
         }
