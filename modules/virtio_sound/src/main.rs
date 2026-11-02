@@ -503,7 +503,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
     }
     CORE.store(core, Ordering::Release);
     if probe_all(api) == 0 {
-        api.write_str("virtio-sound skip\n");
+        myos_abi::status_info(api, "virtio-sound skip");
     } else {
         status_ok(api, "virtio-sound");
     }

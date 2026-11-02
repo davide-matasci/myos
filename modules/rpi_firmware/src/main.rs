@@ -196,7 +196,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     unsafe { API.set(api) };
     let mut dev = MmioDevice::default();
     if api.dt_mmio_find("brcm,bcm2835-mbox", 0, &mut dev) != 0 {
-        api.write_str("rpi_firmware none\n");
+        myos_abi::status_info(api, "rpi_firmware none");
         return 0;
     }
     // The message buffer, where the firmware reaches it (the bus address

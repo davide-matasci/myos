@@ -386,7 +386,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     unsafe { API.set(api) };
     io::mount(api);
     if probe(api) == 0 {
-        api.write_str("sdmmc none\n");
+        myos_abi::status_info(api, "sdmmc none");
     } else {
         status_ok(api, "sdmmc");
     }
