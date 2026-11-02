@@ -334,7 +334,9 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 - **Other**: `getrandom`; `memfd_create` (a `/dev/shm` file; seals are
   kept for the last 256 sealed memfds but not enforced); `select`,
   `pselect6` and `ppoll` (one readiness; the signal mask is not applied);
-  `sched_getaffinity` (every online CPU); `membarrier` (every CPU running
+  `sched_getaffinity` (every online CPU); the scheduling policy calls
+  (every task `SCHED_OTHER` at priority 0, a real-time policy refused
+  with `EPERM`); `membarrier` (every CPU running
   a task answers an IPI); `fadvise64` and `readahead` as hints.
 
 ## Limits
