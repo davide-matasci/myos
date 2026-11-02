@@ -346,7 +346,7 @@ pub unsafe extern "C" fn module_init(api: *const KernelApi) -> i32 {
         registered += 1;
     });
     if registered == 0 {
-        api.write_str("virtio-net skip\n");
+        myos_abi::status_info(api, "virtio-net skip");
     } else {
         status_ok(api, "virtio-net");
     }

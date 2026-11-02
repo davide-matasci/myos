@@ -18,7 +18,7 @@
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use myos_abi::{
-    CONSOLE_BANNER, CONSOLE_INFO, CONSOLE_KEY_SCREEN, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO,
+    CONSOLE_BANNER, CONSOLE_KEY_SCREEN, CONSOLE_STATUS_FAIL, CONSOLE_STATUS_INFO,
     CONSOLE_STATUS_OK, CONSOLE_STATUS_WARN, CONSOLE_TEXT, FramebufferInfo, ModuleConsoleOps,
 };
 use spin::{Mutex, Once};
@@ -293,13 +293,6 @@ pub fn write_banner(s: &str) {
     let _guard = OUT.lock();
     SerialPort::new().write_str(s).ok();
     screen_write(CONSOLE_BANNER, s.as_bytes());
-}
-
-/// Dim informational text (stdin hints, etc.).
-pub fn write_info(s: &str) {
-    let _guard = OUT.lock();
-    SerialPort::new().write_str(s).ok();
-    screen_write(CONSOLE_INFO, s.as_bytes());
 }
 
 /// `[ OK ] label` — tag in green on the screen, plain text on serial.

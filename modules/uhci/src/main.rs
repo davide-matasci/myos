@@ -849,7 +849,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     CORE.store(table.cast_mut(), Ordering::Release);
     let n = probe(api);
     if n == 0 {
-        api.write_str("uhci none\n");
+        myos_abi::status_info(api, "uhci none");
         return 0;
     }
     PORT_THREAD.store(true, Ordering::Release);

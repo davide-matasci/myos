@@ -715,7 +715,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     unsafe { API.set(api) };
     let mut mmio = MmioDevice::default();
     if !COMPATIBLE.iter().any(|compatible| api.dt_mmio_find(compatible, 0, &mut mmio) == 0) {
-        api.write_str("dwc2 none\n");
+        myos_abi::status_info(api, "dwc2 none");
         return 0;
     }
     let table = api.service_lookup(USB_CORE_SERVICE) as *const UsbCoreOps;

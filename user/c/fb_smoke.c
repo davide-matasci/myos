@@ -143,8 +143,9 @@ static int text_main(void) {
         {"block", "\u2588"},    /* █ */
         {"256", "\033[38;5;196m\u2588\033[m"},
         {"rgb", "\033[38;2;255;0;0m\u2588\033[m"},
+        {"reverse", "\033[7m \033[m"},    /* a space in reverse video */
     };
-    enum { BLANK, Q, QQ, LINE, HALF, DOTS, E_ACUTE, WIDE, E, E_COMB, BLOCK, C256, RGB, SAMPLES };
+    enum { BLANK, Q, QQ, LINE, HALF, DOTS, E_ACUTE, WIDE, E, E_COMB, BLOCK, C256, RGB, REVERSE, SAMPLES };
     static uint32_t px[SAMPLES][8][CELLS_W];
     for (int i = 0; i < SAMPLES; i++) {
         if (cells(con, fb, g.pitch, samples[i].s, px[i]) < 0) {
@@ -176,6 +177,9 @@ static int text_main(void) {
     }
     if (bad == NULL && (!SAME(C256, RGB) || SAME(C256, BLOCK))) {
         bad = "256 colors / RGB";
+    }
+    if (bad == NULL && !SAME(REVERSE, BLOCK)) {
+        bad = "reverse video (SGR 7) is not a full block";
     }
     if (bad != NULL) {
         printf("[ FAIL ] fb text: %s\n", bad);
