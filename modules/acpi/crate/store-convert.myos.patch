@@ -1,0 +1,72 @@
+acpi: a store into a named string, buffer or package converts the value
+
+Store into a name that holds a string, a buffer, a package or nothing
+yet panicked with "Stores to objects like WrappedObject(UnsafeCell { ..
+}) are not yet supported" (a ThinkPad T15's devices' _STA and _INI,
+which stopped the interpreter). The value is now converted to the
+target's type, as the spec's section 19.3.5 says: text for a string,
+bytes for a buffer, which keeps its length, the value as it is for a
+package or an empty name; a field is read for its value first. The
+panic left for the other types names the type.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -2336,7 +2336,55 @@
+                 Object::Debug => {
+                     self.handler.handle_debug(&object);
+                 }
+-                _ => panic!("Stores to objects like {:?} are not yet supported", target),
++                // A named string, buffer or package (or a name holding nothing yet) takes the
++                // value converted to its type (section 19.3.5 of the spec): text for a string,
++                // bytes for a buffer, which keeps its length (zero-extended or truncated), the
++                // value as it is otherwise. A field is read for its value first.
++                Object::String(_) | Object::Buffer(_) | Object::Package(_) | Object::Uninitialized => {
++                    let source = object.clone().unwrap_reference();
++                    let source = match unsafe { source.gain_mut(&token) } {
++                        Object::FieldUnit(field) => {
++                            let field = field.clone();
++                            self.do_field_read(&field)?
++                        }
++                        Object::BufferField { length, .. } => {
++                            let mut bytes = vec![0u8; length.div_ceil(8).max(8)];
++                            source.read_buffer_field(&mut bytes)?;
++                            if *length <= 64 {
++                                Object::Integer(u64::from_le_bytes(bytes[..8].try_into().unwrap())).wrap()
++                            } else {
++                                bytes.truncate(length.div_ceil(8));
++                                Object::Buffer(bytes).wrap()
++                            }
++                        }
++                        _ => source.clone(),
++                    };
++                    let integer_bytes = if self.dsdt_revision >= 2 { 8 } else { 4 };
++                    match unsafe { target.gain_mut(&token) } {
++                        Object::String(target) => {
++                            *target = match &*source {
++                                Object::String(value) => value.clone(),
++                                Object::Integer(value) if integer_bytes == 8 => alloc::format!("{value:016X}"),
++                                Object::Integer(value) => alloc::format!("{:08X}", *value as u32),
++                                Object::Buffer(bytes) => {
++                                    bytes.iter().map(|byte| alloc::format!("{byte:02X}")).collect::<Vec<_>>().join(" ")
++                                }
++                                _ => Err(AmlError::ObjectNotOfExpectedType {
++                                    expected: ObjectType::String,
++                                    got: source.typ(),
++                                })?,
++                            };
++                        }
++                        Object::Buffer(target) => {
++                            let bytes = source.to_buffer(integer_bytes)?;
++                            let length = usize::min(bytes.len(), target.len());
++                            target.fill(0);
++                            target[..length].copy_from_slice(&bytes[..length]);
++                        }
++                        target => *target = (*source).clone(),
++                    }
++                }
++                _ => panic!("Stores to objects like {:?} are not yet supported", target.typ()),
+             },
+ 
+             Argument::Namestring(_) => todo!(),

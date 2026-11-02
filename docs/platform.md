@@ -126,8 +126,9 @@ operand and `Not` (and `FindSetLeftBit`/`FindSetRightBit`) a target
 (`unary-ops`, mistakes in 6.1.1), it follows references in `DerefOf`
 and wherever an integer, string or buffer is read (`references`), it
 stores through one (`store-ref`), its `Increment` and `Decrement`
-change a local or a field (`increment`), it
-lets `Notify` pass
+change a local or a field (`increment`), a store into a named
+string, buffer or package converts the value to its type
+(`store-convert`), it lets `Notify` pass
 (nothing listens for notifications), and it reads a `_STA`'s value out
 of whatever the method returned (nothing at all counts as present).
 It calls `\_PIC(1)`, runs the devices' `_STA` and `_INI`, hands every PCI
