@@ -601,7 +601,7 @@ t -t smoke acpi acpi_aml
 # A battery through the firmware's AML (docs/platform.md "Batteries"):
 # the launcher's test boots give the PC an SSDT with one (src/acpi_battery.rs),
 # its methods evaluated at each read of /proc/acpi/battery, and battery
-# prints it.
+# prints it; a second adapter's _PSR fails, and both say why.
 acpi_battery() {
 	grep -q '^intc apic ' /proc/platform || return 0
 	out=$(cat /proc/acpi/battery) &&
@@ -613,7 +613,9 @@ acpi_battery() {
 		printf '%s\n' "$out" | grep -qx 'AC online 0' &&
 		battery > /tmp/battery.out &&
 		grep -qx 'BAT0: 75% discharging, 3:00 left' /tmp/battery.out &&
-		grep -qx 'AC: offline' /tmp/battery.out ||
+		grep -qx 'AC: offline' /tmp/battery.out &&
+		printf '%s\n' "$out" | grep -q '^AC2 error _PSR: ' &&
+		grep -q '^AC2: unknown (_PSR: ' /tmp/battery.out ||
 		{ cat /proc/acpi/battery /proc/acpi/aml /tmp/battery.out; return 1; }
 }
 t -t smoke,acpi battery acpi_battery

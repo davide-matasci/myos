@@ -4,7 +4,9 @@
  *   BAT0: 83% discharging, 2:41 left
  *   AC: online
  *
- * -r prints the file as it is. Exits 1 when the machine reports no battery
+ * A method the firmware could not run is named after the state, with the
+ * interpreter's error ("BAT0: unknown (_BST: ...)"). -r prints the file as
+ * it is. Exits 1 when the machine reports no battery
  * and no adapter (the file is missing).
  */
 #include <stdio.h>
@@ -22,6 +24,7 @@ struct dev {
     char state[24];
     long percent, remaining, full, rate;
     char online[16];
+    char error[96];  /* why a method failed (`NAME error METHOD: ...`) */
 };
 
 static struct dev devs[MAX];
@@ -51,7 +54,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "battery: no battery or AC adapter (" PROC ")\n");
         return 1;
     }
-    char line[128];
+    char line[256];
     while (fgets(line, sizeof line, f)) {
         if (raw) {
             fputs(line, stdout);
@@ -69,6 +72,13 @@ int main(int argc, char **argv) {
         if (!d)
             continue;
         long n = strtol(value, NULL, 10);
+        if (strcmp(key, "error") == 0) {
+            /* The rest of the line, the first error kept. */
+            const char *why = strstr(line, " error ") + 7;
+            if (!d->error[0])
+                snprintf(d->error, sizeof d->error, "%.*s", (int)strcspn(why, "\n"), why);
+            continue;
+        }
         if (strcmp(key, "online") == 0) {
             snprintf(d->online, sizeof d->online, "%s", value);
             continue;
@@ -91,9 +101,10 @@ int main(int argc, char **argv) {
     for (int i = 0; i < ndevs && !raw; i++) {
         struct dev *d = &devs[i];
         if (!d->battery) {
-            printf("%s: %s\n", d->name,
+            printf("%s: %s", d->name,
                    strcmp(d->online, "1") == 0 ? "online"
                    : strcmp(d->online, "0") == 0 ? "offline" : "unknown");
+            printf(d->error[0] ? " (%s)\n" : "\n", d->error);
             continue;
         }
         if (!d->present) {
@@ -117,7 +128,7 @@ int main(int argc, char **argv) {
         if (left >= 0)
             printf(", %ld:%02ld %s", left / 60, left % 60,
                    strcmp(d->state, "charging") == 0 ? "until full" : "left");
-        printf("\n");
+        printf(d->error[0] ? " (%s)\n" : "\n", d->error);
     }
     return 0;
 }
