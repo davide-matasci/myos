@@ -32,6 +32,7 @@
 #include <sys/reboot.h>
 #include <sys/resource.h>
 #include <sys/select.h>
+#include <sys/sendfile.h>
 #include <sys/signalfd.h>
 #include <ucontext.h>
 #include <sys/socket.h>
@@ -1275,6 +1276,45 @@ static void check_fork_vs_fds(void) {
     check(ok, "fork while a thread sets fd flags");
 }
 
+/* sendfile and copy_file_range (libuv's fs.copyFile, which npm's install
+ * scripts use): a whole file, a piece at an offset that moves while the
+ * file position stays, and into a pipe. */
+static void check_copy_calls(void) {
+    const char *a = "/tmp/linux-smoke.copy-a", *b = "/tmp/linux-smoke.copy-b";
+    char big[100000], got[100000];
+    for (size_t i = 0; i < sizeof big; i++) {
+        big[i] = (char)(i * 7 + 3);
+    }
+    int in = open(a, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int out = open(b, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(in >= 0 && out >= 0 && write(in, big, sizeof big) == (ssize_t)sizeof big && lseek(in, 0, SEEK_SET) == 0,
+          "sendfile: the files");
+    check(sendfile(out, in, NULL, sizeof big) == (ssize_t)sizeof big && lseek(in, 0, SEEK_CUR) == (off_t)sizeof big &&
+              pread(out, got, sizeof got, 0) == (ssize_t)sizeof got && memcmp(big, got, sizeof big) == 0,
+          "sendfile: a whole file, the position moved");
+    off_t off = 1000;
+    check(sendfile(out, in, &off, 10) == 10 && off == 1010 && lseek(in, 0, SEEK_CUR) == (off_t)sizeof big,
+          "sendfile: at an offset, which moves and the position does not");
+    int p[2];
+    check(pipe(p) == 0, "sendfile: a pipe");
+    off = 5;
+    char small[3];
+    check(sendfile(p[1], in, &off, 3) == 3 && read(p[0], small, 3) == 3 && memcmp(small, big + 5, 3) == 0,
+          "sendfile: into a pipe");
+    close(p[0]);
+    close(p[1]);
+    loff_t ia = 200, ib = 10;
+    check(ftruncate(out, 0) == 0 && copy_file_range(in, &ia, out, &ib, 50, 0) == 50 && ia == 250 && ib == 60 &&
+              pread(out, got, 50, 10) == 50 && memcmp(got, big + 200, 50) == 0,
+          "copy_file_range: offsets on both sides");
+    errno = 0;
+    check(copy_file_range(in, NULL, out, NULL, 1, 1) == -1 && errno == EINVAL, "copy_file_range: flags are EINVAL");
+    close(in);
+    close(out);
+    unlink(a);
+    unlink(b);
+}
+
 static void check_toolchain_calls(char *self) {
     /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
     pid_t c;
@@ -1343,6 +1383,7 @@ static void check_toolchain_calls(char *self) {
     check_epoll();
     check_signalfd();
     check_sigaction_all(self);
+    check_copy_calls();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;

@@ -66,6 +66,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         18 => ret(sys::pwrite(a[0], a[1], a[2], a[3])),
         19 => ret(sys::rw_vec(a[0], a[1], a[2], false)), // readv
         20 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
+        40 => ret(sys::sendfile(a[0], a[1], a[2], a[3])),
         21 => ret(sys::faccessat(AT_FDCWD, a[0])),       // access
         22 => ret(sys::pipe2(a[0], 0)),
         24 => {
@@ -154,6 +155,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         202 => ret(thread::futex(a[0], a[1], a[2], a[3], a[5])),
         203 => 0, // sched_setaffinity: the core places tasks
         204 => ret(sys::sched_getaffinity(a[1], a[2])),
+        326 => ret(sys::copy_file_range(a[0], a[1], a[2], a[3], a[4], a[5])),
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
         228 => ret(sys::clock_gettime(a[0], a[1])),
