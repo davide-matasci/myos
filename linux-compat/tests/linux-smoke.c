@@ -1328,6 +1328,32 @@ static void check_argv_layout(char *self) {
           "exec: argv's then envp's strings in one ascending block");
 }
 
+/* The scheduling policy calls: every thread is SCHED_OTHER at priority 0
+ * (musl's pthread_getschedparam; V8 printed "pthread_getschedparam failed:
+ * 38" for each mutex), the real-time policies are refused as for an
+ * unprivileged process, and the priority ranges are Linux's. musl's own
+ * sched_setscheduler and friends are ENOSYS stubs: the syscalls, then. */
+static void check_sched_policy(void) {
+    struct sched_param sp = {.sched_priority = 7};
+    int policy = -1;
+    check(pthread_getschedparam(pthread_self(), &policy, &sp) == 0 && policy == SCHED_OTHER && sp.sched_priority == 0,
+          "pthread_getschedparam: SCHED_OTHER, priority 0");
+    sp.sched_priority = 7;
+    check(syscall(SYS_sched_getscheduler, 0) == SCHED_OTHER && syscall(SYS_sched_getparam, 0, &sp) == 0 &&
+              sp.sched_priority == 0,
+          "sched_getscheduler, sched_getparam");
+    sp.sched_priority = 0;
+    check(syscall(SYS_sched_setscheduler, 0, SCHED_BATCH, &sp) == 0 && syscall(SYS_sched_setparam, 0, &sp) == 0,
+          "sched_setscheduler: SCHED_BATCH; sched_setparam");
+    sp.sched_priority = 10;
+    errno = 0;
+    check(syscall(SYS_sched_setscheduler, 0, SCHED_FIFO, &sp) == -1 && errno == EPERM,
+          "sched_setscheduler: SCHED_FIFO is EPERM");
+    check(sched_get_priority_max(SCHED_RR) == 99 && sched_get_priority_min(SCHED_FIFO) == 1 &&
+              sched_get_priority_max(SCHED_OTHER) == 0,
+          "sched_get_priority_max, _min");
+}
+
 static void check_toolchain_calls(char *self) {
     /* posix_spawn: musl's clone(CLONE_VM | CLONE_VFORK) on a stack of its own. */
     pid_t c;
@@ -1398,6 +1424,7 @@ static void check_toolchain_calls(char *self) {
     check_argv_layout(self);
     check_sigaction_all(self);
     check_copy_calls();
+    check_sched_policy();
 
     /* A file cut, grown and written at a position, with locks and fsync. */
     struct stat st;

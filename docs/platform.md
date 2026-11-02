@@ -125,7 +125,8 @@ handler the module installs, it runs `Match`, it gives `LNot` one
 operand and `Not` (and `FindSetLeftBit`/`FindSetRightBit`) a target
 (`unary-ops`, mistakes in 6.1.1), it follows references in `DerefOf`
 and wherever an integer, string or buffer is read (`references`), it
-stores through one (`store-ref`), it
+stores through one (`store-ref`), its `Increment` and `Decrement`
+change a local or a field (`increment`), it
 lets `Notify` pass
 (nothing listens for notifications), and it reads a `_STA`'s value out
 of whatever the method returned (nothing at all counts as present).
