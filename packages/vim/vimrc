@@ -4,3 +4,6 @@
 " and empties 'backspace' (BS cannot erase before the insert start).
 set nocompatible
 set backspace=indent,eol,start
+" Colors by file type, from the syntax files in /lib/vim/runtime.
+syntax on
+filetype plugin indent on
