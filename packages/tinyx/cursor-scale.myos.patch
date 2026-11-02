@@ -1,0 +1,114 @@
+--- a/dix/cursor.c
++++ b/dix/cursor.c
+@@ -147,6 +147,95 @@
+     bits->emptyMask = TRUE;
+ }
+ 
++/* myos: every cursor grows with the screen's -dpi, by 75 dpi steps (startx
++ * passes 75 times the console's scale on a large screen): the cursor font's
++ * glyphs and the clients' bitmaps are 16 pixels, a speck on a 4K panel. The
++ * bits are replaced by copies scaled by nearest neighbour, the hot spot
++ * with them; on a failed allocation the cursor keeps its size. */
++static int
++CursorScale(void)
++{
++    int scale = monitorResolution / 75;
++
++    return scale > 1 ? scale : 1;
++}
++
++static int
++CursorBit(const unsigned char *bits, int stride, int x, int y)
++{
++    unsigned char byte = bits[y * stride + (x >> 3)];
++
++#if BITMAP_BIT_ORDER == LSBFirst
++    return (byte >> (x & 7)) & 1;
++#else
++    return (byte >> (7 - (x & 7))) & 1;
++#endif
++}
++
++static unsigned char *
++ScaleCursorBitmap(const unsigned char *bits, int width, int height, int scale)
++{
++    int stride = BitmapBytePad(width), sstride = BitmapBytePad(width * scale);
++
++    unsigned char *out = calloc(sstride, (size_t) height * scale);
++
++    int x, y;
++
++    if (!out)
++        return NULL;
++    for (y = 0; y < height * scale; y++)
++        for (x = 0; x < width * scale; x++)
++            if (CursorBit(bits, stride, x / scale, y / scale))
++#if BITMAP_BIT_ORDER == LSBFirst
++                out[y * sstride + (x >> 3)] |= 1 << (x & 7);
++#else
++                out[y * sstride + (x >> 3)] |= 0x80 >> (x & 7);
++#endif
++    return out;
++}
++
++static void
++ScaleCursor(unsigned char **psrcbits, unsigned char **pmaskbits,
++            CARD32 **pargb, CursorMetricPtr cm)
++{
++    int scale = CursorScale(), w = cm->width, h = cm->height, x, y;
++
++    unsigned char *src, *mask;
++
++    CARD32 *argb = NULL;
++
++    if (scale == 1 || w == 0 || h == 0)
++        return;
++    src = ScaleCursorBitmap(*psrcbits, w, h, scale);
++    mask = ScaleCursorBitmap(*pmaskbits, w, h, scale);
++    if (pargb && *pargb) {
++        argb = malloc((size_t) w * scale * h * scale * sizeof(CARD32));
++        if (argb)
++            for (y = 0; y < h * scale; y++)
++                for (x = 0; x < w * scale; x++)
++                    argb[y * w * scale + x] =
++                        (*pargb)[(y / scale) * w + x / scale];
++    }
++    if (!src || !mask || (pargb && *pargb && !argb)) {
++        free(src);
++        free(mask);
++        free(argb);
++        return;
++    }
++    free(*psrcbits);
++    free(*pmaskbits);
++    *psrcbits = src;
++    *pmaskbits = mask;
++    if (argb) {
++        free(*pargb);
++        *pargb = argb;
++    }
++    cm->width = w * scale;
++    cm->height = h * scale;
++    cm->xhot *= scale;
++    cm->yhot *= scale;
++}
++
+ /**
+  * does nothing about the resource table, just creates the data structure.
+  * does not copy the src and mask bits
+@@ -169,6 +258,7 @@
+ 
+     ScreenPtr pscr;
+ 
++    ScaleCursor(&psrcbits, &pmaskbits, &argb, cm);
+     pCurs = malloc(sizeof(CursorRec) + sizeof(CursorBits));
+     if (!pCurs) {
+         free(psrcbits);
+@@ -321,6 +411,7 @@
+             free(mskbits);
+             return res;
+         }
++        ScaleCursor(&srcbits, &mskbits, NULL, &cm);
+         if (sourcefont != maskfont) {
+             pCurs = malloc(sizeof(CursorRec) + sizeof(CursorBits));
+             if (pCurs)

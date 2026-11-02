@@ -26,6 +26,10 @@ console's text scale (`docs/tty.md`), 150 at 1920x1080, 225 at
 2560x1600. QEMU's 1280x800 keeps the server's own 75. A `-dpi` among the
 server args wins: `startx dwm -- -dpi 120`.
 
+The cursor grows with it (`cursor-scale.myos.patch`): the server scales
+every cursor's bitmap by whole steps of 75 dpi, so at 150 dpi dwm's
+16-pixel arrow is drawn 32 pixels tall.
+
 ## What it is built from
 
 | Component | Pin | |
@@ -52,6 +56,7 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 | `lock-without-link.myos.patch` | the `/tmp/.X0-lock` file without `link()` (myos has no hard links) |
 | `builtin-fonts.myos.patch` | `KDRIVESERVER` in `dix-config.h`, which registers libXfont's built-in fonts |
 | `shadow.myos.patch` | the server draws into a shadow framebuffer in RAM and copies what changed to `/dev/fb` (kdrive does only for a rotated screen): on a PC the framebuffer is the graphics device's memory, write-combining (`docs/fb.md`), where a read is uncached, and antialiased text reads every pixel back. Not at 24 bits per pixel (QEMU in UTM), which kdrive's shadow copy does not convert to |
+| `cursor-scale.myos.patch` | every cursor is scaled by `-dpi` / 75 (whole steps), its hot spot with it: the cursor font's 16-pixel glyphs are a speck on a laptop's dense panel |
 
 `include/` and `myos_compat.h` hold the libc bits TinyX expects
 (`linux/fb.h` for `fbdev.c`, `net/if.h`, `lstat`); libgloss's
