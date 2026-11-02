@@ -121,6 +121,13 @@ the task or run a handler. The syscall then returns `EINTR` if the
 handler lacks `SA_RESTART`, and restarts if it has it or if nothing acts
 on the signal any more.
 
+Only a call that has done nothing yet is interrupted: a wait marks the
+call so (`signal_interrupt_wait`, also for modules) only when it is about
+to block and then fails, as netfs's wait for room in its request ring
+does. A write that took bytes returns their count; the handler runs after
+it. Reporting `EINTR` for bytes that went out made the caller send them
+again (`loopback_smoke signals`).
+
 - `signal()` installs BSD-style handlers (`SA_RESTART`).
 - `pselect` sets its mask around `select`, not atomically: a signal it
   unblocks just before the wait runs its handler without ending the wait.

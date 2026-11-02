@@ -25,6 +25,14 @@
  * socket in TIME-WAIT, buffers and all, and netd used to keep them all
  * until its heap ran out (it died of it, every socket call after it
  * waiting). Prints [ OK ] loopback burst.
+ *
+ * `loopback_smoke signals`: a TCP sender under a stream of caught signals
+ * (no SA_RESTART), resending what a write reported interrupted, as dropbear
+ * does; the reader gets every byte once, in order. netfs used to mark a
+ * send interrupted and still queue it, so the kernel reported EINTR for
+ * bytes that had gone out and the sender sent them again (dbclient's
+ * "Integrity error (bad packet size)" on a duplicated packet). Prints
+ * [ OK ] loopback signals.
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -34,6 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -44,8 +53,15 @@
 #define HUNG_PORT 7704
 #define NEXT_PORT 7705
 #define BURST_PORT 7706
+#define SIGNALS_PORT 7707
 /* More than netd's heap held in TIME-WAIT (about 165). */
 #define BURST 200
+/* `signals`: this many writes, small and large in turn (a large one goes
+ * to netfs in several messages). */
+#define SIGNALS_WRITES 300
+#define SIGNALS_SMALL 100
+#define SIGNALS_LARGE 4100
+#define SIGNALS_TOTAL ((long)SIGNALS_WRITES / 2 * (SIGNALS_SMALL + SIGNALS_LARGE))
 
 static int fail(const char *what) {
     printf("[ FAIL ] loopback %s (errno %d)\n", what, errno);
@@ -438,6 +454,121 @@ static int tcp_burst(void) {
     return 0;
 }
 
+static volatile sig_atomic_t caught;
+
+static void on_usr1(int sig) {
+    (void)sig;
+    caught++;
+}
+
+/* The byte at stream offset `i`. */
+static unsigned char pattern(long i) {
+    return (unsigned char)(i % 251);
+}
+
+/* Read the whole stream from `s` and check it: SIGNALS_TOTAL bytes of the
+ * pattern, then the end. Exits 0 when right. */
+static void signals_reader(int s) {
+    long total = SIGNALS_TOTAL;
+    long at = 0;
+    unsigned char buf[512];
+    for (;;) {
+        ssize_t n = read(s, buf, sizeof buf);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            break;
+        }
+        for (ssize_t i = 0; i < n; i++, at++) {
+            if (at >= total || buf[i] != pattern(at)) {
+                printf("[ FAIL ] loopback signals: byte %ld is %u, not %u (a write sent twice?)\n", at,
+                       buf[i], at < total ? pattern(at) : 0);
+                fflush(stdout);
+                _exit(1);
+            }
+        }
+    }
+    if (at != total) {
+        printf("[ FAIL ] loopback signals: %ld bytes of %ld\n", at, total);
+        fflush(stdout);
+        _exit(1);
+    }
+    _exit(0);
+}
+
+/* Each write's bytes sent whole, what a write reported interrupted sent
+ * again, with another process sending SIGUSR1 as fast as it can all
+ * along. */
+static int tcp_signals(void) {
+    struct sockaddr_in any = addr_of(htonl(INADDR_ANY), SIGNALS_PORT);
+    struct sockaddr_in to = addr_of(htonl(INADDR_LOOPBACK), SIGNALS_PORT);
+    struct sigaction sa;
+    static unsigned char chunk[SIGNALS_LARGE];
+    long at = 0;
+    int status;
+    pid_t reader, signaller, me = getpid();
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    int s;
+    if (l < 0 || c < 0 || bind(l, (struct sockaddr *)&any, sizeof any) < 0 || listen(l, 1) < 0
+        || connect(c, (struct sockaddr *)&to, sizeof to) < 0 || (s = accept(l, NULL, NULL)) < 0) {
+        return fail("signals: setup");
+    }
+    close(l);
+    reader = fork();
+    if (reader == 0) {
+        close(c);
+        signals_reader(s);
+    }
+    close(s);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;
+    if (reader < 0 || sigaction(SIGUSR1, &sa, NULL) < 0) {
+        return fail("signals: reader or handler");
+    }
+    signaller = fork();
+    if (signaller == 0) {
+        for (;;) {
+            if (kill(me, SIGUSR1) < 0) {
+                _exit(0);
+            }
+        }
+    }
+    if (signaller < 0) {
+        return fail("signals: signaller");
+    }
+    for (int w = 0; w < SIGNALS_WRITES; w++) {
+        size_t size = w % 2 ? SIGNALS_LARGE : SIGNALS_SMALL;
+        for (size_t i = 0; i < size; i++) {
+            chunk[i] = pattern(at + (long)i);
+        }
+        at += (long)size;
+        size_t off = 0;
+        while (off < size) {
+            ssize_t n = write(c, chunk + off, size - off);
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n <= 0) {
+                kill(signaller, SIGKILL);
+                return fail("signals: write");
+            }
+            off += (size_t)n;
+        }
+    }
+    kill(signaller, SIGKILL);
+    waitpid(signaller, &status, 0);
+    close(c);
+    if (waitpid(reader, &status, 0) != reader || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return fail("signals: the reader");
+    }
+    if (caught == 0) {
+        return fail("signals: no signal arrived");
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     in_addr_t own;
     if (argc == 4 && strcmp(argv[1], "exec") == 0) {
@@ -448,6 +579,13 @@ int main(int argc, char **argv) {
             return 1;
         }
         printf("[ OK ] loopback burst\n");
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "signals") == 0) {
+        if (tcp_signals()) {
+            return 1;
+        }
+        printf("[ OK ] loopback signals\n");
         return 0;
     }
     if (interfaces(&own) || udp(own) || tcp() || tcp_hungup() || tcp_bound(own) || tcp_ephemeral() || exec_udp()) {
