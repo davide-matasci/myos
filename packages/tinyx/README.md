@@ -51,6 +51,7 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 | `arches.myos.patch` | `servermd.h` entries for AArch64 and RISC-V 64 |
 | `lock-without-link.myos.patch` | the `/tmp/.X0-lock` file without `link()` (myos has no hard links) |
 | `builtin-fonts.myos.patch` | `KDRIVESERVER` in `dix-config.h`, which registers libXfont's built-in fonts |
+| `shadow.myos.patch` | the server always draws into a shadow framebuffer in RAM and copies what changed to `/dev/fb` (kdrive does only for a rotated screen): on a PC the framebuffer is the graphics device's memory, write-combining (`docs/fb.md`), where a read is uncached, and antialiased text reads every pixel back |
 
 `include/` and `myos_compat.h` hold the libc bits TinyX expects
 (`linux/fb.h` for `fbdev.c`, `net/if.h`, `lstat`); libgloss's

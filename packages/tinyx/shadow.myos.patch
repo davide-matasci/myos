@@ -1,0 +1,20 @@
+--- a/kdrive/fbdev/fbdev.c
++++ b/kdrive/fbdev/fbdev.c
+@@ -317,11 +317,12 @@
+ 	KdMouseMatrix m;
+ 	FbdevPriv *priv = screen->card->driver;
+ 
+-	if (scrpriv->randr != RR_Rotate_0 ||
+-		priv->fix.type != FB_TYPE_PACKED_PIXELS)
+-		scrpriv->shadow = TRUE;
+-	else
+-		scrpriv->shadow = FALSE;
++	/* myos: always draw into a shadow in RAM and copy the damaged parts
++	   to the framebuffer. A PC's framebuffer is the graphics device's
++	   memory, where every read is uncached (/dev/fb maps it
++	   write-combining): drawing in place, antialiased text read each
++	   pixel back from the device, and st took a second per key. */
++	scrpriv->shadow = TRUE;
+ 
+ 	KdComputeMouseMatrix(&m, scrpriv->randr, screen->width, screen->height);
+ 
