@@ -1,0 +1,86 @@
+acpi: references are followed: DerefOf, and an integer, string or buffer read through one
+
+A reference's typ() is its target's type, never Reference. DerefOf
+tested `object.typ() == ObjectType::Reference`, so it dereferenced no
+reference at all and failed with "ObjectNotOfExpectedType { expected:
+Reference, got: Integer }" (a ThinkPad T15's _PSR, DerefOf (Index (...))).
+And as_integer refused a reference to an integer ("expected: Integer,
+got: Integer", its _BIX), which is what Index gives for an element of a
+package. DerefOf now matches the object itself and reads a buffer's
+byte (a buffer field) out; as_integer, as_string and as_buffer follow
+references, as_integer reading a buffer field of up to 64 bits.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -807,8 +807,17 @@
+                     }
+                     Opcode::DerefOf => {
+                         let [Argument::Object(object)] = &op.arguments[..] else { panic!() };
+-                        let result = if object.typ() == ObjectType::Reference {
+-                            object.clone().unwrap_reference()
++                        // A reference's `typ()` is its target's: matched on the object itself,
++                        // or no reference was ever dereferenced ("expected Reference, got
++                        // Integer"). A byte of a buffer (`Index` on one) is read out.
++                        let result = if let Object::Reference { .. } = **object {
++                            let target = object.clone().unwrap_reference();
++                            match *target {
++                                Object::BufferField { length, .. } if length <= 64 => {
++                                    Object::Integer(target.as_integer()?).wrap()
++                                }
++                                _ => target,
++                            }
+                         } else if object.typ() == ObjectType::String {
+                             let path = AmlName::from_str(&object.as_string().unwrap())?
+                                 .resolve(&context.current_scope)?;
+--- a/src/aml/object.rs
++++ b/src/aml/object.rs
+@@ -177,27 +177,35 @@
+         WrappedObject::new(self)
+     }
+ 
++    /// The integer, through references (what `Index` gives: an element of a package, or a byte
++    /// of a buffer as a buffer field, read here); a reference's `typ()` is its target's, so
++    /// refusing one said "expected Integer, got Integer".
+     pub fn as_integer(&self) -> Result<u64, AmlError> {
+-        if let Object::Integer(value) = self {
+-            Ok(*value)
+-        } else {
+-            Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::Integer, got: self.typ() })
++        match self {
++            Object::Integer(value) => Ok(*value),
++            Object::Reference { inner, .. } => inner.as_integer(),
++            Object::BufferField { length, .. } if *length <= 64 => {
++                let mut bytes = [0u8; 8];
++                self.read_buffer_field(&mut bytes)?;
++                Ok(u64::from_le_bytes(bytes))
++            }
++            _ => Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::Integer, got: self.typ() }),
+         }
+     }
+ 
+     pub fn as_string(&self) -> Result<Cow<'_, str>, AmlError> {
+-        if let Object::String(value) = self {
+-            Ok(Cow::from(value))
+-        } else {
+-            Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::String, got: self.typ() })
++        match self {
++            Object::String(value) => Ok(Cow::from(value)),
++            Object::Reference { inner, .. } => inner.as_string(),
++            _ => Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::String, got: self.typ() }),
+         }
+     }
+ 
+     pub fn as_buffer(&self) -> Result<&[u8], AmlError> {
+-        if let Object::Buffer(bytes) = self {
+-            Ok(bytes)
+-        } else {
+-            Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::Buffer, got: self.typ() })
++        match self {
++            Object::Buffer(bytes) => Ok(bytes),
++            Object::Reference { inner, .. } => inner.as_buffer(),
++            _ => Err(AmlError::ObjectNotOfExpectedType { expected: ObjectType::Buffer, got: self.typ() }),
+         }
+     }
+ 

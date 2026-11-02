@@ -29,7 +29,12 @@
 //!             // A _STA that returns nothing (falls off its end), as a
 //!             // ThinkPad T15's has one: the device counts as present.
 //!             Method (_STA) { If (Zero) { Return (0x0F) } }
-//!             Name (_PSR, Zero)
+//!             // Offline (0) through DerefOf and an Index used as an
+//!             // integer, both of which the crate got wrong.
+//!             Method (_PSR) {
+//!                 Return (Add (DerefOf (Index (Package () { 0, 5 }, 0)),
+//!                              Index (Package () { 0 }, 0)))
+//!             }
 //!         }
 //!         // An adapter whose _PSR fails (a name nothing defines): its
 //!         // line says why.
@@ -66,6 +71,9 @@ const NOT_OP: u8 = 0x80;
 const AND_OP: u8 = 0x7b;
 /// A target that discards: an op's result only goes to its caller.
 const NULL_NAME: u8 = 0x00;
+const ADD_OP: u8 = 0x72;
+const DEREF_OF_OP: u8 = 0x83;
+const INDEX_OP: u8 = 0x88;
 /// Match's comparisons: equal, always true.
 const MEQ: u8 = 1;
 const MTR: u8 = 0;
@@ -196,7 +204,19 @@ fn ssdt() -> Vec<u8> {
         vec![
             name(b"_HID", string("ACPI0003")),
             method(b"_STA", vec![[vec![IF_OP], pkg([int(0), vec![RETURN_OP], int(0x0f)].concat())].concat()]),
-            name(b"_PSR", int(0)),
+            method(
+                b"_PSR",
+                vec![[
+                    vec![RETURN_OP, ADD_OP, DEREF_OF_OP, INDEX_OP],
+                    package(vec![int(0), int(5)]),
+                    int(0),
+                    vec![NULL_NAME, INDEX_OP],
+                    package(vec![int(0)]),
+                    int(0),
+                    vec![NULL_NAME, NULL_NAME],
+                ]
+                .concat()],
+            ),
         ],
     );
     let ac2 = device(
