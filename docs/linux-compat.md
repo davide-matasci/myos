@@ -313,7 +313,12 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 - **Signals**: `rt_sigaction` (`SA_SIGINFO`, `SA_RESTART`, `SA_NODEFER`,
   `SA_RESETHAND`), `rt_sigreturn`, the mask, pending, suspend and
   timed-wait calls. Signal numbers are translated, also in `wait4`
-  statuses. `sigaltstack` offers no stacks.
+  statuses. The signals the core has no number for (`SIGSTKFLT`,
+  `SIGPWR`, the real-time ones from 32) keep their dispositions in the
+  layer: `rt_sigaction` sets and reports them, and exec and fork treat
+  them as Linux does, so a runtime that walks every signal at startup
+  (Node resets 1 to 31 and aborts on a refusal, Go installs a handler on
+  all 64) starts. `sigaltstack` offers no stacks.
 - **Sockets**: see Sockets above and Limits. `getsockopt` answers
   `SO_ERROR`, `SO_TYPE`, the buffer sizes (64 KiB unix, 8 KiB otherwise)
   and `SO_PEERCRED` (the caller's pid, ids 0); `SO_PEERSEC`,
@@ -343,7 +348,8 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 - **Signals** act at syscall exit, as for native programs: a task looping
   in user mode is interrupted only at its next syscall, except by
   `SIGKILL`. A fault's signal acts at once. No alternate signal stacks,
-  no real-time signal queueing.
+  no real-time signal queueing. `SIGSTKFLT`, `SIGPWR` and the real-time
+  signals are never sent: `kill` with one fails with `EINVAL`.
 - **`clone`.** The only `clone` with `CLONE_VM` but not `CLONE_THREAD` is
   posix_spawn's. Its child's memory is a fork's (copy-on-write), not
   shared; posix_spawn and a `vfork` child that only execs do not notice.
