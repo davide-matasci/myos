@@ -1,0 +1,73 @@
+acpi: Increment and Decrement change what their operand names; a field write takes a value through a reference
+
+Increment and Decrement wanted the operand itself to be an integer, but
+a local or an argument comes as a reference to its value, and a
+reference's typ() is its target's: `Increment (Local0)`, a loop's
+counter, failed with "ObjectNotOfExpectedType { expected: Integer, got:
+Integer }" (a ThinkPad T15's _BIX). They now change what the operand
+names (a field is read and written back) and give the new value as the
+expression's. A field write had the same refusal for a value through a
+reference; it now writes the value.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -419,21 +419,36 @@
+                     }
+                     Opcode::Increment | Opcode::Decrement => {
+                         let [Argument::Object(operand)] = &op.arguments[..] else { panic!() };
+-                        let token = self.object_token.lock();
+-                        let Object::Integer(operand) = (unsafe { operand.gain_mut(&token) }) else {
+-                            Err(AmlError::ObjectNotOfExpectedType {
+-                                expected: ObjectType::Integer,
+-                                got: operand.typ(),
+-                            })?
++                        let step = |value: u64| match op.op {
++                            Opcode::Increment => value.wrapping_add(1),
++                            _ => value.wrapping_sub(1),
+                         };
+-
+-                        let new_value = match op.op {
+-                            Opcode::Increment => operand.wrapping_add(1),
+-                            Opcode::Decrement => operand.wrapping_sub(1),
+-                            _ => unreachable!(),
++                        /*
++                         * What changes is what the operand names: a local or an argument comes
++                         * as a reference to its value (a reference's `typ()` is its target's,
++                         * so refusing one said "expected Integer, got Integer": `Increment
++                         * (Local0)` failed), and a field is read and written back.
++                         */
++                        let target = operand.clone().unwrap_reference();
++                        let new_value = if let Object::FieldUnit(ref field) = *target {
++                            let field = field.clone();
++                            let value = step(self.do_field_read(&field)?.as_integer()?);
++                            self.do_field_write(&field, Object::Integer(value).wrap())?;
++                            value
++                        } else {
++                            let token = self.object_token.lock();
++                            let Object::Integer(operand) = (unsafe { target.gain_mut(&token) }) else {
++                                Err(AmlError::ObjectNotOfExpectedType {
++                                    expected: ObjectType::Integer,
++                                    got: target.typ(),
++                                })?
++                            };
++                            *operand = step(*operand);
++                            *operand
+                         };
+ 
+-                        *operand = new_value;
++                        // The new value is the expression's, as in `While (Increment (Local0))`.
++                        context.contribute_arg(Argument::Object(Object::Integer(new_value).wrap()));
+                         context.retire_op(op);
+                     }
+                     Opcode::LAnd
+@@ -2426,6 +2441,8 @@
+ 
+     fn do_field_write(&self, field: &FieldUnit, value: WrappedObject) -> Result<(), AmlError> {
+         trace!("AML field write. Field = {:?}. Value = {}", field, value);
++        // A value through a reference (an element `Index` names) is written as the value.
++        let value = value.unwrap_reference();
+ 
+         let value_bytes = match &*value {
+             Object::Integer(value) => &value.to_le_bytes() as &[u8],
