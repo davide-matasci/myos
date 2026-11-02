@@ -38,15 +38,19 @@
 //!             // ThinkPad T15's has one: the device counts as present.
 //!             Method (_STA) { If (Zero) { Return (0x0F) } }
 //!             // DerefOf, an Index used as an integer, a store through an
-//!             // Index and stores into a named buffer and string, all of
-//!             // which the crate got wrong.
+//!             // Index, stores into a named buffer and string and a
+//!             // comparison of 16-byte buffers (a UUID's), all of which
+//!             // the crate got wrong.
 //!             // _INI (run at boot, as a T15's are) stores; _PSR reads
 //!             // back: offline (0) only if the stores landed.
 //!             Name (PKG, Package () { 5 })
 //!             Name (BUF, Buffer () { 5, 6 })
 //!             Name (STR, "AC")
+//!             Name (UUID, Buffer () { 0, 1, ..., 15 })
 //!             Method (_INI) {
-//!                 Store (Zero, Index (PKG, 0))
+//!                 If (LEqual (UUID, Buffer () { 0, 1, ..., 15 })) {
+//!                     Store (Zero, Index (PKG, 0))
+//!                 }
 //!                 Store (0x0700, BUF)
 //!                 Store (BUF, STR)
 //!             }
@@ -249,6 +253,7 @@ fn ssdt() -> Vec<u8> {
             name(b"_BST", package(vec![int(1), int(10000), int(30000), int(11100)])),
         ],
     );
+    let uuid: Vec<u8> = (0..16).collect();
     let ac = device(
         b"AC__",
         vec![
@@ -257,10 +262,26 @@ fn ssdt() -> Vec<u8> {
             name(b"PKG_", package(vec![int(5)])),
             name(b"BUF_", buffer(&[5, 6])),
             name(b"STR_", string("AC")),
+            name(b"UUID", buffer(&uuid)),
             method(
                 b"_INI",
                 vec![
-                    [&[STORE_OP][..], &int(0), &[INDEX_OP], b"PKG_", &int(0), &[NULL_NAME]].concat(),
+                    [
+                        vec![IF_OP],
+                        pkg([
+                            vec![LEQUAL_OP],
+                            b"UUID".to_vec(),
+                            buffer(&uuid),
+                            vec![STORE_OP],
+                            int(0),
+                            vec![INDEX_OP],
+                            b"PKG_".to_vec(),
+                            int(0),
+                            vec![NULL_NAME],
+                        ]
+                        .concat()),
+                    ]
+                    .concat(),
                     [&[STORE_OP][..], &int(0x0700), b"BUF_"].concat(),
                     [&[STORE_OP][..], b"BUF_", b"STR_"].concat(),
                 ],

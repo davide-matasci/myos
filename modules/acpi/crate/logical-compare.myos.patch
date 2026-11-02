@@ -1,0 +1,113 @@
+acpi: logical comparisons compare strings and buffers as their bytes
+
+LEqual, LLess and the other comparisons took a string's or a buffer's
+first 4 bytes as an integer, copying a buffer into a 4-byte array: a
+longer buffer (a UUID compared in a ThinkPad T15's devices' _STA and
+_INI) panicked with "range end index 16 out of range for slice of
+length 4", which stopped the interpreter, and a right operand that was
+not a buffer panicked too. They now compare the bytes lexicographically,
+the right operand converted to the left's type (the spec's section
+19.3.5); LAnd and LOr read their operands as integers.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -1854,61 +1854,47 @@
+         }
+ 
+         let [Argument::Object(left), Argument::Object(right)] = &op.arguments[..] else { panic!() };
+-        let left = left.clone().unwrap_transparent_reference();
+-        let right = right.clone().unwrap_transparent_reference();
++        let left = left.clone().unwrap_reference();
++        let right = right.clone().unwrap_reference();
++        let integer_bytes = if self.dsdt_revision >= 2 { 8 } else { 4 };
++        // An operand read as an integer: a string or a buffer converted (`LAnd`, `LOr`, or an
++        // integer compared with one).
++        let integer = |object: &WrappedObject| match object.as_integer() {
++            Ok(value) => Ok(value),
++            Err(_) => object.to_integer(integer_bytes),
++        };
+ 
+         /*
+-         * Some of these operations allow strings and buffers to be used as operands. Apparently
+-         * NT's interpreter just takes the first 4 bytes of the string/buffer and casts them as an
+-         * integer...
++         * `LAnd` and `LOr` take integers. The comparisons compare strings and buffers as their
++         * bytes, lexicographically, with the right operand converted to the left's type (section
++         * 19.3.5 of the spec): taking a buffer's first 4 bytes as an integer panicked on a longer
++         * one (a UUID compared in a ThinkPad T15's `_INI`) and ignored the rest.
+          */
+-        let (left, right) = match *left {
+-            Object::Integer(left) => (left, right.as_integer()?),
+-            Object::String(ref left) => {
+-                let left = {
+-                    let mut bytes = [0u8; 4];
+-                    let left_bytes = left.as_bytes();
+-                    let bytes_to_use = usize::min(4, left_bytes.len());
+-                    (bytes[0..bytes_to_use]).copy_from_slice(&left_bytes[0..bytes_to_use]);
+-                    u32::from_le_bytes(bytes) as u64
+-                };
+-                let right = {
+-                    let mut bytes = [0u8; 4];
+-                    let right = right.as_string()?;
+-                    let right_bytes = right.as_bytes();
+-                    let bytes_to_use = usize::min(4, right_bytes.len());
+-                    (bytes[0..bytes_to_use]).copy_from_slice(&right_bytes[0..bytes_to_use]);
+-                    u32::from_le_bytes(bytes) as u64
+-                };
+-                (left, right)
+-            }
+-            Object::Buffer(ref left) => {
+-                let Object::Buffer(ref right) = *right else { panic!() };
+-                let left = {
+-                    let mut bytes = [0u8; 4];
+-                    (bytes[0..left.len()]).copy_from_slice(left);
+-                    u32::from_le_bytes(bytes) as u64
+-                };
+-                let right = {
+-                    let mut bytes = [0u8; 4];
+-                    (bytes[0..right.len()]).copy_from_slice(right);
+-                    u32::from_le_bytes(bytes) as u64
++        let result = match op.op {
++            Opcode::LAnd => integer(&left)? > 0 && integer(&right)? > 0,
++            Opcode::LOr => integer(&left)? > 0 || integer(&right)? > 0,
++            _ => {
++                let ordering = match *left {
++                    Object::String(ref left) => {
++                        let right = match *right {
++                            Object::String(ref right) => right.as_bytes().to_vec(),
++                            _ => right.to_buffer(integer_bytes)?,
++                        };
++                        left.as_bytes().cmp(&right[..])
++                    }
++                    Object::Buffer(ref left) => left.as_slice().cmp(&right.to_buffer(integer_bytes)?[..]),
++                    _ => integer(&left)?.cmp(&integer(&right)?),
+                 };
+-                (left, right)
++                match op.op {
++                    Opcode::LNotEqual => ordering.is_ne(),
++                    Opcode::LLessEqual => ordering.is_le(),
++                    Opcode::LGreaterEqual => ordering.is_ge(),
++                    Opcode::LEqual => ordering.is_eq(),
++                    Opcode::LGreater => ordering.is_gt(),
++                    Opcode::LLess => ordering.is_lt(),
++                    _ => panic!(),
++                }
+             }
+-            _ => Err(AmlError::InvalidOperationOnObject { op: Operation::LogicalOp, typ: left.typ() })?,
+-        };
+-
+-        let result = match op.op {
+-            Opcode::LAnd => (left > 0) && (right > 0),
+-            Opcode::LOr => (left > 0) || (right > 0),
+-            Opcode::LNotEqual => left != right,
+-            Opcode::LLessEqual => left <= right,
+-            Opcode::LGreaterEqual => left >= right,
+-            Opcode::LEqual => left == right,
+-            Opcode::LGreater => left > right,
+-            Opcode::LLess => left < right,
+-            _ => panic!(),
+         };
+         let result = if result { Object::Integer(u64::MAX) } else { Object::Integer(0) };
+ 
