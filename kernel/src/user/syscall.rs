@@ -1148,6 +1148,9 @@ fn exec_path_depth(
     let Some(base) = image_base(bytes) else {
         return SYSERR;
     };
+    if mapped.as_ref().is_some_and(|m| !m.fits(base)) {
+        return SYSERR;
+    }
     // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
     // replaced, so a missing one fails the exec cleanly.
@@ -1263,17 +1266,23 @@ fn exec_path_depth(
         }
         None => None,
     };
-    // A mapped program goes at the start of the mmap window; the dynamic
-    // linker, the image, starts and finds it through AT_PHDR / AT_ENTRY. A
-    // native one starts there itself.
-    let program_at = mmap_base_va(base, off);
+    // A mapped program goes at the start of the mmap window, a non-PIE one
+    // at its link addresses; the dynamic linker, the image, starts and
+    // finds it through AT_PHDR / AT_ENTRY. A native one starts there itself.
+    let program_at = match &mapped {
+        Some(m) => match m.at(mmap_base_va(base, off)) {
+            Some(at) => at,
+            None => return SYSERR,
+        },
+        None => mmap_base_va(base, off),
+    };
     // The SysV auxv a libc startup reads.
     let (aux, entry) = match &mapped {
         Some(m) => match m.entry_at(program_at) {
             Some(program_entry) if m.interp.is_some() => {
-                (exec_auxv(&m.head, program_at, program_entry, Some(base as usize)), entry)
+                (exec_auxv(&m.head, m.lowest_at(program_at), program_entry, Some(base as usize)), entry)
             }
-            Some(program_entry) => (exec_auxv(&m.head, program_at, program_entry, None), program_entry),
+            Some(program_entry) => (exec_auxv(&m.head, m.lowest_at(program_at), program_entry, None), program_entry),
             None => return SYSERR,
         },
         None => (
@@ -1984,7 +1993,7 @@ pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
-    if addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi {
+    if (addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi) && !mapped_below_image(addr, pages * PAGE, base) {
         return false;
     }
     let aspace = task::current_aspace();
@@ -2007,6 +2016,15 @@ pub(crate) fn mmap_discard(addr: usize, len: usize) -> bool {
     true
 }
 
+/// Whether `[addr, addr + len)` lies below the image at `base` and wholly in
+/// the process's mappings: a non-PIE Linux program mapped at its link
+/// addresses ([`MappedProgram`]). Its dynamic linker write-protects its
+/// RELRO there and its runtime may give pages back, so the calls that take
+/// the mmap window take such a range too.
+fn mapped_below_image(addr: usize, len: usize, base: u64) -> bool {
+    addr.checked_add(len).is_some_and(|end| end as u64 <= base) && task::mmap_contains(addr, len)
+}
+
 pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     if addr % PAGE != 0 || len == 0 {
         return SYSERR;
@@ -2025,7 +2043,7 @@ pub(crate) fn sys_munmap(addr: usize, len: usize) -> usize {
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
-    if addr < area_lo || addr.saturating_add(map_len) > area_hi {
+    if (addr < area_lo || addr.saturating_add(map_len) > area_hi) && !mapped_below_image(addr, map_len, base) {
         return SYSERR;
     }
     // The pages go first, the region's record only after them: once the
@@ -2071,7 +2089,7 @@ pub(crate) fn sys_msync(addr: usize, len: usize) -> usize {
     let (base, _span, stack_off) = task::current_user_map();
     let area_lo = mmap_base_va(base, stack_off) as usize;
     let area_hi = mmap_limit_va(base, stack_off) as usize;
-    if addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi {
+    if (addr < area_lo || addr.saturating_add(pages * PAGE) > area_hi) && !mapped_below_image(addr, pages * PAGE, base) {
         return SYSERR;
     }
     sync_shared_in(addr, addr + pages * PAGE);
@@ -2090,7 +2108,8 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
     let (base, _span, stack_off) = task::current_user_map();
     let lo = base as usize;
     let hi = mmap_limit_va(base, stack_off) as usize;
-    if addr < lo || addr.saturating_add(map_len) > hi {
+    let below = mapped_below_image(addr, map_len, base);
+    if (addr < lo || addr.saturating_add(map_len) > hi) && !below {
         return SYSERR;
     }
     let aspace = task::current_aspace();
@@ -2132,7 +2151,7 @@ pub(crate) fn sys_mprotect(addr: usize, len: usize, prot: usize) -> usize {
             unlock(guard);
             // An mmap page not touched yet takes the new protection when
             // it is paged in.
-            if va >= area_lo {
+            if va >= area_lo || below {
                 off += PAGE;
                 continue;
             }
@@ -2327,6 +2346,10 @@ struct MappedProgram {
     head: Vec<u8>,
     /// A Linux program's dynamic linker; `None` for a native program.
     interp: Option<alloc::borrow::Cow<'static, [u8]>>,
+    /// A non-PIE (`ET_EXEC`) Linux program: mapped at its link addresses,
+    /// below the image (the dynamic linker, at `DEFAULT_USER_BASE`), not at
+    /// the start of the mmap window.
+    fixed: bool,
 }
 
 /// The headers of a program: what `exec` reads of a mapped one.
@@ -2364,12 +2387,15 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
         }
         got += n;
     }
-    if !elf::is_pie(&head) {
+    // A non-PIE program goes at its link addresses: only a Linux one with a
+    // dynamic linker (the image) is mapped so; a static one is read whole.
+    let fixed = !elf::is_pie(&head);
+    if fixed && (!linux || elf::interp_range(&head).is_none()) {
         return None;
     }
     elf::image_span(&head).ok()?;
     if !linux {
-        return elf::interp_range(&head).is_none().then_some(MappedProgram { node, head, interp: None });
+        return elf::interp_range(&head).is_none().then_some(MappedProgram { node, head, interp: None, fixed });
     }
     let (off, len) = elf::interp_range(&head)?;
     let mut name = alloc::vec![0u8; len.min(MAX_PATH)];
@@ -2386,7 +2412,7 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
         Some(b) => alloc::borrow::Cow::Borrowed(b),
         None => alloc::borrow::Cow::Owned(fs::read_all(&interp_path, 16 << 20)?),
     };
-    Some(MappedProgram { node, head, interp: Some(interp) })
+    Some(MappedProgram { node, head, interp: Some(interp), fixed })
 }
 
 /// The native program at `path`, whose file is `bytes`, as a
@@ -2402,7 +2428,7 @@ fn native_mapped(path: &str, bytes: &[u8]) -> Option<MappedProgram> {
     }
     let node = fs::open(path, 0)?;
     let head = bytes[..bytes.len().min(PROGRAM_HEAD_MAX)].to_vec();
-    Some(MappedProgram { node, head, interp: None })
+    Some(MappedProgram { node, head, interp: None, fixed: false })
 }
 
 impl MappedProgram {
@@ -2432,6 +2458,35 @@ impl MappedProgram {
         });
         flush_user_tlb();
         done
+    }
+
+    /// Where its lowest page goes: its link address for a non-PIE program,
+    /// else `window` (the start of the mmap window).
+    fn at(&self, window: u64) -> Option<u64> {
+        if !self.fixed {
+            return Some(window);
+        }
+        Some(elf::image_span(&self.head).ok()?.min_vaddr & !(PAGE as u64 - 1))
+    }
+
+    /// Whether it fits where it goes with the image at `base`: a non-PIE
+    /// program between the first 64 KiB (left unmapped) and the image. The
+    /// stack, heap and mmap window are all above the image.
+    fn fits(&self, base: u64) -> bool {
+        if !self.fixed {
+            return true;
+        }
+        let Ok(span) = elf::image_span(&self.head) else {
+            return false;
+        };
+        let lo = span.min_vaddr & !(PAGE as u64 - 1);
+        lo >= super::image::EXEC_MIN_VA && span.min_vaddr.checked_add(span.span as u64).is_some_and(|hi| hi <= base)
+    }
+
+    /// Where its lowest virtual address is (what its program headers'
+    /// addresses are relative to) when its lowest page is at `at`.
+    fn lowest_at(&self, at: u64) -> u64 {
+        elf::image_span(&self.head).map_or(at, |span| at + (span.min_vaddr & (PAGE as u64 - 1)))
     }
 
     /// Its entry point when its lowest page is mapped at `at`.

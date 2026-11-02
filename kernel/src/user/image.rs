@@ -5,7 +5,7 @@ use super::*;
 
 /// The lowest address an `ET_EXEC` image may load at: the first 64 KiB
 /// stay unmapped, so that a null pointer faults (Linux's `mmap_min_addr`).
-const EXEC_MIN_VA: u64 = 0x1_0000;
+pub(super) const EXEC_MIN_VA: u64 = 0x1_0000;
 
 /// Where `bytes` loads: an `ET_EXEC` image at its link address (the page
 /// its lowest segment starts in), a position-independent one at

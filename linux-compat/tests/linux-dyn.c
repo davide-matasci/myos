@@ -2,7 +2,10 @@
  * Smoke for dynamically linked Linux binaries under the optional Linux
  * compatibility layer: started by the kernel through its PT_INTERP (musl's
  * /lib/ld-musl-<arch>.so.1), linked against libc.so and libsmoke.so, and
- * dlopen()s libsmoke2.so. Prints "LINUX-DYN OK" when every check passes.
+ * dlopen()s libsmoke2.so. Its zeroed data outgrows the 16 MiB a program
+ * read whole may span: the kernel maps it from its file (the non-PIE build
+ * at its link address, below the dynamic linker). Prints "LINUX-DYN OK"
+ * when every check passes.
  */
 #include <dlfcn.h>
 #include <stdio.h>
@@ -16,6 +19,11 @@ int smoke_bump(void);
 int smoke_tls_next(void);
 
 static int failures;
+
+/* Zeroed data larger than the image a program read whole may span; read
+ * and written through a volatile pointer, so it stays in the program. */
+#define BIG (24 << 20)
+char smoke_big[BIG];
 
 static void check(int ok, const char *what) {
     printf("%s: %s\n", ok ? "ok" : "FAIL", what);
@@ -41,6 +49,11 @@ int main(void) {
     }
     check(p != NULL && p[299999] == 1, "malloc 300K");
     free(p);
+
+    volatile char *big = smoke_big;
+    big[0] = 1;
+    big[BIG - 1] = 2;
+    check(big[0] == 1 && big[BIG / 2] == 0 && big[BIG - 1] == 2, "24 MiB of zeroed data");
 
     void *h = dlopen("libsmoke2.so", RTLD_NOW);
     const char *(*name)(void) = h ? (const char *(*)(void))dlsym(h, "smoke2_name") : NULL;

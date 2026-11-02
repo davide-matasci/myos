@@ -351,6 +351,12 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
     leave the first 64 KiB unmapped and room above it in the user
     window: `[0, 512 GiB)` on x86_64, `[0, 66 GiB)` on aarch64 and
     riscv64.
+  - A dynamically linked program is mapped from its file, its pages read
+    on first touch, so its size is not bounded by what exec reads whole
+    (16 MiB): a PIE one at the start of the mmap window, a non-PIE one at
+    its link addresses below its dynamic linker (at 1 GiB), which it must
+    fit under (Claude Code's 300 MB native binary, linked at 0x200000,
+    does). A static non-PIE one is still read whole.
 - **Signals** act at syscall exit, as for native programs: a task looping
   in user mode is interrupted only at its next syscall, except by
   `SIGKILL`. A fault's signal acts at once. No alternate signal stacks,
