@@ -172,7 +172,11 @@ fn parse_hex_usize(tok: &[u8]) -> Result<usize, &'static str> {
 fn parse_binding(tok: &[u8]) -> Result<u8, &'static str> {
     match tok {
         b"none" => Ok(0),
-        b"\\n" | b"ENTER" | b"enter" => Ok(b'\n'),
+        // Enter types CR, as a terminal's does: the tty's ICRNL makes it
+        // the newline a line reader wants, and a program in raw mode (an
+        // editor, Claude Code's Ink) sees the Return it waits for.
+        b"ENTER" | b"enter" => Ok(b'\r'),
+        b"\\n" => Ok(b'\n'),
         b"\\t" | b"TAB" | b"tab" => Ok(b'\t'),
         b"\\b" | b"BKSP" | b"bksp" | b"BS" => Ok(0x08),
         b"SPACE" | b"space" => Ok(b' '),

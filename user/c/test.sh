@@ -461,6 +461,32 @@ caps_lock() {
 	grep -q '^screen 1$' /dev/console/ctl
 }
 t -t console caps_lock caps_lock
+# Enter types CR, as a terminal's does: tty9 with ICRNL and ICANON off
+# (raw, as Claude Code's Ink puts it) reads `a` and Enter as "a\r", which
+# a raw-mode program takes for Return (a newline it took for something
+# else: Claude's prompts ignored Enter). Its ctl is put back after.
+enter_cr() {
+	: > /tmp/enter.out
+	cat /dev/tty9/ctl > /tmp/ctl9 || return 1
+	printf 'iflag 0x0\nlflag 0x0\n' > /dev/tty9/ctl || return 1
+	echo 'screen 9' > /dev/console/ctl || return 1
+	dd bs=1 count=2 < /dev/tty9/data > /tmp/enter.out 2> /dev/null &
+	pid=$!
+	echo "HOST c-smokes sendkey a ret alt-1" >&3
+	i=0
+	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill $pid 2>/dev/null
+	wait $pid 2>/dev/null
+	cat /tmp/ctl9 > /dev/tty9/ctl
+	grep -q '^screen 1$' /dev/console/ctl || echo 'screen 1' > /dev/console/ctl
+	[ "$(cat /tmp/enter.out)" = "$(printf 'a\r')" ] && return 0
+	echo "read: $(od -c /tmp/enter.out 2>/dev/null || cat /tmp/enter.out)"
+	return 1
+}
+t -t console enter_cr enter_cr
 # A USB keyboard (usb_hid's boot keyboard, into the console's keyboard
 # service): the host plugs a usb-kbd in and types on it (host.sh usb-kbd).
 # Shift+A reaches /dev/console/kbd as four events; then tty9 reads a line
