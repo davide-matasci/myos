@@ -102,25 +102,36 @@ fn mouse_init(kbd_irq: bool) {
         return;
     }
     let _controller = CONTROLLER.lock();
-    if !write_cmd(0xA8) || !write_cmd(0x20) {
+    // The keyboard's port is off meanwhile (the keyboard keeps what is
+    // typed and sends it once the port is back on): a key pressed now
+    // would otherwise land in the output buffer ahead of the
+    // configuration byte, be taken for it and written back as the
+    // configuration. Enter's 0x1C clears the keyboard's interrupt and
+    // stops its clock: a keyboard dead until the next boot.
+    if !write_cmd(0xAD) {
         return;
     }
-    let Some(cfg) = read_data() else {
+    flush_output();
+    let Some(cfg) = config() else {
+        let _ = write_cmd(0xAE);
         return;
     };
     let cfg = (cfg & !CFG_MOUSE_CLK_DISABLE) | if irq { CFG_MOUSE_IRQ } else { 0 };
     // Set defaults (it answers with an ACK), then the sample rates 200,
     // 100 and 80: a wheel mouse then says it is one (id 3).
-    if !write_cmd(0x60) || !write_data(cfg) || !aux_cmd(0xF6) {
+    if !write_cmd(0xA8) || !write_cmd(0x60) || !write_data(cfg) || !aux_cmd(0xF6) {
         mouse_off();
+        let _ = write_cmd(0xAE);
         return;
     }
     let wheel = aux_cmd(0xF3) && aux_cmd(200) && aux_cmd(0xF3) && aux_cmd(100) && aux_cmd(0xF3) && aux_cmd(80)
         && aux_cmd(0xF2) && read_aux() == Some(3);
     if !aux_cmd(0xF4) {
         mouse_off();
+        let _ = write_cmd(0xAE);
         return;
     }
+    let _ = write_cmd(0xAE);
     MOUSE.lock().size = if wheel { 4 } else { 3 };
     MOUSE_IRQ.store(irq, Ordering::SeqCst);
     MOUSE_ON.store(true, Ordering::SeqCst);
@@ -130,12 +141,20 @@ fn mouse_init(kbd_irq: bool) {
 /// The aux port's clock and interrupt off again (no mouse answered).
 fn mouse_off() {
     flush_output();
-    if write_cmd(0x20) {
-        if let Some(cfg) = read_data() {
-            let _ = write_cmd(0x60) && write_data((cfg & !CFG_MOUSE_IRQ) | CFG_MOUSE_CLK_DISABLE);
-        }
+    if let Some(cfg) = config() {
+        let _ = write_cmd(0x60) && write_data((cfg & !CFG_MOUSE_IRQ) | CFG_MOUSE_CLK_DISABLE);
     }
     let _ = write_cmd(0xA7);
+}
+
+/// The controller's configuration byte (command 0x20), with both ports
+/// off or their bytes flushed by the caller: the answer is the next byte
+/// in the output buffer, whoever put it there.
+fn config() -> Option<u8> {
+    if !write_cmd(0x20) {
+        return None;
+    }
+    read_data()
 }
 
 /// `val` to the mouse (through the controller's 0xD4); true on its ACK.
@@ -293,10 +312,7 @@ fn probe_and_enable(irq: bool) -> Option<(Decoder, bool)> {
         return None;
     }
     flush_output();
-    if !write_cmd(0x20) {
-        return None;
-    }
-    let cfg = read_data()?;
+    let cfg = config()?;
     // Enable set-2→set-1 translation at the controller (standard PC behavior).
     let cfg = (cfg & !(CFG_KBD_IRQ | CFG_MOUSE_IRQ | CFG_KBD_CLK_DISABLE))
         | CFG_MOUSE_CLK_DISABLE
@@ -305,29 +321,37 @@ fn probe_and_enable(irq: bool) -> Option<(Decoder, bool)> {
     if !write_cmd(0x60) || !write_data(cfg) {
         return None;
     }
-    if !write_cmd(0x20) {
-        return None;
-    }
-    let verified = read_data()?;
+    let verified = config()?;
     let translate = verified & CFG_TRANSLATE != 0;
     if !write_cmd(0xAE) {
         return None;
     }
-    if !write_data(0xF4) {
-        return None;
-    }
-    if read_data() != Some(0xFA) {
+    // Keys pressed while the port was off (during the firmware's boot, or
+    // the kernel's) come out now, ahead of the ACK: skipped, not taken for
+    // a keyboard that does not answer (which left the console without one).
+    if !write_data(0xF4) || !read_ack() {
         return None;
     }
     flush_output();
     let mut dec = Decoder::new(ScancodeSet::Set1);
     dec.reset_modifiers();
-    let _ = write_data(0xF3);
-    let _ = read_data();
-    let _ = write_data(0x00);
-    let _ = read_data();
+    let _ = write_data(0xF3) && read_ack();
+    let _ = write_data(0x00) && read_ack();
     flush_output();
     Some((dec, translate))
+}
+
+/// The keyboard's ACK (0xFA) to a command, past the scancodes ahead of it
+/// (a keyboard sends up to 16 it kept while its port was off).
+fn read_ack() -> bool {
+    for _ in 0..32 {
+        match read_data() {
+            Some(0xFA) => return true,
+            Some(_) => {}
+            None => return false,
+        }
+    }
+    false
 }
 
 fn flush_output() {
