@@ -77,6 +77,26 @@ fetch_crt() {
   return 1
 }
 
+# musl's release tarball into $1: from musl.libc.org, else Debian's copy of
+# the same file (`orig.tar.gz`, the pinned sha256 too). musl.libc.org has
+# reset every connection for minutes at a time (PR #737's port job: four
+# tries in 43 s), which no retry rides out.
+fetch_musl() {
+  local out="$1" url
+  for url in "https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz" \
+    "https://deb.debian.org/debian/pool/main/m/musl/musl_$MUSL_VERSION.orig.tar.gz"; do
+    if curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 -o "$out.tmp" "$url" &&
+      echo "$MUSL_SHA256  $out.tmp" | sha256sum -c - >/dev/null; then
+      mv "$out.tmp" "$out"
+      return 0
+    fi
+    echo "musl: $url failed, trying the next source" >&2
+  done
+  rm -f "$out.tmp"
+  echo "musl $MUSL_VERSION: no source answered" >&2
+  return 1
+}
+
 # libtf.a: the builtins above for one arch, PIC.
 build_libtf() {
   local arch="$1" prefix="$2" out="$3"
@@ -110,8 +130,7 @@ for arch in "${ARCHES[@]}"; do
   if [[ ! -f "$prefix/lib/libc.so" ]]; then
     mkdir -p "$ROOT/target/linux-compat"
     if [[ ! -f "$tarball" ]]; then
-      curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 -o "$tarball.tmp" "https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz"
-      mv "$tarball.tmp" "$tarball"
+      fetch_musl "$tarball"
     fi
     echo "$MUSL_SHA256  $tarball" | sha256sum -c -
     # The headers the builtins need come from the static install.
