@@ -154,6 +154,11 @@ Handlers run in interrupt context, with interrupts masked, on CPU 0.
 - An INTx line is shared by every slot the swizzle puts on it (QEMU
   `virt` has four for all of them). Every handler on the line runs at
   each interrupt, its device saying whether it was the one.
+- The handler table is changed with interrupts off on the changing CPU,
+  and the dispatch waits for it rather than skip the handlers: a module's
+  init registers on CPU 0, where every interrupt goes, and an interrupt
+  that skipped its handlers there was lost (an MSI) or came back for
+  ever (a level line), the init it had stopped never resuming.
 
 `/proc/interrupts` lists the count per handler, the spurious interrupts,
 and on x86_64 the device vectors taken (`vectors: N/64`).
