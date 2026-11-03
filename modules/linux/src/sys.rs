@@ -540,7 +540,18 @@ pub fn fstat(fd: usize, buf: usize) -> R {
             return put_stat(buf, &st);
         }
     }
-    let (mode, size) = match task::fd_kind(fd).ok_or(EBADF)? {
+    let kind = task::fd_kind(fd).ok_or(EBADF)?;
+    // A terminal the layer did not open (an inherited fd 0): the node
+    // /proc/self/fd/N leads to, as `stat` of its target sees it (in a root
+    // too, where the system's /dev is a bind), so that musl's `ttyname`
+    // finds the two the same.
+    if matches!(kind, task::FdKind::Tty) {
+        let st = real_path(&alloc::format!("/proc/self/fd/{fd}")).ok().and_then(|p| fs::stat(&p));
+        if let Some(st) = st {
+            return put_stat(buf, &st);
+        }
+    }
+    let (mode, size) = match kind {
         task::FdKind::Tty => (0o020620, 0),
         task::FdKind::Pipe => (0o010600, 0),
         task::FdKind::File { size } => (0o100644, size as u64),
