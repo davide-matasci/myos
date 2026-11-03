@@ -14,3 +14,7 @@ from its `st.info`; st sets `TERM=st-256color`).
 
 Column/row counts in the file are defaults; vim uses `TIOCGWINSZ`, which
 reports the real framebuffer character-cell size.
+
+`linux` and `ansi` say the console has 8 colors (`Co#8`): vim takes its
+color count (`t_Co`) from it, and without it drew its syntax highlighting
+with no colors.

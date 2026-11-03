@@ -17,3 +17,14 @@ vim_syntax() {
 	return $r
 }
 t -t vim vim_syntax vim_syntax
+# The console's colors: vim takes their count from the terminal's entry
+# (/lib/termcap, `Co#8`); without it its syntax had no colors on the
+# console.
+vim_colors() {
+	TERM=linux TERMCAP=/lib/termcap run-myos vim -N -u NONE -i NONE \
+		-c 'redir! > /tmp/vim_colors | silent echo &t_Co | redir END | qa!' < /dev/null > /dev/null 2>&1
+	n=$(tr -d '\n' < /tmp/vim_colors 2> /dev/null)
+	rm -f /tmp/vim_colors
+	[ "$n" = 8 ] || { echo "t_Co: '$n'"; return 1; }
+}
+t -t vim vim_colors vim_colors

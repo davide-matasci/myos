@@ -1,6 +1,8 @@
 # Minimal termcap for myos framebuffer ANSI/VT100 (kernel CSI subset).
 # Packed into initramfs as /lib/termcap; getty sets TERMCAP=/lib/termcap.
 # co/li are defaults — real size comes from TIOCGWINSZ (FB width/8 × height/8).
+# Co#8 is what tells a program the colors exist: vim's t_Co comes from it,
+# and without it vim drew its syntax highlighting with no colors.
 linux|linux console:\
 	:am:xenl:mir:\
 	:co#80:li#24:\
@@ -18,7 +20,7 @@ linux|linux console:\
 	:so=\E[7m:se=\E[0m:\
 	:us=\E[4m:ue=\E[0m:\
 	:op=\E[39;49m:\
-	:AF=\E[3%dm:AB=\E[4%dm:\
+	:Co#8:AF=\E[3%dm:AB=\E[4%dm:\
 	:vi=\E[?25l:ve=\E[?25h:\
 	:ti=:te=:\
 	:ms:
@@ -37,7 +39,8 @@ ansi|ansi/pc-term compatible with color:\
 	:SF=\E[%dS:SR=\E[%dT:\
 	:mr=\E[7m:me=\E[0m:md=\E[1m:\
 	:so=\E[7m:se=\E[0m:\
-	:AF=\E[3%dm:AB=\E[4%dm:\
+	:op=\E[39;49m:\
+	:Co#8:AF=\E[3%dm:AB=\E[4%dm:\
 	:ms:
 
 vt100|vt100-am:\
