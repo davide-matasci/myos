@@ -325,15 +325,22 @@ fn smoke_tmp_dev() {
 
 
 fn smoke_signal() {
+    // The child blocks in a read of a pipe it holds both ends of, which
+    // nothing ever ends: only the signal does. It read the console before,
+    // and a key pressed during the boot ended that read first (the child
+    // exited on its own, "signal kill fail", and took the keystroke).
+    let Some((rd, wr)) = pipe() else {
+        status_fail("signal pipe fail");
+        return;
+    };
     match fork() {
         None => {
             status_fail("signal fork fail");
             return;
         }
         Some(0) => {
-            // Block in stdin read until SIGTERM; input::read wakes on pending.
             let mut b = [0u8; 1];
-            let _ = read(0, &mut b);
+            let _ = read(rd, &mut b);
             exit_code(99);
         }
         Some(child) => {
@@ -341,7 +348,10 @@ fn smoke_signal() {
                 status_fail("signal kill fail");
                 return;
             }
-            match wait_status() {
+            let waited = wait_status();
+            close(rd);
+            close(wr);
+            match waited {
                 Some((_, status)) if status == (128 + SIGTERM as u8) => {
                     status_ok("signal");
                 }
