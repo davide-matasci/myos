@@ -450,6 +450,12 @@ fn init_timer() {
     let ticks = timer_ticks();
     arm_virt_timer();
     unsafe {
+        // EL0 may read the virtual counter and its frequency
+        // (`CNTKCTL_EL1.EL0VCTEN`): the Linux layer's vDSO reads the clock
+        // without a syscall (docs/linux-compat.md).
+        let k: u64;
+        asm!("mrs {k}, cntkctl_el1", k = out(reg) k, options(nomem, nostack));
+        asm!("msr cntkctl_el1, {k}", k = in(reg) k | 1 << 1, options(nomem, nostack));
         asm!("msr cntv_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));
         asm!("msr cntp_tval_el0, {t}", t = in(reg) ticks, options(nomem, nostack));
         asm!("msr cntp_ctl_el0, {c}", c = in(reg) 1u64, options(nomem, nostack));

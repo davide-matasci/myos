@@ -24,6 +24,12 @@ pub fn monotonic_ns() -> u64 {
     crate::time::counter_to_ns(t, timebase_hz())
 }
 
+/// The counter user mode reads the time from (`rdtime`, allowed by
+/// `scounteren.TM`): its value at nanosecond 0 and its rate.
+pub fn user_counter() -> Option<(u64, u64)> {
+    Some((0, timebase_hz()))
+}
+
 /// Goldfish RTC base from the device tree (`google,goldfish-rtc`); 0 = none.
 pub fn set_rtc_base(base: usize) {
     goldfish::BASE.store(base, Ordering::SeqCst);

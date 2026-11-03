@@ -1720,6 +1720,14 @@ lx_nopie() {
 	cat $OUT/linux-dyn-nopie.log
 	contains "LINUX-DYN OK" $OUT/linux-dyn-nopie.log
 }
+# The vDSO (docs/linux-compat.md, "vDSO"): AT_SYSINFO_EHDR names it, its
+# monotonic time and the syscall's interleave in order, and a thousand
+# reads of it make no syscall (counted in the trace, which it turns on).
+lx_vdso() {
+	capture $OUT/lx-vdso.log linux /bin/linux/linux-smoke vdso
+	cat $OUT/lx-vdso.log
+	contains "LINUX-VDSO OK" $OUT/lx-vdso.log
+}
 # AF_UNIX between the layers (docs/sockets-unix.md): a Linux client
 # connects to a native server by the name it listens under in /net/unix,
 # as an Alpine X client reaches the X server's /tmp/.X11-unix/X0, and gets
@@ -2007,6 +2015,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_smoke lx_smoke
 	t -t linux linux_dyn lx_dyn
 	t -t linux linux_nopie lx_nopie
+	t -t linux,vdso linux_vdso lx_vdso
 	t -t linux,netfs linux_unix lx_unix
 	t -t linux,netfs,ipv6 linux_inet6 lx_inet6
 	t -t linux,events linux_evfd_root lx_evfd_root

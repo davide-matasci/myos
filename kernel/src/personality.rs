@@ -70,6 +70,15 @@ pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: &mut SyscallRe
     Some(unsafe { (ops.syscall)(nr, a0, a1, a2, regs.as_ptr()) })
 }
 
+/// An exec with the personality mapped its image and the calling task runs
+/// it: the personality's vDSO mapped into it, its address (0: none).
+pub fn map_vdso() -> usize {
+    match OPS.get() {
+        Some(ops) if active() => unsafe { (ops.map_vdso)() },
+        _ => 0,
+    }
+}
+
 /// Hook: a successful exec replaced `slot`'s image.
 pub fn on_exec(slot: usize) {
     let foreign = PENDING[slot].swap(false, Ordering::Relaxed);

@@ -115,7 +115,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// interrupt, or nothing while the screen is held.
 /// 65: [`ModuleVfsOps::mmap`] can ask for a write-combining mapping
 /// ([`MYOS_MMAP_WRITE_COMBINE`]: a framebuffer).
-pub const ABI_VERSION: u32 = 65;
+/// 66: [`KernelApi::user_clock`], the counter userspace reads the time
+/// from, and [`PersonalityOps::map_vdso`], the personality's vDSO at exec.
+pub const ABI_VERSION: u32 = 66;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -675,6 +677,11 @@ pub struct PersonalityOps {
     /// result-register value to `out`. Negative if the frame does not fit
     /// (the kernel then kills the task with SIGSEGV).
     pub deliver: unsafe extern "C" fn(regs: *mut u64, d: *const SignalDelivery, out: *mut usize) -> i32,
+    /// An exec with the personality has mapped its image, the calling
+    /// task runs it now: map the personality's vDSO into it and return
+    /// its address, which the kernel puts in the auxv's `AT_SYSINFO_EHDR`
+    /// (ABI 66); 0 for none (`AT_SYSINFO_EHDR` stays 0).
+    pub map_vdso: unsafe extern "C" fn() -> usize,
 }
 
 /// Bind `dev_id` to a filesystem and fill `ops`. Return 0 on success.
@@ -1209,6 +1216,14 @@ pub struct KernelApi {
         name_len: usize,
         reader: Option<unsafe extern "C" fn(*mut u8, usize) -> i32>,
     ) -> i32,
+    // --- ABI 66 ---
+    /// The counter the monotonic clock runs on, when user mode can read it
+    /// (x86_64 `rdtsc`, aarch64 `CNTVCT_EL0`, riscv64 `rdtime`): its value
+    /// at nanosecond 0 into `*base` and its rate into `*hz`, so that
+    /// [`KernelApi::monotonic_ns`] is `(counter - base)` at `hz` exactly
+    /// (whole seconds, then the remainder's nanoseconds rounded down). 0,
+    /// or -1 when user mode cannot read it or the rate is not known.
+    pub user_clock: unsafe extern "C" fn(base: *mut u64, hz: *mut u64) -> i32,
 }
 
 /// A PCI function's I/O registers ([`KernelApi::pci_io_map`]): ports on
@@ -1543,6 +1558,12 @@ impl KernelApi {
 
     pub fn monotonic_ns(&self) -> u64 {
         unsafe { (self.monotonic_ns)() }
+    }
+
+    /// [`KernelApi::user_clock`]: `(base, hz)`, or `None`.
+    pub fn user_clock(&self) -> Option<(u64, u64)> {
+        let (mut base, mut hz) = (0u64, 0u64);
+        (unsafe { (self.user_clock)(&mut base, &mut hz) } == 0).then_some((base, hz))
     }
 
     pub fn blk_register(&self, name: &str, ops: &ModuleBlkOps, ctx: usize, info: &DiskInfo) -> i32 {

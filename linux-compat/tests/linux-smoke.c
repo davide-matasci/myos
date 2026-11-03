@@ -46,6 +46,7 @@
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
+#include <sys/auxv.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -1785,6 +1786,77 @@ static void check_faults(void) {
 #endif
 }
 
+/* The calling thread's syscall count in the layer's trace (level 2,
+ * `/proc/linux_trace`), or -1. */
+static long traced_calls(void) {
+    int fd = open("/proc/linux_trace", O_WRONLY);
+    if (fd < 0 || write(fd, "2", 1) != 1) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    close(fd);
+    static char text[65536];
+    fd = open("/proc/linux_trace", O_RDONLY);
+    long n = fd < 0 ? -1 : read(fd, text, sizeof text - 1);
+    if (fd >= 0) close(fd);
+    if (n <= 0) return -1;
+    text[n] = 0;
+    /* "tid N pid ", without stdio (its printf needs long double helpers
+     * this build does not link on aarch64). */
+    char num[24], want[40];
+    long tid = (long)syscall(SYS_gettid);
+    int k = sizeof num;
+    num[--k] = 0;
+    do num[--k] = (char)('0' + tid % 10); while ((tid /= 10) && k > 0);
+    strcpy(want, "tid ");
+    strcat(want, num + k);
+    strcat(want, " pid ");
+    for (char *p = text; (p = strstr(p, want)); p++) {
+        if (p == text || p[-1] == '\n') {
+            char *colon = strchr(p, ':');
+            return colon ? strtol(colon + 1, 0, 10) : -1;
+        }
+    }
+    return -1;
+}
+
+/* The vDSO (docs/linux-compat.md, "vDSO"): AT_SYSINFO_EHDR names it, the
+ * monotonic clock read through it agrees with the syscall's and never goes
+ * back, and reading it makes no syscall (the trace's count of this thread
+ * hardly moves over a thousand reads). The wall clock still answers,
+ * through the syscall. */
+static void check_vdso(void) {
+    const unsigned char *eh = (const unsigned char *)getauxval(AT_SYSINFO_EHDR);
+    check(eh && memcmp(eh, "\177ELF", 4) == 0, "AT_SYSINFO_EHDR names the vDSO");
+    struct timespec a, b, c;
+    int back = 0;
+    for (int i = 0; i < 200; i++) {
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &b);
+        clock_gettime(CLOCK_MONOTONIC, &c);
+        long long ta = a.tv_sec * 1000000000LL + a.tv_nsec;
+        long long tb = b.tv_sec * 1000000000LL + b.tv_nsec;
+        long long tc = c.tv_sec * 1000000000LL + c.tv_nsec;
+        if (tb < ta || tc < tb || a.tv_nsec < 0 || a.tv_nsec >= 1000000000L) back++;
+    }
+    check(back == 0, "vDSO and syscall monotonic times in order");
+    struct timespec r;
+    check(clock_gettime(CLOCK_REALTIME, &r) == 0 && r.tv_sec > 1600000000L, "CLOCK_REALTIME through the syscall");
+    long before = traced_calls();
+    for (int i = 0; i < 1000; i++) clock_gettime(CLOCK_MONOTONIC, &a);
+    long after = traced_calls();
+    if (before < 0 || after < 0) {
+        out("vdso: no /proc/linux_trace: syscall count not checked\n");
+    } else {
+        check(after - before < 50, "a thousand vDSO reads make no syscalls");
+    }
+    int fd = open("/proc/linux_trace", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "0", 1) != 1) out("vdso: trace not reset\n");
+        close(fd);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -1883,6 +1955,11 @@ int main(int argc, char **argv) {
     }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root
      * (`linux --root`), where /dev is a bind of the system's. */
+    if (argc > 1 && strcmp(argv[1], "vdso") == 0) {
+        check_vdso();
+        out(failures ? "LINUX-VDSO FAIL\n" : "LINUX-VDSO OK\n");
+        return failures != 0;
+    }
     if (argc > 1 && strcmp(argv[1], "evfd") == 0) {
         check_evfd();
         check_epoll();
