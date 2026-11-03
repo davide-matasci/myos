@@ -9,6 +9,8 @@
 #define CONFIG_TCC_BCHECK 0
 #define CONFIG_TCC_BACKTRACE 0
 #define CONFIG_TCC_PREDEFS 1
-#define CONFIG_TCC_SYSINCLUDEPATHS "/lib/newlib/include"
-#define CONFIG_TCC_LIBPATHS "/lib/newlib/lib"
+/* /lib/x11: the X headers and libraries of the x11-dev package, there
+   when it is installed (packages/x11-dev). */
+#define CONFIG_TCC_SYSINCLUDEPATHS "/lib/newlib/include:/lib/x11/include"
+#define CONFIG_TCC_LIBPATHS "/lib/newlib/lib:/lib/x11/lib"
 #define CONFIG_TCC_CRTPREFIX "/lib/newlib/lib"
