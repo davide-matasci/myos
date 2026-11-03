@@ -321,6 +321,7 @@ MYOS_BOTTOM_VERSION="$MYOS_ROOT/target/.myos-bottom-version"
 MYOS_DMENU_VERSION="$MYOS_ROOT/target/.myos-dmenu-version"
 MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
 MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
+MYOS_X11_DEV_VERSION="$MYOS_ROOT/target/.myos-x11-dev-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_LIBRESSL_VERSION="$MYOS_ROOT/target/.myos-libressl-version"
@@ -1532,6 +1533,28 @@ myos_x11_apps_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/xev-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+myos_x11_dev_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash x11-libs
+      find "$(myos_port_dir x11-dev)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_x11_dev_is_current() {
+  local arch
+  [[ -f "$MYOS_X11_DEV_VERSION" ]] \
+    && [[ "$(cat "$MYOS_X11_DEV_VERSION")" == "$(myos_x11_dev_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/x11-dev-${arch}/lib/x11/lib/libX11.a" ]] || return 1
   done
 }
 
