@@ -242,6 +242,8 @@ get-myos -m https://github.com/davide-matasci/myos/releases/download/rolling -u 
 ```
 
 It is built from the pull request merged into master (GitHub's merge
-commit, which its tag names), and its release is that commit's date: newer
-than `rolling` until the next push to master, which an upgrade from
-`rolling` then installs (`-f` goes back at once).
+commit, which its tag names). Its release is its images' stamp (above):
+newer than `rolling` when the pull request changes the system, the same
+when its images are master's (an `--upgrade` finds nothing to do). After
+the merge, master's build of the same images keeps that stamp; `-f`
+writes `rolling`'s back at once.
