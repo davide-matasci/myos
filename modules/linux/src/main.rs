@@ -35,6 +35,7 @@ mod sys;
 mod thread;
 mod trace;
 mod tty;
+mod vdso;
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 mod generic;
@@ -130,6 +131,11 @@ unsafe extern "C" fn op_deliver(regs: *mut u64, d: *const SignalDelivery, out: *
     }
 }
 
+/// Hook: an exec with the personality mapped its image; the vDSO goes in.
+unsafe extern "C" fn op_map_vdso() -> usize {
+    vdso::map()
+}
+
 static OPS: PersonalityOps = PersonalityOps {
     syscall: op_syscall,
     on_exec: op_on_exec,
@@ -137,6 +143,7 @@ static OPS: PersonalityOps = PersonalityOps {
     on_thread: op_on_thread,
     on_spawn: op_on_spawn,
     deliver: op_deliver,
+    map_vdso: op_map_vdso,
 };
 
 #[inline(never)]
@@ -151,6 +158,7 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
     }
     k::set_api(api);
     trace::init();
+    vdso::init();
     let rc = api.personality_register(&OPS);
     if rc == 0 {
         status_ok(api, "linux");
