@@ -5,6 +5,9 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+    # `labeled`: adding `ci:full` or `ci:prerelease` runs CI again with the
+    # label in force; other labels start a run whose jobs are all skipped.
+    types: [opened, synchronize, reopened, labeled]
   schedule:
     # Daily: every boot test (a pull request runs what its change needs).
     - cron: '0 0 * * *'
@@ -18,8 +21,10 @@ on:
 # A newer run of the same kind on the same ref replaces the older one. The
 # kind is part of the group so the daily scheduled run never cancels a push
 # to master: that run publishes the packages and the ISO.
+# A label that changes nothing gets a group of its own (its run id), so it
+# does not cancel the pull request's run in progress.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ (github.event.action != 'labeled' || github.event.label.name == 'ci:full' || github.event.label.name == 'ci:prerelease') && github.ref || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -37,16 +42,19 @@ defaults:
 jobs:
   # The ports workflow also checks wire-myos.py against the pinned nightly.
   ports:
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci:full' || github.event.label.name == 'ci:prerelease'
     uses: ./.github/workflows/ci-ports.yml
     secrets: inherit
 
   runtime:
     needs: ports
     # contents: write for the publish job (the rolling release on pushes to
-    # master); a called workflow cannot have more than its caller.
+    # master, a pull request's own with `ci:prerelease`); a called workflow
+    # cannot have more than its caller.
     permissions:
       contents: write
       packages: write
+      pull-requests: read
     uses: ./.github/workflows/ci-runtime.yml
     with:
       full_boot: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_boot) }}
