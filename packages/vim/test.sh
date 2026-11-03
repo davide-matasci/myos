@@ -17,3 +17,18 @@ vim_syntax() {
 	return $r
 }
 t -t vim vim_syntax vim_syntax
+# Colors on the console: the termcap entry of TERM=linux (getty's,
+# /lib/termcap) says 8 colors, which vim needs to color its syntax
+# (without Co it takes none). vim reads the termcap only on a terminal of
+# its own, not in Ex mode: it runs as usual, its input and output not a
+# tty (it says so and goes on), and writes &t_Co to a file.
+vim_colors() {
+	TERM=linux TERMCAP=/lib/termcap run-myos vim \
+		-c 'call writefile([&t_Co], "/tmp/vim_colors")' -c 'qa!' \
+		< /dev/null > /dev/null 2>&1
+	r=$(cat /tmp/vim_colors 2>/dev/null)
+	rm -f /tmp/vim_colors
+	echo "t_Co: $r"
+	[ "$r" = 8 ]
+}
+t -t vim,termcap vim_colors vim_colors

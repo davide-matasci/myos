@@ -3,7 +3,7 @@
 # co/li are defaults — real size comes from TIOCGWINSZ (FB width/8 × height/8).
 linux|linux console:\
 	:am:xenl:mir:\
-	:co#80:li#24:\
+	:co#80:li#24:Co#8:pa#64:\
 	:bs:\
 	:cl=\E[H\E[J:cd=\E[J:ce=\E[K:\
 	:cm=\E[%i%d;%dH:ho=\E[H:\
@@ -25,7 +25,7 @@ linux|linux console:\
 
 ansi|ansi/pc-term compatible with color:\
 	:am:\
-	:co#80:li#24:\
+	:co#80:li#24:Co#8:pa#64:\
 	:bs:\
 	:cl=\E[H\E[J:cd=\E[J:ce=\E[K:\
 	:cm=\E[%i%d;%dH:ho=\E[H:\
