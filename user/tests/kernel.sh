@@ -1321,6 +1321,31 @@ console_cr() {
 }
 t -t console,tty console_cr console_cr
 
+# The sequences a full-screen program sends beside its text are never shown,
+# and the cursor moves they make land the text where it asks (Claude Code's
+# renderer: a character set designation in terminfo's sgr0, a terminal
+# version query, a window title, CHA over the cells that did not change).
+# Each pattern draws the same top-left two cells as "QQ", or as " Q".
+console_escapes() {
+	read -r w h depth chan pitch mode < /dev/fb/ctl
+	echo 'screen 0' > /dev/console/ctl || return 1
+	qq=$(console_cells 'QQ')
+	sq=$(console_cells ' Q')
+	bad=
+	for p in '\033(BQQ' '\033[>0qQQ' '\033]0;title\007QQ' '\033]8;;x\033\\QQ' \
+		'\033P+q544e\033\\QQ' '\033[2 qQQ' 'ZZ\033[2GQ\033[1GQ' 'ZQ\033[`Q' \
+		'ZQQ\033[1G\033[P'; do
+		[ "$(console_cells "$p")" = "$qq" ] || bad="$bad $p"
+	done
+	for p in 'Q\033[1G\033[@' 'QQ\033[1G\033[X'; do
+		[ "$(console_cells "$p")" = "$sq" ] || bad="$bad $p"
+	done
+	printf '\033[H\033[J\n' > /dev/console/data
+	echo 'screen 1' > /dev/console/ctl
+	[ -z "$bad" ] || { echo "drawn unlike QQ or \" Q\":$bad"; return 1; }
+}
+t -t console,tty console_escapes console_escapes
+
 # Inserting and deleting lines moves the rows below the cursor (termcap `al`
 # and `dl`: vim opening a line with Enter or `o`), as does reverse index at
 # the top (`sr`): the first two cells of the top three rows read back must
