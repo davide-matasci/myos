@@ -116,7 +116,12 @@ Programs not in the image (vim, git, `btm` from bottom, ...) are packages:
 
 - The framebuffer terminal handles scroll regions, 256/RGB colors and
   UTF-8 with box-drawing, block and braille glyphs. `TERMCAP=/lib/termcap`
-  (`ports/termcap`) and termios raw mode serve full-screen TUIs.
+  (`ports/termcap`) and termios raw mode serve full-screen TUIs. It moves
+  the cursor by row and column (CUP, CHA, VPA, CNL/CPL), erases, inserts
+  and deletes cells and lines (ECH, ICH, DCH, IL, DL), and skips what it has
+  no use for: OSC, DCS, APC and PM strings (titles, hyperlinks, queries),
+  character set designations (`ESC ( B`), and CSI queries and modes with a
+  `>`, `<` or `=` marker or an intermediate byte. It answers no query.
 - A terminal is a directory with `data` and `ctl` (its termios and window
   size as text): the console at `/dev/console/`, the ptys at
   `/dev/pts/N/` from `/dev/pts/clone` (`docs/tty.md`).

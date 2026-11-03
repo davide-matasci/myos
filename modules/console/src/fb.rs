@@ -79,6 +79,15 @@ enum AnsiState {
     Escape,
     /// Saw ESC `[` — collecting CSI params until a final byte.
     Csi,
+    /// Saw ESC and an intermediate byte (`ESC ( B`, a character set
+    /// designation): the next byte ends the sequence.
+    EscIntermediate,
+    /// Inside an OSC, DCS, SOS, PM or APC string (`ESC ]`, `ESC P`,
+    /// `ESC X`, `ESC ^`, `ESC _`: a window title, a hyperlink, a query):
+    /// skipped up to BEL or ST (`ESC \`).
+    Str,
+    /// Saw ESC inside such a string: `\` ends it.
+    StrEscape,
 }
 
 const CSI_MAX_PARAMS: usize = 16;
@@ -139,8 +148,13 @@ pub struct FrameBufferWriter {
     csi_param_count: u8,
     /// True once at least one digit was seen for the current parameter slot.
     csi_has_digit: bool,
-    /// CSI private-mode marker (`ESC [ ? …`).
-    csi_private: bool,
+    /// CSI private-mode marker (`ESC [ ? …`, also `>`, `<`, `=`): the byte,
+    /// or 0.
+    csi_private: u8,
+    /// An intermediate byte (0x20–0x2F) came before the final one
+    /// (`CSI 2 SP q`, `CSI ? 2026 $ p`): none of the sequences acted on has
+    /// one, so it is consumed and ignored.
+    csi_intermediate: bool,
     saved_col: usize,
     saved_row: usize,
     /// DECTCEM (CSI ?25h / ?25l): userspace may hide the cursor (vim).
@@ -222,7 +236,8 @@ impl FrameBufferWriter {
             csi_params: [0; CSI_MAX_PARAMS],
             csi_param_count: 0,
             csi_has_digit: false,
-            csi_private: false,
+            csi_private: 0,
+            csi_intermediate: false,
             saved_col: 0,
             saved_row: 0,
             cursor_visible: true,
@@ -333,7 +348,8 @@ impl FrameBufferWriter {
         self.csi_params = [0; CSI_MAX_PARAMS];
         self.csi_param_count = 0;
         self.csi_has_digit = false;
-        self.csi_private = false;
+        self.csi_private = 0;
+        self.csi_intermediate = false;
         self.utf8_left = 0;
     }
 
@@ -406,6 +422,29 @@ impl FrameBufferWriter {
                 self.handle_csi_byte(byte);
                 return;
             }
+            AnsiState::EscIntermediate => {
+                self.ansi_state = AnsiState::Normal;
+                return;
+            }
+            AnsiState::Str => {
+                match byte {
+                    0x07 => self.ansi_state = AnsiState::Normal,
+                    0x1b => self.ansi_state = AnsiState::StrEscape,
+                    _ => {}
+                }
+                return;
+            }
+            AnsiState::StrEscape => {
+                // ST (`ESC \`) ends the string; ESC and anything else
+                // starts a new sequence, the string cut short.
+                if byte == b'\\' {
+                    self.ansi_state = AnsiState::Normal;
+                } else {
+                    self.ansi_state = AnsiState::Escape;
+                    self.handle_escape_byte(byte);
+                }
+                return;
+            }
         }
 
         if byte >= 0x80 {
@@ -439,8 +478,20 @@ impl FrameBufferWriter {
                 self.csi_params = [0; CSI_MAX_PARAMS];
                 self.csi_param_count = 0;
                 self.csi_has_digit = false;
-                self.csi_private = false;
+                self.csi_private = 0;
+                self.csi_intermediate = false;
                 self.ansi_state = AnsiState::Csi;
+            }
+            // OSC, DCS, SOS, PM, APC: a string up to BEL or ST, never
+            // shown.
+            b']' | b'P' | b'X' | b'^' | b'_' => {
+                self.ansi_state = AnsiState::Str;
+            }
+            // A character set designation (`ESC ( B`, which terminfo's
+            // sgr0 sends) and the other forms with an intermediate byte:
+            // one more byte, not shown.
+            0x20..=0x2f => {
+                self.ansi_state = AnsiState::EscIntermediate;
             }
             // DECSC / DECRC (optional): save / restore cursor.
             b'7' => {
@@ -494,8 +545,8 @@ impl FrameBufferWriter {
 
     fn handle_csi_byte(&mut self, byte: u8) {
         match byte {
-            b'?' if self.csi_param_count == 0 && !self.csi_has_digit && !self.csi_private => {
-                self.csi_private = true;
+            b'<'..=b'?' if self.csi_param_count == 0 && !self.csi_has_digit && self.csi_private == 0 => {
+                self.csi_private = byte;
             }
             b'0'..=b'9' => {
                 let digit = (byte - b'0') as u16;
@@ -528,8 +579,10 @@ impl FrameBufferWriter {
                 self.csi_param_count += 1;
                 self.csi_has_digit = false;
             }
-            // Intermediate bytes (0x20–0x2F) — ignore for the sequences we care about.
-            0x20..=0x2f => {}
+            // Intermediate bytes (0x20–0x2F).
+            0x20..=0x2f => {
+                self.csi_intermediate = true;
+            }
             // Final byte: dispatch.
             0x40..=0x7e => {
                 self.dispatch_csi(byte);
@@ -565,10 +618,16 @@ impl FrameBufferWriter {
     }
 
     fn dispatch_csi(&mut self, final_byte: u8) {
+        if self.csi_intermediate {
+            return;
+        }
         // Private modes: only DECTCEM (CSI ?25h / ?25l, cursor show/hide) —
         // vim hides the cursor while redrawing and shows it again after.
-        if self.csi_private {
-            if final_byte == b'h' || final_byte == b'l' {
+        // The other markers (`CSI > 0 q`, a terminal's name and version;
+        // `CSI > 1 u`, the kitty keyboard flags) are queries and modes this
+        // console has no answer for.
+        if self.csi_private != 0 {
+            if self.csi_private == b'?' && (final_byte == b'h' || final_byte == b'l') {
                 let mut has_25 = false;
                 for i in 0..self.csi_param_count as usize {
                     if self.csi_params[i] == 25 {
@@ -720,9 +779,71 @@ impl FrameBufferWriter {
                     self.set_cursor(self.row, 0);
                 }
             }
+            // CHA / HPA — cursor to column n (1-based) of this row. A
+            // renderer skips cells that did not change this way (Claude
+            // Code: the gaps between its words).
+            b'G' | b'`' => {
+                let col = self.csi_param(0, 1) as usize;
+                self.set_cursor(self.row, col.saturating_sub(1));
+            }
+            // VPA — cursor to row n (1-based), same column.
+            b'd' => {
+                let row = self.csi_param(0, 1) as usize;
+                self.set_cursor(row.saturating_sub(1), self.col);
+            }
+            // CNL / CPL — cursor to the start of the line n below / above.
+            b'E' => {
+                let n = self.csi_param(0, 1) as usize;
+                self.set_cursor(self.row + n, 0);
+            }
+            b'F' => {
+                let n = self.csi_param(0, 1) as usize;
+                self.set_cursor(self.row.saturating_sub(n), 0);
+            }
+            // ECH — erase n cells from the cursor on, the cursor staying.
+            b'X' => {
+                let n = self.csi_param(0, 1) as usize;
+                self.clear_region(self.col, self.row, self.col.saturating_add(n), self.row + 1);
+            }
+            // ICH / DCH — insert n blank cells at the cursor (the rest of
+            // the line moves right, its end lost) / delete n cells there (the
+            // rest moves left, blanks come in at the end).
+            b'@' | b'P' => {
+                let n = self.csi_param(0, 1) as usize;
+                self.shift_line(n, final_byte == b'@');
+            }
             // Ignore unsupported finals (still consumed).
             _ => {}
         }
+    }
+
+    /// ICH (`insert`) or DCH: the cells of the cursor's row from the cursor
+    /// on move `n` right or left; the cells uncovered are blank (the
+    /// current background).
+    fn shift_line(&mut self, n: usize, insert: bool) {
+        let (row, col, cols) = (self.row, self.col, self.cols());
+        let n = n.min(cols.saturating_sub(col));
+        if n == 0 {
+            return;
+        }
+        self.cursor_out();
+        let blank = Cell { glyph: [0; 8], fg: self.fg, bg: self.bg };
+        let span = cols - col;
+        for i in 0..span {
+            // Right to left when inserting, so no cell is read after it was
+            // overwritten; left to right when deleting.
+            let at = if insert { cols - 1 - i } else { col + i };
+            let from = if insert { at.checked_sub(n).filter(|&f| f >= col) } else { Some(at + n).filter(|&f| f < cols) };
+            let c = match from.and_then(|f| self.cell(row, f).map(|c| *c)) {
+                Some(c) => c,
+                None => blank,
+            };
+            if let Some(cell) = self.cell(row, at) {
+                *cell = c;
+            }
+            self.paint_cell(row, at, c);
+        }
+        self.cursor_in();
     }
 
     /// Paint the cell at (row, col) from what it holds, its colors inverted
