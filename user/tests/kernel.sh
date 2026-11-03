@@ -1775,6 +1775,21 @@ lx_dns_root() {
 	linux --root /tmp/lxroot /linux-smoke dns "$ns" 192.0.2.1
 	return 1
 }
+# A terminal as fd 0 the way a login shell's child gets it, opened by the
+# shell, not by the program (tty9: nothing is typed on it here): ttyname
+# finds it, and with no input poll, select and epoll wait and a
+# nonblocking read is EAGAIN (Bun read the keys of a tty that poll called
+# ready with a read that blocked: Claude Code's keys came minutes late).
+# Plain and from a root, where /dev and /proc are binds.
+lx_tty() {
+	capture $OUT/lx-tty.log linux /bin/linux/linux-smoke tty < /dev/tty9/data
+	cat $OUT/lx-tty.log
+	contains "LINUX-TTY OK" $OUT/lx-tty.log || return 1
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-tty-root.log linux --root /tmp/lxroot /linux-smoke tty < /dev/tty9/data
+	cat $OUT/lx-tty-root.log
+	contains "LINUX-TTY OK" $OUT/lx-tty-root.log
+}
 # getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
 # kernel finds the cwd where it is stored, /tmp/mnt/..., and still names
 # it in the root's terms (Python's venv and busybox's pwd loop on a
@@ -2012,6 +2027,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,events linux_evfd_root lx_evfd_root
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind
+	t -t linux,tty linux_tty lx_tty
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache
 	# The Alpine packages (get-alpine, an app: the packages and the network).

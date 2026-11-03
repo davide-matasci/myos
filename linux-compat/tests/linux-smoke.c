@@ -56,6 +56,17 @@ static void out(const char *s) {
     write(1, s, strlen(s));
 }
 
+static void out_hex(unsigned long v) {
+    char b[19], *p = b + sizeof b;
+    do {
+        *--p = "0123456789abcdef"[v & 15];
+        v >>= 4;
+    } while (v);
+    *--p = 'x';
+    *--p = '0';
+    write(1, p, b + sizeof b - p);
+}
+
 static void check(int ok, const char *what) {
     out(ok ? "ok: " : "FAIL: ");
     out(what);
@@ -735,6 +746,78 @@ static void check_select(void) {
  * an empty nonblocking read is EAGAIN; a child's write wakes a blocked
  * read; a one-shot timer expires once after its delay, a periodic one
  * counts its expirations, gettime shows what is left, disarming stops it. */
+/* `tty`, with fd 0 a terminal nothing is typed on (inherited, not opened
+ * here, as a login shell's child gets it): musl's ttyname finds it (fstat
+ * and stat of /proc/self/fd/0's target agree), and with no input poll,
+ * select and epoll wait out their timeout and a nonblocking read is
+ * EAGAIN, on fd 0 and on the terminal opened again by name (Bun's tty
+ * reader does both). */
+static long elapsed_ms(const struct timespec *t0) {
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    return (t1.tv_sec - t0->tv_sec) * 1000 + (t1.tv_nsec - t0->tv_nsec) / 1000000;
+}
+
+static void check_tty_idle(int fd, const char *what) {
+    char c;
+    struct timespec t0;
+    struct pollfd p = { fd, POLLIN, 0 };
+    out(what);
+    out(":\n");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(poll(&p, 1, 50) == 0 && elapsed_ms(&t0) >= 40, "tty: poll with no input times out");
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(fd, &rd);
+    struct timeval tv = { 0, 50000 };
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(select(fd + 1, &rd, NULL, NULL, &tv) == 0 && elapsed_ms(&t0) >= 40, "tty: select with no input times out");
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    struct epoll_event ev = { .events = EPOLLIN, .data.fd = fd }, got;
+    check(ep >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev) == 0, "tty: epoll_ctl");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(epoll_wait(ep, &got, 1, 50) == 0 && elapsed_ms(&t0) >= 40, "tty: epoll_wait with no input times out");
+    close(ep);
+    int fl = fcntl(fd, F_GETFL);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    errno = 0;
+    check(read(fd, &c, 1) == -1 && errno == EAGAIN, "tty: a nonblocking read with no input is EAGAIN");
+    fcntl(fd, F_SETFL, fl);
+}
+
+static void check_tty(void) {
+    char link[256] = { 0 };
+    struct stat a, b;
+    check(isatty(0), "tty: fd 0 is a terminal");
+    ssize_t n = readlink("/proc/self/fd/0", link, sizeof link - 1);
+    check(n > 0 && link[0] == '/', "tty: readlink /proc/self/fd/0");
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    int same = n > 0 && stat(link, &a) == 0 && fstat(0, &b) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+    check(same, "tty: fstat(0) is stat of its path");
+    if (!same) {
+        out(link);
+        out(": dev/ino ");
+        out_hex(a.st_dev);
+        out("/");
+        out_hex(a.st_ino);
+        out(", fstat ");
+        out_hex(b.st_dev);
+        out("/");
+        out_hex(b.st_ino);
+        out("\n");
+    }
+    const char *name = ttyname(0);
+    check(name && n > 0 && strcmp(name, link) == 0, "tty: ttyname(0)");
+    check_tty_idle(0, "tty fd 0");
+    int fd = name ? open(name, O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC) : -1;
+    check(fd >= 0, "tty: open(ttyname(0))");
+    if (fd >= 0) {
+        check_tty_idle(fd, "tty by name");
+        close(fd);
+    }
+}
+
 static void check_evfd(void) {
     uint64_t v = 0;
     struct pollfd p;
@@ -1879,6 +1962,11 @@ int main(int argc, char **argv) {
             }
         }
         out(failures ? "LINUX-DNS FAIL\n" : "LINUX-DNS OK\n");
+        return failures != 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "tty") == 0) {
+        check_tty();
+        out(failures ? "LINUX-TTY FAIL\n" : "LINUX-TTY OK\n");
         return failures != 0;
     }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root

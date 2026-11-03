@@ -369,7 +369,14 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   POSIX shared memory works.
 - **Close-on-exec and `O_NONBLOCK`** (outside sockets) are flags the layer
   keeps per fd (`files.rs`). Exec closes the close-on-exec fds, and a
-  non-blocking pipe gives `EAGAIN`.
+  non-blocking pipe or terminal gives `EAGAIN`. `poll` and `select` ask
+  the kernel whether a pipe, an event fd or a terminal is ready (a
+  terminal on a keyboard without interrupts is checked every 10 ms while
+  they wait); any other file is always ready.
+- **Terminals** a program inherits (a login shell's fd 0) have the
+  `fstat` of their device file, so `ttyname` finds them, in a root too:
+  `/proc/self/fd/N` names the system's `/dev` through the root's bind of
+  it.
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct
