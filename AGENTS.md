@@ -208,7 +208,10 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   and the packages to the rolling GitHub release `rolling`, get-myos's
   default mirror (`docs/packages.md`). The ISO is not boot-tested: the bios
   and uefi boots carry the same files, and the tests module beside them
-  (`docs/testing.md`), which the ISO and the release do not.
+  (`docs/testing.md`), which the ISO and the release do not. A pull
+  request labelled `ci:prerelease` gets the same as its own prerelease
+  `pr-N` once its boots pass, a mirror to try it on hardware before the
+  merge; it is deleted when the pull request closes or loses the label.
 - CI runs in the `myos-ci` container (`Dockerfile`, `build-ci-image.yml`).
 - **A red CI job blocks its pull request until the root cause is found and
   fixed in that same pull request**, whatever the failure looks like: a

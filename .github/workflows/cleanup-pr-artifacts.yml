@@ -2,14 +2,15 @@ name: Cleanup PR artifacts
 
 on:
   pull_request:
-    types: [closed]
+    types: [closed, unlabeled]
 
 permissions:
   actions: write
+  contents: write
 
 jobs:
   cleanup:
-    if: github.event.pull_request.merged == true
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -41,3 +42,23 @@ jobs:
                 });
               }
             }
+
+  # The pull request's own release (`ci:prerelease`, docs/packages.md,
+  # "Publishing"): gone with the pull request or the label. A fork's
+  # pull request has none, and its token could not delete one.
+  prerelease:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action == 'closed' || github.event.label.name == 'ci:prerelease')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the pull request's release and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: pr-${{ github.event.pull_request.number }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          else
+            echo "no release $TAG"
+          fi

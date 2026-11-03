@@ -262,7 +262,9 @@ change touches, and writes the boot job's matrix. `scripts/ci-select.py
 `smoke` is always in. A push to master, the daily run, a dispatch of
 `ci.yml` with `full_boot: true` and a pull request labelled `ci:full` run
 everything on every machine. The image carries the Linux layer
-(`MYOS_CI_FEATURES=linux_compat`) when a `linux` test runs.
+(`MYOS_CI_FEATURES=linux_compat`) when a `linux` test runs. Adding the
+`ci:full` or `ci:prerelease` label (`docs/packages.md`, "Publishing")
+starts the run again with it; another label starts nothing.
 
 ### Machines
 

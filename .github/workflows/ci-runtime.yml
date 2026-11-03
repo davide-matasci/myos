@@ -12,6 +12,8 @@ on:
 permissions:
   contents: write
   packages: write
+  # The publish job checks that a pull request still wants its release.
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +35,7 @@ jobs:
     outputs:
       boots: ${{ steps.plan.outputs.boots }}
       features: ${{ steps.plan.outputs.features }}
+      release: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -51,6 +54,25 @@ jobs:
             args+=(--base origin/master --head HEAD)
           fi
           python3 scripts/ci-select.py "${args[@]}"
+      # The release this run publishes once its boots pass (docs/packages.md,
+      # "Publishing"): `rolling` from master; `pr-N` from a pull request
+      # labelled `ci:prerelease`, a mirror to try it on hardware before the
+      # merge (not from a fork: its token cannot write releases); none
+      # otherwise.
+      - name: Select the release
+        id: release
+        env:
+          PRERELEASE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:prerelease') && github.event.pull_request.head.repo.full_name == github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          tag=
+          if [[ "$GITHUB_EVENT_NAME" == push || "$GITHUB_EVENT_NAME" == schedule ]] && [[ "$GITHUB_REF" == refs/heads/master ]]; then
+            tag=rolling
+          elif [[ "$PRERELEASE" == true ]]; then
+            tag="pr-$PR"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release: ${tag:-none}"
 
   build:
     runs-on: ubuntu-latest
@@ -273,9 +295,9 @@ jobs:
           retention-days: 7
 
   iso:
-    # x86_64 hybrid ISO from the build outputs, on master only: the image
-    # with everything in it (the Linux layer loaded at boot and its tests),
-    # published on the rolling release by the publish job. The
+    # x86_64 hybrid ISO from the build outputs, for a run that publishes (the
+    # plan's release): the image with everything in it (the Linux layer
+    # loaded at boot and its tests), published by the publish job. The
     # bios and uefi boots test the same kernel and initramfs from the disk
     # images; the ISO itself is not booted. Toolchain only for
     # `cargo run -- iso`; must not rebuild ports here.
@@ -285,13 +307,12 @@ jobs:
       image: ghcr.io/davide-matasci/myos-ci:latest
       options: -e HOME=/root
     timeout-minutes: 30
-    needs: build
+    needs: [plan, build]
     if: >-
       always() &&
       !cancelled() &&
       needs.build.result == 'success' &&
-      github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/master'
+      needs.plan.outputs.release != ''
     steps:
       - uses: actions/checkout@v6
 
@@ -320,20 +341,21 @@ jobs:
 
   # Master (a push, or the daily scheduled full boot): the packages and the
   # ISO go to the rolling GitHub release `rolling` (the default mirror of
-  # get-myos), once every boot of this run passed. The tag moves to the
-  # published commit: the binaries of the copyleft ports (git, lynx, make,
-  # ...) are redistributed with their corresponding source that way
+  # get-myos), once every boot of this run passed. A pull request labelled
+  # `ci:prerelease` gets the same as `pr-N`, deleted when it closes or loses
+  # the label (cleanup-pr-artifacts.yml). The tag moves to the published
+  # commit: the binaries of the copyleft ports (git, lynx, make, ...) are
+  # redistributed with their corresponding source that way
   # (THIRD_PARTY_NOTICES.md).
   publish:
     name: publish packages
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [build, boot, iso]
+    needs: [plan, build, boot, iso]
     if: >-
       always() &&
       !cancelled() &&
-      (github.event_name == 'push' || github.event_name == 'schedule') &&
-      github.ref == 'refs/heads/master' &&
+      needs.plan.outputs.release != '' &&
       needs.build.result == 'success' &&
       needs.boot.result == 'success' &&
       needs.iso.result == 'success'
@@ -354,18 +376,34 @@ jobs:
           name: myos-x86_64-iso
           path: target
 
-      - name: Publish to the rolling release
+      - name: Publish to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.release }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          tag=rolling
+          tag="$TAG"
+          title="myos (rolling)"
           notes="Built from ${GITHUB_SHA} (the tag points at it). myos-x86_64.iso boots on BIOS and UEFI machines (and from a USB stick). The <arch>-*.tar.gz files are the packages: install one on a running myos with \`get-myos NAME\`, see docs/packages.md. Third-party licenses: THIRD_PARTY_NOTICES.md at that commit; the copyleft ports' sources are the pinned upstreams plus the patches in the repository."
+          if [[ -n "$PR" ]]; then
+            # The label or the pull request may have gone while the boots
+            # ran: the cleanup has deleted the release, so do not bring it
+            # back.
+            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state,labels \
+              --jq '.state + " " + ([.labels[].name] | join(","))')
+            if [[ "$state" != "OPEN "* || ",${state#* }," != *",ci:prerelease,"* ]]; then
+              echo "pull request #$PR is no longer open with ci:prerelease ($state): not publishing"
+              exit 0
+            fi
+            title="myos (pull request #$PR)"
+            notes="Pull request #$PR, built from ${GITHUB_SHA} (its merge into the base branch; the tag points at it), after the boot tests the pull request selects. Deleted when the pull request closes. Try it on a running myos: \`get-myos -m https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag --upgrade\` (docs/packages.md, \"Publishing\"). ${notes#*(the tag points at it). }"
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
             gh release edit "$tag" --notes "$notes" --prerelease
           else
-            gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --title "myos (rolling)" --notes "$notes"
+            gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --latest=false --title "$title" --notes "$notes"
           fi
           gh release upload "$tag" target/packages/* target/myos-x86_64.iso --clobber
           ls -l target/packages | tail -n +2 | wc -l

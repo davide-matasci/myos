@@ -210,13 +210,40 @@ os-test). The tests run them with `run-myos`. get-myos's own tests are in
 
 ## Publishing
 
-On master, once the build, the boots and the ISO passed, the `publish`
-job of `ci-runtime.yml` uploads `target/packages/*` and
+On master (a push or the daily run), once the build, the boots and the
+ISO passed, the `publish` job of `ci-runtime.yml` uploads `target/packages/*` and
 `myos-x86_64.iso` to the rolling prerelease **`rolling`** and moves its
 tag to the published commit. It is get-myos's default mirror
 (`https://github.com/davide-matasci/myos/releases/download/rolling`).
 
-The copyleft ports (git, lynx, GNU make, ...) are redistributed there as
-binaries. The tag names the commit they were built from, whose
-`versions.env` pins and `*.myos.patch` files are the corresponding source
-(`THIRD_PARTY_NOTICES.md`, "License compliance" in `AGENTS.md`).
+The copyleft ports (git, lynx, GNU make, ...) are redistributed there,
+and on a pull request's release, as binaries. The tag names the commit
+they were built from, whose `versions.env` pins and `*.myos.patch` files
+are the corresponding source (`THIRD_PARTY_NOTICES.md`, "License
+compliance" in `AGENTS.md`).
+
+### A pull request's release
+
+A pull request labelled **`ci:prerelease`** gets the same files as a
+prerelease of its own, **`pr-N`** (N its number), once the boots its
+change selects passed: its build is on a mirror about twenty minutes
+after a push, before the merge, to try on hardware. Each push replaces
+it. Adding the label starts the pull request's CI again; removing it, or
+closing the pull request, deletes the release and its tag
+(`cleanup-pr-artifacts.yml`). A pull request from a fork gets none (its
+token cannot write releases), nor does one that changes only
+documentation (no boot runs).
+
+```sh
+m=https://github.com/davide-matasci/myos/releases/download/pr-735
+get-myos -m $m --upgrade && reboot    # the system (no Linux layer: the ISO has it)
+get-myos -m $m -u vim                 # a package; -u makes pr-735 the root's mirror
+get-myos -m https://github.com/davide-matasci/myos/releases/download/rolling -u   # back
+```
+
+It is built from the pull request merged into master (GitHub's merge
+commit, which its tag names). Its release is its images' stamp (above):
+newer than `rolling` when the pull request changes the system, the same
+when its images are master's (an `--upgrade` finds nothing to do). After
+the merge, master's build of the same images keeps that stamp; `-f`
+writes `rolling`'s back at once.
