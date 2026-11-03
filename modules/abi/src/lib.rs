@@ -925,8 +925,10 @@ pub struct KernelApi {
     pub fd_pread: unsafe extern "C" fn(fd: usize, pos: usize, buf: *mut u8, len: usize) -> i32,
     /// What `fd` refers to (`MYOS_FD_*`; a file's size in `*size`), or negative.
     pub fd_kind: unsafe extern "C" fn(fd: usize, size: *mut usize) -> i32,
-    /// Pipe readiness bits (1 readable, 2 writable, 4 hung up), or negative
-    /// when the fd is not a pipe.
+    /// Readiness bits of an fd that can block (a pipe, an event object, a
+    /// pty or the console tty): 1 readable, 2 writable, 4 hung up, 8 re-check
+    /// within 10 ms while waiting (a polled keyboard); negative for any
+    /// other fd.
     pub fd_poll_bits: unsafe extern "C" fn(fd: usize) -> i32,
     pub fd_dup_min: unsafe extern "C" fn(fd: usize, min: usize) -> i32,
     pub fd_dup2: unsafe extern "C" fn(old: usize, new: usize) -> i32,

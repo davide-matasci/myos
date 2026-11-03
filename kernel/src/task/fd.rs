@@ -493,11 +493,11 @@ pub fn fd_open_fifo(id: usize, flags: u32) -> Result<usize, FifoOpenErr> {
     Err(FifoOpenErr::Failed)
 }
 
-/// Readiness bits for a userspace fd, for select()/poll() on pipes.
-/// bit0 = readable (data or EOF), bit1 = writable, bit2 = hangup.
-/// Non-pipe fds return 0; sockets are handled by netfs from userspace.
-/// Poll readiness for pipes. `None` if `fd` is not a pipe end (so libgloss can
-/// tell "empty pipe" apart from "not a pipe" when honouring O_NONBLOCK).
+/// Readiness bits of an fd whose reads and writes can block: a pipe end,
+/// an event object, a pty end or the console tty, for the Linux layer's
+/// poll/select and O_NONBLOCK. Bit 0 readable (data or end of file), bit 1
+/// writable, bit 2 hung up, bit 3 (a terminal) re-check while waiting.
+/// `None` for any other fd (a file never blocks; sockets are netfs's).
 pub fn fd_poll_bits(fd: usize) -> Option<u32> {
     if fd >= MAX_FDS {
         return None;
@@ -527,8 +527,34 @@ pub fn fd_poll_bits(fd: usize) -> Option<u32> {
         FdEntry::Timer(id) => Some(u32::from(crate::evfd::timer_poll(id).0)),
         FdEntry::Wait(id) => Some(u32::from(crate::evfd::wait_ready(id).0)),
         FdEntry::Sig(id) => Some(u32::from(crate::evfd::sig_poll(id).0)),
+        // A terminal: a pty end, or the console tty. Bit 3 asks the caller
+        // to re-check within 10 ms while it waits, for a keyboard that is
+        // polled rather than interrupt-driven (as `sys_poll` does).
+        FdEntry::PtyMaster(_) | FdEntry::PtySlave(..) | FdEntry::Stdin | FdEntry::Console => {
+            Some(tty_poll_bits(entry))
+        }
+        FdEntry::File(_) if fd_is_console_tty(entry) => Some(tty_poll_bits(entry)),
         _ => None,
     }
+}
+
+/// [`fd_poll_bits`] of a terminal, from its `poll(2)` bits.
+fn tty_poll_bits(entry: FdEntry) -> u32 {
+    let (bits, console, _) = entry_poll_changes(entry);
+    let mut out = 0;
+    if bits & POLLIN != 0 {
+        out |= 1;
+    }
+    if bits & POLLOUT != 0 {
+        out |= 2;
+    }
+    if bits & POLLHUP != 0 {
+        out |= 4;
+    }
+    if console && crate::input::keyboard_present() && !crate::console::keyboard_irq() {
+        out |= 8;
+    }
+    out
 }
 
 /// `poll(2)` bits (Linux values).
