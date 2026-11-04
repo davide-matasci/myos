@@ -146,12 +146,17 @@ static int alone(void) {
     }
     pthread_key_delete(key);
 
-    /* Nobody signals: the wait ends at its deadline, the mutex held again. */
+    /* Nobody signals: the wait ends at its deadline, the mutex held again.
+     * The wait is measured from the reading the deadline is built on: the
+     * wait ends once the clock reads the deadline, so a yardstick taken
+     * even a moment later (another gettimeofday) comes up a millisecond
+     * short whenever a millisecond boundary falls between the two readings
+     * and the wake is prompt (CI 2511: "returned after 19 ms of 20"). */
     pthread_cond_t c = PTHREAD_COND_INITIALIZER;
     pthread_mutex_lock(&m);
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    long start = now_ms();
+    long start = tv.tv_sec * 1000L + tv.tv_usec / 1000L;
     struct timespec deadline = {tv.tv_sec, tv.tv_usec * 1000L + 200000000L};
     if (deadline.tv_nsec >= 1000000000L) {
         deadline.tv_sec++;
@@ -172,7 +177,7 @@ static int alone(void) {
      * (issue #435: one came back 11 ms early). */
     for (int i = 0; i < 25; i++) {
         gettimeofday(&tv, NULL);
-        start = now_ms();
+        start = tv.tv_sec * 1000L + tv.tv_usec / 1000L;
         deadline.tv_sec = tv.tv_sec;
         deadline.tv_nsec = tv.tv_usec * 1000L + 20000000L;
         if (deadline.tv_nsec >= 1000000000L) {
