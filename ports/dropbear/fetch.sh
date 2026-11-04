@@ -12,6 +12,6 @@ if [[ -f "$TARBALL" ]] && [[ "$(sha256sum "$TARBALL" | cut -d' ' -f1)" == "$MYOS
   echo "dropbear tarball already fetched + verified"
 else
   echo "fetching dropbear ${MYOS_DROPBEAR_VERSION}"
-  curl -fL --retry 3 -o "$TARBALL" "$MYOS_DROPBEAR_URL"
+  curl -fL --retry 3 --retry-all-errors --retry-delay 2 -o "$TARBALL" "$MYOS_DROPBEAR_URL"
   echo "$MYOS_DROPBEAR_SHA256  $TARBALL" | sha256sum -c -
 fi

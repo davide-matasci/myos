@@ -18,7 +18,7 @@ rm -rf "$SRC"
 mkdir -p "$SRC"
 tarball="$SRC/limine-binary.tar.gz"
 echo "==> fetch limine $LIMINE_VERSION"
-curl -fsSL --retry 3 -o "$tarball" \
+curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 -o "$tarball" \
   "https://github.com/limine-bootloader/limine/releases/download/v${LIMINE_VERSION}/limine-binary.tar.gz"
 echo "$LIMINE_SHA256  $tarball" | sha256sum -c - >/dev/null
 tar -xzf "$tarball" -C "$SRC" --strip-components=1

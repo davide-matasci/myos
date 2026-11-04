@@ -25,7 +25,7 @@ tarball="$CACHE/dejavu-fonts-ttf-$DEJAVU_VERSION.tar.bz2"
 mkdir -p "$CACHE"
 if [[ ! -f "$tarball" ]]; then
   echo "==> fetch DejaVu $DEJAVU_VERSION"
-  curl -L --fail --retry 5 --retry-delay 2 -o "$tarball.partial" "$DEJAVU_URL"
+  curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 -o "$tarball.partial" "$DEJAVU_URL"
   mv "$tarball.partial" "$tarball"
 fi
 got="$(sha256sum "$tarball" | awk '{print $1}')"

@@ -24,7 +24,7 @@ fetch() {
   local tmp
   tmp="$(mktemp -d)"
   echo "fetch $name $version"
-  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp/src.tar"
+  curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$url" -o "$tmp/src.tar"
   echo "$sha  $tmp/src.tar" | sha256sum -c -
   mkdir -p "$tmp/extract"
   if [[ "$flag" == J ]] && ! command -v xz >/dev/null 2>&1; then

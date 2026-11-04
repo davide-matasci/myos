@@ -19,7 +19,7 @@ mkdir -p "$ROOT/target"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "fetch sqlite $SQLITE_VERSION"
-curl -fsSL --retry 5 --retry-delay 2 "$SQLITE_URL" -o "$tmp/sqlite.tar.gz"
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$SQLITE_URL" -o "$tmp/sqlite.tar.gz"
 echo "${SQLITE_SHA256}  $tmp/sqlite.tar.gz" | sha256sum -c -
 mkdir -p "$tmp/extract"
 tar -xzf "$tmp/sqlite.tar.gz" -C "$tmp/extract"

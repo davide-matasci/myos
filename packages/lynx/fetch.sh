@@ -20,7 +20,7 @@ fi
 
 if [[ ! -f "$TARBALL" ]]; then
   echo "==> fetch lynx $LYNX_VERSION"
-  curl -L --fail --retry 5 --retry-delay 2 -o "$TARBALL.partial" "$LYNX_URL"
+  curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 -o "$TARBALL.partial" "$LYNX_URL"
   mv "$TARBALL.partial" "$TARBALL"
 fi
 

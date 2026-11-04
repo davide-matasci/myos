@@ -17,7 +17,7 @@ if [[ -f "$SRC/dwm-$DWM_VERSION/dwm.c" ]]; then
 fi
 if [[ ! -f "$tarball" ]]; then
   echo "==> fetch dwm $DWM_VERSION"
-  curl -L --fail --retry 5 --retry-delay 2 -o "$tarball.partial" "$DWM_URL"
+  curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 -o "$tarball.partial" "$DWM_URL"
   mv "$tarball.partial" "$tarball"
 fi
 got="$(sha256sum "$tarball" | awk '{print $1}')"

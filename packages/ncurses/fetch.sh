@@ -21,7 +21,7 @@ fi
 if [[ ! -f "$TARBALL" ]]; then
   echo "==> fetch ncurses $NCURSES_VERSION"
   for url in $NCURSES_URLS; do
-    if curl -L --fail --connect-timeout 20 --retry 3 --retry-delay 2 -o "$TARBALL.partial" "$url"; then
+    if curl -L --fail --connect-timeout 20 --retry 3 --retry-all-errors --retry-delay 2 -o "$TARBALL.partial" "$url"; then
       break
     fi
     echo "fetch $url failed; trying the next mirror" >&2
