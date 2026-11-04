@@ -145,6 +145,14 @@ the keys as below. The Rust sysroot, the kernels bundle and the Linux
 layer are keyed by their sources alone (nothing builds against them
 through `myos_dep_hash`).
 
+Every key also carries the CI image's `Dockerfile` (`myos_hash`): the
+ports are built by the image's compiler, so a change to the image
+rebuilds them all once, on the pull request that makes it, instead of
+each port when its own sources next change (issue #534, where a newer
+clang surfaced a test's bug in an unrelated pull request). It is the
+file's content, not the host's compiler, so a clone on another machine
+still pulls what CI built.
+
 A port built for both C libraries (zlib, pcre2, libressl, ncurses,
 x11-libs, x11-xft) has its outputs in two **flavours**: the mlibc one is
 what lies under `target/<name>-mlibc-<arch>/`, the newlib one the rest

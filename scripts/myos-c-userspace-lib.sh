@@ -15,10 +15,17 @@ MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 # undefined: a one-off `unknown-...` value, which no stamp or registry tag
 # ever matches, so the port is never current and the registry lacks it.
 # `keys=` names the scheme: every key changes with it (so every artifact
-# at a new key was pushed by the code that reads it).
+# at a new key was pushed by the code that reads it). The CI image's
+# Dockerfile is in every key too: the ports are built by the image's
+# compiler, and a change to it (a newer clang) must rebuild them on the
+# pull request that makes it, not when their own sources next change
+# (issue #534: a compiler change surfaced a test's bug in an unrelated
+# pull request). The file's content, not the host's compiler, so a local
+# clone on another Ubuntu still pulls what CI built (`AGENTS.md`, "Fast
+# local setup").
 myos_hash() {
   local input
-  input="keys=outputs-1"$'\n'"$(cat)"
+  input="keys=outputs-1"$'\n'"$(sha256sum "$MYOS_ROOT/Dockerfile")"$'\n'"$(cat)"
   if grep -q '^dep-hash-unknown:' <<<"$input"; then
     grep '^dep-hash-unknown:' <<<"$input" | sort -u \
       | sed 's/^dep-hash-unknown:/myos: cache key undefined: the outputs of /; s/$/ are neither built here nor in the registry/' >&2
