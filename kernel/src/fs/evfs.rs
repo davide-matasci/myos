@@ -223,8 +223,8 @@ macro_rules! backend {
                 super::read($kind, name, pos, out)
             }
 
-            pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Option<usize> {
-                super::write($kind, name, buf)
+            pub fn write(name: &str, _pos: usize, buf: &[u8]) -> Result<usize, crate::fs::WriteError> {
+                super::write($kind, name, buf).ok_or(crate::fs::WriteError::Failed)
             }
 
             pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {

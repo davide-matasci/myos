@@ -826,6 +826,8 @@ pub const SYSERR_ESPIPE: usize = usize::MAX - 5;
 
 /// A write the file's filesystem has no room for: `ENOSPC`.
 pub const SYSERR_ENOSPC: usize = usize::MAX - 10;
+/// A write or truncate past the size a file may have (tmpfs's cap, `EFBIG`).
+pub const SYSERR_EFBIG: usize = usize::MAX - 11;
 
 /// Distinct syscall error for pty peer-gone (`EIO`): `usize::MAX` is the
 /// generic SYSERR (libgloss maps it to EBADF), so read/write return `MAX-1`
@@ -1147,6 +1149,7 @@ fn write_chunks(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                         // told apart (Linux: a partial count, then ENOSPC).
                         Err(_) if total != 0 => return total,
                         Err(crate::fs::WriteError::NoSpace) => return SYSERR_ENOSPC,
+                        Err(crate::fs::WriteError::TooBig) => return SYSERR_EFBIG,
                         Err(crate::fs::WriteError::Failed) => return usize::MAX,
                     };
                     // A poller (select/poll sleeping on "any event") may be
@@ -1236,13 +1239,16 @@ fn write_chunks(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
 
 /// Make the file `fd` is open on (for writing, not append-only) `size`
 /// bytes long (`ftruncate`): cut, or grown with zeros. The position stays.
-pub fn fd_set_size(fd: usize, size: usize) -> bool {
+/// `ftruncate`: the file `fd` holds open for writing made `size` bytes
+/// long, or why not (`WriteError::Failed`: not such an fd, or a file that
+/// cannot be resized).
+pub fn fd_set_size(fd: usize, size: usize) -> Result<(), crate::fs::WriteError> {
     let Some(FdEntry::File(id)) = with_process_mut(|t| t.fds.get(fd).copied()) else {
-        return false;
+        return Err(crate::fs::WriteError::Failed);
     };
     match open_file_get(id) {
         Some((node, _, true, _)) if !open_file_append_only(id) => crate::fs::set_size(&node, size),
-        _ => false,
+        _ => Err(crate::fs::WriteError::Failed),
     }
 }
 

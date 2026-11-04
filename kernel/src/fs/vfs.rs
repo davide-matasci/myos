@@ -99,8 +99,8 @@ pub struct MountOps {
     pub truncate: fn(&str) -> bool,
     /// Read file/device bytes at `pos` into `out`.
     pub read: fn(&str, usize, &mut [u8]) -> usize,
-    /// Write bytes at `pos`. `None` if the mount rejects the write.
-    pub write: fn(&str, usize, &[u8]) -> Option<usize>,
+    /// Write bytes at `pos`: the count, or why none were written.
+    pub write: fn(&str, usize, &[u8]) -> Result<usize, WriteError>,
     /// Create a directory.
     pub mkdir: fn(&str) -> bool,
     /// Remove an empty directory.
@@ -124,7 +124,7 @@ pub struct MountOps {
     pub set_times: Option<fn(&str, Option<u64>, Option<u64>) -> bool>,
     /// Optional: make a file that many bytes long, cut or grown with zeros
     /// (`ftruncate`). `None` for a mount whose files cannot be resized.
-    pub set_size: Option<fn(&str, usize) -> bool>,
+    pub set_size: Option<fn(&str, usize) -> Result<(), WriteError>>,
     /// Optional: the mount's files by id (see [`FileOps`]).
     pub files: Option<FileOps>,
     /// Optional: how full the filesystem is (`statvfs`). `None` for one
@@ -152,10 +152,10 @@ pub struct FileOps {
     /// The id of the file (or directory) at a path.
     pub id: fn(&str) -> Option<u64>,
     pub read: fn(u64, usize, &mut [u8]) -> usize,
-    pub write: fn(u64, usize, &[u8]) -> Option<usize>,
+    pub write: fn(u64, usize, &[u8]) -> Result<usize, WriteError>,
     pub stat: fn(u64) -> Option<StatInfo>,
     /// Make the file that many bytes long, cut or grown with zeros.
-    pub set_size: fn(u64, usize) -> bool,
+    pub set_size: fn(u64, usize) -> Result<(), WriteError>,
     /// Access and modification times, seconds since the epoch (`None`
     /// keeps one).
     pub set_times: fn(u64, Option<u64>, Option<u64>) -> bool,
@@ -651,6 +651,9 @@ pub enum WriteError {
     Failed,
     /// The filesystem has no room for the bytes (`ENOSPC`).
     NoSpace,
+    /// The file cannot grow that far: past the size its filesystem allows
+    /// one (tmpfs's 128 MiB), `EFBIG`.
+    TooBig,
 }
 
 impl WriteError {
@@ -684,16 +687,16 @@ pub(super) fn write_through(node: &Vnode, pos: usize, buf: &[u8]) -> Result<usiz
 }
 
 /// Make an open vnode `size` bytes long, cut or grown with zeros
-/// (`ftruncate`): false when its filesystem cannot.
-pub fn set_size(node: &Vnode, size: usize) -> bool {
+/// (`ftruncate`), or why its filesystem did not.
+pub fn set_size(node: &Vnode, size: usize) -> Result<(), WriteError> {
     let _tree = tree_read();
     let done = match node::locate(node) {
         Some((idx, node::Loc::File(id))) => file_set_size(idx, id, size),
         Some((idx, node::Loc::Path(rel))) => backend_set_size(idx, rel.as_str(), size),
-        None => false,
+        None => Err(WriteError::Failed),
     };
     // As after a write: the pages past the new end are gone or zero now.
-    if done {
+    if done.is_ok() {
         pagecache::truncated(node, size);
     }
     done
@@ -1048,7 +1051,7 @@ pub fn anon_file(size: usize) -> Option<Vnode> {
     let id = super::tmpfs::create_kept()?;
     let node = node::kept(idx, id);
     // Dropped unsized, the node has the tmpfs forget the file.
-    file_set_size(idx, id, size).then_some(node)
+    file_set_size(idx, id, size).ok().map(|_| node)
 }
 
 /// Held to read while a path is resolved and the file it names used, or a
@@ -1578,7 +1581,7 @@ fn file_read(idx: usize, id: u64, pos: usize, out: &mut [u8]) -> usize {
 
 fn file_write(idx: usize, id: u64, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     match backend_of(idx).ok_or(WriteError::Failed)? {
-        MountBackend::Kernel(ops) => ops.files.and_then(|f| (f.write)(id, pos, buf)).ok_or(WriteError::Failed),
+        MountBackend::Kernel(ops) => (ops.files.ok_or(WriteError::Failed)?.write)(id, pos, buf),
         MountBackend::Module(ops) => {
             let write = ops.write_ino.ok_or(WriteError::Failed)?;
             WriteError::from_rc(unsafe { write(id, pos, buf.as_ptr(), buf.len()) })
@@ -1600,11 +1603,13 @@ fn file_stat(idx: usize, id: u64) -> Option<StatInfo> {
     Some(StatInfo { dev: (idx as u32).wrapping_add(1), ..info })
 }
 
-fn file_set_size(idx: usize, id: u64, size: usize) -> bool {
-    match backend_of(idx) {
-        Some(MountBackend::Kernel(ops)) => ops.files.is_some_and(|f| (f.set_size)(id, size)),
-        Some(MountBackend::Module(ops)) => ops.set_size_ino.is_some_and(|f| unsafe { f(id, size as u64) == 0 }),
-        None => false,
+fn file_set_size(idx: usize, id: u64, size: usize) -> Result<(), WriteError> {
+    match backend_of(idx).ok_or(WriteError::Failed)? {
+        MountBackend::Kernel(ops) => (ops.files.ok_or(WriteError::Failed)?.set_size)(id, size),
+        MountBackend::Module(ops) => {
+            let f = ops.set_size_ino.ok_or(WriteError::Failed)?;
+            WriteError::from_rc(unsafe { f(id, size as u64) }).map(|_| ())
+        }
     }
 }
 
@@ -1715,20 +1720,18 @@ fn backend_truncate(idx: usize, rel: &str) -> bool {
     }
 }
 
-fn backend_set_size(idx: usize, rel: &str, size: usize) -> bool {
+fn backend_set_size(idx: usize, rel: &str, size: usize) -> Result<(), WriteError> {
     let backend = {
         let mounts = MOUNTS.lock();
-        let Some(m) = mounts.get(idx) else {
-            return false;
-        };
+        let m = mounts.get(idx).ok_or(WriteError::Failed)?;
         m.backend
     };
     match backend {
-        MountBackend::Kernel(ops) => ops.set_size.is_some_and(|set_size| set_size(rel, size)),
-        MountBackend::Module(ops) => match ops.set_size {
-            Some(set_size) => unsafe { set_size(rel.as_ptr(), rel.len(), size as u64) == 0 },
-            None => false,
-        },
+        MountBackend::Kernel(ops) => (ops.set_size.ok_or(WriteError::Failed)?)(rel, size),
+        MountBackend::Module(ops) => {
+            let set_size = ops.set_size.ok_or(WriteError::Failed)?;
+            WriteError::from_rc(unsafe { set_size(rel.as_ptr(), rel.len(), size as u64) }).map(|_| ())
+        }
     }
 }
 
@@ -1780,7 +1783,7 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Result<usize,
         m.backend
     };
     match backend {
-        MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf).ok_or(WriteError::Failed),
+        MountBackend::Kernel(ops) => (ops.write)(rel, pos, buf),
         MountBackend::Module(ops) => module_write(&ops, rel, pos, buf),
     }
 }

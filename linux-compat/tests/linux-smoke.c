@@ -1989,6 +1989,22 @@ int main(int argc, char **argv) {
         out(failures ? "LINUX-ENOSPC FAIL\n" : "LINUX-ENOSPC OK\n");
         return failures != 0;
     }
+    /* `efbig PATH`: a write or truncate past the size tmpfs allows a file
+     * (128 MiB) is EFBIG, as on Linux (the layer said EBADF: npm's
+     * TAR_ENTRY_ERROR, issue #725). */
+    if (argc > 2 && strcmp(argv[1], "efbig") == 0) {
+        const off_t cap = (off_t)128 << 20;
+        int fd = open(argv[2], O_RDWR | O_CREAT | O_TRUNC, 0644);
+        check(fd >= 0, "open on tmpfs");
+        errno = 0;
+        check(pwrite(fd, "z", 1, cap) == -1 && errno == EFBIG, "pwrite at the cap: EFBIG");
+        errno = 0;
+        check(ftruncate(fd, cap + 1) == -1 && errno == EFBIG, "ftruncate past the cap: EFBIG");
+        close(fd);
+        unlink(argv[2]);
+        out(failures ? "LINUX-EFBIG FAIL\n" : "LINUX-EFBIG OK\n");
+        return failures != 0;
+    }
     /* `enosys`: a syscall no arch has gets ENOSYS (with the layer's trace
      * on, user/tests/kernel.sh, it is also reported on the console). */
     if (argc > 1 && strcmp(argv[1], "enosys") == 0) {

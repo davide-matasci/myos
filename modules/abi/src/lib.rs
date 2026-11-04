@@ -560,7 +560,9 @@ pub const MYOS_SYSERR_EAGAIN: usize = usize::MAX - 8;
 pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
 /// A write the filesystem has no room for.
 pub const MYOS_SYSERR_ENOSPC: usize = usize::MAX - 10;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ENOSPC;
+/// A write or truncate past the size a file may have (tmpfs's 128 MiB).
+pub const MYOS_SYSERR_EFBIG: usize = usize::MAX - 11;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EFBIG;
 
 /// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s
 /// result when the filesystem has no room for the bytes (the caller's

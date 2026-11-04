@@ -401,9 +401,12 @@ pub(crate) fn native_dispatch(nr: usize, a0: usize, a1: usize, a2: usize, regs: 
             let at = (flags & FILE_AT != 0).then_some(offset);
             if nr == SYS_PREAD { task::fd_read(a0, a1, a2, at) } else { task::fd_write(a0, a1, a2, at) }
         }
-        SYS_FTRUNCATE => {
-            if task::fd_set_size(a0, a1) { 0 } else { SYSERR }
-        }
+        SYS_FTRUNCATE => match task::fd_set_size(a0, a1) {
+            Ok(()) => 0,
+            Err(fs::WriteError::TooBig) => task::SYSERR_EFBIG,
+            Err(fs::WriteError::NoSpace) => task::SYSERR_ENOSPC,
+            Err(fs::WriteError::Failed) => SYSERR,
+        },
         SYS_FDFLAGS => sys_fdflags(a0, a1, a2),
         SYS_FLOCK => sys_flock(a0, a1),
         SYS_LOCKCTL => sys_lockctl(a0, a1, a2),

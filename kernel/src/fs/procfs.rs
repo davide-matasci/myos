@@ -72,7 +72,12 @@ pub fn truncate(name: &str) -> bool {
 /// rescan). After a successful `pci` write the drivers probe for devices that
 /// appeared (`module_rescan`, `crate::modules::rescan_all`) and the disks'
 /// partition tables are read again (`crate::blk::rescan`).
-pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+/// The mount's write hook: what [`write_opt`] gave, or the generic failure.
+pub fn write(name: &str, pos: usize, buf: &[u8]) -> Result<usize, crate::fs::WriteError> {
+    write_opt(name, pos, buf).ok_or(crate::fs::WriteError::Failed)
+}
+
+fn write_opt(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     if name == HOSTNAME_PATH {
         return hostname_write(pos, buf);
     }

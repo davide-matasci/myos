@@ -89,7 +89,7 @@ pub fn console_ctl_write(text: &[u8]) -> Option<usize> {
 }
 
 /// Make an open vnode `size` bytes long (see [`vfs::set_size`]).
-pub fn set_size(node: &Vnode, size: usize) -> bool {
+pub fn set_size(node: &Vnode, size: usize) -> Result<(), WriteError> {
     vfs::set_size(node, size)
 }
 
@@ -485,7 +485,7 @@ fn ro_ops(
     create: fn(&str) -> bool,
     truncate: fn(&str) -> bool,
     read: fn(&str, usize, &mut [u8]) -> usize,
-    write: fn(&str, usize, &[u8]) -> Option<usize>,
+    write: fn(&str, usize, &[u8]) -> Result<usize, WriteError>,
 ) -> vfs::MountOps {
     vfs::MountOps {
         lookup,
@@ -521,7 +521,7 @@ fn rw_ops(
     create: fn(&str) -> bool,
     truncate: fn(&str) -> bool,
     read: fn(&str, usize, &mut [u8]) -> usize,
-    write: fn(&str, usize, &[u8]) -> Option<usize>,
+    write: fn(&str, usize, &[u8]) -> Result<usize, WriteError>,
     mkdir: fn(&str) -> bool,
     rmdir: fn(&str) -> bool,
     unlink: fn(&str) -> bool,

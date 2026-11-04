@@ -229,7 +229,16 @@ int __myos_ftruncate(int fd, off_t length) {
         errno = EINVAL;
         return -1;
     }
-    if (myos_syscall3(MYOS_SYS_FTRUNCATE, fd, (long)length, 0) == (long)MYOS_SYSERR) {
+    long ret = myos_syscall3(MYOS_SYS_FTRUNCATE, fd, (long)length, 0);
+    if (ret == (long)MYOS_EFBIG) {
+        errno = EFBIG; /* past the size the file may have (tmpfs's cap) */
+        return -1;
+    }
+    if (ret == (long)MYOS_ENOSPC) {
+        errno = ENOSPC; /* no room to grow it */
+        return -1;
+    }
+    if (ret == (long)MYOS_SYSERR) {
         /* Not an fd, not open for writing (EBADF), or not a file that can
          * be resized (EINVAL). */
         errno = myos_syscall3(MYOS_SYS_FDFLAGS, fd, MYOS_FD_GET, 0) == (long)MYOS_SYSERR ? EBADF : EINVAL;
