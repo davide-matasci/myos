@@ -58,6 +58,10 @@ struct Entry {
     owner: Option<&'static str>,
 }
 
+/// The handlers. [`dispatch`] waits for it, so every holder has its
+/// interrupts off ([`with_table`]): an interrupt can then never find it
+/// held by the very code it stopped, and a holder is never preempted or
+/// moved to another CPU half way.
 static TABLE: Mutex<[Option<Entry>; MAX_HANDLERS]> = Mutex::new([None; MAX_HANDLERS]);
 static COUNTS: [AtomicU64; MAX_HANDLERS] = [const { AtomicU64::new(0) }; MAX_HANDLERS];
 /// Interrupts that reached `dispatch` with no handler registered.
@@ -106,28 +110,42 @@ fn register_pci(irq: u32, pci: (u8, u8, u8), name: &str, handler: Handler, ctx: 
     register_for(irq, Some(pci), name, handler, ctx)
 }
 
+/// `f` on [`TABLE`], held with this CPU's interrupts off: an interrupt
+/// taken here cannot find the table held by the task it stopped. `f` is
+/// short and takes nothing else (no lock, no allocation): a [`dispatch`]
+/// on another CPU waits it out.
+fn with_table<T>(f: impl FnOnce(&mut [Option<Entry>; MAX_HANDLERS]) -> T) -> T {
+    let flags = crate::arch::irq_save();
+    crate::arch::irq_off();
+    let out = f(&mut TABLE.lock());
+    crate::arch::irq_restore(flags);
+    out
+}
+
 fn register_for(irq: u32, pci: Option<(u8, u8, u8)>, name: &str, handler: Handler, ctx: usize) -> bool {
-    let mut table = TABLE.lock();
-    if table.iter().flatten().any(|e| e.irq == irq && e.handler as usize == handler as usize && e.ctx == ctx) {
-        return false;
-    }
-    let Some(slot) = table.iter().position(|e| e.is_none()) else {
-        return false;
-    };
     let mut n = [0u8; 16];
     let len = name.len().min(16);
     n[..len].copy_from_slice(&name.as_bytes()[..len]);
-    COUNTS[slot].store(0, Ordering::Relaxed);
-    table[slot] = Some(Entry {
-        irq,
-        pci,
-        handler,
-        ctx,
-        name: n,
-        name_len: len as u8,
-        owner: crate::modules::registry::current(),
-    });
-    true
+    let owner = crate::modules::registry::current();
+    with_table(|table| {
+        if table.iter().flatten().any(|e| e.irq == irq && e.handler as usize == handler as usize && e.ctx == ctx) {
+            return false;
+        }
+        let Some(slot) = table.iter().position(|e| e.is_none()) else {
+            return false;
+        };
+        COUNTS[slot].store(0, Ordering::Relaxed);
+        table[slot] = Some(Entry {
+            irq,
+            pci,
+            handler,
+            ctx,
+            name: n,
+            name_len: len as u8,
+            owner,
+        });
+        true
+    })
 }
 
 /// Route platform interrupt `irq` to `handler(ctx)` on CPU 0, through the
@@ -168,17 +186,19 @@ pub fn disable(irq: u32, handler: Handler, ctx: usize) -> bool {
 
 /// Second-level dispatch from the arch interrupt entry (IRQs masked).
 pub fn dispatch(irq: u32) {
-    // `try_lock`: a registration racing with an interrupt on another CPU is
-    // harmless (the interrupt is simply counted as spurious once); the
-    // interrupted CPU can never be the holder because `register` runs with
-    // IRQs on only from module init, and we never spin in IRQ context. The
+    // Taken, not tried: its holder has its interrupts off (`with_table`),
+    // so it is another CPU, and lets go in a moment. Trying and giving up
+    // dropped the interrupt: an MSI was lost, and a level-triggered line
+    // (a PCI INTx, the UART) came back at once and for ever when the
+    // holder was the task it had stopped, a module's init registering on
+    // CPU 0 with interrupts on: the boot hung after `[ OK ] usbdev`, the
+    // USB controllers' INTx lines up while virtio-net registered. The
     // handlers run with the table unlocked (copied out).
     IN_DISPATCH.fetch_add(1, Ordering::SeqCst);
-    let Some(table) = TABLE.try_lock().map(|t| *t) else {
-        IN_DISPATCH.fetch_sub(1, Ordering::SeqCst);
-        SPURIOUS.fetch_add(1, Ordering::Relaxed);
-        return;
-    };
+    // Through `with_table` too: the arch entries come here with interrupts
+    // masked, but `KernelApi::irq_dispatch` is a module's call, and one
+    // made with them on would otherwise wait here for itself.
+    let table = with_table(|table| *table);
     let mut handled = false;
     for (i, e) in table.iter().enumerate() {
         let Some(e) = e.filter(|e| e.irq == irq) else { continue };
@@ -221,12 +241,11 @@ fn same(e: &Entry, handler: Handler, ctx: usize) -> bool {
 /// registered it has one registration less. When this returns the handler
 /// runs no more, on any CPU.
 fn unregister(matches: impl Fn(&Entry) -> bool) -> Option<(u32, bool)> {
-    let (irq, owner) = {
-        let mut table = TABLE.lock();
+    let (irq, owner) = with_table(|table| {
         let slot = table.iter().position(|e| e.as_ref().is_some_and(&matches))?;
         let e = table[slot].take()?;
-        (e.irq, e.owner)
-    };
+        Some((e.irq, e.owner))
+    })?;
     if let Some(owner) = owner {
         crate::modules::registry::drop_registration(owner);
     }
@@ -235,7 +254,7 @@ fn unregister(matches: impl Fn(&Entry) -> bool) -> Option<(u32, bool)> {
     while IN_DISPATCH.load(Ordering::SeqCst) != 0 {
         core::hint::spin_loop();
     }
-    let last = !TABLE.lock().iter().flatten().any(|e| e.irq == irq);
+    let last = !with_table(|table| table.iter().flatten().any(|e| e.irq == irq));
     Some((irq, last))
 }
 
@@ -282,7 +301,8 @@ pub fn pci_intx_setup(bus: u8, slot: u8, func: u8) -> Option<PciIrq> {
 /// `/proc/interrupts`.
 pub fn interrupts_text() -> alloc::vec::Vec<u8> {
     let mut out = alloc::string::String::new();
-    let table = TABLE.lock();
+    // Copied out: the lines are formatted (allocated) with it let go.
+    let table = with_table(|table| *table);
     for (i, e) in table.iter().enumerate() {
         let Some(e) = e else { continue };
         let name = core::str::from_utf8(&e.name[..e.name_len as usize]).unwrap_or("?");
