@@ -1187,9 +1187,8 @@ unsafe extern "C" fn api_vfs_write(path: StrRef, pos: usize, buf: *const u8, len
     match crate::fs::write(&node, pos, src) {
         Ok(n) => n.min(i32::MAX as usize) as i32,
         Err(crate::fs::WriteError::NoSpace) => myos_abi::VFS_ENOSPC,
-        // A file that cannot grow that far: the generic failure to a
-        // module, as before (the syscalls tell it apart, `SYSERR_EFBIG`).
-        Err(crate::fs::WriteError::TooBig | crate::fs::WriteError::Failed) => -1,
+        Err(crate::fs::WriteError::TooBig) => myos_abi::VFS_EFBIG,
+        Err(crate::fs::WriteError::Failed) => -1,
     }
 }
 

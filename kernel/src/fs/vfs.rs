@@ -661,6 +661,7 @@ impl WriteError {
     fn from_rc(rc: i32) -> Result<usize, WriteError> {
         match rc {
             myos_abi::VFS_ENOSPC => Err(WriteError::NoSpace),
+            myos_abi::VFS_EFBIG => Err(WriteError::TooBig),
             rc if rc < 0 => Err(WriteError::Failed),
             rc => Ok(rc as usize),
         }

@@ -117,7 +117,10 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// ([`MYOS_MMAP_WRITE_COMBINE`]: a framebuffer).
 /// 66: [`KernelApi::user_clock`], the counter userspace reads the time
 /// from, and [`PersonalityOps::map_vdso`], the personality's vDSO at exec.
-pub const ABI_VERSION: u32 = 66;
+/// 67: a filesystem's write hooks and [`KernelApi::vfs_write`] tell a
+/// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
+/// `EFBIG`).
+pub const ABI_VERSION: u32 = 67;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -226,7 +229,8 @@ pub struct ModuleVfsOps {
         ) -> i32,
     >,
     /// Optional write at `pos`. Bytes written (>=0), or negative:
-    /// [`VFS_ENOSPC`] when the filesystem has no room for them.
+    /// [`VFS_ENOSPC`] when the filesystem has no room for them,
+    /// [`VFS_EFBIG`] when the file cannot grow that far.
     pub write: Option<
         unsafe extern "C" fn(
             path: *const u8,
@@ -568,6 +572,9 @@ pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EFBIG;
 /// result when the filesystem has no room for the bytes (the caller's
 /// `ENOSPC`); any other negative result is the generic failure.
 pub const VFS_ENOSPC: i32 = -2;
+/// The same hooks' and call's result when the file cannot grow that far
+/// (tmpfs's 128 MiB cap; the caller's `EFBIG`).
+pub const VFS_EFBIG: i32 = -3;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are

@@ -487,11 +487,13 @@ pub mod fs {
         (n >= 0).then_some(n as usize)
     }
     /// [`write`] with the errno a failure is: `ENOSPC` for a full
-    /// filesystem, `EIO` for the rest.
+    /// filesystem, `EFBIG` for a file that cannot grow that far (tmpfs's
+    /// cap; `pwrite` writes by path, issue #725), `EIO` for the rest.
     pub fn write_errno(path: &str, pos: usize, src: &[u8]) -> Result<usize, usize> {
         match api().vfs_write(path, pos, src) {
             n if n >= 0 => Ok(n as usize),
             myos_abi::VFS_ENOSPC => Err(crate::abi::ENOSPC),
+            myos_abi::VFS_EFBIG => Err(crate::abi::EFBIG),
             _ => Err(crate::abi::EIO),
         }
     }
