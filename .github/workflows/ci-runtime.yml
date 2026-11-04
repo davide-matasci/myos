@@ -405,5 +405,13 @@ jobs:
           else
             gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --latest=false --title "$title" --notes "$notes"
           fi
-          gh release upload "$tag" target/packages/* target/myos-x86_64.iso --clobber
+          # GitHub's API answers an asset's replacement with a 500 now and
+          # then (PR #743's first republish): the upload, which --clobber
+          # makes safe to repeat, is tried three times before the job fails.
+          for try in 1 2 3; do
+            gh release upload "$tag" target/packages/* target/myos-x86_64.iso --clobber && break
+            [[ $try -lt 3 ]] || exit 1
+            echo "upload failed (try $try): again in 30 s"
+            sleep 30
+          done
           ls -l target/packages | tail -n +2 | wc -l

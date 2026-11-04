@@ -13,6 +13,16 @@ pub fn monotonic_ns() -> u64 {
     crate::time::counter_to_ns(cnt, frq.max(1))
 }
 
+/// The counter EL0 reads the time from (`CNTVCT_EL0`, allowed by
+/// `CNTKCTL_EL1.EL0VCTEN`): its value at nanosecond 0 and its rate.
+pub fn user_counter() -> Option<(u64, u64)> {
+    let frq: u64;
+    unsafe {
+        core::arch::asm!("mrs {f}, cntfrq_el0", f = out(reg) frq, options(nomem, nostack));
+    }
+    (frq != 0).then_some((0, frq))
+}
+
 /// Nothing to calibrate: the counter frequency is architectural.
 pub fn init() {}
 

@@ -357,6 +357,11 @@ pub fn timer_resume() {
 }
 
 fn init_timer() {
+    // User mode may read the `time` CSR (`scounteren.TM`): the Linux
+    // layer's vDSO reads the clock without a syscall (docs/linux-compat.md).
+    unsafe {
+        asm!("csrs scounteren, {}", in(reg) 1 << 1, options(nostack));
+    }
     arm_timer();
 }
 

@@ -24,6 +24,13 @@ pub fn clock_hz() -> u64 {
     x86clock::tsc_hz()
 }
 
+/// The counter user mode reads the time from (`rdtsc`: `CR4.TSD` is
+/// clear): its value at nanosecond 0 and its rate, once calibrated.
+pub fn user_counter() -> Option<(u64, u64)> {
+    let hz = x86clock::tsc_hz();
+    (hz != 0).then(|| (x86clock::tsc_base(), hz))
+}
+
 /// Unix seconds from the platform RTC.
 pub fn rtc_unix_seconds() -> Option<i64> {
     cmos::unix_seconds()
@@ -142,6 +149,10 @@ mod x86clock {
             SOURCE.store(2, Ordering::Relaxed);
         }
         TSC_BASE.store(rdtsc(), Ordering::Relaxed);
+    }
+
+    pub fn tsc_base() -> u64 {
+        TSC_BASE.load(Ordering::Relaxed)
     }
 
     pub fn tsc_hz() -> u64 {

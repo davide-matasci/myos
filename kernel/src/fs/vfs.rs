@@ -1401,6 +1401,30 @@ fn unbind(path: &str) -> Option<String> {
     None
 }
 
+/// The other names a bind gives `real` (a canonical absolute path): for
+/// each bind whose source holds it, the same file under the bind's target
+/// (`/dev/tty1/data` is `/data/alpine/dev/tty1/data` too once the system's
+/// `/dev` is bound into a root, `docs/linux-compat.md`).
+pub fn bound_names(real: &str) -> Vec<String> {
+    let real = normalize_path(real);
+    BINDS
+        .lock()
+        .iter()
+        .filter_map(|(target, source)| {
+            let rest = if source.is_empty() {
+                real
+            } else {
+                let rest = real.strip_prefix(source.as_str())?;
+                if !rest.is_empty() && !rest.starts_with('/') {
+                    return None;
+                }
+                rest.trim_start_matches('/')
+            };
+            Some(if rest.is_empty() { alloc::format!("/{target}") } else { alloc::format!("/{target}/{rest}") })
+        })
+        .collect()
+}
+
 /// Bind `source` (a directory or a file) at `target` (absolute paths),
 /// replacing a bind already there. `target` need not exist: `get-myos`
 /// binds a package's files where the image would have them (`/lib/vim`,

@@ -1332,6 +1332,21 @@ fn exec_path_depth(
             }
         }
     }
+    // A personality's vDSO goes in now that the image's mappings are
+    // recorded; its address fills the auxv's `AT_SYSINFO_EHDR`, the first
+    // entry after envp's NULL (`exec_auxv`).
+    let vdso = crate::personality::map_vdso();
+    if vdso != 0 {
+        let word = core::mem::size_of::<usize>();
+        let aux = argv + (argc + 1 + env_refs.len() + 1) * word;
+        if read_user_usize(aspace, aux) == Some(AT_SYSINFO_EHDR) {
+            write_user_usize(aspace, aux + word, vdso);
+        }
+        // Its code was written before the page became executable.
+        if let Some(pa) = virt_to_phys(aspace, vdso as u64) {
+            aspace::sync_icache(mm::hhdm(pa) as usize, PAGE);
+        }
+    }
     // aarch64: sret/eret through the live syscall frame (shallow exec);
     // riscv64 clears the frame instead and falls through (see there).
     crate::arch::exec_resume(entry, rsp, argc, argv);
@@ -2560,6 +2575,9 @@ impl elf::FileSrc for NodeSrc<'_> {
     }
 }
 
+/// Linux's auxv key for the vDSO's ELF header.
+const AT_SYSINFO_EHDR: usize = 33;
+
 fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usize>) -> AuxV {
     let mut aux = AuxV::new();
     let u16_at = |o: usize| elf_bytes.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u64);
@@ -2588,6 +2606,12 @@ fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usiz
         if ty == 1 && off <= phoff && phoff - off < filesz {
             phdr = va.wrapping_add(phoff - off);
         }
+    }
+    // A personality's exec reserves `AT_SYSINFO_EHDR` first: `sys_exec`
+    // fills it with the vDSO's address once the image is mapped (0, as
+    // when there is none, makes libc use the syscalls).
+    if crate::personality::pending() {
+        aux.push(AT_SYSINFO_EHDR, 0);
     }
     const AT_PHDR: usize = 3;
     const AT_PHENT: usize = 4;

@@ -1720,6 +1720,14 @@ lx_nopie() {
 	cat $OUT/linux-dyn-nopie.log
 	contains "LINUX-DYN OK" $OUT/linux-dyn-nopie.log
 }
+# The vDSO (docs/linux-compat.md, "vDSO"): AT_SYSINFO_EHDR names it, its
+# monotonic time and the syscall's interleave in order, and a thousand
+# reads of it make no syscall (counted in the trace, which it turns on).
+lx_vdso() {
+	capture $OUT/lx-vdso.log linux /bin/linux/linux-smoke vdso
+	cat $OUT/lx-vdso.log
+	contains "LINUX-VDSO OK" $OUT/lx-vdso.log
+}
 # AF_UNIX between the layers (docs/sockets-unix.md): a Linux client
 # connects to a native server by the name it listens under in /net/unix,
 # as an Alpine X client reaches the X server's /tmp/.X11-unix/X0, and gets
@@ -1774,6 +1782,21 @@ lx_dns_root() {
 	printf 'nameserver %s\n' "$ns" > /tmp/lxroot/etc/resolv.conf
 	linux --root /tmp/lxroot /linux-smoke dns "$ns" 192.0.2.1
 	return 1
+}
+# A terminal as fd 0 the way a login shell's child gets it, opened by the
+# shell, not by the program (tty9: nothing is typed on it here): ttyname
+# finds it, and with no input poll, select and epoll wait and a
+# nonblocking read is EAGAIN (Bun read the keys of a tty that poll called
+# ready with a read that blocked: Claude Code's keys came minutes late).
+# Plain and from a root, where /dev and /proc are binds.
+lx_tty() {
+	capture $OUT/lx-tty.log linux /bin/linux/linux-smoke tty < /dev/tty9/data
+	cat $OUT/lx-tty.log
+	contains "LINUX-TTY OK" $OUT/lx-tty.log || return 1
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-tty-root.log linux --root /tmp/lxroot /linux-smoke tty < /dev/tty9/data
+	cat $OUT/lx-tty-root.log
+	contains "LINUX-TTY OK" $OUT/lx-tty-root.log
 }
 # getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
 # kernel finds the cwd where it is stored, /tmp/mnt/..., and still names
@@ -2007,11 +2030,13 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_smoke lx_smoke
 	t -t linux linux_dyn lx_dyn
 	t -t linux linux_nopie lx_nopie
+	t -t linux,vdso linux_vdso lx_vdso
 	t -t linux,netfs linux_unix lx_unix
 	t -t linux,netfs,ipv6 linux_inet6 lx_inet6
 	t -t linux,events linux_evfd_root lx_evfd_root
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind
+	t -t linux,tty linux_tty lx_tty
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache
 	# The Alpine packages (get-alpine, an app: the packages and the network).

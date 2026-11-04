@@ -46,6 +46,7 @@
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
+#include <sys/auxv.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -54,6 +55,17 @@ static int failures;
 
 static void out(const char *s) {
     write(1, s, strlen(s));
+}
+
+static void out_hex(unsigned long v) {
+    char b[19], *p = b + sizeof b;
+    do {
+        *--p = "0123456789abcdef"[v & 15];
+        v >>= 4;
+    } while (v);
+    *--p = 'x';
+    *--p = '0';
+    write(1, p, b + sizeof b - p);
 }
 
 static void check(int ok, const char *what) {
@@ -735,6 +747,78 @@ static void check_select(void) {
  * an empty nonblocking read is EAGAIN; a child's write wakes a blocked
  * read; a one-shot timer expires once after its delay, a periodic one
  * counts its expirations, gettime shows what is left, disarming stops it. */
+/* `tty`, with fd 0 a terminal nothing is typed on (inherited, not opened
+ * here, as a login shell's child gets it): musl's ttyname finds it (fstat
+ * and stat of /proc/self/fd/0's target agree), and with no input poll,
+ * select and epoll wait out their timeout and a nonblocking read is
+ * EAGAIN, on fd 0 and on the terminal opened again by name (Bun's tty
+ * reader does both). */
+static long elapsed_ms(const struct timespec *t0) {
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    return (t1.tv_sec - t0->tv_sec) * 1000 + (t1.tv_nsec - t0->tv_nsec) / 1000000;
+}
+
+static void check_tty_idle(int fd, const char *what) {
+    char c;
+    struct timespec t0;
+    struct pollfd p = { fd, POLLIN, 0 };
+    out(what);
+    out(":\n");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(poll(&p, 1, 50) == 0 && elapsed_ms(&t0) >= 40, "tty: poll with no input times out");
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(fd, &rd);
+    struct timeval tv = { 0, 50000 };
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(select(fd + 1, &rd, NULL, NULL, &tv) == 0 && elapsed_ms(&t0) >= 40, "tty: select with no input times out");
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    struct epoll_event ev = { .events = EPOLLIN, .data.fd = fd }, got;
+    check(ep >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev) == 0, "tty: epoll_ctl");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check(epoll_wait(ep, &got, 1, 50) == 0 && elapsed_ms(&t0) >= 40, "tty: epoll_wait with no input times out");
+    close(ep);
+    int fl = fcntl(fd, F_GETFL);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    errno = 0;
+    check(read(fd, &c, 1) == -1 && errno == EAGAIN, "tty: a nonblocking read with no input is EAGAIN");
+    fcntl(fd, F_SETFL, fl);
+}
+
+static void check_tty(void) {
+    char link[256] = { 0 };
+    struct stat a, b;
+    check(isatty(0), "tty: fd 0 is a terminal");
+    ssize_t n = readlink("/proc/self/fd/0", link, sizeof link - 1);
+    check(n > 0 && link[0] == '/', "tty: readlink /proc/self/fd/0");
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    int same = n > 0 && stat(link, &a) == 0 && fstat(0, &b) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+    check(same, "tty: fstat(0) is stat of its path");
+    if (!same) {
+        out(link);
+        out(": dev/ino ");
+        out_hex(a.st_dev);
+        out("/");
+        out_hex(a.st_ino);
+        out(", fstat ");
+        out_hex(b.st_dev);
+        out("/");
+        out_hex(b.st_ino);
+        out("\n");
+    }
+    const char *name = ttyname(0);
+    check(name && n > 0 && strcmp(name, link) == 0, "tty: ttyname(0)");
+    check_tty_idle(0, "tty fd 0");
+    int fd = name ? open(name, O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC) : -1;
+    check(fd >= 0, "tty: open(ttyname(0))");
+    if (fd >= 0) {
+        check_tty_idle(fd, "tty by name");
+        close(fd);
+    }
+}
+
 static void check_evfd(void) {
     uint64_t v = 0;
     struct pollfd p;
@@ -1785,6 +1869,77 @@ static void check_faults(void) {
 #endif
 }
 
+/* The calling thread's syscall count in the layer's trace (level 2,
+ * `/proc/linux_trace`), or -1. */
+static long traced_calls(void) {
+    int fd = open("/proc/linux_trace", O_WRONLY);
+    if (fd < 0 || write(fd, "2", 1) != 1) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    close(fd);
+    static char text[65536];
+    fd = open("/proc/linux_trace", O_RDONLY);
+    long n = fd < 0 ? -1 : read(fd, text, sizeof text - 1);
+    if (fd >= 0) close(fd);
+    if (n <= 0) return -1;
+    text[n] = 0;
+    /* "tid N pid ", without stdio (its printf needs long double helpers
+     * this build does not link on aarch64). */
+    char num[24], want[40];
+    long tid = (long)syscall(SYS_gettid);
+    int k = sizeof num;
+    num[--k] = 0;
+    do num[--k] = (char)('0' + tid % 10); while ((tid /= 10) && k > 0);
+    strcpy(want, "tid ");
+    strcat(want, num + k);
+    strcat(want, " pid ");
+    for (char *p = text; (p = strstr(p, want)); p++) {
+        if (p == text || p[-1] == '\n') {
+            char *colon = strchr(p, ':');
+            return colon ? strtol(colon + 1, 0, 10) : -1;
+        }
+    }
+    return -1;
+}
+
+/* The vDSO (docs/linux-compat.md, "vDSO"): AT_SYSINFO_EHDR names it, the
+ * monotonic clock read through it agrees with the syscall's and never goes
+ * back, and reading it makes no syscall (the trace's count of this thread
+ * hardly moves over a thousand reads). The wall clock still answers,
+ * through the syscall. */
+static void check_vdso(void) {
+    const unsigned char *eh = (const unsigned char *)getauxval(AT_SYSINFO_EHDR);
+    check(eh && memcmp(eh, "\177ELF", 4) == 0, "AT_SYSINFO_EHDR names the vDSO");
+    struct timespec a, b, c;
+    int back = 0;
+    for (int i = 0; i < 200; i++) {
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &b);
+        clock_gettime(CLOCK_MONOTONIC, &c);
+        long long ta = a.tv_sec * 1000000000LL + a.tv_nsec;
+        long long tb = b.tv_sec * 1000000000LL + b.tv_nsec;
+        long long tc = c.tv_sec * 1000000000LL + c.tv_nsec;
+        if (tb < ta || tc < tb || a.tv_nsec < 0 || a.tv_nsec >= 1000000000L) back++;
+    }
+    check(back == 0, "vDSO and syscall monotonic times in order");
+    struct timespec r;
+    check(clock_gettime(CLOCK_REALTIME, &r) == 0 && r.tv_sec > 1600000000L, "CLOCK_REALTIME through the syscall");
+    long before = traced_calls();
+    for (int i = 0; i < 1000; i++) clock_gettime(CLOCK_MONOTONIC, &a);
+    long after = traced_calls();
+    if (before < 0 || after < 0) {
+        out("vdso: no /proc/linux_trace: syscall count not checked\n");
+    } else {
+        check(after - before < 50, "a thousand vDSO reads make no syscalls");
+    }
+    int fd = open("/proc/linux_trace", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "0", 1) != 1) out("vdso: trace not reset\n");
+        close(fd);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -1881,8 +2036,18 @@ int main(int argc, char **argv) {
         out(failures ? "LINUX-DNS FAIL\n" : "LINUX-DNS OK\n");
         return failures != 0;
     }
+    if (argc > 1 && strcmp(argv[1], "tty") == 0) {
+        check_tty();
+        out(failures ? "LINUX-TTY FAIL\n" : "LINUX-TTY OK\n");
+        return failures != 0;
+    }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root
      * (`linux --root`), where /dev is a bind of the system's. */
+    if (argc > 1 && strcmp(argv[1], "vdso") == 0) {
+        check_vdso();
+        out(failures ? "LINUX-VDSO FAIL\n" : "LINUX-VDSO OK\n");
+        return failures != 0;
+    }
     if (argc > 1 && strcmp(argv[1], "evfd") == 0) {
         check_evfd();
         check_epoll();

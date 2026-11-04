@@ -37,8 +37,10 @@ keycode <N> = <base> <Shift> <AltGr> <Shift+AltGr>
 ```
 
 - `<N>` is decimal or `0xNN`, a PS/2 set-1 make code.
-- A level is a printable byte, `none`, `ENTER`/`\n`, `TAB`/`\t`,
-  `BKSP`/`\b`, `SPACE`, or an explicit byte `\xNN`/`0xNN`.
+- A level is a printable byte, `none`, `ENTER` (CR, as a terminal's
+  Enter: the tty's `ICRNL` turns it into a newline for line readers,
+  `docs/tty.md`), `\n`, `TAB`/`\t`, `BKSP`/`\b`, `SPACE`, or an explicit
+  byte `\xNN`/`0xNN`.
 - `#` starts a comment.
 
 ```

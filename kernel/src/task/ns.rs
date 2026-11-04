@@ -117,12 +117,21 @@ impl Namespace {
     /// `vfs::node_path`).
     pub fn to_virtual(&self, real: &str) -> Option<String> {
         let real = crate::fs::vfs::canonical(real)?;
+        // Under no binding, the file may still be in view through a bind
+        // mount (a root's /dev, bound from the system's): name it there.
+        self.through_bindings(&real).or_else(|| {
+            crate::fs::vfs::bound_names(&real).iter().find_map(|name| self.through_bindings(name))
+        })
+    }
+
+    /// `real` as the binding holding it names it, the longest one first.
+    fn through_bindings(&self, real: &str) -> Option<String> {
         let (b, _, rest) = self
             .binds
             .iter()
             .filter_map(|b| {
                 let source = crate::fs::vfs::canonical(&b.source)?;
-                below(&real, &source).map(|rest| (b, source.len(), String::from(rest)))
+                below(real, &source).map(|rest| (b, source.len(), String::from(rest)))
             })
             .max_by_key(|&(_, len, _)| len)?;
         Some(join(&b.target, &rest))

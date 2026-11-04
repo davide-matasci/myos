@@ -157,6 +157,7 @@ static API: KernelApi = KernelApi {
     irq_disable: api_irq_disable,
     pci_io_map: api_pci_io_map,
     proc_set_reader: api_proc_set_reader,
+    user_clock: api_user_clock,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1470,6 +1471,22 @@ unsafe extern "C" fn api_fork_from(regs: *mut u64, sp: usize) -> i32 {
 unsafe extern "C" fn api_thread_place(tid: i32) {
     if tid >= 0 {
         crate::task::place_thread(tid as usize);
+    }
+}
+
+unsafe extern "C" fn api_user_clock(base: *mut u64, hz: *mut u64) -> i32 {
+    if base.is_null() || hz.is_null() {
+        return -1;
+    }
+    match crate::arch::clock::user_counter() {
+        Some((b, h)) => {
+            unsafe {
+                *base = b;
+                *hz = h;
+            }
+            0
+        }
+        None => -1,
     }
 }
 

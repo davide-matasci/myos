@@ -5,6 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use myos_abi::Lock as Mutex;
 
 use super::abi::*;
@@ -169,7 +170,8 @@ fn unresolved(path: &str) -> usize {
 
 // ---- files ----------------------------------------------------------------
 
-/// A non-blocking pipe end that would block (bits: readable 1, writable 2).
+/// A non-blocking pipe end, event fd or terminal that would block (bits:
+/// readable 1, writable 2).
 fn would_block(fd: usize, ready: u32) -> bool {
     files::nonblock(fd) && task::fd_poll_bits(fd).is_some_and(|b| b & ready == 0)
 }
@@ -538,7 +540,18 @@ pub fn fstat(fd: usize, buf: usize) -> R {
             return put_stat(buf, &st);
         }
     }
-    let (mode, size) = match task::fd_kind(fd).ok_or(EBADF)? {
+    let kind = task::fd_kind(fd).ok_or(EBADF)?;
+    // A terminal the layer did not open (an inherited fd 0): the node
+    // /proc/self/fd/N leads to, as `stat` of its target sees it (in a root
+    // too, where the system's /dev is a bind), so that musl's `ttyname`
+    // finds the two the same.
+    if matches!(kind, task::FdKind::Tty) {
+        let st = real_path(&alloc::format!("/proc/self/fd/{fd}")).ok().and_then(|p| fs::stat(&p));
+        if let Some(st) = st {
+            return put_stat(buf, &st);
+        }
+    }
+    let (mode, size) = match kind {
         task::FdKind::Tty => (0o020620, 0),
         task::FdKind::Pipe => (0o010600, 0),
         task::FdKind::File { size } => (0o100644, size as u64),
@@ -982,7 +995,7 @@ pub fn epoll_wait(epfd: usize, events: usize, maxevents: usize, timeout_ms: isiz
     }
     let timeout_us = (timeout_ms >= 0).then(|| timeout_ms as u64 * 1000);
     let mut taken = Vec::new();
-    wait_ready(timeout_us, || {
+    wait_ready(timeout_us, &Cell::new(false), || {
         taken = task::wait_take(epfd, max).ok_or(EINVAL)?;
         Ok(taken.len())
     })?;
@@ -2049,8 +2062,10 @@ const POLLNVAL: u16 = 0x20;
 
 /// The `poll` events of `fd` among `events`, with `POLLERR` and `POLLHUP`,
 /// which are reported unasked; `POLLNVAL` for an fd that is not open.
-/// Pipes and sockets know their readiness, other fds are always ready.
-fn fd_revents(fd: usize, events: u16) -> u16 {
+/// Pipes, event fds, terminals and sockets know their readiness, other fds
+/// are always ready. A terminal on a keyboard that is polled, not interrupt-driven, sets
+/// `recheck` when POLLIN is asked for: the wait re-checks it every 10 ms.
+fn fd_revents(fd: usize, events: u16, recheck: &Cell<bool>) -> u16 {
     if task::fd_kind(fd).is_none() {
         return POLLNVAL;
     }
@@ -2059,6 +2074,9 @@ fn fd_revents(fd: usize, events: u16) -> u16 {
     }
     match task::fd_poll_bits(fd) {
         Some(bits) => {
+            if bits & 8 != 0 && events & POLLIN != 0 {
+                recheck.set(true);
+            }
             let mut r = 0;
             if bits & 1 != 0 {
                 r |= POLLIN;
@@ -2078,12 +2096,14 @@ fn fd_revents(fd: usize, events: u16) -> u16 {
 /// The wait of `poll` and `select`: `scan` checks the fds and returns how
 /// many are ready; until some are, the timeout (`timeout_us`, `None`: no
 /// timeout) passes or a signal comes, sleep until something happens
-/// (pipe, tty, socket or device traffic, an exit) and scan again.
-fn wait_ready(timeout_us: Option<u64>, mut scan: impl FnMut() -> R) -> R {
+/// (pipe, tty, socket or device traffic, an exit) and scan again; at most
+/// 10 ms while `scan` sets `recheck` (`fd_revents`).
+fn wait_ready(timeout_us: Option<u64>, recheck: &Cell<bool>, mut scan: impl FnMut() -> R) -> R {
     let now = crate::k::time::monotonic_ns;
     let deadline = timeout_us.map(|t| now().saturating_add(t.saturating_mul(1000)).max(1));
     loop {
         let seq = task::wait_seq();
+        recheck.set(false);
         let ready = scan()?;
         if ready > 0 || deadline.is_some_and(|d| now() >= d) {
             return Ok(ready);
@@ -2091,7 +2111,12 @@ fn wait_ready(timeout_us: Option<u64>, mut scan: impl FnMut() -> R) -> R {
         if crate::k::signal::interrupt_wait() {
             return Err(EINTR);
         }
-        task::block_until(task::WAIT_ANY, seq, deadline.unwrap_or(0));
+        let mut until = deadline.unwrap_or(0);
+        if recheck.get() {
+            let soon = now().saturating_add(10_000_000);
+            until = if until == 0 { soon } else { until.min(soon) };
+        }
+        task::block_until(task::WAIT_ANY, seq, until);
     }
 }
 
@@ -2101,14 +2126,15 @@ pub fn poll(fds: usize, nfds: usize, timeout_ms: isize) -> R {
         return Err(EINVAL);
     }
     let timeout_us = (timeout_ms >= 0).then(|| timeout_ms as u64 * 1000);
-    wait_ready(timeout_us, || {
+    let recheck = Cell::new(false);
+    wait_ready(timeout_us, &recheck, || {
         let mut ready = 0;
         for i in 0..nfds {
             let mut b = [0u8; 8];
             get(fds + i * 8, &mut b)?;
             let fd = i32::from_le_bytes(b[..4].try_into().unwrap());
             let events = u16::from_le_bytes([b[4], b[5]]);
-            let rev = if fd < 0 { 0 } else { fd_revents(fd as usize, events) };
+            let rev = if fd < 0 { 0 } else { fd_revents(fd as usize, events, &recheck) };
             b[6..8].copy_from_slice(&rev.to_le_bytes());
             put(fds + i * 8, &b)?;
             if rev != 0 {
@@ -2182,7 +2208,8 @@ fn select_sets(nfds: usize, sets: [usize; 3], timeout_us: Option<u64>) -> R {
     let wanted = |set: &[u64; FD_SETSIZE / 64], fd: usize| set[fd / 64] & (1 << (fd % 64)) != 0;
     // The ready fds of the last scan, the sets written back.
     let mut got = [[0u64; FD_SETSIZE / 64]; 3];
-    let ready = wait_ready(timeout_us, || {
+    let recheck = Cell::new(false);
+    let ready = wait_ready(timeout_us, &recheck, || {
         got = [[0u64; FD_SETSIZE / 64]; 3];
         let mut ready = 0;
         for fd in 0..nfds {
@@ -2190,7 +2217,7 @@ fn select_sets(nfds: usize, sets: [usize; 3], timeout_us: Option<u64>) -> R {
             if !(r || w || e) {
                 continue;
             }
-            let rev = fd_revents(fd, POLLIN | POLLOUT | POLLPRI);
+            let rev = fd_revents(fd, POLLIN | POLLOUT | POLLPRI, &recheck);
             if rev & POLLNVAL != 0 {
                 return Err(EBADF);
             }
