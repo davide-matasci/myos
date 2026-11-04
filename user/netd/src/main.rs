@@ -327,6 +327,10 @@ struct Handshake {
 /// after a few dozen connections (issue #483).
 struct Lingering {
     handle: SocketHandle,
+    /// A UDP socket, closed with datagrams still queued: it goes once they
+    /// went out, at the next poll (issue #679: removed at the close, it
+    /// took them with it, a reply sent right before `_exit` among them).
+    udp: bool,
     /// Data written before the close that the socket had no room for yet
     /// (`Conv::pending`); the FIN follows it.
     pending: Vec<u8>,
@@ -668,12 +672,17 @@ fn convs_text(
         let _ = writeln!(s, " port {} handshake {}ms", convs[l].listen_port, (now - hs.since).total_millis());
     }
     for l in lingering {
+        let secs = l.since.map_or(0, |t| (now - t).secs());
+        if l.udp {
+            let sock = sockets.get::<udp::Socket>(l.handle);
+            let _ = writeln!(s, "- udp closing {secs}s sendq {}", sock.send_queue());
+            continue;
+        }
         let sock = sockets.get::<tcp::Socket>(l.handle);
         let _ = write!(s, "- tcp {:?}", sock.state());
         if let Some(IpEndpoint { addr, port }) = sock.remote_endpoint() {
             let _ = write!(s, " peer {addr}!{port}");
         }
-        let secs = l.since.map_or(0, |t| (now - t).secs());
         let _ = writeln!(s, " closing {secs}s tx {} sendq {}", l.pending.len(), sock.send_queue());
     }
     s
@@ -816,7 +825,7 @@ fn tx_credit(chan: usize, conv: u16, mut n: usize) {
     }
 }
 
-fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize) {
+fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, lingering: &mut Vec<Lingering>, i: usize) {
     if i >= MAX_CONV {
         return;
     }
@@ -854,7 +863,13 @@ fn drop_conv(convs: &mut [Conv; MAX_CONV], sockets: &mut SocketSet<'_>, i: usize
             convs[i].closing = true;
             return;
         }
-        sockets.remove(h);
+        // A UDP socket with datagrams still queued: they go out at the
+        // next poll, so the socket lingers until then.
+        if matches!(convs[i].kind, Kind::Udp) && sockets.get::<udp::Socket>(h).send_queue() != 0 {
+            lingering.push(Lingering { handle: h, udp: true, pending: Vec::new(), since: None });
+        } else {
+            sockets.remove(h);
+        }
     }
     retire(convs, i);
 }
@@ -868,7 +883,7 @@ fn release_conv(
     lingering: &mut Vec<Lingering>,
     i: usize,
 ) {
-    drop_conv(convs, sockets, i);
+    drop_conv(convs, sockets, lingering, i);
     let c = &mut convs[i];
     if !c.closing && !c.closing_after_flush {
         return;
@@ -879,6 +894,7 @@ fn release_conv(
         }
         lingering.push(Lingering {
             handle: h,
+            udp: false,
             pending: core::mem::take(&mut c.pending),
             since: c.closing_since,
         });
@@ -892,6 +908,15 @@ fn release_conv(
 /// What the peer still sends is read and dropped.
 fn sweep_lingering(sockets: &mut SocketSet<'_>, lingering: &mut Vec<Lingering>, now: Instant) {
     lingering.retain_mut(|l| {
+        if l.udp {
+            // Its datagrams went out (or never will: the grace is up).
+            let since = *l.since.get_or_insert(now);
+            if sockets.get::<udp::Socket>(l.handle).send_queue() != 0 && now - since < CLOSE_GRACE {
+                return true;
+            }
+            sockets.remove(l.handle);
+            return false;
+        }
         let s = sockets.get_mut::<tcp::Socket>(l.handle);
         if !l.pending.is_empty() && s.can_send() {
             let n = s.send_slice(&l.pending).unwrap_or(0);
@@ -913,7 +938,7 @@ fn sweep_lingering(sockets: &mut SocketSet<'_>, lingering: &mut Vec<Lingering>, 
     // Oldest first: `lingering` is in the order the closes began. The
     // socket goes without a reset; the peer has its ACK of the FIN.
     let time_wait = |sockets: &SocketSet<'_>, l: &Lingering| {
-        sockets.get::<tcp::Socket>(l.handle).state() == tcp::State::TimeWait
+        !l.udp && sockets.get::<tcp::Socket>(l.handle).state() == tcp::State::TimeWait
     };
     let mut excess = lingering.iter().filter(|l| time_wait(sockets, l)).count().saturating_sub(MAX_TIME_WAIT);
     lingering.retain(|l| {
@@ -995,6 +1020,7 @@ fn retire(convs: &mut [Conv; MAX_CONV], i: usize) {
 fn handle_ctl(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
+    lingering: &mut Vec<Lingering>,
     nics: &mut Nics,
     lo: &mut Interface,
     chan: usize,
@@ -1013,7 +1039,7 @@ fn handle_ctl(
         if convs[i].accept_wait {
             reply(chan, REP_ERR, conv, -1, b"hangup");
         }
-        drop_conv(convs, sockets, i);
+        drop_conv(convs, sockets, lingering, i);
         reply(chan, REP_STATUS, conv, 0, b"hangup");
         return;
     }
@@ -2107,7 +2133,7 @@ fn handle_req(
             handle_clone(convs, sockets, lingering, proto, conv);
             reply(chan, REP_CLONE_OK, conv, 0, &[]);
         }
-        REQ_CTL => handle_ctl(convs, sockets, nics, lo, chan, conv, payload, local_ports),
+        REQ_CTL => handle_ctl(convs, sockets, lingering, nics, lo, chan, conv, payload, local_ports),
         REQ_SEND => handle_send(convs, sockets, nics, chan, conv, payload, local_ports),
         REQ_CLOSE => {
             if let Some(c) = convs.get_mut(conv as usize) {
@@ -2258,7 +2284,7 @@ fn main() -> ! {
                 && !queued(&convs, i)
             {
                 drain_tcp_rx_into_rep(&mut convs, &mut sockets, chan, i);
-                drop_conv(&mut convs, &mut sockets, i);
+                drop_conv(&mut convs, &mut sockets, &mut lingering, i);
             }
         }
         // Accepted connections nobody took that died: only after pump had a

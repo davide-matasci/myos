@@ -167,7 +167,8 @@ t -t netfs netconv $SMOKES/netconv_smoke
 # netd's loopback interface: getifaddrs and if_nametoindex; UDP over
 # 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
 # unconnect, ECONNREFUSED after a datagram to a closed port, the host's
-# own address); TCP to a listener on any address (MSG_PEEK) and to one
+# own address, a datagram sent right before its socket's close); TCP to a
+# listener on any address (MSG_PEEK) and to one
 # bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's),
 # and to one on port 0 (the port netd picks, getsockname's); a UDP socket
 # passed by exec (bare datagrams to read(), then the socket
