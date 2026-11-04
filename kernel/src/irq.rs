@@ -58,10 +58,10 @@ struct Entry {
     owner: Option<&'static str>,
 }
 
-/// The handlers. Held with the holder's interrupts off ([`with_table`]):
-/// every device interrupt goes to CPU 0, where the modules' inits register
-/// their handlers, so a holder an interrupt could stop would be the very
-/// task that interrupt's [`dispatch`] waits for.
+/// The handlers. [`dispatch`] waits for it, so every holder has its
+/// interrupts off ([`with_table`]): an interrupt can then never find it
+/// held by the very code it stopped, and a holder is never preempted or
+/// moved to another CPU half way.
 static TABLE: Mutex<[Option<Entry>; MAX_HANDLERS]> = Mutex::new([None; MAX_HANDLERS]);
 static COUNTS: [AtomicU64; MAX_HANDLERS] = [const { AtomicU64::new(0) }; MAX_HANDLERS];
 /// Interrupts that reached `dispatch` with no handler registered.
@@ -195,7 +195,10 @@ pub fn dispatch(irq: u32) {
     // USB controllers' INTx lines up while virtio-net registered. The
     // handlers run with the table unlocked (copied out).
     IN_DISPATCH.fetch_add(1, Ordering::SeqCst);
-    let table = *TABLE.lock();
+    // Through `with_table` too: the arch entries come here with interrupts
+    // masked, but `KernelApi::irq_dispatch` is a module's call, and one
+    // made with them on would otherwise wait here for itself.
+    let table = with_table(|table| *table);
     let mut handled = false;
     for (i, e) in table.iter().enumerate() {
         let Some(e) = e.filter(|e| e.irq == irq) else { continue };
