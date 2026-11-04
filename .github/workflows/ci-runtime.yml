@@ -405,13 +405,31 @@ jobs:
           else
             gh release create "$tag" --target "${GITHUB_SHA}" --prerelease --latest=false --title "$title" --notes "$notes"
           fi
-          # GitHub's API answers an asset's replacement with a 500 now and
-          # then (PR #743's first republish): the upload, which --clobber
-          # makes safe to repeat, is tried three times before the job fails.
-          for try in 1 2 3; do
-            gh release upload "$tag" target/packages/* target/myos-x86_64.iso --clobber && break
-            [[ $try -lt 3 ]] || exit 1
-            echo "upload failed (try $try): again in 30 s"
-            sleep 30
+          # GitHub's API answers the replacement of an asset with a 5xx now
+          # and then (PR #743's first republish once; CI 2513 three uploads
+          # of the whole set in a row, each on another asset). The set is
+          # some 230 assets, each replaced in a request of its own, so a
+          # retry of the whole set fails about as often as the first try.
+          # Each round uploads only what is not up yet, an asset of this
+          # run's (made since the job began, a minute of clock skew allowed)
+          # in state uploaded: a failed asset is tried again without the
+          # rest being replaced again.
+          since=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+          files=(target/packages/* target/myos-x86_64.iso)
+          for try in 1 2 3 4 5 6; do
+            up=$(gh release view "$tag" --json assets \
+              --jq ".assets[] | select(.state == \"uploaded\" and .createdAt >= \"$since\") | .name")
+            pending=()
+            for f in "${files[@]}"; do
+              grep -qxF "${f##*/}" <<< "$up" || pending+=("$f")
+            done
+            [[ ${#pending[@]} -gt 0 ]] || break
+            gh release upload "$tag" "${pending[@]}" --clobber && continue
+            if [[ $try -eq 6 ]]; then
+              echo "::error::${#pending[@]} asset(s) not uploaded after $try tries"
+              exit 1
+            fi
+            echo "upload failed (try $try, ${#pending[@]} to go): again in 20 s"
+            sleep 20
           done
           ls -l target/packages | tail -n +2 | wc -l
