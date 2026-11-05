@@ -314,6 +314,10 @@ static ssize_t write_at(int fd, const void *buf, size_t cnt, off_t off, long fla
             errno = ENOSPC; /* the filesystem is full */
             return done ? (ssize_t)done : -1;
         }
+        if (ret == (long)MYOS_EFBIG) {
+            errno = EFBIG; /* the file cannot grow further (tmpfs's cap) */
+            return done ? (ssize_t)done : -1;
+        }
         if (ret == (long)MYOS_SYSERR) {
             /* A stream socket refuses a write while it has no room. */
             switch (myos_socket_write_failed(fd)) {

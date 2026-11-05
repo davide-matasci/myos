@@ -137,6 +137,27 @@ static void excl(void) {
     }
 }
 
+/* A write or truncate past the size tmpfs allows a file, 128 MiB
+ * (kernel/src/fs/tmpfs.rs, FILE_CAP), is EFBIG, as on Linux, not the
+ * generic failure (issue #725: the Linux layer told it as EBADF). Nothing
+ * is allocated for them: the file stays empty. The cap is tmpfs's: the
+ * default run's, on /tmp (ext2_files runs this smoke on an ext2, where a
+ * write at 128 MiB just makes a sparse file). */
+static void too_big(void) {
+    const off_t cap = (off_t)128 << 20;
+    const char *f = in_dir("big");
+    int fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    struct stat st;
+    check(fd >= 0, "open big");
+    errno = 0;
+    check(pwrite(fd, "z", 1, cap) == -1 && errno == EFBIG, "pwrite at the cap: EFBIG");
+    errno = 0;
+    check(ftruncate(fd, cap + 1) == -1 && errno == EFBIG, "ftruncate past the cap: EFBIG");
+    check(fstat(fd, &st) == 0 && st.st_size == 0, "the file stayed empty");
+    close(fd);
+    unlink(f);
+}
+
 static void positional(void) {
     const char *f = in_dir("pos");
     char buf[64];
@@ -736,6 +757,9 @@ int main(int argc, char **argv) {
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     excl();
     positional();
+    if (argc == 1) {
+        too_big();
+    }
     cloexec("/bin/etc/fileio_smoke");
     many_fds();
     open_flags();

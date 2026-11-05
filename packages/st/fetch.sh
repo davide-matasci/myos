@@ -17,7 +17,7 @@ if [[ -f "$SRC/st-$ST_VERSION/st.c" ]]; then
 fi
 if [[ ! -f "$tarball" ]]; then
   echo "==> fetch st $ST_VERSION"
-  curl -L --fail --retry 5 --retry-delay 2 -o "$tarball.partial" "$ST_URL"
+  curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 -o "$tarball.partial" "$ST_URL"
   mv "$tarball.partial" "$tarball"
 fi
 got="$(sha256sum "$tarball" | awk '{print $1}')"

@@ -1187,6 +1187,7 @@ unsafe extern "C" fn api_vfs_write(path: StrRef, pos: usize, buf: *const u8, len
     match crate::fs::write(&node, pos, src) {
         Ok(n) => n.min(i32::MAX as usize) as i32,
         Err(crate::fs::WriteError::NoSpace) => myos_abi::VFS_ENOSPC,
+        Err(crate::fs::WriteError::TooBig) => myos_abi::VFS_EFBIG,
         Err(crate::fs::WriteError::Failed) => -1,
     }
 }

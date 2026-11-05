@@ -1798,6 +1798,15 @@ lx_tty() {
 	cat $OUT/lx-tty-root.log
 	contains "LINUX-TTY OK" $OUT/lx-tty-root.log
 }
+# A write or truncate past tmpfs's 128 MiB file cap under the Linux layer
+# is EFBIG, as on Linux (the layer reported EBADF, which sent npm's
+# TAR_ENTRY_ERROR looking for a closed fd; issue #725). Natively it is
+# fileio_smoke's check (user/c/test.sh).
+lx_efbig() {
+	capture $OUT/lx-efbig.log linux /bin/linux/linux-smoke efbig /tmp/lx-big
+	cat $OUT/lx-efbig.log
+	contains "LINUX-EFBIG OK" $OUT/lx-efbig.log
+}
 # getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
 # kernel finds the cwd where it is stored, /tmp/mnt/..., and still names
 # it in the root's terms (Python's venv and busybox's pwd loop on a
@@ -2037,6 +2046,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind
 	t -t linux,tty linux_tty lx_tty
+	t -t linux,fs linux_efbig lx_efbig
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache
 	# The Alpine packages (get-alpine, an app: the packages and the network).

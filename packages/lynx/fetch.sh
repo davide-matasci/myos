@@ -20,7 +20,14 @@ fi
 
 if [[ ! -f "$TARBALL" ]]; then
   echo "==> fetch lynx $LYNX_VERSION"
-  curl -L --fail --retry 5 --retry-delay 2 -o "$TARBALL.partial" "$LYNX_URL"
+  for url in $LYNX_URLS; do
+    if curl -L --fail --connect-timeout 20 --retry 3 --retry-all-errors --retry-delay 2 -o "$TARBALL.partial" "$url"; then
+      break
+    fi
+    echo "fetch $url failed; trying the next mirror" >&2
+    rm -f "$TARBALL.partial"
+  done
+  [[ -f "$TARBALL.partial" ]] || { echo "error: cannot fetch lynx $LYNX_VERSION" >&2; exit 1; }
   mv "$TARBALL.partial" "$TARBALL"
 fi
 

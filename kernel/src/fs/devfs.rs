@@ -330,7 +330,12 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     }
 }
 
-pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+/// The mount's write hook: what [`write_opt`] gave, or the generic failure.
+pub fn write(name: &str, pos: usize, buf: &[u8]) -> Result<usize, crate::fs::WriteError> {
+    write_opt(name, pos, buf).ok_or(crate::fs::WriteError::Failed)
+}
+
+fn write_opt(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
     match parse(name) {
         Some(Node::Null) => Some(buf.len()),
         Some(Node::Zero) => Some(buf.len()),

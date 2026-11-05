@@ -11,6 +11,7 @@
 //! walk. A plain list scanned on every lookup made unpacking os-test's 7500 files
 //! quadratic: five minutes of its install under TCG.
 
+use crate::fs::WriteError;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -357,32 +358,32 @@ pub fn truncate(name: &str) -> bool {
     }
 }
 
-/// Make the file `name` `size` bytes long: cut, or grown with zeros.
-pub fn set_size(name: &str, size: usize) -> bool {
+/// Make the file `name` `size` bytes long: cut, or grown with zeros; or
+/// why not (`TooBig` past [`FILE_CAP`], `NoSpace` when the heap has no
+/// room for the growth).
+pub fn set_size(name: &str, size: usize) -> Result<(), WriteError> {
     set_size_at(At::Path(name), size)
 }
 
-fn set_size_at(at: At, size: usize) -> bool {
+fn set_size_at(at: At, size: usize) -> Result<(), WriteError> {
     if size > FILE_CAP {
-        return false;
+        return Err(WriteError::TooBig);
     }
     let now = now();
     let mut entries = ENTRIES.lock();
-    let Some(entry) = entry_at_mut(&mut entries, at) else {
-        return false;
-    };
+    let entry = entry_at_mut(&mut entries, at).ok_or(WriteError::Failed)?;
     let Kind::File(data) = &mut entry.kind else {
-        return false;
+        return Err(WriteError::Failed);
     };
     if size > data.len() && data.try_reserve_exact(size - data.len()).is_err() {
-        return false;
+        return Err(WriteError::NoSpace);
     }
     data.resize(size, 0);
     if size < data.capacity() / 2 {
         data.shrink_to_fit();
     }
     entry.mtime = now;
-    true
+    Ok(())
 }
 
 pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
@@ -404,21 +405,23 @@ fn read_at(at: At, pos: usize, out: &mut [u8]) -> usize {
     n
 }
 
-pub fn write(name: &str, pos: usize, buf: &[u8]) -> Option<usize> {
+pub fn write(name: &str, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     write_at(At::Path(name), pos, buf)
 }
 
-fn write_at(at: At, pos: usize, buf: &[u8]) -> Option<usize> {
+/// The bytes written, or why none were: `TooBig` past [`FILE_CAP`]
+/// (`EFBIG`, issue #725), `NoSpace` when the heap has no room for them.
+fn write_at(at: At, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let now = now();
     let mut entries = ENTRIES.lock();
-    let entry = entry_at_mut(&mut entries, at)?;
+    let entry = entry_at_mut(&mut entries, at).ok_or(WriteError::Failed)?;
     let Kind::File(data) = &mut entry.kind else {
-        return None;
+        return Err(WriteError::Failed);
     };
     // A write past the end leaves zeros in the gap.
-    let end = pos.checked_add(buf.len())?;
+    let end = pos.checked_add(buf.len()).ok_or(WriteError::TooBig)?;
     if end > FILE_CAP {
-        return None;
+        return Err(WriteError::TooBig);
     }
     if end > data.len() {
         // Sequential writes grow the file a block at a time: reserve ahead,
@@ -426,13 +429,13 @@ fn write_at(at: At, pos: usize, buf: &[u8]) -> Option<usize> {
         let extra = end - data.len();
         let ahead = data.len().min(1 << 20).max(extra);
         if data.try_reserve(ahead.min(FILE_CAP - data.len())).is_err() && data.try_reserve_exact(extra).is_err() {
-            return None;
+            return Err(WriteError::NoSpace);
         }
         data.resize(end, 0);
     }
     data[pos..end].copy_from_slice(buf);
     entry.mtime = now;
-    Some(buf.len())
+    Ok(buf.len())
 }
 
 /// mkfifo(2): create a named pipe at `name` (fails if anything exists there).

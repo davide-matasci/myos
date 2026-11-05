@@ -14,7 +14,7 @@ fetch() {
   mkdir -p "$ROOT/target"
   for url in $MAKE_URLS; do
     echo "==> fetch make $MAKE_VERSION ($url)"
-    if curl -fsSL --connect-timeout 20 --retry 2 -o "$TARBALL" "$url"; then
+    if curl -fsSL --connect-timeout 20 --retry 2 --retry-all-errors --retry-delay 2 -o "$TARBALL" "$url"; then
       return
     fi
     echo "fetch $url failed; trying the next mirror" >&2

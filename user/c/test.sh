@@ -167,7 +167,8 @@ t -t netfs netconv $SMOKES/netconv_smoke
 # netd's loopback interface: getifaddrs and if_nametoindex; UDP over
 # 127.0.0.1 (bind, sendto/recvfrom with addresses, EADDRINUSE, connect and
 # unconnect, ECONNREFUSED after a datagram to a closed port, the host's
-# own address); TCP to a listener on any address (MSG_PEEK) and to one
+# own address, a datagram sent right before its socket's close); TCP to a
+# listener on any address (MSG_PEEK) and to one
 # bound to 127.0.0.1 (not the host's address, EADDRNOTAVAIL for another's),
 # and to one on port 0 (the port netd picks, getsockname's); a UDP socket
 # passed by exec (bare datagrams to read(), then the socket
@@ -490,14 +491,15 @@ t -t console enter_cr enter_cr
 # A USB keyboard (usb_hid's boot keyboard, into the console's keyboard
 # service): the host plugs a usb-kbd in and types on it (host.sh usb-kbd).
 # Shift+A reaches /dev/console/kbd as four events; then tty9 reads a line
-# typed with Caps Lock (whose LED usb_hid sets) and an `x` held for a
-# second, which the console repeats (a USB keyboard does not); Alt+1 shows
+# typed with Caps Lock (whose LED usb_hid sets) and an `x` held for two
+# seconds, which the console repeats (a USB keyboard does not); Alt+1 shows
 # tty1 again. The console's own keyboard took none of it (its interrupt
 # count), and the keyboard is gone from /proc/usb once pulled out.
 usb_keyboard() {
 	# The console's own keyboard, whose interrupt count must not move (a
 	# Raspberry Pi has none).
-	native=$(grep -o -e ' ps2 keyboard$' -e ' virtio-input$' /proc/interrupts | head -n 1 | sed 's/^ //')
+	# (sed: the image's grep is sbase's, which has no -o; issue #690.)
+	native=$(sed -n 's/.* \(ps2 keyboard\|virtio-input\)$/\1/p' /proc/interrupts | head -n 1)
 	[ -z "$native" ] || before=$(mouse_irqs "$native")
 	echo "HOST c-smokes usb-kbd plug" >&3
 	i=0
@@ -528,7 +530,7 @@ usb_keyboard() {
 	echo 'screen 9' > /dev/console/ctl || return 1
 	head -n 1 < /dev/tty9/data > /tmp/ukbd.line &
 	pid=$!
-	echo "HOST c-smokes sendkey caps_lock a shift-b caps_lock c x@1000 ret alt-1" >&3
+	echo "HOST c-smokes sendkey caps_lock a shift-b caps_lock c x@2000 ret alt-1" >&3
 	i=0
 	while [ $i -lt 30 ] && kill -0 $pid 2>/dev/null; do
 		sleep 1
@@ -538,8 +540,11 @@ usb_keyboard() {
 	wait $pid 2>/dev/null
 	line=$(cat /tmp/ukbd.line)
 	echo "read: $line"
-	# The held x: its press and at least four repeats, not one every tick.
-	echo "$line" | grep -qx 'Abcx\{5,40\}' || ok=1
+	# The held x: its press and at least four repeats (500 ms, then one
+	# every 33 ms: some 45 in the two seconds), not one every tick. Two
+	# seconds, not one: on a loaded runner the press report sat in QEMU's
+	# queue for half a second and the console saw one repeat (issue #690).
+	echo "$line" | grep -qx 'Abcx\{5,100\}' || ok=1
 	i=0
 	while [ $i -lt 10 ] && ! grep -q '^screen 1$' /dev/console/ctl; do
 		sleep 1

@@ -27,7 +27,7 @@ mkdir -p "$ROOT/target"
 tmp="$(mktemp -d "$ROOT/target/acpi-myos.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 crate="$tmp/acpi-$ACPI_VERSION.crate"
-curl -fsSL --retry 5 --retry-delay 2 -o "$crate" \
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$crate" \
   "https://static.crates.io/crates/acpi/acpi-$ACPI_VERSION.crate"
 got="$(sha256 "$crate" | cut -d' ' -f1)"
 if [[ "$got" != "$ACPI_SHA256" ]]; then

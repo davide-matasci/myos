@@ -39,6 +39,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -138,6 +139,7 @@ static int udp(in_addr_t own) {
     int c = socket(AF_INET, SOCK_DGRAM, 0);
     int d = socket(AF_INET, SOCK_DGRAM, 0);
     char x = 'x';
+    int i;
     if (a < 0 || b < 0 || c < 0 || d < 0) {
         return fail("udp socket");
     }
@@ -198,6 +200,24 @@ static int udp(in_addr_t own) {
     b_addr.sin_addr.s_addr = own;
     if (!recv_is(d, "own", &b_addr)) {
         return fail("udp from the own address");
+    }
+    /* A datagram sent right before its socket's close still arrives: netd
+     * removed the socket at the close, the datagram still queued in it,
+     * when the send and the close reached it in one batch (issue #679). */
+    for (i = 0; i < 20; i++) {
+        int e = socket(AF_INET, SOCK_DGRAM, 0);
+        if (e < 0 || sendto(e, "bye", 3, 0, (struct sockaddr *)&a_addr, sizeof a_addr) != 3) {
+            return fail("udp send before close");
+        }
+        close(e);
+    }
+    for (i = 0; i < 20; i++) {
+        struct pollfd p = { a, POLLIN, 0 };
+        char buf[8];
+        if (poll(&p, 1, 2000) != 1 || recv(a, buf, sizeof buf, 0) != 3 || memcmp(buf, "bye", 3) != 0) {
+            printf("[ FAIL ] udp: %d of 20 datagrams sent right before their socket's close arrived\n", i);
+            return 1;
+        }
     }
     close(a);
     close(b);

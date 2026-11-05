@@ -487,11 +487,13 @@ pub mod fs {
         (n >= 0).then_some(n as usize)
     }
     /// [`write`] with the errno a failure is: `ENOSPC` for a full
-    /// filesystem, `EIO` for the rest.
+    /// filesystem, `EFBIG` for a file that cannot grow that far (tmpfs's
+    /// cap; `pwrite` writes by path, issue #725), `EIO` for the rest.
     pub fn write_errno(path: &str, pos: usize, src: &[u8]) -> Result<usize, usize> {
         match api().vfs_write(path, pos, src) {
             n if n >= 0 => Ok(n as usize),
             myos_abi::VFS_ENOSPC => Err(crate::abi::ENOSPC),
+            myos_abi::VFS_EFBIG => Err(crate::abi::EFBIG),
             _ => Err(crate::abi::EIO),
         }
     }
@@ -513,6 +515,7 @@ pub mod signal {
     pub const SYSERR_EAGAIN: usize = myos_abi::MYOS_SYSERR_EAGAIN;
     pub const SYSERR_EACCES: usize = myos_abi::MYOS_SYSERR_EACCES;
     pub const SYSERR_ENOSPC: usize = myos_abi::MYOS_SYSERR_ENOSPC;
+    pub const SYSERR_EFBIG: usize = myos_abi::MYOS_SYSERR_EFBIG;
     /// The lowest of the native failure sentinels: a result at or above it
     /// failed.
     pub const SYSERR_LOWEST: usize = myos_abi::MYOS_SYSERR_LOWEST;

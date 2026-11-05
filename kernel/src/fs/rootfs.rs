@@ -117,8 +117,8 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
     n
 }
 
-pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Option<usize> {
-    None
+pub fn write(_name: &str, _pos: usize, _buf: &[u8]) -> Result<usize, crate::fs::WriteError> {
+    Err(crate::fs::WriteError::Failed)
 }
 
 fn is_dir_path(files: &[File], dir: &str) -> bool {

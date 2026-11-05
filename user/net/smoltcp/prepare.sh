@@ -27,7 +27,7 @@ mkdir -p "$ROOT/target"
 tmp="$(mktemp -d "$ROOT/target/smoltcp-myos.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 crate="$tmp/smoltcp-$SMOLTCP_VERSION.crate"
-curl -fsSL --retry 5 --retry-delay 2 -o "$crate" \
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$crate" \
   "https://static.crates.io/crates/smoltcp/smoltcp-$SMOLTCP_VERSION.crate"
 got="$(sha256 "$crate" | cut -d' ' -f1)"
 if [[ "$got" != "$SMOLTCP_SHA256" ]]; then

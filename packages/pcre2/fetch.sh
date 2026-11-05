@@ -19,7 +19,7 @@ mkdir -p "$ROOT/target"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "fetch pcre2 $PCRE2_VERSION"
-curl -fsSL --retry 5 --retry-delay 2 "$PCRE2_URL" -o "$tmp/pcre2.tar.gz"
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$PCRE2_URL" -o "$tmp/pcre2.tar.gz"
 echo "${PCRE2_SHA256}  $tmp/pcre2.tar.gz" | sha256sum -c -
 mkdir -p "$tmp/extract"
 tar -xzf "$tmp/pcre2.tar.gz" -C "$tmp/extract"

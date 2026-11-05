@@ -19,7 +19,7 @@ mkdir -p "$ROOT/target"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "fetch libedit $LIBEDIT_VERSION"
-curl -fsSL --retry 5 --retry-delay 2 "$LIBEDIT_URL" -o "$tmp/libedit.tar.gz"
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$LIBEDIT_URL" -o "$tmp/libedit.tar.gz"
 echo "${LIBEDIT_SHA256}  $tmp/libedit.tar.gz" | sha256sum -c -
 mkdir -p "$tmp/extract"
 tar -xzf "$tmp/libedit.tar.gz" -C "$tmp/extract"

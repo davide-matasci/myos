@@ -90,8 +90,9 @@ initramfs. A directory exists through its files, so an empty one carries a
 ### tmpfs and devfs
 
 tmpfs is the writable mount at `/tmp`. Its files live in the kernel heap,
-up to 128 MiB per file (issue #338). devfs at `/dev` holds the device
-nodes.
+up to 128 MiB per file (issue #338; a write or truncate past that fails
+with `EFBIG`, a write the heap has no room for with `ENOSPC`). devfs at
+`/dev` holds the device nodes.
 
 ### procfs
 

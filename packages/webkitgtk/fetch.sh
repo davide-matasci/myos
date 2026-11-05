@@ -32,7 +32,7 @@ fetch() {
   echo "fetch $name $version"
   local url got=0
   for url in $urls; do
-    if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 "$url" -o "$tmp/src.tar" \
+    if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 30 "$url" -o "$tmp/src.tar" \
       && echo "$sha  $tmp/src.tar" | sha256sum -c - >/dev/null; then
       got=1
       break
