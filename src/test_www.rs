@@ -19,8 +19,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 pub const HTTP_PORT: u16 = 8766;
 pub const HTTPS_PORT: u16 = 8767;
 pub const HELLO: &str = "hello from the myos test server\n";
-/// A page for the browser tests (packages/webkitgtk): a title, a blue box
-/// at the top left (200 by 100 pixels) and a script that writes into it.
+/// A page for the browser tests (packages/webkitgtk-smoke and surf): a title, a
+/// blue box at the top left (200 by 100 pixels) and a script that writes into it.
 pub const HELLO_HTML: &str = "<!DOCTYPE html>\n<html><head><title>myos test page</title>\n\
 <style>body { margin: 0; background: #fff; } #box { width: 200px; height: 100px; background: #00f; }</style>\n\
 </head><body><div id=\"box\"></div><p id=\"js\">no script</p>\n\

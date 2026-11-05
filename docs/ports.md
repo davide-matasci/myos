@@ -74,6 +74,7 @@ minimal port needs only `PORT_FILES`.
 | `PORT_TIMEOUT` | `45` | the CI ports job's limit for the port, in minutes; at most 360 |
 | `PORT_OUTPUTS` | | what the script leaves under `target/` (what the registry caches); globs are allowed |
 | `PORT_READY` | every output but the globs | the `target/` files whose presence means the port was built |
+| `PORT_LINK_OUTPUTS` | | the outputs the ports over it only link, never compile against (libsoup's TLS backend and smoke): left out of its compile flavour ("Cache keys" below) |
 | `PORT_FILES` | | what the image (or the package) gets, below |
 | `PORT_TEST_FILES` | | what the tests module gets instead (`docs/testing.md`), same syntax |
 | `PORT_BIN`, `PORT_WATCH`, `PORT_PREPARE` | | `user` only: the binary name, extra watched sources, a script run before the build (netd's patched smoltcp) |
@@ -169,6 +170,19 @@ flavour the first time their dual dependency is rebuilt. The mlibc flavour
 must be reproducible for this: x11-libs's was not until xcb-proto's
 byte-compiled Python module (`__pycache__`, timestamps inside) was taken
 out of its stage.
+
+A port some of whose outputs its dependents only link, never compile
+against, names them in `PORT_LINK_OUTPUTS` and has a **compile
+flavour**, its other outputs: its record carries `compile=<hash>`, and a
+port keyed on what it compiles against takes that alone
+(`myos_dep_hash <dep> compile`). libsoup's TLS backend (glib-networking
+over LibreSSL) and its smoke are such outputs: WebKit's key takes
+libsoup's compile flavour, and WebKit's programs (`webkitgtk-smoke`,
+surf), linked from its archive in packages of their own, take libsoup's
+whole hash and LibreSSL's, so a glib-networking patch or a LibreSSL bump
+relinks them and does not rebuild WebKit (issue #664). Such a port's
+programs must be linked outside it for this: a program it built would be
+stale under a key that leaves out what it links.
 
 The output hash is recorded beside the stamp, in
 `target/.myos-<name>-outputs` (one per arch, `.myos-<name>-<arch>-outputs`,
