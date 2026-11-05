@@ -1823,6 +1823,18 @@ lx_efbig() {
 	cat $OUT/lx-efbig.log
 	contains "LINUX-EFBIG OK" $OUT/lx-efbig.log
 }
+# What the layer answers from the kernel's own files, asked from a root
+# (sysinfo's memory, the CPU count, uname's host name): read through the
+# root's /proc, the launcher's bind. By the kernel path they were refused
+# there (the namespace confines the layer's reads too), and sysinfo
+# reported no memory: Bun's JavaScriptCore took a heap budget of 0 bytes
+# and collected on every allocation; Claude Code's keys lagged minutes.
+lx_sysinfo_root() {
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-sysinfo-root.log linux --root /tmp/lxroot /linux-smoke sysinfo
+	cat $OUT/lx-sysinfo-root.log
+	contains "LINUX-SYSINFO OK" $OUT/lx-sysinfo-root.log
+}
 # getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
 # kernel finds the cwd where it is stored, /tmp/mnt/..., and still names
 # it in the root's terms (Python's venv and busybox's pwd loop on a
@@ -2062,6 +2074,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind
 	t -t linux,tty linux_tty lx_tty
+	t -t linux linux_sysinfo_root lx_sysinfo_root
 	t -t linux,fs linux_efbig lx_efbig
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache

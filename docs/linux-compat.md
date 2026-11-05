@@ -411,6 +411,15 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   resident one the pages mapped now (`docs/proc.md`). Bun's
   JavaScriptCore reads its memory footprint from it on every collection
   and, with the file missing, used an uninitialized value.
+- **`sysinfo`, `uname` and the CPU count** are answered from the kernel's
+  own files (`/proc/meminfo`, the host name, `/proc/cpuinfo`), read as
+  the process names them: in a root, through its `/proc`, the launcher's
+  bind of the system's. A root has no name for the kernel path, and the
+  layer's reads are confined to the namespace like the process's: asked
+  by that path, `sysinfo` reported no memory at all, which JavaScriptCore
+  took for a heap budget of 0 bytes and collected on every allocation.
+  That is where Claude Code's minutes of key lag went (`linux --root
+  /data/alpine claude`).
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct
