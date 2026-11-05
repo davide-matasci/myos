@@ -2075,6 +2075,29 @@ int main(int argc, char **argv) {
     struct utsname u;
     check(uname(&u) == 0 && strcmp(u.sysname, "Linux") == 0, "uname");
 
+    /* /proc/self/statm, Linux's memory line: seven numbers, the resident
+     * one above zero (JavaScriptCore reads its footprint from it on every
+     * collection: unreadable, Bun's heap was over its memory limit by
+     * garbage and collected on every allocation). */
+    {
+        char statm[256] = { 0 };
+        int sfd = open("/proc/self/statm", O_RDONLY);
+        ssize_t got = sfd >= 0 ? read(sfd, statm, sizeof statm - 1) : -1;
+        if (sfd >= 0)
+            close(sfd);
+        unsigned long v[7] = { 0 };
+        char *p = statm, *end = statm;
+        int fields = 0;
+        while (fields < 7 && got > 0) {
+            v[fields] = strtoul(p, &end, 10);
+            if (end == p)
+                break;
+            fields++;
+            p = end;
+        }
+        check(got > 0 && fields == 7 && *end == '\n' && v[1] > 0 && v[1] <= v[0], "/proc/self/statm: seven numbers, resident pages");
+    }
+
     /* The host name is the kernel's: sethostname sets what uname reports. */
     char host[65];
     strcpy(host, u.nodename);

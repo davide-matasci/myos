@@ -379,6 +379,55 @@ pub fn reclaim_user_aspace(
     retire_aspace(aspace);
 }
 
+/// The pages of `aspace` mapped now (`/proc/self/statm`), over the ranges
+/// [`reclaim_user_aspace`] frees: the image, the stack, the heap below the
+/// break and the mmap regions, whose empty page tables are skipped as
+/// [`free_mmap_regions`] skips them (a reservation of gigabytes, most of
+/// it never touched). For the running process only: another's tables may
+/// go away under the walk.
+pub(super) fn resident_pages(
+    aspace: u64,
+    base: u64,
+    image_span: usize,
+    stack_off: u64,
+    brk_cur: u64,
+    mmap: &[task::MmapRegion],
+) -> u64 {
+    if aspace == 0 || base == 0 {
+        return 0;
+    }
+    let mut n = 0u64;
+    let mut count = |lo: u64, hi: u64| {
+        let mut va = lo;
+        while va < hi {
+            if let Some(skip) = (va == lo || va % TABLE_SPAN == 0).then(|| unmapped_span_end(aspace, va)).flatten() {
+                va = skip;
+                continue;
+            }
+            if virt_to_phys(aspace, va).is_some() {
+                n += 1;
+            }
+            va += PAGE as u64;
+        }
+    };
+    let code = image_span.div_ceil(PAGE).min(MAX_ELF_PAGES) as u64;
+    count(base, base.saturating_add(code * PAGE as u64));
+    let stack = base.saturating_add(stack_off);
+    count(stack, stack.saturating_add((USER_STACK_PAGES * PAGE) as u64));
+    let heap_base = heap_base_va(base, stack_off);
+    let heap_end = align_up_u64(brk_cur, PAGE as u64).min(heap_limit_va(base, stack_off));
+    if heap_end > heap_base {
+        count(heap_base, heap_end);
+    }
+    for r in mmap.iter().filter(|r| r.pages != 0 && r.va != 0) {
+        let pages = (r.pages as usize).min(MMAP_AREA_PAGES);
+        if let Some(end) = r.va.checked_add((pages * PAGE) as u64) {
+            count(r.va, end);
+        }
+    }
+    n
+}
+
 /// Reclaimed address spaces some CPU still had loaded (`unload_user_aspace`
 /// stopped waiting for it): what is left of them is freed by a later
 /// [`retire_aspace`], once no CPU has them loaded.

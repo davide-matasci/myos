@@ -407,6 +407,10 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   `fstat` of their device file, so `ttyname` finds them, in a root too:
   `/proc/self/fd/N` names the system's `/dev` through the root's bind of
   it.
+- **`/proc/self/statm`** is Linux's line of memory sizes in pages, the
+  resident one the pages mapped now (`docs/proc.md`). Bun's
+  JavaScriptCore reads its memory footprint from it on every collection
+  and, with the file missing, used an uninitialized value.
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct

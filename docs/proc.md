@@ -11,6 +11,7 @@ read-only for now; control files are issue #291. The code is
 
 ```
 /proc/<pid>/status                  the process, one line
+/proc/<pid>/statm                   its memory in pages, Linux's line (/proc/self/statm too)
 /proc/<pid>/task/                   its threads (their tids), the leader first
 /proc/<pid>/task/<tid>/status       a thread, one line
 /proc/self/exe                      symlink to the file its exec loaded (a script's interpreter)
@@ -76,6 +77,17 @@ the monotonic clock (since boot).
 | start | when it started |
 | kind | `user` or `kernel` |
 | faults | its threads' page faults, those that ended included |
+
+`/proc/<pid>/statm` is Linux's: `size resident shared text lib data dt`,
+in pages. `size` and `data` are the virtual size (the `size` field of
+`status`); `resident` is the pages mapped now when a process reads its
+own (`/proc/self/statm`: its tables are walked, the reservations an
+allocator never touched skipped), and the virtual size for another
+process, whose tables may go away under a walk; `shared`, `text` and
+`dt` are 0. It is there for the Linux programs that read their memory
+footprint from it (`docs/linux-compat.md`): JavaScriptCore's collector
+took the garbage it read for a heap over its memory limit and collected
+on every allocation, and Claude Code's keys lagged minutes behind.
 
 ```sh
 read pid name state ppid pgid sid threads size cpu children start kind faults < /proc/$$/status

@@ -45,6 +45,14 @@ pub const PAGE: usize = 4096;
 /// run of bump frames. `docs/linux-compat.md` states the limit.
 const MAX_ELF_PAGES: usize = 4096;
 
+/// The current process's resident memory in KiB: the pages mapped now
+/// (`aspace::resident_pages`), for `/proc/self/statm`.
+pub fn resident_kib() -> u64 {
+    let (base, span, stack_off) = task::current_user_map();
+    let mmap = task::mmap_regions();
+    aspace::resident_pages(task::current_aspace(), base, span, stack_off, task::current_brk(), &mmap) * (PAGE / 1024) as u64
+}
+
 /// In-place `reload_user_elf` scratch and mapping cap (a small C program;
 /// bigger images, the sbase multicall ELF among them, take a fresh mapping).
 const MAX_RELOAD_PAGES: usize = 40;
