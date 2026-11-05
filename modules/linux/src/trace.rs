@@ -11,6 +11,11 @@
 //!   shows which thread is busy and what each one last asked for (a call
 //!   still waiting has no result yet). Nothing is printed per call: the
 //!   console would scroll faster than anyone can read.
+//! - `3`: the same, and each kept call carries the user stack it was made
+//!   from, up to [`FRAMES`] return addresses (`arch::backtrace`): what a
+//!   program with no output and no telling syscalls is doing, read against
+//!   its binary (`objdump -d --start-address=ADDR`; a PIE's addresses are
+//!   relative to where the exec loaded it, `docs/linux-compat.md`).
 
 use alloc::string::String;
 use core::fmt::Write;
@@ -19,6 +24,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use myos_abi::Lock;
 
 use super::abi::{err, ENOSYS};
+use crate::k::user::SyscallRegs;
 use crate::k::{api, task, MAX_TASKS};
 
 static LEVEL: AtomicU8 = AtomicU8::new(0);
@@ -27,12 +33,17 @@ const NAME: &str = "linux_trace";
 
 /// Calls kept per thread at level 2.
 const KEPT: usize = 8;
+/// Return addresses kept per call at level 3.
+const FRAMES: usize = 12;
 
 #[derive(Clone, Copy)]
 struct Call {
     nr: usize,
     args: [usize; 4],
     ret: Option<usize>,
+    /// The user stack at the call (level 3): the return addresses found,
+    /// innermost first, then zeros.
+    stack: [usize; FRAMES],
 }
 
 /// One thread's last calls: `calls[n % KEPT]` is its `n`th.
@@ -42,7 +53,7 @@ struct Ring {
     calls: [Call; KEPT],
 }
 
-const NO_CALL: Call = Call { nr: 0, args: [0; 4], ret: None };
+const NO_CALL: Call = Call { nr: 0, args: [0; 4], ret: None, stack: [0; FRAMES] };
 
 static RINGS: [Lock<Ring>; MAX_TASKS] =
     [const { Lock::new(Ring { pid: 0, count: 0, calls: [NO_CALL; KEPT] }) }; MAX_TASKS];
@@ -54,11 +65,12 @@ pub fn init() {
     let _ = api().proc_set_writer(NAME, Some(write));
 }
 
-/// The level, then at level 2 the kept calls by thread.
+/// The level, then at level 2 the kept calls by thread (at 3 with their
+/// stacks).
 fn publish() {
     let level = LEVEL.load(Ordering::Relaxed);
     let mut text = alloc::format!("{level}\n");
-    if level == 2 {
+    if level >= 2 {
         for (tid, ring) in RINGS.iter().enumerate() {
             let r = ring.lock();
             if r.count == 0 {
@@ -73,6 +85,13 @@ fn publish() {
                     Some(v) => show_ret(&mut text, v),
                     None => text.push_str(" ...\n"),
                 }
+                if c.stack[0] != 0 {
+                    text.push_str("    stack");
+                    for pc in c.stack.iter().take_while(|&&pc| pc != 0) {
+                        let _ = write!(text, " {pc:#x}");
+                    }
+                    text.push('\n');
+                }
             }
         }
     }
@@ -86,8 +105,8 @@ fn show_ret(text: &mut String, v: usize) {
     }
 }
 
-/// A write of `0`, `1` or `2` (surrounding white space ignored) sets the
-/// level; anything else is refused.
+/// A write of `0` to `3` (surrounding white space ignored) sets the level;
+/// anything else is refused.
 unsafe extern "C" fn write(data: *const u8, len: usize) -> i32 {
     // Copied before it is looked at: the buffer is the writer's.
     let mut buf = [0u8; 8];
@@ -96,7 +115,7 @@ unsafe extern "C" fn write(data: *const u8, len: usize) -> i32 {
     }
     unsafe { core::ptr::copy_nonoverlapping(data, buf.as_mut_ptr(), len) };
     let level = match buf[..len].trim_ascii() {
-        [d @ b'0'..=b'2'] => d - b'0',
+        [d @ b'0'..=b'3'] => d - b'0',
         _ => return -1,
     };
     LEVEL.store(level, Ordering::Relaxed);
@@ -104,11 +123,17 @@ unsafe extern "C" fn write(data: *const u8, len: usize) -> i32 {
     len as i32
 }
 
-/// A syscall starts: kept at level 2. The answer goes to [`leave`] with
-/// what this returns.
-pub fn enter(nr: usize, a: &[usize; 6]) -> Option<u64> {
-    if LEVEL.load(Ordering::Relaxed) != 2 {
+/// A syscall starts: kept at level 2, with its stack at 3. The answer
+/// goes to [`leave`] with what this returns.
+pub fn enter(nr: usize, a: &[usize; 6], regs: &SyscallRegs) -> Option<u64> {
+    let level = LEVEL.load(Ordering::Relaxed);
+    if level < 2 {
         return None;
+    }
+    // Read before the ring is locked: the stack is the caller's memory.
+    let mut stack = [0; FRAMES];
+    if level == 3 {
+        crate::arch::backtrace(regs, &mut stack);
     }
     let mut r = RINGS.get(task::current_tid())?.lock();
     let pid = task::current_pid();
@@ -118,7 +143,7 @@ pub fn enter(nr: usize, a: &[usize; 6]) -> Option<u64> {
         r.count = 0;
     }
     let n = r.count;
-    r.calls[n as usize % KEPT] = Call { nr, args: [a[0], a[1], a[2], a[3]], ret: None };
+    r.calls[n as usize % KEPT] = Call { nr, args: [a[0], a[1], a[2], a[3]], ret: None, stack };
     r.count += 1;
     Some(n)
 }

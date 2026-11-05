@@ -29,6 +29,31 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
     [a0, a1, a2, regs.word(13) as usize, regs.word(14) as usize, regs.word(15) as usize]
 }
 
+/// The user stack of a syscall for the trace's level 3: the program
+/// counter, the return address, then the frame chain from s0 (a frame
+/// pointer marks the top of its frame: the return address lies 8 below
+/// it, the previous frame pointer 16), up to `out.len()` addresses.
+pub fn backtrace(regs: &SyscallRegs, out: &mut [usize]) -> usize {
+    let mut n = 0;
+    for v in [regs.word(R_PC), regs.word(1)] {
+        if n < out.len() {
+            out[n] = v as usize;
+            n += 1;
+        }
+    }
+    let mut fp = regs.word(8) as usize;
+    while n < out.len() && fp >= 16 {
+        let (Ok(prev), Ok(ra)) = (sys::get_u64(fp - 16), sys::get_u64(fp - 8)) else { break };
+        out[n] = ra as usize;
+        n += 1;
+        if prev as usize <= fp {
+            break;
+        }
+        fp = prev as usize;
+    }
+    n
+}
+
 // ---- FP -------------------------------------------------------------------
 
 /// f0-f31 then fcsr: the `__riscv_d_ext_state` layout (see `task::fpu`).

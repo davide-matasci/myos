@@ -447,6 +447,22 @@ proc_limits() {
 	echo "$limits" | grep -q '^Max cpu time  *unlimited  *unlimited  *seconds$'
 }
 t -t proc proc_limits proc_limits
+# /proc/self/statm and /proc/<pid>/statm, Linux's memory line: seven
+# numbers in pages, the resident one (counted for the reader itself)
+# above zero and within the size, which another process reads as both.
+proc_statm() {
+	line=$(cat /proc/self/statm) || return 1
+	echo "statm: $line"
+	set -- $line
+	[ $# -eq 7 ] && [ "$1" -gt 0 ] && [ "$2" -gt 0 ] && [ "$2" -le "$1" ] && [ "$3" = 0 ] && [ "$6" = "$1" ] || return 1
+	other=$(cat /proc/$$/statm) || return 1
+	set -- $other
+	[ "$2" = "$1" ] || return 1
+	grep -q '^statm$' <<-EOF
+		$(ls /proc/self)
+	EOF
+}
+t -t proc proc_statm proc_statm
 
 # /proc/self/fd listed while a file is open (here fd 7): its entry's path
 # takes the mount table's lock, which the listing held, and the system froze
@@ -1807,6 +1823,18 @@ lx_efbig() {
 	cat $OUT/lx-efbig.log
 	contains "LINUX-EFBIG OK" $OUT/lx-efbig.log
 }
+# What the layer answers from the kernel's own files, asked from a root
+# (sysinfo's memory, the CPU count, uname's host name): read through the
+# root's /proc, the launcher's bind. By the kernel path they were refused
+# there (the namespace confines the layer's reads too), and sysinfo
+# reported no memory: Bun's JavaScriptCore took a heap budget of 0 bytes
+# and collected on every allocation; Claude Code's keys lagged minutes.
+lx_sysinfo_root() {
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-sysinfo-root.log linux --root /tmp/lxroot /linux-smoke sysinfo
+	cat $OUT/lx-sysinfo-root.log
+	contains "LINUX-SYSINFO OK" $OUT/lx-sysinfo-root.log
+}
 # getcwd in a root under a bind (/mnt is /tmp/mnt bound over it): the
 # kernel finds the cwd where it is stored, /tmp/mnt/..., and still names
 # it in the root's terms (Python's venv and busybox's pwd loop on a
@@ -2046,6 +2074,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind
 	t -t linux,tty linux_tty lx_tty
+	t -t linux linux_sysinfo_root lx_sysinfo_root
 	t -t linux,fs linux_efbig lx_efbig
 	t -t linux linux_trace lx_trace
 	t -t linux linux_pagecache lx_pagecache

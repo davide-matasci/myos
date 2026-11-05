@@ -407,6 +407,19 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   `fstat` of their device file, so `ttyname` finds them, in a root too:
   `/proc/self/fd/N` names the system's `/dev` through the root's bind of
   it.
+- **`/proc/self/statm`** is Linux's line of memory sizes in pages, the
+  resident one the pages mapped now (`docs/proc.md`). Bun's
+  JavaScriptCore reads its memory footprint from it on every collection
+  and, with the file missing, used an uninitialized value.
+- **`sysinfo`, `uname` and the CPU count** are answered from the kernel's
+  own files (`/proc/meminfo`, the host name, `/proc/cpuinfo`), read as
+  the process names them: in a root, through its `/proc`, the launcher's
+  bind of the system's. A root has no name for the kernel path, and the
+  layer's reads are confined to the namespace like the process's: asked
+  by that path, `sysinfo` reported no memory at all, which JavaScriptCore
+  took for a heap budget of 0 bytes and collected on every allocation.
+  That is where Claude Code's minutes of key lag went (`linux --root
+  /data/alpine claude`).
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct
@@ -477,7 +490,11 @@ linux: pid 7 syscall 4000 (0x1, 0x2, 0x3): ENOSYS
 
 **What a hung or spinning program is doing.** `echo 2 >
 /proc/linux_trace` also keeps every thread's last 8 syscalls and its call
-count. Each write publishes what was kept so far, so with the program
+count; `echo 3` keeps each call's user stack with it (up to 12 return
+addresses, a `stack` line under the call), for a program whose last
+syscalls do not say what it is doing: read them against its binary with
+`objdump -d --start-address=ADDR` (a PIE's addresses are relative to
+where it was loaded). Each write publishes what was kept so far, so with the program
 running in the background, write `2` again and read the file:
 
 ```

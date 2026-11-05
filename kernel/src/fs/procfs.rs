@@ -308,6 +308,8 @@ fn self_link(node: &SelfNode) -> Option<alloc::string::String> {
 enum PidNode {
     Dir(usize),
     Status(usize),
+    /// `<n>/statm`, Linux's memory sizes in pages.
+    Statm(usize),
     TaskDir(usize),
     Thread(usize),
     ThreadStatus(usize),
@@ -329,6 +331,7 @@ fn parse_pid(name: &str) -> Option<PidNode> {
     let node = match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (None, ..) => PidNode::Dir(pid),
         (Some("status"), None, ..) => PidNode::Status(pid),
+        (Some("statm"), None, ..) => PidNode::Statm(pid),
         (Some("task"), None, ..) => PidNode::TaskDir(pid),
         (Some("task"), Some(t), rest, None) => {
             let tid = parse_id(t)?;
@@ -385,6 +388,24 @@ fn process_status(pid: usize) -> Option<alloc::string::String> {
     Some(out)
 }
 
+/// `<pid>/statm`, as Linux writes it for its programs: size, resident,
+/// shared, text, lib, data and dirty pages (`docs/proc.md`). Size and data
+/// are the virtual size; resident is the pages mapped now for the reading
+/// process itself (`self/statm`, `user::resident_kib`), the virtual size
+/// for another (its tables may go away under a walk); shared, text and
+/// dirty are 0. A program that reads its memory footprint from this file
+/// gets a sane figure rather than none: with the file missing,
+/// JavaScriptCore's collector read garbage, took its heap for one over
+/// the machine's memory and collected on every allocation (Claude Code's
+/// keys lagged minutes behind).
+fn statm_text(pid: usize) -> Option<alloc::string::String> {
+    let p = crate::task::info::process_info(pid)?;
+    let page_kib = (crate::user::PAGE / 1024) as u64;
+    let size = p.size_kib / page_kib;
+    let resident = if pid == crate::task::current_pid() { crate::user::resident_kib() / page_kib } else { size };
+    Some(alloc::format!("{size} {resident} 0 0 0 {size} 0\n"))
+}
+
 /// `<pid>/task/<tid>/status`: one line, fields in the order `docs/proc.md`
 /// lists them.
 fn thread_status(tid: usize) -> Option<alloc::string::String> {
@@ -429,6 +450,7 @@ fn pid_ino(name: &str) -> u32 {
     let (id, kind) = match parse_pid(name) {
         Some(PidNode::Dir(p)) => (p, 0),
         Some(PidNode::Status(p)) => (p, 1),
+        Some(PidNode::Statm(p)) => (p, 5),
         Some(PidNode::TaskDir(p)) => (p, 2),
         Some(PidNode::Thread(t)) => (t, 3),
         Some(PidNode::ThreadStatus(t)) => (t, 4),
@@ -485,6 +507,7 @@ fn generated(name: &str) -> Option<alloc::string::String> {
     match name {
         "self/ctx" => Some(crate::sec::ctx_text()),
         "self/limits" => Some(limits_text()),
+        "self/statm" => statm_text(crate::task::current_pid()),
         "self/stack" => crate::task::main_stack().map(|(lo, end)| alloc::format!("{lo:x}-{end:x}\n")),
         "sys/security/users" => Some(crate::sec::users_text()),
         "cpu" => Some(cpu_text()),
@@ -497,6 +520,7 @@ fn generated(name: &str) -> Option<alloc::string::String> {
         "boot/partuuid" => crate::limine_boot::boot_partuuid().map(|u| alloc::format!("{u}\n")),
         _ => match parse_pid(name)? {
             PidNode::Status(pid) => process_status(pid),
+            PidNode::Statm(pid) => statm_text(pid),
             PidNode::ThreadStatus(tid) => thread_status(tid),
             _ => None,
         },
@@ -537,6 +561,7 @@ fn list_self(name: &str, buf: &mut [u8]) -> usize {
             push(b"fd");
             push(b"ctx");
             push(b"limits");
+            push(b"statm");
             if crate::task::main_stack().is_some() {
                 push(b"stack");
             }
@@ -683,7 +708,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
         return list_self(rel, buf);
     }
     let pid_entries = match parse_pid(rel) {
-        Some(PidNode::Dir(_)) => Some(alloc::string::String::from("status\ntask\n")),
+        Some(PidNode::Dir(_)) => Some(alloc::string::String::from("statm\nstatus\ntask\n")),
         Some(PidNode::TaskDir(pid)) => crate::task::info::threads_of(pid).map(|t| ids_text(&t)),
         Some(PidNode::Thread(_)) => Some(alloc::string::String::from("status\n")),
         _ => None,
@@ -743,6 +768,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
                 "self/ctx" => 94,
                 "self/limits" => 88,
                 "self/stack" => 89,
+                "self/statm" => 85,
                 "sys/security/users" => 95,
                 "cpu" => 96,
                 "iommu" => 80,

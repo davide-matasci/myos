@@ -55,7 +55,7 @@ pub(super) fn get_bytes(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
     get(ptr, out)
 }
 
-fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
+pub(super) fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
     if ptr == 0 || !user::buffer_ok(ptr, out.len()) || !user::copy_from_user(ptr, out) {
         return Err(EFAULT);
     }
@@ -150,6 +150,18 @@ fn view_path(path: &str) -> String {
 /// The VFS path behind `path` (cwd, chroot and symlinks applied).
 fn real_path(path: &str) -> R2<String> {
     user::resolve_copied_path(path).ok_or_else(|| unresolved(path))
+}
+
+/// A file of the kernel's that the layer answers a call from (`/proc/meminfo`
+/// for `sysinfo`), as the process names it: through its namespace, where a
+/// root's `/proc` is the launcher's bind of the system's (the layer's own
+/// reads are confined to the namespace like the process's: by the kernel
+/// path, a root has no `/proc/meminfo`, and `sysinfo` said no memory at
+/// all, which JavaScriptCore took for a heap budget of 0 bytes and
+/// collected on every allocation, `docs/linux-compat.md`). The kernel path
+/// itself when the namespace has no name for it.
+fn kernel_file(path: &str) -> String {
+    real_path(path).unwrap_or_else(|_| String::from(path))
 }
 
 /// Like [`real_path`], but a symlink in the last component is not followed.
@@ -1725,7 +1737,7 @@ pub fn kill(pid: usize, sig: usize) -> R {
 /// the mask written is the result, as on Linux.
 pub fn sched_getaffinity(len: usize, mask: usize) -> R {
     let mut b = [0u8; 256];
-    let n = fs::read("/proc/cpuinfo", 0, &mut b).unwrap_or(0);
+    let n = fs::read(&kernel_file("/proc/cpuinfo"), 0, &mut b).unwrap_or(0);
     let cpus = core::str::from_utf8(&b[..n])
         .ok()
         .and_then(|t| t.lines().find_map(|l| l.strip_prefix("processor_count: ")))
@@ -1777,7 +1789,7 @@ fn xattr_none(op: Xattr) -> R {
 /// no swap, load average or process count. Firefox sizes its caches by `totalram`.
 pub fn sysinfo(info: usize) -> R {
     let mut text = [0u8; 2048];
-    let n = fs::read("/proc/meminfo", 0, &mut text).unwrap_or(0);
+    let n = fs::read(&kernel_file("/proc/meminfo"), 0, &mut text).unwrap_or(0);
     let kib = |key: &str| {
         core::str::from_utf8(&text[..n])
             .ok()
@@ -1800,7 +1812,7 @@ const HOSTNAME: &str = "/proc/sys/kernel/hostname";
 pub fn uname(buf: usize) -> R {
     let mut b = [0u8; 6 * 65];
     let mut host = [0u8; 65];
-    let mut n = fs::read(HOSTNAME, 0, &mut host).unwrap_or(0);
+    let mut n = fs::read(&kernel_file(HOSTNAME), 0, &mut host).unwrap_or(0);
     while n > 0 && host[n - 1] == b'\n' {
         n -= 1;
     }

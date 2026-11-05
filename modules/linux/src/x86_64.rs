@@ -37,6 +37,48 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
     [a0, a1, a2, regs.word(R_R10) as usize, regs.word(R_R8) as usize, regs.word(R_R9) as usize]
 }
 
+/// The user stack of a syscall for the trace's level 3: the program
+/// counter, then the words from the stack pointer up that a `call`
+/// precedes (the frame keeps no rbp to walk, and the stack is read as far
+/// as it is mapped), up to `out.len()` of them.
+pub fn backtrace(regs: &SyscallRegs, out: &mut [usize]) -> usize {
+    let mut n = 0;
+    if !out.is_empty() {
+        out[0] = regs.word(R_RIP) as usize;
+        n = 1;
+    }
+    let sp = regs.word(R_RSP) as usize;
+    for i in 0..2048 {
+        if n >= out.len() {
+            break;
+        }
+        let Ok(v) = sys::get_u64(sp + i * 8) else { break };
+        let v = v as usize;
+        if v < 0x1_0000 {
+            continue;
+        }
+        // The seven bytes before `v`: a direct call (e8 rel32) ends there,
+        // or an indirect one (ff /2: a register, or memory with no, a byte
+        // or a dword displacement, with or without a REX prefix).
+        let mut b = [0u8; 7];
+        if sys::get(v - 7, &mut b).is_err() {
+            continue;
+        }
+        let indirect = |at: usize| b[at] == 0xff && b[at + 1] & 0x38 == 0x10;
+        let call = b[2] == 0xe8
+            || indirect(5)
+            || indirect(4)
+            || indirect(1)
+            || (b[4] & 0xf0 == 0x40 && indirect(5))
+            || (b[3] & 0xf0 == 0x40 && indirect(4));
+        if call {
+            out[n] = v;
+            n += 1;
+        }
+    }
+    n
+}
+
 const AT_FDCWD: usize = -100isize as usize;
 
 pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {

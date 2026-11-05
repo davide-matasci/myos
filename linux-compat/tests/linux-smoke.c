@@ -2057,6 +2057,22 @@ int main(int argc, char **argv) {
         out(failures ? "LINUX-TTY FAIL\n" : "LINUX-TTY OK\n");
         return failures != 0;
     }
+    /* `sysinfo`: what the layer answers from the kernel's own files, for a
+     * run chrooted into a root (`linux --root`), whose /proc is the
+     * launcher's bind: the memory sysinfo reports (JavaScriptCore sizes its
+     * heap by it: told 0, it collected on every allocation), the CPUs,
+     * uname's host name. */
+    if (argc > 1 && strcmp(argv[1], "sysinfo") == 0) {
+        struct sysinfo si;
+        memset(&si, 0, sizeof si);
+        check(sysinfo(&si) == 0 && si.totalram > 0 && si.mem_unit > 0, "sysinfo: total memory");
+        check(sysconf(_SC_PHYS_PAGES) > 0, "sysconf: physical pages");
+        check(sysconf(_SC_NPROCESSORS_ONLN) >= 1, "sysconf: online CPUs");
+        struct utsname un;
+        check(uname(&un) == 0 && un.nodename[0] != 0, "uname: a host name");
+        out(failures ? "LINUX-SYSINFO FAIL\n" : "LINUX-SYSINFO OK\n");
+        return failures != 0;
+    }
     /* `evfd`: the event fds alone, for a run chrooted into a bare root
      * (`linux --root`), where /dev is a bind of the system's. */
     if (argc > 1 && strcmp(argv[1], "vdso") == 0) {
@@ -2074,6 +2090,29 @@ int main(int argc, char **argv) {
 
     struct utsname u;
     check(uname(&u) == 0 && strcmp(u.sysname, "Linux") == 0, "uname");
+
+    /* /proc/self/statm, Linux's memory line: seven numbers, the resident
+     * one above zero (JavaScriptCore reads its footprint from it on every
+     * collection: unreadable, Bun's heap was over its memory limit by
+     * garbage and collected on every allocation). */
+    {
+        char statm[256] = { 0 };
+        int sfd = open("/proc/self/statm", O_RDONLY);
+        ssize_t got = sfd >= 0 ? read(sfd, statm, sizeof statm - 1) : -1;
+        if (sfd >= 0)
+            close(sfd);
+        unsigned long v[7] = { 0 };
+        char *p = statm, *end = statm;
+        int fields = 0;
+        while (fields < 7 && got > 0) {
+            v[fields] = strtoul(p, &end, 10);
+            if (end == p)
+                break;
+            fields++;
+            p = end;
+        }
+        check(got > 0 && fields == 7 && *end == '\n' && v[1] > 0 && v[1] <= v[0], "/proc/self/statm: seven numbers, resident pages");
+    }
 
     /* The host name is the kernel's: sethostname sets what uname reports. */
     char host[65];
