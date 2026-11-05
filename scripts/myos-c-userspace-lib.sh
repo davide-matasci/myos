@@ -369,6 +369,7 @@ MYOS_CAIRO_PANGO_VERSION="$MYOS_ROOT/target/.myos-cairo-pango-version"
 MYOS_GTK3_VERSION="$MYOS_ROOT/target/.myos-gtk3-version"
 MYOS_LIBSOUP_VERSION="$MYOS_ROOT/target/.myos-libsoup-version"
 MYOS_SURF_VERSION="$MYOS_ROOT/target/.myos-surf-version"
+MYOS_WEBKITGTK_SMOKE_VERSION="$MYOS_ROOT/target/.myos-webkitgtk-smoke-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -1987,14 +1988,17 @@ myos_libsoup_is_current() {
 
 # WebKitGTK (packages/webkitgtk), against mlibc: its pins, patches and
 # scripts, cairo-pango's pins (its HarfBuzz is built again), and what it
-# builds over: GTK 3 (and so the text, image and X libraries), libsoup
-# (LibreSSL and SQLite) and the cross compilers and meson helpers.
+# compiles against: GTK 3 (and so the text, image and X libraries),
+# libsoup's compile flavour (libsoup, libxml2, libpsl and nghttp2, not GIO's
+# TLS backend or LibreSSL, which only its programs link: issue #664),
+# SQLite, and the cross compilers and meson helpers.
 myos_webkitgtk_version_hash() {
   local h
   h="$(
     {
       myos_dep_hash gtk3
-      myos_dep_hash libsoup
+      myos_dep_hash libsoup compile
+      myos_dep_hash sqlite
       find "$(myos_port_dir webkitgtk)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -2013,17 +2017,49 @@ myos_webkitgtk_is_current() {
     stamp="$MYOS_ROOT/target/.myos-webkitgtk-${arch}-version"
     [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
     [[ -f "$MYOS_ROOT/target/webkitgtk-mlibc-${arch}/lib/libwebkit2gtk-4.1.a" ]] || return 1
+  done
+}
+
+# WebKitGTK's program (packages/webkitgtk-smoke), against mlibc: its
+# sources, the WebKit it links (and so everything under it) and what WebKit
+# leaves to its programs to link: libsoup whole (GIO's TLS backend) and
+# LibreSSL.
+myos_webkitgtk_smoke_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash webkitgtk
+      myos_dep_hash libsoup
+      myos_dep_hash libressl mlibc
+      find "$(myos_port_dir webkitgtk-smoke)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver myos_mlibc_meson_cross
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_webkitgtk_smoke_is_current() {
+  local arch
+  [[ -f "$MYOS_WEBKITGTK_SMOKE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_WEBKITGTK_SMOKE_VERSION")" == "$(myos_webkitgtk_smoke_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/webkitgtk-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
-# surf (packages/surf), against mlibc: its pin, patch and scripts, and the
-# WebKit it links (and so everything under it).
+# surf (packages/surf), against mlibc: its pin, patch and scripts, the
+# WebKit it links (and so everything under it) and what WebKit leaves to its
+# programs to link: libsoup whole (GIO's TLS backend) and LibreSSL.
 myos_surf_version_hash() {
   local h
   h="$(
     {
       myos_dep_hash webkitgtk
+      myos_dep_hash libsoup
+      myos_dep_hash libressl mlibc
       find "$(myos_port_dir surf)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \

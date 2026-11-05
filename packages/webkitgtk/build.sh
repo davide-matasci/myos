@@ -7,8 +7,9 @@
 # libgcrypt, libtasn1, HarfBuzz's ICU library (packages/cairo-pango's
 # HarfBuzz, built again with it), then WebKit, with JavaScriptCore's JIT.
 # Over the mlibc builds of GLib, the image, text and X libraries, GTK 3,
-# libsoup, LibreSSL and SQLite. Then the package's program, one binary
-# that is the browser and WebKit's web and network processes (smoke.c).
+# libsoup and SQLite. The programs are linked from WebKit's archive by
+# their own packages (webkitgtk-smoke, surf), which also link what WebKit
+# never compiles against: GIO's TLS backend and LibreSSL (issue #664).
 #
 # WebKit draws with Skia on the CPU and never loads GL: there is no EGL
 # (webkitgtk-*.myos.patch).
@@ -161,9 +162,9 @@ Libs: -L$4/lib $5
 EOF
 }
 
-# WebKit with CMake over the arch's prefixes, and the program
-# (WEBKIT_MYOS_PROGRAM, webkitgtk-*.myos.patch: smoke.c, with WebKit's
-# processes in it). Its sources are compiled as Linux's (WebKit's and
+# WebKit with CMake over the arch's prefixes, and a program
+# (WEBKIT_MYOS_PROGRAM, webkitgtk-*.myos.patch: program.c, with WebKit's
+# processes in it), whose link names what the archive gathers. Its sources are compiled as Linux's (WebKit's and
 # CMake's platform; __linux__ and __linux, not __unix__, which would have
 # libc++ use message catalogs mlibc lacks), against mlibc: the patch takes
 # the Linux system calls and EGL away, compat/ has the Linux headers mlibc
@@ -249,8 +250,8 @@ EOF
   PKG_CONFIG_LIBDIR="$pc:$build/pc:$build/x11-pc" cmake -G Ninja -S "$T/webkitgtk-src" -B "$cmake" \
     -DCMAKE_TOOLCHAIN_FILE="$build/toolchain.cmake" -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_INSTALL_PREFIX="$out" \
-    -DPORT=GTK -DWEBKIT_MYOS=ON -DWEBKIT_MYOS_PROGRAM="$HERE/smoke.c" \
-    -DWEBKIT_MYOS_PROGRAM_NAME=webkitgtk-smoke -DWEBKIT_MYOS_PROGRAM_LIBRARIES="${libs// /;}" \
+    -DPORT=GTK -DWEBKIT_MYOS=ON -DWEBKIT_MYOS_PROGRAM="$HERE/program.c" \
+    -DWEBKIT_MYOS_PROGRAM_NAME=webkit-program -DWEBKIT_MYOS_PROGRAM_LIBRARIES="${libs// /;}" \
     -DUSE_GTK4=OFF -DENABLE_X11_TARGET=ON "${jsc[@]}" \
     -DENABLE_WAYLAND_TARGET=OFF -DENABLE_QUARTZ_TARGET=OFF -DENABLE_INTROSPECTION=OFF \
     -DENABLE_DOCUMENTATION=OFF -DENABLE_JOURNALD_LOG=OFF -DENABLE_MINIBROWSER=OFF \
@@ -272,8 +273,6 @@ EOF
   ninja -C "$cmake" -d keeprsp -j"$(nproc)" MyosProgram >>"$cmake/ninja.log" 2>&1 \
     || { grep -n "error" "$cmake/ninja.log" | head -30 >&2 || true; tail -20 "$cmake/ninja.log" >&2; exit 1; }
   install_webkit
-  "${arch}-unknown-myos-strip" -o "$T/webkitgtk-smoke-mlibc-${arch}-unknown-none" \
-    "$cmake/bin/webkitgtk-smoke"
   rm -rf "$cmake"
 }
 
@@ -299,7 +298,7 @@ install_webkit() {
   read -d "" -ra words <"$cmake/CMakeFiles/MyosProgram.rsp" || true
   for f in "${words[@]}"; do
     case "$f" in
-      *smoke.c.o) ;;
+      *program.c.o) ;;
       *.o) objs+=("$cmake/$f") ;;
       lib/*.a)
         # WebKit's own archives are thin: their members, by path.

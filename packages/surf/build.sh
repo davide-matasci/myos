@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-build surf for the three arches against mlibc and packages/
 # webkitgtk's archive (libwebkit2gtk-4.1.a and its pkg-config file, over
-# GTK 3, libsoup and the rest), as that package's own program is built:
+# GTK 3, libsoup and the rest), as packages/webkitgtk-smoke's program is:
 # surf's main renamed webkit_myos_program_main, which the archive's main
 # (WebKit's MultiCall.cpp) runs, or WebKit's web or network process when
 # the program runs itself again as one. Upstream surf with one myos patch
@@ -37,7 +37,7 @@ patch -d "$WORK/surf" -p1 --forward --batch -s <"$HERE/surf.myos.patch"
 cp "$WORK/surf/config.def.h" "$WORK/surf/config.h"
 
 # pc DIR NAME VERSION PREFIX LIBS: a pkg-config file for a library built
-# without one (LibreSSL's and SQLite's mlibc builds; as packages/webkitgtk).
+# without one (LibreSSL's and SQLite's mlibc builds; as packages/webkitgtk-smoke).
 pc() {
   cat >"$1/$2.pc" <<EOP
 Name: $2

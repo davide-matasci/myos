@@ -4,7 +4,7 @@
 and libsoup 3), static against mlibc, what surf links (issue #616), with
 the libraries it needs beyond the other packages': [ICU](https://icu.unicode.org/)
 (its data a file beside the program, `/lib/webkitgtk/icudt79l.dat` in
-the app: in the program it would take it past the 128 MiB a file in
+the programs' apps: in a program it would take it past the 128 MiB a file in
 tmpfs may hold, issue #338), [libgpg-error](https://gnupg.org/software/libgpg-error/),
 [libgcrypt](https://gnupg.org/software/libgcrypt/) (WebKit's digests and
 ciphers), [libtasn1](https://www.gnu.org/software/libtasn1/) and
@@ -37,10 +37,10 @@ Linux-shaped. What myos lacks is taken away:
   headers WebKit compiles against are cairo-pango's;
 - one binary: WebKit's web and network processes are the program itself
   (`Source/WebKit/myos/MultiCall.cpp`, added by the patch), which the
-  browser's process runs again with the process's name first; the
-  program (here `smoke.c`) is linked in WebKit's build
-  (`WEBKIT_MYOS_PROGRAM`), its `main` renamed; GTK's injected bundle is
-  in it too, called by the web process instead of loaded;
+  browser's process runs again with the process's name first; a program
+  links the archive with its `main` renamed `webkit_myos_program_main`,
+  which MultiCall.cpp's `main` calls; GTK's injected bundle is in it too,
+  called by the web process instead of loaded;
 - no Linux system calls: `gettid` is the libc's, and `compat/` has the
   Linux headers mlibc lacks (`prctl`, `sysinfo`, `mincore`,
   `malloc_trim`, `fallocate`, `sys/syscall.h`, the ARM64 JIT's
@@ -61,12 +61,16 @@ Linux-shaped. What myos lacks is taken away:
   checking, speech, gamepads, introspection, the optional image and font
   formats (AVIF, JPEG XL, WOFF2, color management) or libsecret.
 
-The app is the package's program, `webkitgtk-smoke` (`smoke.c`, its
-test, with TinyX, x11-xft's `fonts.conf` and the x11-fonts
-package): on Xfbdev a web view loads the launcher's test page
-(`src/test_www.rs`); once WebKit says it loaded and its title came (the
-title may come after the load), what its script wrote (asked through JavaScript) and its blue box on the screen
-(read back from the window) are checked. `webkitgtk-smoke URL` loads URL.
+No app here: WebKit's programs are packages of their own, linked from
+the archive, `webkitgtk-smoke` (WebKit's program and boot test,
+`packages/webkitgtk-smoke`) and surf. WebKit's own build links a stub,
+`program.c` (`WEBKIT_MYOS_PROGRAM`), only for the list of what the
+archive gathers. What the programs link and WebKit never compiles
+against, GIO's TLS backend and LibreSSL, is so theirs to link: a change
+to glib-networking or LibreSSL relinks them and leaves WebKit's build
+alone. Its cache key takes libsoup's compile flavour, which leaves those
+out (`docs/ports.md` "Cache keys", issue #664). ICU's data,
+`share/icu-data`, is shipped by each program's package.
 
 WebKit's WebCore, libgpg-error, libgcrypt and libtasn1 are LGPL
-(`THIRD_PARTY_NOTICES.md`); the program links them statically.
+(`THIRD_PARTY_NOTICES.md`); the programs link them statically.

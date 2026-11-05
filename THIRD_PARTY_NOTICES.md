@@ -147,7 +147,7 @@ GLib, GNU libiconv and proxy-libintl in the glib package, fribidi,
 cairo, pango and gdk-pixbuf in the cairo-pango package, ATK and GTK in
 the gtk3 package, libsoup, glib-networking and libpsl's Public Suffix
 List in the libsoup package, libgpg-error, libgcrypt, libtasn1 and
-WebKitGTK in the webkitgtk package.** (The glib, cairo-pango, gtk3, libsoup, webkitgtk and surf packages' programs link those LGPL libraries statically: the programs'
+WebKitGTK in the webkitgtk package.** (The glib, cairo-pango, gtk3, libsoup, webkitgtk-smoke and surf packages' programs link those LGPL libraries statically: the programs'
 sources and every build script are in this repository too, so they can
 be relinked against a modified library.) (Vim's license also allows redistribution. LibreSSL's
 inherited OpenSSL and SSLeay licenses ask that binary distributions carry

@@ -1,7 +1,7 @@
-/* webkitgtk-smoke: the webkitgtk package's boot test, against mlibc; also
- * WebKit's web and network processes (one binary: the patch's
- * MultiCall.cpp runs WebKitWebProcess and WebKitNetworkProcess, and this
- * main is the rest).
+/* webkitgtk-smoke: the webkitgtk-smoke package's program, WebKit's boot
+ * test, against mlibc; also WebKit's web and network processes (one
+ * binary: packages/webkitgtk's MultiCall.cpp runs WebKitWebProcess and
+ * WebKitNetworkProcess, and this main, renamed, is the rest).
  *
  * On Xfbdev (display :0), a GTK window holds a web view, which loads URL
  * (the first argument; the launcher's test page, src/test_www.rs, by
