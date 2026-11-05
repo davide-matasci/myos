@@ -55,7 +55,7 @@ pub(super) fn get_bytes(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
     get(ptr, out)
 }
 
-fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
+pub(super) fn get(ptr: usize, out: &mut [u8]) -> Result<(), usize> {
     if ptr == 0 || !user::buffer_ok(ptr, out.len()) || !user::copy_from_user(ptr, out) {
         return Err(EFAULT);
     }

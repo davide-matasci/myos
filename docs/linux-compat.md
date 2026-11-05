@@ -477,7 +477,11 @@ linux: pid 7 syscall 4000 (0x1, 0x2, 0x3): ENOSYS
 
 **What a hung or spinning program is doing.** `echo 2 >
 /proc/linux_trace` also keeps every thread's last 8 syscalls and its call
-count. Each write publishes what was kept so far, so with the program
+count; `echo 3` keeps each call's user stack with it (up to 12 return
+addresses, a `stack` line under the call), for a program whose last
+syscalls do not say what it is doing: read them against its binary with
+`objdump -d --start-address=ADDR` (a PIE's addresses are relative to
+where it was loaded). Each write publishes what was kept so far, so with the program
 running in the background, write `2` again and read the file:
 
 ```

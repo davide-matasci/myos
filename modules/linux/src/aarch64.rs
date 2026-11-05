@@ -32,6 +32,31 @@ pub fn args(regs: &SyscallRegs, a0: usize, a1: usize, a2: usize) -> [usize; 6] {
     [a0, a1, a2, regs.word(3) as usize, regs.word(4) as usize, regs.word(5) as usize]
 }
 
+/// The user stack of a syscall for the trace's level 3: the program
+/// counter, the link register, then the frame chain from x29 (a frame
+/// holds the previous x29, then the saved link register), up to
+/// `out.len()` addresses.
+pub fn backtrace(regs: &SyscallRegs, out: &mut [usize]) -> usize {
+    let mut n = 0;
+    for v in [regs.word(R_PC), regs.word(30)] {
+        if n < out.len() {
+            out[n] = v as usize;
+            n += 1;
+        }
+    }
+    let mut fp = regs.word(29) as usize;
+    while n < out.len() && fp != 0 {
+        let (Ok(prev), Ok(lr)) = (sys::get_u64(fp), sys::get_u64(fp + 8)) else { break };
+        out[n] = lr as usize;
+        n += 1;
+        if prev as usize <= fp {
+            break;
+        }
+        fp = prev as usize;
+    }
+    n
+}
+
 // ---- FP / SIMD ------------------------------------------------------------
 
 /// The register image is laid out as the frame's `fpsimd_context`: head
