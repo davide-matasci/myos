@@ -1,4 +1,7 @@
-/* Prove outbound TCP via userspace BSD sockets (no socket syscall). */
+/* Prove outbound TCP via userspace BSD sockets (no socket syscall): an HTTP
+ * GET of the launcher's test web server (src/test_www.rs, 10.0.2.2:8766
+ * through QEMU's user network), whose answer is known, not a site on the
+ * internet (github.com's outage failed CI #2527 here). */
 #include <errno.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -27,11 +30,14 @@ int main(void) {
     struct addrinfo hints, *res = NULL;
     int fd = -1;
     const char *req =
-        "GET / HTTP/1.1\r\n"
-        "Host: github.com\r\n"
+        "GET /hello.txt HTTP/1.1\r\n"
+        "Host: 10.0.2.2\r\n"
         "Connection: close\r\n"
         "\r\n";
     char buf[512];
+    /* The whole answer, for the check of its body (it is a few hundred bytes). */
+    char resp[2048];
+    size_t len = 0;
     ssize_t n;
     int got = 0;
     int i;
@@ -41,7 +47,7 @@ int main(void) {
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo("github.com", "80", &hints, &res) != 0 || res == NULL) {
+    if (getaddrinfo("10.0.2.2", "8766", &hints, &res) != 0 || res == NULL) {
         die("getaddrinfo fail");
     }
 
@@ -90,11 +96,19 @@ int main(void) {
         got = 1;
         empty = 0;
         write(STDOUT_FILENO, buf, (size_t)n);
+        if (len + (size_t)n < sizeof resp) {
+            memcpy(resp + len, buf, (size_t)n);
+            len += (size_t)n;
+        }
     }
     close(fd);
 
     if (!got) {
         die("no data");
+    }
+    resp[len] = '\0';
+    if (strstr(resp, "hello from the myos test server") == NULL) {
+        die("not the test server's hello");
     }
     write(STDOUT_FILENO, "\n[ OK ] socket\n", 15);
     return 0;

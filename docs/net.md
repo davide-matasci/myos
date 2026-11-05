@@ -306,8 +306,10 @@ outputs. By hand:
 ./ports/curl/build.sh
 ```
 
-`/bin/etc/socket_smoke` resolves `github.com`, connects and sends an HTTP
-GET, and prints `[ OK ] socket`; `/heap` (`user/heap`) runs it. The IPv6,
+`/bin/etc/socket_smoke` connects to the launcher's test web server
+(`10.0.2.2:8766`, `docs/testing.md`), sends an HTTP GET of `/hello.txt`,
+checks its answer and prints `[ OK ] socket`; `/heap` (`user/heap`) runs
+it. The IPv6,
 multi-NIC and loopback tests are in `user/c/test.sh` (tag `netfs`).
 
 ## Limits
