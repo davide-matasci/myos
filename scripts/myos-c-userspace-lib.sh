@@ -120,10 +120,22 @@ myos_piece_is_current() {
 # the mlibc flavour alone (`myos_dep_hash <dep> mlibc`): a libgloss change
 # rebuilds the dual ports, whose newlib flavour changes, and nothing in the
 # mlibc world (CI #2371 rebuilt WebKitGTK for the resolver fix of #680).
+# A port whose dependents only link some of its outputs (PORT_LINK_OUTPUTS:
+# libsoup's TLS backend and smoke) has a compile flavour too, the rest:
+# what a port keyed on it (`myos_dep_hash <dep> compile`) compiles against,
+# so that a change to what it only links leaves it current (issue #664,
+# WebKit for a glib-networking patch). Such a port's linked programs are
+# keyed on the whole hash.
+# Args: FLAVOUR, and for `compile` the piece's NAME and ARCH.
 myos_outputs_flavour_filter() {
   case "${1:-}" in
     mlibc) grep -E '^target/[^/]*-mlibc-' ;;
     newlib) grep -v -E '^target/[^/]*-mlibc-' ;;
+    compile)
+      # shellcheck disable=SC2086
+      awk -v ex="$(myos_port_link_outputs "$2" $3)" '
+        BEGIN { n = split(ex, x, "\n") }
+        { for (i = 1; i <= n; i++) if (x[i] != "" && ($0 == x[i] || index($0, x[i] "/") == 1)) next; print }' ;;
     *) cat ;;
   esac
 }
@@ -149,7 +161,7 @@ myos_outputs_hash_files() {
           fi
         done \
       | grep -v '^target/newlib-[^/]*/[^/]*/lib/libtcc1\.a$' \
-      | myos_outputs_flavour_filter "$flavour" \
+      | myos_outputs_flavour_filter "$flavour" "$name" "$arch" \
       | LC_ALL=C sort \
       | while IFS= read -r f; do
           if [[ -L "$f" ]]; then
@@ -162,6 +174,11 @@ myos_outputs_hash_files() {
         done \
       | sha256sum | awk '{print $1}'
   )
+}
+
+# Whether a piece has a compile flavour (PORT_LINK_OUTPUTS).
+myos_outputs_link_only() {
+  (myos_ports_lib && myos_port_load "${1%%:*}" && [[ -n "$PORT_LINK_OUTPUTS" ]])
 }
 
 # Whether a piece's outputs come in both flavours (files under a `-mlibc-`
@@ -177,7 +194,8 @@ myos_outputs_dual() {
 
 # Record a current piece's output hash in its outputs stamp (the registry
 # push, after a build): the hash and, for a dual port, each flavour's
-# (`<hash> newlib=<hash> mlibc=<hash>`): what the stamp holds after the
+# (`<hash> newlib=<hash> mlibc=<hash>`), for a port with link-only outputs
+# its compile flavour's (`compile=<hash>`): what the stamp holds after the
 # input hash, and the registry's annotation.
 myos_outputs_record() {
   local piece="$1" fn h stamp
@@ -190,6 +208,9 @@ myos_outputs_record() {
   h="$(myos_outputs_hash_files "$piece")"
   if myos_outputs_dual "$piece"; then
     h="$h newlib=$(myos_outputs_hash_files "$piece" newlib) mlibc=$(myos_outputs_hash_files "$piece" mlibc)"
+  fi
+  if myos_outputs_link_only "$piece"; then
+    h="$h compile=$(myos_outputs_hash_files "$piece" compile)"
   fi
   stamp="$(myos_outputs_stamp "$piece")"
   mkdir -p "$(dirname "$stamp")"
@@ -239,9 +260,9 @@ myos_piece_output_hash() {
   printf '%s\n' "${rec%% *}"
 }
 
-# The output hash of FLAVOUR (`newlib`, `mlibc`) of a piece at input hash
-# VH; nothing when its record has none (not a dual port, or recorded before
-# the flavours were).
+# The output hash of FLAVOUR (`newlib`, `mlibc`, `compile`) of a piece at
+# input hash VH; nothing when its record has none (not a port with that
+# flavour, or recorded before the flavours were).
 myos_piece_flavour_hash() {
   local piece="$1" vh="$2" flavour="$3" rec word
   rec="$(myos_piece_output_record "$piece" "$vh")" || return 1
@@ -258,8 +279,9 @@ myos_piece_flavour_hash() {
 # as `outputs:<piece>:<hash>` lines (one per arch for a port built an arch
 # at a time), or the `dep-hash-unknown:` line myos_hash turns into an
 # undefined key. With FLAVOUR (`mlibc`: an mlibc port over a port built for
-# both libraries), that flavour's hash, `outputs-mlibc:<piece>:<hash>`, so
-# that the other flavour's files are not in the key; the whole hash as
+# both libraries; `compile`: a port over one with link-only outputs), that
+# flavour's hash, `outputs-<flavour>:<piece>:<hash>`, so that the other
+# files are not in the key; the whole hash as
 # before while the dependency's record has no flavours (one made before
 # they were recorded), which keeps the keys of the registry's artifacts.
 myos_dep_hash() {

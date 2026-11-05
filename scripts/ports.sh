@@ -59,7 +59,7 @@ myos_port_load() {
   local want="$1" role name dir
   PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES="" PORT_TEST_FILES=""
   PORT_READY="" PORT_BIN="" PORT_WATCH="" PORT_PREPARE="" PORT_TEST="" PORT_HOST=""
-  PORT_ARCH_JOBS=0 PORT_TIMEOUT=45
+  PORT_ARCH_JOBS=0 PORT_TIMEOUT=45 PORT_LINK_OUTPUTS=""
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
       PORT_NAME="$name" PORT_DIR="$dir" PORT_ROLE="$role"
@@ -124,6 +124,20 @@ myos_port_outputs_stamp() {
   else
     echo "target/.myos-$PORT_NAME-outputs"
   fi
+}
+
+# The outputs of NAME that the ports over it only link, never compile
+# against (PORT_LINK_OUTPUTS, under target/), for every arch or for ARCH
+# alone: what its compile flavour leaves out (docs/ports.md "Cache keys").
+myos_port_link_outputs() {
+  myos_port_load "$1" || return 1
+  local arches=("${MYOS_ARCHES[@]}") o arch
+  [[ -n "${2:-}" ]] && arches=("$2")
+  for o in $PORT_LINK_OUTPUTS; do
+    for arch in "${arches[@]}"; do
+      echo "target/$(myos_port_expand "$o" "$arch")"
+    done
+  done | sort -u
 }
 
 # Everything the registry caches for NAME: the stamps and PORT_OUTPUTS for
