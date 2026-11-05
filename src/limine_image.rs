@@ -251,7 +251,9 @@ pub fn fetch_limine(cache_dir: &Path) -> LimineFiles {
 
 fn download(url: &str, dest: &Path) {
     let status = Command::new("curl")
-        .args(["-fsSL", "--retry", "3", "-o"])
+        // Retried on any error, backing off for about four minutes:
+        // GitHub's release host answered 504 for minutes (CI #2527).
+        .args(["-fsSL", "--retry", "8", "--retry-all-errors", "-o"])
         .arg(dest)
         .arg(url)
         .status()
