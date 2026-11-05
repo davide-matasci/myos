@@ -26,6 +26,10 @@ fi
 
 "$HERE/fetch.sh"
 "$ROOT/packages/webkitgtk/build.sh"
+# The binutils: newlib's tool wrappers, <triple>-strip among them, written
+# here: WebKit's build, current, exits before anything under it writes
+# them, and a job whose newlib pull missed had none (PR #749).
+"$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 T="$ROOT/target"
