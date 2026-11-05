@@ -238,10 +238,10 @@ ensure_oras() {
   url="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_${os}_${arch}.tar.gz"
   mkdir -p "$bindir"
   tgz="$(mktemp "${TMPDIR:-/tmp}/oras.XXXXXX.tar.gz")"
-  # Retried on any error, as the fetch scripts' downloads are: a 504 from
-  # GitHub's release host left one job without oras for its first pull
-  # (newlib's, and so its tool wrappers), which no later pull redid.
-  curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$url" -o "$tgz"
+  # Retried on any error, backing off for about a minute: GitHub's release
+  # host answered 504 for over 20 s and left a job without oras for its
+  # first pull (newlib's), which no later pull redid.
+  curl -fsSL --retry 6 --retry-all-errors "$url" -o "$tgz"
   echo "${sha}  ${tgz}" | sha256sum -c - >/dev/null
   tar -xzf "$tgz" -C "$bindir" oras
   rm -f "$tgz"
