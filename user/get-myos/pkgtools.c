@@ -77,21 +77,27 @@ int data_mounted(void) {
 }
 
 /* mkdir -p of path's directories (and path itself if `self`). */
-void mkdirs(const char *path, int self) {
+int mkdirs(const char *path, int self) {
     char buf[PATH_MAX_GV];
     size_t n = strlen(path);
+    int err = 0;
     if (n >= sizeof buf) {
-        return;
+        return ENAMETOOLONG;
     }
     memcpy(buf, path, n + 1);
     for (size_t i = 1; i <= n; i++) {
         if (buf[i] == '/' || (self && buf[i] == '\0')) {
             char c = buf[i];
             buf[i] = '\0';
-            mkdir(buf, 0755); /* EEXIST (also for a symlinked dir) is fine */
+            /* EEXIST (also for a symlinked dir) is fine; the first other
+             * failure is why what goes below cannot be made. */
+            if (mkdir(buf, 0755) != 0 && errno != EEXIST && err == 0) {
+                err = errno;
+            }
             buf[i] = c;
         }
     }
+    return err;
 }
 
 /* ---- running curl ------------------------------------------------------- */

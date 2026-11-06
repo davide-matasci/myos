@@ -344,7 +344,11 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
         path[--pl] = '\0';
     }
     if (type == '5') {
-        mkdirs(path, 1);
+        int err = mkdirs(path, 1);
+        if (err != 0) {
+            unpack_failed(u, path, err);
+            return 0;
+        }
         copy_field(u->dir, sizeof u->dir, path, pl);
         return 0;
     }
@@ -353,7 +357,12 @@ static int unpack_entry(tar *t, char type, const char *name, const char *link, u
     }
     size_t dl = (size_t)(strrchr(path, '/') - path);
     if (strlen(u->dir) != dl || strncmp(u->dir, path, dl) != 0) {
-        mkdirs(path, 0);
+        /* Its directory's failure is why the file cannot be written. */
+        int err = mkdirs(path, 0);
+        if (err != 0) {
+            unpack_failed(u, path, err);
+            return 0;
+        }
         copy_field(u->dir, sizeof u->dir, path, dl);
     }
     /* Not written through a symlink an earlier entry left at this name. */
@@ -1508,8 +1517,11 @@ static int fetch_version(const package *pkg) {
         return die("checksum mismatch: ", pkg->file);
     }
     if (rename(tmp, dir) != 0) {
+        /* Why, before anything else can change errno. */
+        int err = errno;
         remove_tree(tmp);
-        return die("cannot rename to ", dir);
+        say("cannot rename to ", dir, NULL);
+        return die(strerror(err), "");
     }
     return 0;
 }
