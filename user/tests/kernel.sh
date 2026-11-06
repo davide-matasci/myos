@@ -1754,6 +1754,17 @@ lx_inet6() {
 	cat $OUT/lx-inet6.log
 	contains "LINUX-INET6 OK" $OUT/lx-inet6.log
 }
+# TCP servers in Linux programs (issue #415): a listener on a port netd
+# picks, its connections accepted after epoll and after poll, set up as
+# Bun's HTTP server does (Claude Code's sign-in listener); in a root too,
+# whose /net is the launcher's bind.
+lx_tcp() {
+	capture $OUT/lx-tcp.log linux /bin/linux/linux-smoke tcp
+	mkdir -p /tmp/lxroot && cp /bin/linux/linux-smoke /tmp/lxroot/ || return 1
+	capture $OUT/lx-tcp-root.log linux --root /tmp/lxroot /linux-smoke tcp
+	cat $OUT/lx-tcp.log $OUT/lx-tcp-root.log
+	contains "LINUX-TCP OK" $OUT/lx-tcp.log && contains "LINUX-TCP OK" $OUT/lx-tcp-root.log
+}
 lx_unix() {
 	/bin/etc/unix_smoke echo /tmp/.lx-unix > $OUT/lx-unix-server.log 2>&1 &
 	spid=$!
@@ -2070,6 +2081,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,vdso linux_vdso lx_vdso
 	t -t linux,netfs linux_unix lx_unix
 	t -t linux,netfs,ipv6 linux_inet6 lx_inet6
+	t -t linux,netfs linux_tcp lx_tcp
 	t -t linux,events linux_evfd_root lx_evfd_root
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind

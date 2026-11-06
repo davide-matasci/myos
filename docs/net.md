@@ -322,7 +322,7 @@ multi-NIC and loopback tests are in `user/c/test.sh` (tag `netfs`).
 - IPv6: no duplicate address detection, DHCPv6, privacy addresses, second
   prefix per NIC, or use of the advertised MTU and hop limit. Fragmented
   packets are dropped. `sin6_scope_id` is not used for routing. The Linux
-  layer has no `AF_INET6` listen or `IPV6_V6ONLY` (issue #611).
+  layer has no `IPV6_V6ONLY` (issue #611).
 - curl is still a large ELF (~0.6–1.2 MB stripped).
 
 ## History

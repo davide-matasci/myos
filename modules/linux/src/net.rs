@@ -8,12 +8,14 @@
 //! conversation's `data` file, so reads, writes, dup, fork and close are
 //! ordinary fd operations, and the last close hangs the conversation up.
 //! `connect` is a `ctl` write; readiness comes from `status` and the size of
-//! `data` (the bytes netd delivered and nobody read yet). The `/net` files
-//! never block, so waits sleep until netd's next reply (or, for a unix
-//! socket, its peer) wakes the pollers. A unix socket's name is a name in
-//! `/net/unix`, as for libgloss's sockets: a Linux program in a
-//! `linux --root` reaches a native server by the path it listens on (the
-//! X server's `/tmp/.X11-unix/X0`) with nothing in its root.
+//! `data` (the bytes netd delivered and nobody read yet). A TCP listener's
+//! connections are netd's offers on its `status` (`accepted <N> ...`),
+//! taken one at a time. The `/net` files never block, so waits sleep until
+//! netd's next reply (or, for a unix socket, its peer) wakes the pollers.
+//! A unix socket's name is a name in `/net/unix`, as for libgloss's
+//! sockets: a Linux program in a `linux --root` reaches a native server by
+//! the path it listens on (the X server's `/tmp/.X11-unix/X0`) with nothing
+//! in its root.
 
 use alloc::format;
 use alloc::string::String;
@@ -50,6 +52,7 @@ const SO_PEERGROUPS: usize = 59;
 const SO_PEERPIDFD: usize = 77;
 
 const EADDRINUSE: usize = 98;
+const EADDRNOTAVAIL: usize = 99;
 const EISCONN: usize = 106;
 const ENOTSOCK: usize = 88;
 const EPROTOTYPE: usize = 91;
@@ -142,7 +145,15 @@ pub struct Sock {
     pub passcred: bool,
     /// `AF_UNIX` `SOCK_SEQPACKET`: its conversation keeps records.
     pub records: bool,
+    /// A TCP socket's own address: what `bind` gave, a listener's port
+    /// once netd chose it, an accepted socket's listener's.
+    pub bound: Option<Addr>,
+    /// A TCP listener: the handoff (`accepted ... <seq>`) it took last.
+    pub taken: u32,
 }
+
+/// No handoff taken yet.
+const NO_SEQ: u32 = u32::MAX;
 
 /// The names of an `AF_UNIX` socket in `/net/unix`: its own (`bind`; an
 /// accepted socket has its listener's) and the one it connected to.
@@ -179,7 +190,8 @@ enum State {
     /// Not connected yet (or a TCP handshake in flight).
     Pending,
     Connected,
-    /// A unix listener (`listen`).
+    /// A listener (`listen`): a unix one `announced`; a TCP one
+    /// `listening`, or `accepted ...` while a connection waits.
     Listening,
     /// The peer (or we) hung up; buffered data can still be read.
     HungUp,
@@ -199,6 +211,7 @@ fn state(conv: &str) -> State {
         [b'#', ..] => State::Pending,
         b"connected" => State::Connected,
         b"announced" => State::Listening,
+        s if s.starts_with(b"listening") || s.starts_with(b"accepted") => State::Listening,
         b"hangup" => State::HungUp,
         _ => State::Failed,
     }
@@ -366,7 +379,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
     };
     let proto = if stream { "tcp" } else { "udp" };
     let inet6 = domain == AF_INET6;
-    let fd = new_conv(proto, ty, Sock { stream, nonblock: false, inet6, peer: None, unix: None, passcred: false, records: false })?;
+    let fd = new_conv(proto, ty, Sock { stream, inet6, unix: None, ..UNIX_SOCK })?;
     // An IPv6 datagram socket's port is on `::`, which takes IPv4 datagrams
     // too, as on Linux (musl's resolver asks IPv4 and IPv6 nameservers
     // from one such socket); tagged, its answer is no `connected`.
@@ -391,8 +404,19 @@ fn conv_id(file: &str) -> Result<String, usize> {
     id.map(String::from).ok_or(EMFILE)
 }
 
-/// A new unix socket's state.
-const UNIX_SOCK: Sock = Sock { stream: true, nonblock: false, inet6: false, peer: None, unix: Some(UNNAMED), passcred: false, records: false };
+/// A new unix socket's state (an `AF_INET` one's but for its kind, family
+/// and names).
+const UNIX_SOCK: Sock = Sock {
+    stream: true,
+    nonblock: false,
+    inet6: false,
+    peer: None,
+    unix: Some(UNNAMED),
+    passcred: false,
+    records: false,
+    bound: None,
+    taken: NO_SEQ,
+};
 
 /// The largest record: what the kernel hands a file in one write (a larger
 /// `write` would reach `/net/unix` in pieces, each a record).
@@ -978,14 +1002,15 @@ pub fn shutdown(fd: usize, how: usize) -> R {
 }
 
 /// A unix socket's own name; a UDP socket's local address, netd's; a TCP
-/// one's is not known: any address, port 0.
+/// one's as bound (a listener's port netd's choice), else not known: any
+/// address, port 0.
 pub fn getsockname(fd: usize, addr: usize, alen: usize) -> R {
     let (conv, s) = sock(fd)?;
     if let Some(u) = s.unix {
         return put_name(addr, alen, &u.name);
     }
     let any = if s.inet6 { Addr::ANY6 } else { Addr::ANY4 };
-    let local = if s.stream { None } else { udp_local(&conv) };
+    let local = if s.stream { s.bound } else { udp_local(&conv) };
     put_addr(addr, alen, local.unwrap_or(any), s.inet6)
 }
 
@@ -1046,11 +1071,16 @@ pub fn setsockopt(fd: usize, level: usize, opt: usize, val: usize, len: usize) -
     Ok(0)
 }
 
-/// `bind`: a unix socket takes the name its `listen` announces; an
-/// `AF_INET` or `AF_INET6` one ignores it (a client socket binds
+/// `bind`: a unix socket takes the name its `listen` announces; a TCP one
+/// the address and port it listens on; a UDP one ignores it (it binds
 /// implicitly).
 pub fn bind(fd: usize, addr: usize, len: usize) -> R {
-    let Some(u) = sock(fd)?.1.unix else {
+    let s = sock(fd)?.1;
+    let Some(u) = s.unix else {
+        if s.stream {
+            let a = get_addr(addr, len, s.inet6)?;
+            files::with_sock(fd, |s| s.bound = Some(a));
+        }
         return Ok(0);
     };
     let name = get_name(addr, len)?;
@@ -1058,12 +1088,20 @@ pub fn bind(fd: usize, addr: usize, len: usize) -> R {
     Ok(0)
 }
 
-/// `listen`: a bound unix socket announces its name in `/net/unix`. No
-/// `AF_INET` or `AF_INET6` listeners.
+/// How long `listen` waits for netd's answer.
+const LISTEN_TIMEOUT_NS: u64 = 5_000_000_000;
+
+/// `listen`: a bound unix socket announces its name in `/net/unix`; a TCP
+/// socket announces its address and port (any address and a free port when
+/// not bound) and waits for netd's answer, `listening <port>`, which names
+/// the port it chose for port 0 (`docs/net.md`).
 pub fn listen(fd: usize) -> R {
     let (conv, s) = sock(fd)?;
     let Some(u) = s.unix else {
-        return Err(EOPNOTSUPP);
+        if !s.stream {
+            return Err(EOPNOTSUPP);
+        }
+        return tcp_listen(fd, &conv, &s);
     };
     match state(&conv) {
         State::Listening => return Ok(0),
@@ -1075,13 +1113,76 @@ pub fn listen(fd: usize) -> R {
     fs::write(&format!("{conv}/ctl"), 0, &cmd).map(|_| 0).ok_or(EADDRINUSE)
 }
 
-/// `accept` / `accept4`: the next connection queued on a unix listener,
-/// waited for unless the listener is non-blocking; `flags` as `socket`'s
-/// type flags. The new socket has the listener's name, its peer none.
+fn tcp_listen(fd: usize, conv: &str, s: &Sock) -> R {
+    match state(conv) {
+        State::Listening => return Ok(0),
+        State::Pending => {}
+        _ => return Err(EINVAL),
+    }
+    let any = if s.inet6 { Addr::ANY6 } else { Addr::ANY4 };
+    let mut a = s.bound.unwrap_or(any);
+    let cmd = format!("announce {}!{}", a.text(), a.port);
+    fs::write(&format!("{conv}/ctl"), 0, cmd.as_bytes()).ok_or(EIO)?;
+    // Until netd answers, the status is the clone's (`cloned`).
+    let mut answer = String::new();
+    wait(
+        || {
+            answer = status_text(conv);
+            !answer.is_empty() && answer != "cloned"
+        },
+        time::monotonic_ns() + LISTEN_TIMEOUT_NS,
+    )?;
+    if let Some(port) = answer.strip_prefix("listening") {
+        if a.port == 0 {
+            a.port = port.trim().parse().map_err(|_| EIO)?;
+        }
+    } else if !answer.starts_with("accepted") {
+        return Err(match answer.as_str() {
+            "addrinuse" => EADDRINUSE,
+            "addrnotavail" => EADDRNOTAVAIL,
+            _ => EINVAL,
+        });
+    }
+    files::with_sock(fd, |s| s.bound = Some(a));
+    Ok(0)
+}
+
+/// A conversation's `status`, its first line.
+fn status_text(conv: &str) -> String {
+    let mut b = [0u8; 160];
+    let n = fs::read(&format!("{conv}/status"), 0, &mut b).unwrap_or(0);
+    let text = core::str::from_utf8(&b[..n]).unwrap_or("");
+    String::from(text.lines().next().unwrap_or("").trim())
+}
+
+/// The connection TCP listener `conv` offers, not the one it took last
+/// (`taken`): its index, peer and handoff number, from `accepted <N>
+/// [<addr>!<port>] <seq>`.
+fn tcp_offer(conv: &str, taken: u32) -> Option<(String, Option<Addr>, u32)> {
+    let st = status_text(conv);
+    let rest = st.strip_prefix("accepted ")?;
+    let mut words = rest.split(' ');
+    let id = words.next()?;
+    let mut words: Vec<&str> = words.collect();
+    let seq: u32 = words.pop()?.parse().ok()?;
+    if seq == taken || id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let peer = words.first().and_then(|w| Addr::parse(w));
+    Some((String::from(id), peer, seq))
+}
+
+/// `accept` / `accept4`: the next connection queued on a listener, waited
+/// for unless the listener is non-blocking; `flags` as `socket`'s type
+/// flags. A unix one has the listener's name, its peer none; a TCP one
+/// the listener's address and its peer's.
 pub fn accept(fd: usize, addr: usize, alen: usize, flags: usize) -> R {
     let (conv, s) = sock(fd)?;
     let Some(u) = s.unix else {
-        return Err(EOPNOTSUPP);
+        if !s.stream {
+            return Err(EOPNOTSUPP);
+        }
+        return tcp_accept(fd, &conv, &s, addr, alen, flags);
     };
     if state(&conv) != State::Listening {
         return Err(EINVAL);
@@ -1099,6 +1200,46 @@ pub fn accept(fd: usize, addr: usize, alen: usize, flags: usize) -> R {
     let names = UnixNames { name: u.name, peer: Name::NONE };
     let new = open_conv("unix", &id, flags, Sock { unix: Some(names), records: s.records, ..UNIX_SOCK })?;
     put_name(addr, alen, &Name::NONE)?;
+    Ok(new)
+}
+
+/// How long `taken` waits for room in netd's request ring.
+const TAKEN_TIMEOUT_NS: u64 = 5_000_000_000;
+
+/// A TCP listener's `accept`: netd offers each connection on the
+/// listener's `status` (`accepted <N> ...`, numbered) until told `taken
+/// <seq>`, after which it offers the next (`docs/net.md`).
+fn tcp_accept(fd: usize, conv: &str, s: &Sock, addr: usize, alen: usize, flags: usize) -> R {
+    if state(conv) != State::Listening {
+        return Err(EINVAL);
+    }
+    let mut offer = None;
+    let ready = |offer: &mut Option<_>| {
+        *offer = tcp_offer(conv, s.taken);
+        offer.is_some()
+    };
+    if s.nonblock {
+        if !ready(&mut offer) {
+            return Err(EAGAIN);
+        }
+    } else {
+        wait(|| ready(&mut offer), 0)?;
+    }
+    let (id, peer, seq) = offer.ok_or(EAGAIN)?;
+    let sock = Sock { peer, bound: s.bound, taken: NO_SEQ, ..*s };
+    let new = open_conv("tcp", &id, flags, sock);
+    // Taken, opened or not (a failed open hung it up): netd offers the
+    // next one. Its request ring may be full for a while.
+    files::with_sock(fd, |s| s.taken = seq);
+    let cmd = format!("taken {seq}");
+    let deadline = time::monotonic_ns() + TAKEN_TIMEOUT_NS;
+    while fs::write(&format!("{conv}/ctl"), 0, cmd.as_bytes()).is_none() && time::monotonic_ns() < deadline {
+        let wseq = task::wait_seq();
+        task::block_until(task::WAIT_ANY, wseq, time::monotonic_ns() + RETRY_NS);
+    }
+    let new = new?;
+    let any = if s.inet6 { Addr::ANY6 } else { Addr::ANY4 };
+    put_addr(addr, alen, peer.unwrap_or(any), s.inet6)?;
     Ok(new)
 }
 
@@ -1141,6 +1282,10 @@ pub fn poll_events(fd: usize) -> Option<u16> {
         State::Connected => input | POLLOUT,
         State::Pending if !s.stream && s.peer.is_some() => input | POLLOUT,
         State::Pending => input,
+        // A TCP listener: a connection offered that it has not taken.
+        State::Listening if s.unix.is_none() => {
+            if tcp_offer(&conv, s.taken).is_some() { POLLIN } else { 0 }
+        }
         State::Listening if queued(&conv) => POLLIN,
         State::Listening => 0,
         State::HungUp => POLLIN | POLLHUP,
