@@ -1436,7 +1436,17 @@ pub fn pwrite(fd: usize, buf: usize, count: usize, off: usize) -> R {
     write_at(&real, off, &tmp)
 }
 
-/// `pwritev` / `pwritev2` (flags ignored): one `pwrite` per buffer.
+/// `pwritev2` (flags ignored): at offset -1, the fd's own position, as
+/// `writev` (a pipe or a socket too: Bun writes a piped stdout so);
+/// elsewhere [`pwritev`].
+pub fn pwritev2(fd: usize, iov: usize, cnt: usize, off: usize) -> R {
+    if off as isize == -1 {
+        return rw_vec(fd, iov, cnt, true);
+    }
+    pwritev(fd, iov, cnt, off)
+}
+
+/// `pwritev`: one `pwrite` per buffer.
 pub fn pwritev(fd: usize, iov: usize, cnt: usize, off: usize) -> R {
     if cnt > 1024 {
         return Err(EINVAL);
