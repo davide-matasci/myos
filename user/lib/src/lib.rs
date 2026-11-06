@@ -263,9 +263,11 @@ pub fn listdir(path: &[u8], buf: &mut [u8]) -> usize {
     }
 }
 
-/// A path call on `path` (relative to the cwd) with one more argument.
+/// A path call on `path` (relative to the cwd) with one more argument:
+/// whether it succeeded (0; a failure is one of the error results, which
+/// for a mkdir says why, `MYOS_SYSERR_ENOSPC` and the rest).
 fn path_call(nr: usize, path: &[u8], arg: usize) -> bool {
-    unsafe { sys6(nr, AT_FDCWD, path.as_ptr() as usize, path.len(), arg, 0, 0) != usize::MAX }
+    unsafe { sys6(nr, AT_FDCWD, path.as_ptr() as usize, path.len(), arg, 0, 0) == 0 }
 }
 
 pub fn mkdir(path: &[u8]) -> bool {
@@ -282,12 +284,12 @@ pub fn unlink(path: &[u8]) -> bool {
 
 pub fn rename(old: &[u8], new: &[u8]) -> bool {
     let (o, n) = (old.as_ptr() as usize, new.as_ptr() as usize);
-    unsafe { sys6(SYS_RENAMEAT, AT_FDCWD, o, old.len(), AT_FDCWD, n, new.len()) != usize::MAX }
+    unsafe { sys6(SYS_RENAMEAT, AT_FDCWD, o, old.len(), AT_FDCWD, n, new.len()) == 0 }
 }
 
 pub fn symlink(target: &[u8], linkpath: &[u8]) -> bool {
     let (t, l) = (target.as_ptr() as usize, linkpath.as_ptr() as usize);
-    unsafe { sys6(SYS_SYMLINKAT, t, target.len(), AT_FDCWD, l, linkpath.len(), 0) != usize::MAX }
+    unsafe { sys6(SYS_SYMLINKAT, t, target.len(), AT_FDCWD, l, linkpath.len(), 0) == 0 }
 }
 
 pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {

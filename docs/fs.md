@@ -205,6 +205,15 @@ Linux and e2fsprogs know: 1, 2 and 4 KiB blocks, indirect blocks up to
 triple, symlinks, sparse superblocks and files over 2 GiB. Format with
 `mkfs.ext2` (or Linux's `mke2fs -t ext2`) and mount with fstype `ext2`.
 
-`cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots
-carry an empty 4 GiB scratch disk (`/dev/nvme1n1/data`) for big
-filesystems.
+A failure says why: a full filesystem is `ENOSPC` on a write, a mkdir, a
+rename and a symlink alike, and a mkdir or symlink that finds no room for
+its block takes its name back, leaving nothing half made. A rename onto a
+directory that is not empty is `ENOTEMPTY`, a device's failure `EIO` and a
+damaged directory `EINVAL` (the module's hooks return `VFS_E*`,
+`modules/abi`, which the syscalls pass on; the kernel's own filesystems
+give the generic failure, whose errno libgloss works out).
+
+`cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`, with
+`get_myos_upgrades` doing what `get-myos -u` does to `/data/apps`
+(`MYOS_EXT2_TEST_BYTES` sizes its disk). CI boots carry an empty 4 GiB
+scratch disk (`/dev/nvme1n1/data`) for big filesystems.

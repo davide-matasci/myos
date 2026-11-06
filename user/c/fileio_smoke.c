@@ -697,11 +697,31 @@ static void space(void) {
           "a removed file gives its space back");
 }
 
+/* A rename onto a directory that is not empty says ENOTEMPTY: the
+ * filesystem's reason, where libgloss used to guess (EACCES). */
+static void rename_not_empty(void) {
+    char a[192], b[192], x[200];
+    snprintf(a, sizeof a, "%s", in_dir("from"));
+    snprintf(b, sizeof b, "%s", in_dir("onto"));
+    snprintf(x, sizeof x, "%s/x", b);
+    int fd = -1;
+    check(mkdir(a, 0755) == 0 && mkdir(b, 0755) == 0 && (fd = open(x, O_WRONLY | O_CREAT, 0644)) >= 0,
+          "two directories, the second with a file");
+    close(fd);
+    errno = 0;
+    check(rename(a, b) == -1 && errno == ENOTEMPTY, "a rename onto a directory with a file: ENOTEMPTY");
+    unlink(x);
+    rmdir(b);
+    rmdir(a);
+}
+
 /* `enospc DIR`: fill the filesystem DIR is on. The write that finds it full
  * gives what fit and the next one ENOSPC (not EIO, which apk showed on a
  * full /data), as does a pwrite into the hole a grown file has; statvfs
- * shows it full. The file stays, for the Linux layer's check
- * (user/tests/kernel.sh). */
+ * shows it full. Then a mkdir, and a symlink too long to keep in its inode,
+ * say ENOSPC too (get-myos's renames and mkdirs on a full /data said only
+ * that they failed, libgloss guessing ENOENT). The file stays, for the Linux
+ * layer's check (user/tests/kernel.sh). */
 static void fill(void) {
     static char mib[1 << 20];
     const char *f = in_dir("fill");
@@ -726,6 +746,21 @@ static void fill(void) {
     check(pwrite(fd, mib, 4096, total + 4096) == -1 && errno == ENOSPC, "pwrite into the hole: ENOSPC");
     check(fstatvfs(fd, &st) == 0 && st.f_bavail * st.f_frsize < sizeof mib, "statvfs shows it full");
     close(fd);
+    /* The last free blocks, a few at a time, so that nothing at all is
+     * left for a new directory's block or a long symlink's. */
+    fd = open(in_dir("crumbs"), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    while (fd >= 0 && write(fd, mib, 1024) > 0) {
+    }
+    close(fd);
+    errno = 0;
+    check(mkdir(in_dir("newdir"), 0755) == -1 && errno == ENOSPC, "a mkdir on a full filesystem: ENOSPC");
+    char target[200];
+    memset(target, 't', sizeof target - 1);
+    target[sizeof target - 1] = '\0';
+    errno = 0;
+    check(symlink(target, in_dir("longlink")) == -1 && errno == ENOSPC,
+          "a symlink with a block of its own on a full filesystem: ENOSPC");
+    unlink(in_dir("crumbs"));
 }
 
 /* The image is read-only and full, and a missing path is on no filesystem. */
@@ -751,6 +786,7 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "enospc") == 0) {
         snprintf(dir, sizeof dir, "%s", argv[2]);
+        rename_not_empty();
         fill();
         return failures != 0;
     }

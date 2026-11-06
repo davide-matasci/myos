@@ -106,6 +106,27 @@ static int failed(long ret) {
     return ret == (long)MYOS_SYSERR;
 }
 
+/* The errno a mkdir's, symlink's or rename's result names: the
+ * filesystem's reason (a full disk, a device error, a name taken, a
+ * directory not empty, a damaged one); 0 for success or the generic
+ * failure, whose errno the caller works out. */
+static int name_errno(long ret) {
+    switch ((unsigned long)ret) {
+    case MYOS_ENOSPC:
+        return ENOSPC;
+    case MYOS_EIO:
+        return EIO;
+    case MYOS_EEXIST:
+        return EEXIST;
+    case MYOS_ENOTEMPTY:
+        return ENOTEMPTY;
+    case MYOS_EINVAL:
+        return EINVAL;
+    default:
+        return 0;
+    }
+}
+
 /* ---- stat ---------------------------------------------------------------- */
 
 static void fill_stat(struct stat *st, const struct myos_stat *src) {
@@ -304,7 +325,12 @@ int __myos_mkdirat(int dirfd, const char *path, mode_t mode) {
     if (len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_MKNODAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, MYOS_MKNOD_DIR, 0, 0))) {
+    long ret = myos_syscall6(MYOS_SYS_MKNODAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, MYOS_MKNOD_DIR, 0, 0);
+    if (name_errno(ret) != 0) {
+        errno = name_errno(ret);
+        return -1;
+    }
+    if (failed(ret)) {
         /* `mkdir -p` tolerates EEXIST only. */
         errno = make_errno(dirfd, path, EROFS);
         return -1;
@@ -354,8 +380,13 @@ int __myos_symlinkat(const char *target, int dirfd, const char *path) {
     if (tlen < 0 || len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_SYMLINKAT, (long)(uintptr_t)target, tlen, k_dirfd(dirfd),
-                             (long)(uintptr_t)path, len, 0))) {
+    long ret = myos_syscall6(MYOS_SYS_SYMLINKAT, (long)(uintptr_t)target, tlen, k_dirfd(dirfd),
+                             (long)(uintptr_t)path, len, 0);
+    if (name_errno(ret) != 0) {
+        errno = name_errno(ret);
+        return -1;
+    }
+    if (failed(ret)) {
         errno = make_errno(dirfd, path, EROFS);
         return -1;
     }
@@ -400,8 +431,13 @@ int __myos_renameat(int olddirfd, const char *oldpath, int newdirfd, const char 
     if (olen < 0 || nlen < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_RENAMEAT, k_dirfd(olddirfd), (long)(uintptr_t)oldpath, olen,
-                             k_dirfd(newdirfd), (long)(uintptr_t)newpath, nlen))) {
+    long ret = myos_syscall6(MYOS_SYS_RENAMEAT, k_dirfd(olddirfd), (long)(uintptr_t)oldpath, olen,
+                             k_dirfd(newdirfd), (long)(uintptr_t)newpath, nlen);
+    if (name_errno(ret) != 0) {
+        errno = name_errno(ret);
+        return -1;
+    }
+    if (failed(ret)) {
         errno = __myos_fstatat(olddirfd, oldpath, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EACCES : missing(olddirfd, oldpath);
         return -1;
     }

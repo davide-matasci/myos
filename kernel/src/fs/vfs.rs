@@ -668,6 +668,45 @@ impl WriteError {
     }
 }
 
+/// Why a mkdir, rename or symlink did nothing: what the caller's errno
+/// becomes (a filesystem module says, [`myos_abi::VFS_ENOSPC`] and the rest;
+/// the kernel's own filesystems give the generic failure).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NameError {
+    /// The generic failure: nothing there, read-only, refused.
+    Failed,
+    /// The filesystem has no room for the name or its blocks (`ENOSPC`).
+    NoSpace,
+    /// The device failed under the filesystem (`EIO`).
+    Io,
+    /// The name is taken (`EEXIST`).
+    Exists,
+    /// A rename's target is a directory that is not empty (`ENOTEMPTY`).
+    NotEmpty,
+    /// The filesystem found its own structures wrong (`EINVAL`).
+    Invalid,
+}
+
+impl NameError {
+    /// A module hook's result: 0, or which failure.
+    fn from_rc(rc: i32) -> Result<(), NameError> {
+        match rc {
+            0 => Ok(()),
+            myos_abi::VFS_ENOSPC => Err(NameError::NoSpace),
+            myos_abi::VFS_EIO => Err(NameError::Io),
+            myos_abi::VFS_EEXIST => Err(NameError::Exists),
+            myos_abi::VFS_ENOTEMPTY => Err(NameError::NotEmpty),
+            myos_abi::VFS_EINVAL => Err(NameError::Invalid),
+            _ => Err(NameError::Failed),
+        }
+    }
+
+    /// A kernel filesystem's answer: done, or the generic failure.
+    fn from_ok(ok: bool) -> Result<(), NameError> {
+        if ok { Ok(()) } else { Err(NameError::Failed) }
+    }
+}
+
 /// Write to an open vnode at `pos`: the bytes written, or why none were.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let written = write_through(node, pos, buf);
@@ -919,17 +958,15 @@ pub fn size_of(node: &Vnode) -> Option<usize> {
     stat_node(node).map(|s| s.size as usize)
 }
 
-/// Create directory at `path` (must resolve to a writable mount).
-pub fn mkdir(path: &str) -> bool {
+/// Create directory at `path` (must resolve to a writable mount), or say
+/// why not.
+pub fn mkdir(path: &str) -> Result<(), NameError> {
     let _tree = tree_read();
     let Some((idx, ref rel)) = resolve_index(path) else {
-        return false;
+        return Err(NameError::Failed);
     };
-    if rel.is_empty() {
-        return false;
-    }
-    if !backend_has_write(idx) {
-        return false;
+    if rel.is_empty() || !backend_has_write(idx) {
+        return Err(NameError::Failed);
     }
     backend_mkdir(idx, rel)
 }
@@ -977,23 +1014,23 @@ pub fn unlink(path: &str) -> bool {
 /// Rename within a single mount (`old` and `new` must resolve to the same
 /// mount). What is open below `old` follows it; a file `new` replaces
 /// stays for whoever holds it.
-pub fn rename(old: &str, new: &str) -> bool {
+pub fn rename(old: &str, new: &str) -> Result<(), NameError> {
     if holds_mount(old) {
-        return false;
+        return Err(NameError::Failed);
     }
     reap();
     let _tree = tree_write();
     let Some((idx_o, ref rel_o)) = resolve_index(old) else {
-        return false;
+        return Err(NameError::Failed);
     };
     let Some((idx_n, ref rel_n)) = resolve_index(new) else {
-        return false;
+        return Err(NameError::Failed);
     };
     if idx_o != idx_n || rel_o.is_empty() || rel_n.is_empty() {
-        return false;
+        return Err(NameError::Failed);
     }
     if !backend_has_write(idx_o) {
-        return false;
+        return Err(NameError::Failed);
     }
     if rel_o == rel_n {
         return backend_rename(idx_o, rel_o, rel_n);
@@ -1008,12 +1045,10 @@ pub fn rename(old: &str, new: &str) -> bool {
         pagecache::forget_at(idx_n, rel_n);
         hide_held(idx_n, rel_n);
     }
-    if !backend_rename(idx_o, rel_o, rel_n) {
-        return false;
-    }
+    backend_rename(idx_o, rel_o, rel_n)?;
     node::kill(idx_n, rel_n);
     node::moved(idx_o, rel_o, rel_n);
-    true
+    Ok(())
 }
 
 /// The regular file at `rel` of mount `idx` is about to go: when something
@@ -1174,17 +1209,14 @@ pub fn symlinks_possible() -> bool {
     super::tmpfs::has_symlinks() || MODULE_SYMLINKS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// Create symlink at `linkpath` with contents `target`.
-pub fn symlink(target: &str, linkpath: &str) -> bool {
+/// Create symlink at `linkpath` with contents `target`, or say why not.
+pub fn symlink(target: &str, linkpath: &str) -> Result<(), NameError> {
     let _tree = tree_read();
     let Some((idx, ref rel)) = resolve_index(linkpath) else {
-        return false;
+        return Err(NameError::Failed);
     };
-    if rel.is_empty() {
-        return false;
-    }
-    if !backend_has_write(idx) {
-        return false;
+    if rel.is_empty() || !backend_has_write(idx) {
+        return Err(NameError::Failed);
     }
     backend_symlink(idx, target, rel)
 }
@@ -1789,17 +1821,20 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Result<usize,
     }
 }
 
-fn backend_mkdir(idx: usize, rel: &str) -> bool {
+fn backend_mkdir(idx: usize, rel: &str) -> Result<(), NameError> {
     let backend = {
         let mounts = MOUNTS.lock();
         let Some(m) = mounts.get(idx) else {
-            return false;
+            return Err(NameError::Failed);
         };
         m.backend
     };
     match backend {
-        MountBackend::Kernel(ops) => (ops.mkdir)(rel),
-        MountBackend::Module(ops) => module_path_i32(ops.mkdir, rel),
+        MountBackend::Kernel(ops) => NameError::from_ok((ops.mkdir)(rel)),
+        MountBackend::Module(ops) => match ops.mkdir {
+            Some(mkdir) => NameError::from_rc(unsafe { mkdir(rel.as_ptr(), rel.len()) }),
+            None => Err(NameError::Failed),
+        },
     }
 }
 
@@ -1831,30 +1866,30 @@ fn backend_unlink(idx: usize, rel: &str) -> bool {
     }
 }
 
-fn backend_rename(idx: usize, old: &str, new: &str) -> bool {
+fn backend_rename(idx: usize, old: &str, new: &str) -> Result<(), NameError> {
     let backend = {
         let mounts = MOUNTS.lock();
         let Some(m) = mounts.get(idx) else {
-            return false;
+            return Err(NameError::Failed);
         };
         m.backend
     };
     match backend {
-        MountBackend::Kernel(ops) => (ops.rename)(old, new),
+        MountBackend::Kernel(ops) => NameError::from_ok((ops.rename)(old, new)),
         MountBackend::Module(ops) => module_rename(&ops, old, new),
     }
 }
 
-fn backend_symlink(idx: usize, target: &str, linkpath: &str) -> bool {
+fn backend_symlink(idx: usize, target: &str, linkpath: &str) -> Result<(), NameError> {
     let backend = {
         let mounts = MOUNTS.lock();
         let Some(m) = mounts.get(idx) else {
-            return false;
+            return Err(NameError::Failed);
         };
         m.backend
     };
     match backend {
-        MountBackend::Kernel(ops) => (ops.symlink)(target, linkpath),
+        MountBackend::Kernel(ops) => NameError::from_ok((ops.symlink)(target, linkpath)),
         MountBackend::Module(ops) => module_symlink(&ops, target, linkpath),
     }
 }
@@ -1970,25 +2005,18 @@ fn module_write(ops: &ModuleVfsOps, rel: &str, pos: usize, buf: &[u8]) -> Result
     WriteError::from_rc(unsafe { (write)(rel.as_ptr(), rel.len(), pos, buf.as_ptr(), buf.len()) })
 }
 
-fn module_rename(ops: &ModuleVfsOps, old: &str, new: &str) -> bool {
+fn module_rename(ops: &ModuleVfsOps, old: &str, new: &str) -> Result<(), NameError> {
     let Some(rename) = ops.rename else {
-        return false;
+        return Err(NameError::Failed);
     };
-    unsafe { (rename)(old.as_ptr(), old.len(), new.as_ptr(), new.len()) == 0 }
+    NameError::from_rc(unsafe { (rename)(old.as_ptr(), old.len(), new.as_ptr(), new.len()) })
 }
 
-fn module_symlink(ops: &ModuleVfsOps, target: &str, linkpath: &str) -> bool {
+fn module_symlink(ops: &ModuleVfsOps, target: &str, linkpath: &str) -> Result<(), NameError> {
     let Some(symlink) = ops.symlink else {
-        return false;
+        return Err(NameError::Failed);
     };
-    unsafe {
-        (symlink)(
-            target.as_ptr(),
-            target.len(),
-            linkpath.as_ptr(),
-            linkpath.len(),
-        ) == 0
-    }
+    NameError::from_rc(unsafe { (symlink)(target.as_ptr(), target.len(), linkpath.as_ptr(), linkpath.len()) })
 }
 
 fn module_readlink(ops: &ModuleVfsOps, rel: &str, buf: &mut [u8]) -> Option<usize> {
