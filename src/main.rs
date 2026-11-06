@@ -592,17 +592,18 @@ fn add_virtio_blk_riscv64(cmd: &mut Command) {
 /// listening. QEMU `guestfwd=…-tcp:127.0.0.1:8765` aborts at startup with
 /// "Connection refused" if nothing is bound.
 ///
+/// The test web server (`test_www`) for every test run: it is on the host
+/// loopback, and the socket smoke (`heap`, `heap mini`) fetches from it.
 /// The `packages` test installs this build's packages: pack them for `arch`
 /// and serve `target/packages/` on the host loopback, which the guest
-/// reaches as http://10.0.2.2:8765, and the test web server
-/// (`test_www`). A run that skips `net` stays network-free.
+/// reaches as http://10.0.2.2:8765. A run that skips `net` packs none.
 fn start_package_mirror(arch: &str, mode: &Mode) {
     let Mode::Tests(sel) = mode else { return };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    test_www::start(&root);
     if !sel.needs_network() {
         return;
     }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    test_www::start(&root);
     let dir = packages::build(&root, arch);
     if packages::serve_mirror(dir, arch) {
         eprintln!("package mirror: serving target/packages on 127.0.0.1:{}", packages::MIRROR_PORT);

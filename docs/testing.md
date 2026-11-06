@@ -135,7 +135,8 @@ and clicks its mice.
 
 The tests that fetch over HTTP(S) use the launcher's test web server
 (`src/test_www.rs`), not a site on the internet, whose answers vary from
-run to run. It serves `/hello.txt` on the guest's `10.0.2.2:8766` (HTTP)
+run to run. It runs for every test run, the quick ones too (the socket
+smoke of `heap mini` fetches from it). It serves `/hello.txt` on the guest's `10.0.2.2:8766` (HTTP)
 and `10.0.2.2:8767` (HTTPS, with a certificate of the test CA in
 `user/tests/tls`, made by its `make.sh` and committed, signed through an
 intermediate CA the server sends along, as a site's is). The tests trust
