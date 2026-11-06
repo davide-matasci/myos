@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -1678,6 +1679,92 @@ static int inet6_udp(void) {
     return failures != 0;
 }
 
+/* A TCP client of 127.0.0.1:port (network order), connected. */
+static int tcp_client(in_port_t port) {
+    struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = port, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0 && connect(fd, (struct sockaddr *)&to, sizeof to) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* `tcp`: a TCP server over loopback, set up as Bun's HTTP server does
+ * (Claude Code's sign-in listener): non-blocking, SO_REUSEADDR, bound to
+ * 127.0.0.1 port 0, TCP_DEFER_ACCEPT, the port from getsockname;
+ * connections accepted after epoll and after poll; an IPv6 listener on ::
+ * takes IPv4 connections too. */
+static int tcp_server(void) {
+    struct sockaddr_in me = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) }, got, peer;
+    struct sockaddr_in6 me6 = { .sin6_family = AF_INET6 }, peer6;
+    static const unsigned char mapped[16] = { [10] = 0xff, [11] = 0xff, [12] = 127, [15] = 1 };
+    struct epoll_event ev = { .events = EPOLLIN, .data.u64 = 7 };
+    socklen_t len = sizeof got;
+    int on = 1;
+    char b[8];
+    int ls = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
+    check(ls >= 0 && setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on) == 0
+              && bind(ls, (struct sockaddr *)&me, sizeof me) == 0 && listen(ls, 512) == 0
+              && setsockopt(ls, IPPROTO_TCP, TCP_DEFER_ACCEPT, &on, sizeof on) == 0,
+          "TCP socket, bind 127.0.0.1:0, listen");
+    check(getsockname(ls, (struct sockaddr *)&got, &len) == 0 && got.sin_family == AF_INET && got.sin_port != 0
+              && got.sin_addr.s_addr == htonl(INADDR_LOOPBACK),
+          "TCP getsockname: the port listen chose");
+    int other = socket(AF_INET, SOCK_STREAM, 0);
+    me.sin_port = got.sin_port;
+    check(other >= 0 && bind(other, (struct sockaddr *)&me, sizeof me) == 0 && listen(other, 1) < 0 && errno == EADDRINUSE,
+          "TCP listen on a taken port: EADDRINUSE");
+    close(other);
+    check(accept4(ls, NULL, NULL, 0) < 0 && errno == EAGAIN, "TCP nonblocking accept: EAGAIN");
+
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    check(ep >= 0 && epoll_ctl(ep, EPOLL_CTL_ADD, ls, &ev) == 0, "epoll_ctl add the listener");
+    int c = tcp_client(got.sin_port);
+    check(c >= 0, "TCP connect to the listener");
+    struct epoll_event out_ev;
+    check(epoll_wait(ep, &out_ev, 1, 10000) == 1 && out_ev.data.u64 == 7, "epoll_wait: a connection to accept");
+    len = sizeof peer;
+    int a = accept4(ls, (struct sockaddr *)&peer, &len, SOCK_CLOEXEC);
+    check(a >= 0 && peer.sin_family == AF_INET && peer.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && peer.sin_port != 0,
+          "TCP accept4: the peer is 127.0.0.1");
+    check(accept4(ls, NULL, NULL, 0) < 0 && errno == EAGAIN, "TCP accept: taken, nothing more waiting");
+    len = sizeof got;
+    check(getsockname(a, (struct sockaddr *)&me, &len) == 0 && me.sin_port == got.sin_port,
+          "TCP getsockname of an accepted socket: the listener's port");
+    check(write(c, "ping", 4) == 4 && read(a, b, 4) == 4 && memcmp(b, "ping", 4) == 0
+              && write(a, "pong", 4) == 4 && read(c, b, 4) == 4 && memcmp(b, "pong", 4) == 0,
+          "TCP exchange over an accepted socket");
+    close(a);
+    close(c);
+
+    struct pollfd p = { .fd = ls, .events = POLLIN };
+    c = tcp_client(got.sin_port);
+    check(c >= 0 && poll(&p, 1, 10000) == 1 && (p.revents & POLLIN), "TCP poll: a second connection");
+    a = accept(ls, NULL, NULL);
+    check(a >= 0 && write(c, "x", 1) == 1 && read(a, b, 1) == 1 && b[0] == 'x', "TCP accept of the second");
+    close(a);
+    close(c);
+    close(ep);
+    close(ls);
+
+    ls = socket(AF_INET6, SOCK_STREAM, 0);
+    len = sizeof me6;
+    check(ls >= 0 && bind(ls, (struct sockaddr *)&me6, sizeof me6) == 0 && listen(ls, 8) == 0
+              && getsockname(ls, (struct sockaddr *)&me6, &len) == 0 && me6.sin6_port != 0,
+          "TCP listen on [::]:0");
+    c = tcp_client(me6.sin6_port);
+    len = sizeof peer6;
+    a = c >= 0 ? accept(ls, (struct sockaddr *)&peer6, &len) : -1;
+    check(a >= 0 && peer6.sin6_family == AF_INET6 && memcmp(peer6.sin6_addr.s6_addr, mapped, 16) == 0,
+          "TCP [::] listener: an IPv4 peer is ::ffff:127.0.0.1");
+    close(a);
+    close(c);
+    close(ls);
+    out(failures ? "LINUX-TCP FAIL\n" : "LINUX-TCP OK\n");
+    return failures != 0;
+}
+
 static void dns_probe(const char *ns, const char *dead) {
     static const unsigned char q[] = { 0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 'g', 'i', 't', 'h', 'u',
                                        'b', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1 };
@@ -1970,6 +2057,9 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "inet6") == 0) {
         return inet6_udp();
+    }
+    if (argc > 1 && strcmp(argv[1], "tcp") == 0) {
+        return tcp_server();
     }
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);

@@ -426,15 +426,21 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   signalfd_siginfo`, with only `ssi_signo` set). `EPOLLET` reports a
   readiness once until the object changes. `EPOLLPRI`, `EPOLLRDHUP`,
   `EPOLLEXCLUSIVE` and `epoll_pwait`'s mask are ignored.
-- **Sockets.** IPv4 and IPv6 clients and `AF_UNIX` streams only.
-  - `listen` and `accept` serve `AF_UNIX` only; TCP's `listen` is
-    `EOPNOTSUPP` (issue #415).
+- **Sockets.** IPv4 and IPv6 TCP and UDP, and `AF_UNIX` streams.
+  - A TCP `listen` announces the bound address and port to netd (any
+    address and a free port when not bound) and takes the port netd
+    chose for port 0; `accept` opens the connection netd offers on the
+    listener's `status` and tells it `taken` (`docs/net.md`
+    "Listening"). An `AF_INET6` listener on `::` takes IPv4 connections
+    too. A port already taken is `EADDRINUSE` at `listen`, not at
+    `bind`. A UDP `bind` is ignored: netd picks the port.
   - `socketpair` makes `AF_UNIX` `SOCK_STREAM` or `SOCK_SEQPACKET` pairs.
     A `SOCK_SEQPACKET` record is at most 8 KiB (`EMSGSIZE`). No
     `SOCK_DGRAM`.
   - No half-close: `shutdown` hangs up only for `SHUT_RDWR`.
-  - A TCP socket's local address reads as the any address, port 0; a UDP
-    one's is netd's.
+  - A TCP socket's local address is the one it was bound to (a
+    listener's port netd's choice, an accepted socket's its listener's),
+    else the any address, port 0; a UDP one's is netd's.
   - Options are ignored, `IPV6_V6ONLY` too.
   - `poll` reports a connected socket writable even with no send room;
     a nonblocking write then says `EAGAIN`.
