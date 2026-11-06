@@ -255,6 +255,15 @@ fn full_disk_is_no_space() {
         }
     }
     assert!(pos > 1 << 20);
+    // A new directory's first block, and a symlink's, find no room: the
+    // name is not left behind, half made (e2fsck below), nor its inode.
+    let free_inodes = fs.usage().free_inodes;
+    assert_eq!(fs.mkdir("d"), Err(Error::NoSpace));
+    assert_eq!(fs.stat("d").map(|_| ()), Err(Error::NotFound));
+    let long = "t".repeat(200);
+    assert_eq!(fs.symlink(&long, "l"), Err(Error::NoSpace));
+    assert_eq!(fs.stat("l").map(|_| ()), Err(Error::NotFound));
+    assert_eq!(fs.usage().free_inodes, free_inodes);
     drop(fs.unmount().unwrap());
     e2fsck_clean(&path);
 }
@@ -384,6 +393,58 @@ fn usage_follows_the_disk() {
     assert_eq!(full.free_blocks, dumpe2fs(&path, "Free blocks"));
     fs.unlink("f").unwrap();
     assert_eq!(fs.usage(), start);
+    drop(fs.unmount().unwrap());
+    e2fsck_clean(&path);
+}
+
+/// What `get-myos -u` does to `/data/apps` (user/get-myos): each package's
+/// new version unpacked into `.<name>-<version>.new`, renamed to
+/// `<name>-<version>`, a `.link` symlink renamed over `<name>`, and every
+/// few upgrades the versions no generation needs removed (`--gc`): the
+/// directory grows past a block and shrinks again. `MYOS_EXT2_TEST_BYTES`
+/// sets the disk's size (a T15's 953 GiB /data, 4 KiB blocks and thousands
+/// of groups, took a minute and passed).
+#[test]
+fn get_myos_upgrades() {
+    let size: u64 = std::env::var("MYOS_EXT2_TEST_BYTES").map(|v| v.parse().unwrap()).unwrap_or(256 << 20);
+    let path = image("get-myos", size);
+    mkfs(&mut open(&path), size).unwrap();
+    let mut fs = Fs::mount(open(&path)).unwrap();
+    fs.mkdir("apps").unwrap();
+    let pkgs = [
+        "surf", "vim", "dwm", "python", "st", "git", "dmenu", "bottom", "tinyx", "tcc", "x11-apps", "lynx",
+        "x11-fonts", "x11-libs", "make", "lua", "clear", "get-alpine", "x11-xft", "webkitgtk-smoke", "coreutils",
+        "os-test", "nginx", "openssl", "rust",
+    ];
+    let mut current: Vec<Option<String>> = vec![None; pkgs.len()];
+    let mut old: Vec<Vec<String>> = vec![Vec::new(); pkgs.len()];
+    for round in 0..40u64 {
+        for (i, p) in pkgs.iter().enumerate() {
+            let v = format!("{:012x}", (round * 7919 + i as u64 * 104729).wrapping_mul(2654435761) % (1 << 48));
+            let tmp = format!("apps/.{p}-{v}.new");
+            fs.mkdir(&tmp).unwrap();
+            fs.mkdir(&format!("{tmp}/bin")).unwrap();
+            write_all(&mut fs, &format!("{tmp}/app"), b"run /bin/x\n", 2048);
+            write_all(&mut fs, &format!("{tmp}/bin/{p}"), &pattern(3000 + i * 100, round as u8), 2048);
+            let dir = format!("apps/{p}-{v}");
+            fs.rename(&tmp, &dir).unwrap_or_else(|e| panic!("round {round}: rename to {dir}: {e:?}"));
+            fs.symlink(&format!("{p}-{v}"), &format!("apps/.{p}.link")).unwrap();
+            fs.rename(&format!("apps/.{p}.link"), &format!("apps/{p}")).unwrap();
+            if let Some(c) = current[i].replace(dir) {
+                old[i].push(c);
+            }
+        }
+        if round % 5 == 4 {
+            for d in old.iter_mut().flat_map(|v| v.drain(..)) {
+                for f in names(&mut fs, &format!("{d}/bin")) {
+                    fs.unlink(&format!("{d}/bin/{f}")).unwrap();
+                }
+                fs.rmdir(&format!("{d}/bin")).unwrap();
+                fs.unlink(&format!("{d}/app")).unwrap();
+                fs.rmdir(&d).unwrap();
+            }
+        }
+    }
     drop(fs.unmount().unwrap());
     e2fsck_clean(&path);
 }

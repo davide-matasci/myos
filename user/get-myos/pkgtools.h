@@ -17,8 +17,9 @@ int die(const char *a, const char *b);
 
 /* out = pkg_root + "/" + rel (rel without a leading '/'); -1 if too long. */
 int under_root(char *out, const char *rel);
-/* mkdir -p of path's directories (and path itself if `self`). */
-void mkdirs(const char *path, int self);
+/* mkdir -p of path's directories (and path itself if `self`): 0, or the
+ * errno of the first that could not be made (a full disk, ...). */
+int mkdirs(const char *path, int self);
 /* Whether something is mounted at /data (the boot disk's data partition,
  * docs/install.md): the default roots are kept there when it is. */
 int data_mounted(void);

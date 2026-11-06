@@ -338,8 +338,25 @@ impl<D: Device> Fs<D> {
         let now = self.now();
         let node = Inode::new(mode, now);
         self.write_new_inode(ino, &node)?;
-        self.dir_add(dir_ino, name.as_bytes(), ino, node.file_type())?;
+        if let Err(e) = self.dir_add(dir_ino, name.as_bytes(), ino, node.file_type()) {
+            // No room for the name (its directory could not grow): the
+            // inode goes back.
+            self.free_inode(ino, is_dir)?;
+            return Err(e);
+        }
         Ok((ino, node))
+    }
+
+    /// Take back what [`Fs::make`] made when the rest of the operation found
+    /// no room (a new directory's first block, a symlink's): its name, the
+    /// blocks it got and its inode, so a full disk leaves nothing half made.
+    fn unmake(&mut self, dir_ino: u32, name: &str, ino: u32, node: &mut Inode) -> Result<()> {
+        self.dir_remove(dir_ino, name.as_bytes())?;
+        self.free_data(node)?;
+        node.links = 0;
+        node.dtime = self.now().max(1);
+        self.write_inode(ino, node)?;
+        self.free_inode(ino, node.is_dir())
     }
 
     /// Drop one link to the non-directory `ino`; free it with its last.
@@ -503,8 +520,11 @@ impl<D: Device> Fs<D> {
             if fs.lookup(&dir, name.as_bytes())?.is_some() {
                 return Err(Error::Exists);
             }
-            let (ino, _) = fs.make(dir_ino, name, S_IFDIR | 0o755)?;
-            fs.dir_init(ino, dir_ino)?;
+            let (ino, mut node) = fs.make(dir_ino, name, S_IFDIR | 0o755)?;
+            if let Err(e) = fs.dir_init(ino, dir_ino) {
+                fs.unmake(dir_ino, name, ino, &mut node)?;
+                return Err(e);
+            }
             let mut dir = fs.inode(dir_ino)?;
             dir.links += 1;
             fs.write_inode(dir_ino, &dir)
@@ -686,8 +706,9 @@ impl<D: Device> Fs<D> {
             if target.len() < node.inline_capacity() {
                 // A fast symlink: the target in place of the block map.
                 node.set_inline(target.as_bytes());
-            } else {
-                fs.write_data(&mut node, 0, target.as_bytes())?;
+            } else if let Err(e) = fs.write_data(&mut node, 0, target.as_bytes()) {
+                fs.unmake(dir_ino, name, ino, &mut node)?;
+                return Err(e);
             }
             fs.write_inode(ino, &node)
         })

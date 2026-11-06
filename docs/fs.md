@@ -205,6 +205,10 @@ Linux and e2fsprogs know: 1, 2 and 4 KiB blocks, indirect blocks up to
 triple, symlinks, sparse superblocks and files over 2 GiB. Format with
 `mkfs.ext2` (or Linux's `mke2fs -t ext2`) and mount with fstype `ext2`.
 
-`cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`. CI boots
-carry an empty 4 GiB scratch disk (`/dev/nvme1n1/data`) for big
-filesystems.
+A mkdir or symlink that finds no room for its block takes its name back:
+a full disk leaves nothing half made.
+
+`cargo test -p ext2fs` checks it against `e2fsck` and `debugfs`, with
+`get_myos_upgrades` doing what `get-myos -u` does to `/data/apps`
+(`MYOS_EXT2_TEST_BYTES` sizes its disk). CI boots carry an empty 4 GiB
+scratch disk (`/dev/nvme1n1/data`) for big filesystems.
