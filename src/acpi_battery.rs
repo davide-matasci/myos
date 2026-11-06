@@ -20,14 +20,27 @@
 //!                 }
 //!                 Return (0)
 //!             }
-//!             // The unit (mWh: 0) through a loop's Increment (Local0)
-//!             // and a store through Index, the package's 1 (mAh) else.
+//!             // The unit (mWh: 0) through a loop's Increment (Local0),
+//!             // a T15's loop turning a number into digits (its battery's
+//!             // serial number: Divide's remainder first, the quotient
+//!             // second) and a store through Index, the package's 1 (mAh)
+//!             // else.
 //!             Name (BIFP, Package () { 1, 50000, 40000, 1, 11100, 2000, 500,
 //!                                      1, 1, "MYOS", "1", "LION", "myos" })
+//!             Name (SERN, Buffer () { 0, 0, 0 })
 //!             Method (_BIF) {
 //!                 Store (Zero, Local0)
 //!                 While (LLess (Local0, 3)) { Increment (Local0) }
-//!                 Store (Subtract (Local0, 3), Index (BIFP, 0))
+//!                 Store (Subtract (Local0, 3), Local3)
+//!                 Store (123, Local0)
+//!                 Store (2, Local2)
+//!                 While (Local0) {
+//!                     Divide (Local0, 10, Local1, Local0)
+//!                     Add (Local1, 0x30, Index (SERN, Local2))
+//!                     Decrement (Local2)
+//!                 }
+//!                 // Local2 is -1 once the three digits are in.
+//!                 Store (Add (Local3, Add (Local2, 1)), Index (BIFP, 0))
 //!                 Return (BIFP)
 //!             }
 //!             Name (_BST, Package () { 1, 10000, 30000, 11100 })
@@ -104,7 +117,12 @@ const WHILE_OP: u8 = 0xa2;
 const LLESS_OP: u8 = 0x95;
 const INCREMENT_OP: u8 = 0x75;
 const SUBTRACT_OP: u8 = 0x74;
+const DIVIDE_OP: u8 = 0x78;
+const DECREMENT_OP: u8 = 0x76;
 const LOCAL0: u8 = 0x60;
+const LOCAL1: u8 = 0x61;
+const LOCAL2: u8 = 0x62;
+const LOCAL3: u8 = 0x63;
 /// Match's comparisons: equal, always true.
 const MEQ: u8 = 1;
 const MTR: u8 = 0;
@@ -232,21 +250,33 @@ fn ssdt() -> Vec<u8> {
                     string("myos"),
                 ]),
             ),
+            name(b"SERN", buffer(&[0, 0, 0])),
             method(
                 b"_BIF",
                 vec![
                     [vec![STORE_OP], int(0), vec![LOCAL0]].concat(),
                     [vec![WHILE_OP], pkg([vec![LLESS_OP, LOCAL0], int(3), vec![INCREMENT_OP, LOCAL0]].concat())]
                         .concat(),
+                    [vec![STORE_OP, SUBTRACT_OP, LOCAL0], int(3), vec![NULL_NAME, LOCAL3]].concat(),
+                    [vec![STORE_OP], int(123), vec![LOCAL0]].concat(),
+                    [vec![STORE_OP], int(2), vec![LOCAL2]].concat(),
                     [
-                        vec![STORE_OP, SUBTRACT_OP, LOCAL0],
-                        int(3),
-                        vec![NULL_NAME, INDEX_OP],
-                        b"BIFP".to_vec(),
-                        int(0),
-                        vec![NULL_NAME],
+                        vec![WHILE_OP],
+                        pkg([
+                            vec![LOCAL0, DIVIDE_OP, LOCAL0],
+                            int(10),
+                            vec![LOCAL1, LOCAL0, ADD_OP, LOCAL1],
+                            int(0x30),
+                            vec![INDEX_OP],
+                            b"SERN".to_vec(),
+                            vec![LOCAL2, NULL_NAME, DECREMENT_OP, LOCAL2],
+                        ]
+                        .concat()),
                     ]
                     .concat(),
+                    [vec![STORE_OP, ADD_OP, LOCAL3, ADD_OP, LOCAL2], int(1), vec![NULL_NAME, NULL_NAME, INDEX_OP]]
+                        .concat(),
+                    [b"BIFP".to_vec(), int(0), vec![NULL_NAME]].concat(),
                     [&[RETURN_OP][..], b"BIFP"].concat(),
                 ],
             ),

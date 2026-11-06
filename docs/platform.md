@@ -129,7 +129,9 @@ stores through one (`store-ref`), its `Increment` and `Decrement`
 change a local or a field (`increment`), a store into a named
 string, buffer or package converts the value to its type
 (`store-convert`), its comparisons compare strings and buffers byte
-by byte (`logical-compare`), it lets `Notify` pass
+by byte (`logical-compare`), its `Divide` stores the remainder and
+the quotient in the targets the spec names (`divide`), it lets `Notify`
+pass
 (nothing listens for notifications), and it reads a `_STA`'s value out
 of whatever the method returned (nothing at all counts as present).
 It calls `\_PIC(1)`, runs the devices' `_STA` and `_INI`, hands every PCI

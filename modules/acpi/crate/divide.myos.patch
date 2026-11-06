@@ -1,0 +1,57 @@
+acpi: Divide stores the remainder in its first target, the quotient in its second
+
+Divide (Dividend, Divisor, Remainder, Result) stored the quotient in
+the Remainder target and the remainder in the Result one. A ThinkPad
+T15's GBIX (behind _BIX and _BIF) turns the battery's serial number
+into digits with While (Local0) { Divide (Local0, 10, Local1, Local0)
+... Index (SERN, Local2) ... Decrement (Local2) }: Local0 never got
+smaller, so the loop ran past the 6-byte buffer and the method failed
+with IndexOutOfBounds. The targets are now the spec's, the expression's
+value the quotient, and a division by zero (Divide or Mod) is an error,
+DivideByZero, instead of a panic.
+
+Derived from acpi, so under acpi's license (MIT or Apache-2.0).
+
+--- a/src/aml/mod.rs
++++ b/src/aml/mod.rs
+@@ -1776,15 +1776,26 @@
+             Opcode::Add => left.wrapping_add(right),
+             Opcode::Subtract => left.wrapping_sub(right),
+             Opcode::Multiply => left.wrapping_mul(right),
++            // `Divide (Dividend, Divisor, Remainder, Result)`: the first target takes the
++            // remainder, the second the quotient (the crate had them swapped, so a loop
++            // dividing a number down by 10, a ThinkPad T15's serial number into digits, never
++            // ended). The expression's value is the quotient.
+             Opcode::Divide => {
+-                if let Some(remainder) = target2 {
+-                    self.do_store(remainder, Object::Integer(left.wrapping_rem(right)).wrap())?;
+-                }
+-                left.wrapping_div_euclid(right)
++                let (Some(quotient), Some(remainder)) = (left.checked_div(right), left.checked_rem(right)) else {
++                    Err(AmlError::DivideByZero)?
++                };
++                self.do_store(target, Object::Integer(remainder).wrap())?;
++                if let Some(target2) = target2 {
++                    self.do_store(target2, Object::Integer(quotient).wrap())?;
++                }
++                let result = Object::Integer(quotient).wrap();
++                context.contribute_arg(Argument::Object(result));
++                context.retire_op(op);
++                return Ok(());
+             }
+             Opcode::ShiftLeft => left.wrapping_shl(right as u32),
+             Opcode::ShiftRight => left.wrapping_shr(right as u32),
+-            Opcode::Mod => left.wrapping_rem(right),
++            Opcode::Mod => left.checked_rem(right).ok_or(AmlError::DivideByZero)?,
+             Opcode::Nand => !(left & right),
+             Opcode::And => left & right,
+             Opcode::Or => left | right,
+@@ -3313,6 +3324,8 @@
+         typ: ObjectType,
+     },
+     IndexOutOfBounds,
++    /// `Divide` or `Mod` by zero.
++    DivideByZero,
+     ObjectNotOfExpectedType {
+         expected: ObjectType,
+         got: ObjectType,
