@@ -48,7 +48,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         66 => ret(sys::rw_vec(a[0], a[1], a[2], true)),  // writev
         67 => ret(sys::pread(a[0], a[1], a[2], a[3])),
         68 => ret(sys::pwrite(a[0], a[1], a[2], a[3])),
-        70 | 287 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
+        70 => ret(sys::pwritev(a[0], a[1], a[2], a[3])),
+        287 => ret(sys::pwritev2(a[0], a[1], a[2], a[3])),
         72 => ret(sys::pselect6(a[0], a[1], a[2], a[3], a[4])),
         73 => ret(sys::ppoll(a[0], a[1], a[2])),
         74 => ret(sys::signalfd4(a[0], a[1], a[2], a[3])),

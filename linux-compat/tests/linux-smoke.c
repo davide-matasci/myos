@@ -1386,6 +1386,14 @@ static void check_copy_calls(void) {
     char small[3];
     check(sendfile(p[1], in, &off, 3) == 3 && read(p[0], small, 3) == 3 && memcmp(small, big + 5, 3) == 0,
           "sendfile: into a pipe");
+    /* Offset -1 is the fd's own position: Bun writes a piped stdout so
+     * (RWF_NOWAIT), and wrote nothing when the pipe took it for one. */
+    struct iovec iv = { .iov_base = "pw", .iov_len = 2 };
+    check(syscall(SYS_pwritev2, p[1], &iv, 1, -1L, 0, 8) == 2 && read(p[0], small, 2) == 2 && memcmp(small, "pw", 2) == 0,
+          "pwritev2 at offset -1: a pipe's write");
+    off_t at = lseek(out, 0, SEEK_END);
+    check(syscall(SYS_pwritev2, out, &iv, 1, -1L, 0, 0) == 2 && lseek(out, 0, SEEK_CUR) == at + 2,
+          "pwritev2 at offset -1: a file's write at its position, which moves");
     close(p[0]);
     close(p[1]);
     loff_t ia = 200, ib = 10;

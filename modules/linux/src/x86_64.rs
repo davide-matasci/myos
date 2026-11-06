@@ -239,7 +239,8 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         291 => ret(sys::epoll_create1(a[0])),
         292 => ret(sys::dup3(a[0], a[1], false, a[2])),
         293 => ret(sys::pipe2(a[0], a[1])),
-        296 | 328 => ret(sys::pwritev(a[0], a[1], a[2], a[3])), // pwritev, pwritev2
+        296 => ret(sys::pwritev(a[0], a[1], a[2], a[3])),
+        328 => ret(sys::pwritev2(a[0], a[1], a[2], a[3])),
         302 => ret(sys::prlimit(a[1], a[3])),
         318 => ret(sys::getrandom(a[0], a[1])),
         319 => ret(sys::memfd_create(a[0], a[1])),
