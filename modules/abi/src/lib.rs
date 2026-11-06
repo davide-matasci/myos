@@ -120,10 +120,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 67: a filesystem's write hooks and [`KernelApi::vfs_write`] tell a
 /// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
 /// `EFBIG`).
-/// 68: a filesystem's create, mkdir, rename and symlink hooks say why they
-/// failed ([`VFS_ENOSPC`], [`VFS_EIO`], [`VFS_EEXIST`], [`VFS_ENOTEMPTY`],
-/// [`VFS_EINVAL`]), which the caller's errno becomes.
-pub const ABI_VERSION: u32 = 68;
+pub const ABI_VERSION: u32 = 67;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -243,10 +240,7 @@ pub struct ModuleVfsOps {
             buf_len: usize,
         ) -> i32,
     >,
-    /// Optional create/truncate/mkdir/rmdir/unlink. 0 ok, negative fail:
-    /// create and mkdir, as rename and symlink, say why with a `VFS_E*`
-    /// ([`VFS_ENOSPC`], [`VFS_EIO`], [`VFS_EEXIST`], [`VFS_ENOTEMPTY`],
-    /// [`VFS_EINVAL`]), any other negative value being the generic failure.
+    /// Optional create/truncate/mkdir/rmdir/unlink. 0 ok, negative fail.
     pub create: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
     pub truncate: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
     pub mkdir: Option<unsafe extern "C" fn(path: *const u8, path_len: usize) -> i32>,
@@ -572,11 +566,7 @@ pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
 pub const MYOS_SYSERR_ENOSPC: usize = usize::MAX - 10;
 /// A write or truncate past the size a file may have (tmpfs's 128 MiB).
 pub const MYOS_SYSERR_EFBIG: usize = usize::MAX - 11;
-/// A rename onto a directory that is not empty.
-pub const MYOS_SYSERR_ENOTEMPTY: usize = usize::MAX - 12;
-/// A filesystem that found its own structures wrong (a damaged directory).
-pub const MYOS_SYSERR_EINVAL: usize = usize::MAX - 13;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EINVAL;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EFBIG;
 
 /// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s
 /// result when the filesystem has no room for the bytes (the caller's
@@ -585,15 +575,6 @@ pub const VFS_ENOSPC: i32 = -2;
 /// The same hooks' and call's result when the file cannot grow that far
 /// (tmpfs's 128 MiB cap; the caller's `EFBIG`).
 pub const VFS_EFBIG: i32 = -3;
-/// A hook's result when the device failed under it (the caller's `EIO`).
-pub const VFS_EIO: i32 = -4;
-/// A create, mkdir or symlink hook's result when the name is taken.
-pub const VFS_EEXIST: i32 = -5;
-/// A rename hook's result when its target is a directory that is not empty.
-pub const VFS_ENOTEMPTY: i32 = -6;
-/// A hook's result when the filesystem found its own structures wrong (a
-/// damaged directory, a loop in `..`): the caller's `EINVAL`.
-pub const VFS_EINVAL: i32 = -7;
 
 /// Native signal dispositions (`signal_get_action`): default, ignore; any
 /// other value is a caught handler's address. Native signal numbers are

@@ -79,24 +79,6 @@ const SYSERR_ENOTDIR: usize = usize::MAX - 7;
 const SYSERR_EAGAIN: usize = usize::MAX - 8;
 /// `setpgid` of a child that has exec'd (`myos_abi::MYOS_SYSERR_EACCES`).
 const SYSERR_EACCES: usize = usize::MAX - 9;
-/// A rename onto a directory that is not empty (ENOTEMPTY).
-const SYSERR_ENOTEMPTY: usize = usize::MAX - 12;
-/// A filesystem that found its own structures wrong (EINVAL).
-const SYSERR_EINVAL: usize = usize::MAX - 13;
-
-/// A mkdir's, rename's or symlink's failure as the syscall returns it: the
-/// filesystem's reason, which libgloss's errno becomes.
-fn name_err(e: crate::fs::NameError) -> usize {
-    use crate::fs::NameError;
-    match e {
-        NameError::Failed => SYSERR,
-        NameError::NoSpace => crate::task::SYSERR_ENOSPC,
-        NameError::Io => crate::task::SYSERR_EIO,
-        NameError::Exists => SYSERR_EEXIST,
-        NameError::NotEmpty => SYSERR_ENOTEMPTY,
-        NameError::Invalid => SYSERR_EINVAL,
-    }
-}
 /// The first process, from the initramfs.
 const INIT_PATH: &str = "/bin/custom/init";
 

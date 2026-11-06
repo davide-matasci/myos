@@ -54,7 +54,7 @@ pub fn read_all(path: &str, max: usize) -> Option<alloc::vec::Vec<u8>> {
     vfs::read_all(path, max)
 }
 
-pub use vfs::{NameError, WriteError};
+pub use vfs::WriteError;
 /// Write to an open vnode: the count, or why nothing was written.
 pub fn write(node: &Vnode, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     vfs::write(node, pos, buf)
@@ -151,8 +151,8 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     vfs::listdir(path, buf)
 }
 
-/// Create a directory, or say why not.
-pub fn mkdir(path: &str) -> Result<(), NameError> {
+/// Create a directory.
+pub fn mkdir(path: &str) -> bool {
     vfs::mkdir(path)
 }
 
@@ -166,13 +166,13 @@ pub fn unlink(path: &str) -> bool {
     vfs::unlink(path)
 }
 
-/// Rename within one mount, or say why not.
-pub fn rename(old: &str, new: &str) -> Result<(), NameError> {
+/// Rename within one mount.
+pub fn rename(old: &str, new: &str) -> bool {
     vfs::rename(old, new)
 }
 
-/// Create a symbolic link, or say why not.
-pub fn symlink(target: &str, linkpath: &str) -> Result<(), NameError> {
+/// Create a symbolic link.
+pub fn symlink(target: &str, linkpath: &str) -> bool {
     vfs::symlink(target, linkpath)
 }
 

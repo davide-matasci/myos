@@ -384,11 +384,12 @@ pub(super) fn sys_mknodat(dirfd: usize, ptr: usize, len: usize, kind: usize) -> 
     if fs::stat(&f.real).is_some() || !f.may(Rights::CREATE) {
         return SYSERR;
     }
-    match kind {
-        MKNOD_DIR => fs::mkdir(&f.real).map_or_else(name_err, |()| 0),
-        MKNOD_FIFO if fs::vfs::mkfifo(&f.real) => 0,
-        _ => SYSERR,
-    }
+    let made = match kind {
+        MKNOD_DIR => fs::mkdir(&f.real),
+        MKNOD_FIFO => fs::vfs::mkfifo(&f.real),
+        _ => false,
+    };
+    if made { 0 } else { SYSERR }
 }
 
 pub(super) fn sys_symlinkat(target_ptr: usize, target_len: usize, dirfd: usize, ptr: usize, len: usize) -> usize {
@@ -403,10 +404,7 @@ pub(super) fn sys_symlinkat(target_ptr: usize, target_len: usize, dirfd: usize, 
     let Some(f) = resolve(dirfd, &path, false) else {
         return SYSERR;
     };
-    if !f.may(Rights::CREATE) {
-        return SYSERR;
-    }
-    fs::symlink(&target, &f.real).map_or_else(name_err, |()| 0)
+    if f.may(Rights::CREATE) && fs::symlink(&target, &f.real) { 0 } else { SYSERR }
 }
 
 pub(super) fn sys_unlinkat(dirfd: usize, ptr: usize, len: usize, flags: usize) -> usize {
@@ -446,7 +444,7 @@ pub(super) fn sys_renameat(
     if !crate::sec::may_rename(&old.real, old.cap, &new.real, new.cap, replaced) {
         return SYSERR;
     }
-    fs::rename(&old.real, &new.real).map_or_else(name_err, |()| 0)
+    if fs::rename(&old.real, &new.real) { 0 } else { SYSERR }
 }
 
 pub(super) fn sys_readlinkat(dirfd: usize, ptr: usize, len: usize, buf: usize, size: usize) -> usize {

@@ -1099,7 +1099,7 @@ unsafe extern "C" fn api_vfs_listdir(path: StrRef, buf: *mut u8, cap: usize) -> 
 
 unsafe extern "C" fn api_vfs_mkdir(path: StrRef) -> i32 {
     match str_ref(path) {
-        Some(p) if may(p, Rights::CREATE) && crate::fs::mkdir(p).is_ok() => 0,
+        Some(p) if may(p, Rights::CREATE) && crate::fs::mkdir(p) => 0,
         _ => -1,
     }
 }
@@ -1120,7 +1120,7 @@ unsafe extern "C" fn api_vfs_unlink(path: StrRef) -> i32 {
 
 unsafe extern "C" fn api_vfs_rename(old: StrRef, new: StrRef) -> i32 {
     match (str_ref(old), str_ref(new)) {
-        (Some(o), Some(n)) if crate::sec::may_rename(o, None, n, None, crate::fs::stat(n).is_some()) && crate::fs::rename(o, n).is_ok() => 0,
+        (Some(o), Some(n)) if crate::sec::may_rename(o, None, n, None, crate::fs::stat(n).is_some()) && crate::fs::rename(o, n) => 0,
         _ => -1,
     }
 }
@@ -1137,7 +1137,7 @@ unsafe extern "C" fn api_vfs_set_times(path: StrRef, atime: u64, mtime: u64) -> 
 
 unsafe extern "C" fn api_vfs_symlink(target: StrRef, link: StrRef) -> i32 {
     match (str_ref(target), str_ref(link)) {
-        (Some(t), Some(l)) if may(l, Rights::CREATE) && crate::fs::symlink(t, l).is_ok() => 0,
+        (Some(t), Some(l)) if may(l, Rights::CREATE) && crate::fs::symlink(t, l) => 0,
         _ => -1,
     }
 }

@@ -15,10 +15,7 @@ extern crate alloc;
 use core::alloc::{GlobalAlloc, Layout};
 
 use ext2fs::{Device, Fs, Kind};
-use myos_abi::{
-    ApiCell, SleepLock, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT, VFS_EEXIST, VFS_EINVAL,
-    VFS_EIO, VFS_ENOSPC, VFS_ENOTEMPTY,
-};
+use myos_abi::{ApiCell, SleepLock, ABI_VERSION, KernelApi, ModuleVfsOps, VfsStatFs, VfsStatInfo, MYOS_TIME_OMIT, VFS_ENOSPC};
 
 /// The kernel's table, set once by `module_init` before anything runs.
 static API: ApiCell = ApiCell::new();
@@ -81,21 +78,6 @@ fn with_fs<const S: usize, T>(f: impl FnOnce(&mut Fs<Blk>) -> T) -> Option<T> {
 fn rc<T>(r: Option<ext2fs::Result<T>>) -> i32 {
     match r {
         Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-/// What a create, mkdir, rename or symlink hook returns: 0, or why it
-/// failed, which the caller's errno becomes (a full filesystem, a device
-/// error, a name taken, a directory not empty, a damaged directory).
-fn name_rc(r: Option<ext2fs::Result<()>>) -> i32 {
-    match r {
-        Some(Ok(())) => 0,
-        Some(Err(ext2fs::Error::NoSpace)) => VFS_ENOSPC,
-        Some(Err(ext2fs::Error::Io)) => VFS_EIO,
-        Some(Err(ext2fs::Error::Exists)) => VFS_EEXIST,
-        Some(Err(ext2fs::Error::NotEmpty)) => VFS_ENOTEMPTY,
-        Some(Err(ext2fs::Error::Invalid)) => VFS_EINVAL,
         _ => -1,
     }
 }
@@ -217,7 +199,7 @@ unsafe extern "C" fn ext2_write<const S: usize>(path: *const u8, path_len: usize
 
 unsafe extern "C" fn ext2_create<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    name_rc(with_fs::<S, _>(|fs| fs.create(path)))
+    rc(with_fs::<S, _>(|fs| fs.create(path)))
 }
 
 unsafe extern "C" fn ext2_truncate<const S: usize>(path: *const u8, path_len: usize) -> i32 {
@@ -232,7 +214,7 @@ unsafe extern "C" fn ext2_set_size<const S: usize>(path: *const u8, path_len: us
 
 unsafe extern "C" fn ext2_mkdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
     let Some(path) = (unsafe { text(path, path_len) }) else { return -1 };
-    name_rc(with_fs::<S, _>(|fs| fs.mkdir(path)))
+    rc(with_fs::<S, _>(|fs| fs.mkdir(path)))
 }
 
 unsafe extern "C" fn ext2_rmdir<const S: usize>(path: *const u8, path_len: usize) -> i32 {
@@ -249,14 +231,14 @@ unsafe extern "C" fn ext2_rename<const S: usize>(old: *const u8, old_len: usize,
     let (Some(old), Some(new)) = (unsafe { text(old, old_len) }, unsafe { text(new, new_len) }) else {
         return -1;
     };
-    name_rc(with_fs::<S, _>(|fs| fs.rename(old, new)))
+    rc(with_fs::<S, _>(|fs| fs.rename(old, new)))
 }
 
 unsafe extern "C" fn ext2_symlink<const S: usize>(target: *const u8, target_len: usize, link: *const u8, link_len: usize) -> i32 {
     let (Some(target), Some(link)) = (unsafe { text(target, target_len) }, unsafe { text(link, link_len) }) else {
         return -1;
     };
-    name_rc(with_fs::<S, _>(|fs| fs.symlink(target, link)))
+    rc(with_fs::<S, _>(|fs| fs.symlink(target, link)))
 }
 
 unsafe extern "C" fn ext2_readlink<const S: usize>(path: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> i32 {
