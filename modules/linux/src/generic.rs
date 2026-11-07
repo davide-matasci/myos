@@ -80,7 +80,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         }
         129 | 130 => ret(sys::kill(a[0], a[1])), // kill, tkill
         131 => ret(sys::kill(a[1], a[2])),       // tgkill
-        132 => ret(lsig::sigaltstack(a[1])),
+        132 => ret(lsig::sigaltstack(a[0], a[1], super::arch::user_sp(regs))),
         133 => lsig::rt_sigsuspend(a[0]),
         134 => ret(lsig::rt_sigaction(a[0], a[1], a[2])),
         135 => ret(lsig::rt_sigprocmask(a[0], a[1], a[2])),
@@ -195,9 +195,9 @@ pub const SIGINFO_BYTES: usize = 128;
 pub const UC_SIGMASK: usize = 40;
 pub const UC_MCONTEXT: usize = 176;
 
-/// The common head of the ucontext: `uc_stack.ss_flags = SS_DISABLE` and
-/// the blocked mask.
-pub fn uc_head(uc: &mut [u8], mask: u64) {
-    uc[24..28].copy_from_slice(&2u32.to_le_bytes());
+/// The common head of the ucontext: `uc_stack` (the alternate signal
+/// stack, `stack_t` at 16) and the blocked mask.
+pub fn uc_head(uc: &mut [u8], stack: &[u8; 24], mask: u64) {
+    uc[16..40].copy_from_slice(stack);
     uc[UC_SIGMASK..UC_SIGMASK + 8].copy_from_slice(&mask.to_le_bytes());
 }

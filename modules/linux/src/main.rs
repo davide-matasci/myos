@@ -107,6 +107,7 @@ unsafe extern "C" fn op_on_fork(parent: usize, child: usize) {
 /// Hook: thread `creator` started thread `slot` in its process. Process-wide
 /// state (fd paths, the signal trampoline) is kept per process.
 unsafe extern "C" fn op_on_thread(_creator: usize, slot: usize) {
+    signal::on_thread(slot);
     thread::on_new_task(slot);
 }
 
