@@ -278,11 +278,16 @@ impl FrameBufferWriter {
         Some(unsafe { &mut *self.cells.add(i) })
     }
 
-    /// Put the screen on the framebuffer: every cell painted, the cursor
-    /// shown.
+    /// Put the screen on the framebuffer: every cell painted, the strips
+    /// the cells do not cover (a screen not a whole number of cells high or
+    /// wide) cleared, the cursor shown.
     pub fn show(&mut self) {
         self.visible = true;
         self.cursor_on = false;
+        // After a program held the screen (X), its pixels would stay there.
+        let (grid_w, grid_h) = (self.cols() * self.cell_w(), self.rows() * self.cell_h());
+        self.fill(grid_w, 0, self.width.saturating_sub(grid_w), self.height, BG);
+        self.fill(0, grid_h, grid_w, self.height.saturating_sub(grid_h), BG);
         for row in 0..self.rows() {
             for col in 0..self.cols() {
                 let Some(&mut c) = self.cell(row, col) else {
@@ -1327,6 +1332,25 @@ impl FrameBufferWriter {
             }
             if let (Some(sh), Some(out)) = (shadow.as_deref(), fb.get_mut(span.clone())) {
                 out.copy_from_slice(&sh[span]);
+            }
+        }
+    }
+
+    /// Fill the `w` x `h` pixels at (`x0`, `y0`) with `rgb`, in the shadow
+    /// and on the framebuffer.
+    fn fill(&mut self, x0: usize, y0: usize, w: usize, h: usize, rgb: (u8, u8, u8)) {
+        let (bpp, pitch) = (self.bytes_per_pixel, self.pitch);
+        let v = self.encode(rgb);
+        let n = bpp.min(4);
+        let fb = self.pixels();
+        let mut shadow = self.shadow();
+        for y in y0..y0 + h {
+            let start = y * pitch + x0 * bpp;
+            let span = start..start + w * bpp;
+            for out in [fb.get_mut(span.clone()), shadow.as_deref_mut().and_then(|sh| sh.get_mut(span.clone()))] {
+                for pixel in out.into_iter().flat_map(|l| l.chunks_exact_mut(bpp)) {
+                    pixel[..n].copy_from_slice(&v[..n]);
+                }
             }
         }
     }
