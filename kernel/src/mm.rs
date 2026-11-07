@@ -97,6 +97,7 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
     let total = usable_total();
     let free = total.saturating_sub(a - f);
     let caches = (crate::blk::cache_frames() as u64, crate::fs::pagecache::frames() as u64);
+    let heap = crate::heap::usage();
     let (faults, around, flushes, page_flushes) = crate::user::fault_counts();
     let (forks, copies) = crate::user::cow::counts();
     let (deferred, retired) = crate::user::deferred_counts();
@@ -107,6 +108,7 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
          Forks: {}\nCowCopies: {}\nSyscalls: {}\n\
          DeferredFrames: {}\nRetiredAspaces: {}\n\
          BlockCacheKiB: {}\nPageCacheKiB: {}\n\
+         HeapKiB: {}\nHeapFreeKiB: {}\n\
          MemTotalKiB: {}\nMemFreeKiB: {}\nMemAvailableKiB: {}\n",
         a,
         f,
@@ -130,6 +132,8 @@ pub fn meminfo_text() -> alloc::vec::Vec<u8> {
         retired,
         caches.0 * (PAGE / 1024),
         caches.1 * (PAGE / 1024),
+        heap.0 / 1024,
+        heap.1 / 1024,
         total * (PAGE / 1024),
         free * (PAGE / 1024),
         (free + caches.0 + caches.1) * (PAGE / 1024),

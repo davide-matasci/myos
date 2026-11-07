@@ -120,7 +120,7 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 67: a filesystem's write hooks and [`KernelApi::vfs_write`] tell a
 /// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
 /// `EFBIG`).
-pub const ABI_VERSION: u32 = 67;
+pub const ABI_VERSION: u32 = 68;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -726,6 +726,15 @@ pub struct ModuleChrOps {
 ///
 /// Layout is frozen by `repr(C)`. New functions are appended; never reorder.
 #[repr(C)]
+/// Where an exec'd image starts, from [`KernelApi::personality_exec`] to
+/// [`KernelApi::exec_resume`]: the kernel's own words, carried by the module.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ExecResume {
+    pub words: [usize; 4],
+}
+
+#[repr(C)]
 pub struct KernelApi {
     pub abi_version: u32,
     pub _reserved: u32,
@@ -891,13 +900,18 @@ pub struct KernelApi {
     /// Install the foreign personality (one per boot). 0 ok.
     pub personality_register: unsafe extern "C" fn(ops: *const PersonalityOps) -> i32,
     /// Exec `path` with `argv` / `envp` (kernel strings) so the new image
-    /// starts with the personality. Native result (does not return on success).
+    /// starts with the personality: the image is put in place and `resume`
+    /// filled in, 0; the module then frees what it allocated for the exec
+    /// and calls [`KernelApi::exec_resume`], which enters the image and
+    /// never returns (what is still allocated then is never freed). Native
+    /// error otherwise, the current image untouched.
     pub personality_exec: unsafe extern "C" fn(
         path: StrRef,
         argv: *const StrRef,
         argc: usize,
         envp: *const StrRef,
         envc: usize,
+        resume: *mut ExecResume,
     ) -> usize,
     /// Run native syscall `nr` for the current task (no personality
     /// dispatch, no signal handling): the native result.
@@ -1235,6 +1249,10 @@ pub struct KernelApi {
     /// (whole seconds, then the remainder's nanoseconds rounded down). 0,
     /// or -1 when user mode cannot read it or the rate is not known.
     pub user_clock: unsafe extern "C" fn(base: *mut u64, hz: *mut u64) -> i32,
+    // --- ABI 68: an exec in two steps ---
+    /// Enter the image [`KernelApi::personality_exec`] prepared, with
+    /// everything the exec allocated freed. Never returns.
+    pub exec_resume: unsafe extern "C" fn(resume: *const ExecResume) -> !,
 }
 
 /// A PCI function's I/O registers ([`KernelApi::pci_io_map`]): ports on

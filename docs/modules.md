@@ -86,6 +86,7 @@ and passes it to `module_init`. Drivers register what they provide:
 | `fs_register` / `vfs_mount` | filesystems, with optional `mmap` (`docs/fb.md`) and `poll` hooks |
 | `console_register` | screen and keyboard |
 | `personality_register` | a foreign syscall ABI (`docs/linux-compat.md`) |
+| `personality_exec`, `exec_resume` | an exec under it, in two steps: the image prepared and the module's own allocations freed, then entered (entering never returns, and nothing allocated by then is ever freed) |
 | `service_register` / `service_lookup` | how modules reach each other |
 
 `dt_mmio_find` gives a driver its memory-mapped devices from the device

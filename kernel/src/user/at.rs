@@ -641,5 +641,14 @@ pub(super) fn sys_execat(dirfd: usize, ptr: usize, len: usize, args: usize, flag
     };
     let arg_refs: Vec<&[u8]> = arg_bufs.iter().map(|s| s.as_slice()).collect();
     let env_refs: Vec<&[u8]> = env_bufs.iter().map(|s| s.as_slice()).collect();
-    exec_path(&virt, &arg_refs, &env_refs)
+    let Some(resume) = exec_path(&virt, &arg_refs, &env_refs) else {
+        return SYSERR;
+    };
+    // Entering the image never returns: the exec's copies go first.
+    drop(arg_refs);
+    drop(env_refs);
+    drop(arg_bufs);
+    drop(env_bufs);
+    drop(virt);
+    super::exec_go(resume)
 }

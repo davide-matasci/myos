@@ -1008,11 +1008,47 @@ fn sys_sigprocmask(how: usize, set: usize, oset: usize) -> usize {
     }
 }
 
-/// Replace the current image with the ELF at `path` (cwd-relative or
-/// absolute), or run the script there through its `#!` interpreter; returns
-/// only on failure.
-pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> usize {
+/// Prepare to replace the current image with the ELF at `path`
+/// (cwd-relative or absolute), or to run the script there through its `#!`
+/// interpreter: the new image is in place, [`exec_go`] enters it. `None`
+/// on failure, the current image untouched or, past the point of no
+/// return, the task exited.
+pub(crate) fn exec_path(path: &str, arg_refs: &[&[u8]], env_refs: &[&[u8]]) -> Option<ExecResume> {
     exec_path_depth(path, arg_refs, env_refs, 0, None)
+}
+
+/// Where the new image starts: what [`exec_path`] prepares and [`exec_go`]
+/// enters. Between the two the caller frees what it allocated for the
+/// exec: the strings' copies, the paths. `exec_go` never returns, so what
+/// is still allocated when it runs stays allocated for good: a laptop's
+/// 1 GiB heap went in a day of builds, the argv and envp copies of every
+/// exec (17 KiB each for rustc's) and a mapped program's headers.
+#[derive(Clone, Copy)]
+pub(crate) struct ExecResume {
+    entry: usize,
+    rsp: usize,
+    argc: usize,
+    argv: usize,
+}
+
+impl ExecResume {
+    /// The four words a module carries between `personality_exec` and
+    /// `exec_resume` (`KernelApi`).
+    pub(crate) fn words(self) -> [usize; 4] {
+        [self.entry, self.rsp, self.argc, self.argv]
+    }
+
+    pub(crate) fn from_words([entry, rsp, argc, argv]: [usize; 4]) -> Self {
+        ExecResume { entry, rsp, argc, argv }
+    }
+}
+
+/// Enter the image [`exec_path`] prepared: the end of a successful exec,
+/// which allocates nothing. aarch64 erets through the live syscall frame;
+/// riscv64 clears the frame instead and falls through (see there).
+pub(crate) fn exec_go(r: ExecResume) -> ! {
+    crate::arch::exec_resume(r.entry, r.rsp, r.argc, r.argv);
+    enter(r.entry, r.rsp, r.argc, r.argv)
 }
 
 /// Longest `#!` line read (Linux reads 256 bytes).
@@ -1030,9 +1066,9 @@ fn exec_script(
     env_refs: &[&[u8]],
     depth: u8,
     script_ctx: Option<crate::sec::Ctx>,
-) -> usize {
+) -> Option<ExecResume> {
     if depth > 0 {
-        return SYSERR;
+        return None;
     }
     let line = &line[..line.len().min(SHEBANG_MAX)];
     let line = line.split(|&b| b == b'\n').next().unwrap_or(&[]).trim_ascii();
@@ -1041,10 +1077,10 @@ fn exec_script(
         None => (line, &[][..]),
     };
     let Ok(interp) = core::str::from_utf8(interp) else {
-        return SYSERR;
+        return None;
     };
     if interp.is_empty() {
-        return SYSERR;
+        return None;
     }
     let mut args: Vec<&[u8]> = Vec::with_capacity(arg_refs.len() + 2);
     args.push(interp.as_bytes());
@@ -1062,23 +1098,23 @@ fn exec_path_depth(
     env_refs: &[&[u8]],
     depth: u8,
     script_ctx: Option<crate::sec::Ctx>,
-) -> usize {
+) -> Option<ExecResume> {
     // The program's name in the caller's view: what a script's interpreter
     // is handed (the real path may be one the caller's namespace lacks).
     let mut virt = [0u8; MAX_PATH];
     let Some(vn) = fs::resolve_user_path_virtual(None, path, &mut virt) else {
-        return SYSERR;
+        return None;
     };
     let Ok(virt) = core::str::from_utf8(&virt[..vn]) else {
-        return SYSERR;
+        return None;
     };
     let Some(path) = resolve_copied_path(path) else {
-        return SYSERR;
+        return None;
     };
     // `exec` on the program (a script's interpreter too); its `exec` rule
     // may move the process into another domain (docs/security.md).
     if !may(&path, Rights::EXEC) {
-        return SYSERR;
+        return None;
     }
     let new_ctx = script_ctx.or_else(|| crate::sec::exec_ctx(&path));
     // The name it was run under, as the caller named it (a symlink's, not
@@ -1108,22 +1144,22 @@ fn exec_path_depth(
         // prebuilt ELF under /lib/os-test/prebuilt fails with EACCES and the
         // boot smoke silently falls back to guest tcc.
         let Some(node) = fs::open(&path, 0) else {
-            return SYSERR;
+            return None;
         };
         let Some(size) = fs::size_of(&node) else {
-            return SYSERR;
+            return None;
         };
         if size == 0 || size > EXEC_FILE_MAX {
-            return SYSERR;
+            return None;
         }
         let Some(mut v) = crate::heap::try_zeroed(size) else {
-            return SYSERR;
+            return None;
         };
         let mut pos = 0usize;
         while pos < size {
             let n = fs::read(&node, pos, &mut v[pos..]);
             if n == 0 {
-                return SYSERR;
+                return None;
             }
             pos += n;
         }
@@ -1149,10 +1185,10 @@ fn exec_path_depth(
     // before anything of the current image goes, or the caller is left with
     // no code to return to.
     let Some(base) = image_base(bytes) else {
-        return SYSERR;
+        return None;
     };
     if mapped.as_ref().is_some_and(|m| !m.fits(base)) {
-        return SYSERR;
+        return None;
     }
     // A foreign-personality image that is dynamically linked also needs its
     // interpreter (the dynamic linker). Read it before the current image is
@@ -1161,7 +1197,7 @@ fn exec_path_depth(
         Some(_) => None,
         None => match exec_interp(bytes) {
             Ok(i) => i,
-            Err(()) => return SYSERR,
+            Err(()) => return None,
         },
     };
     // A dynamically linked program is relocated by its dynamic linker (which
@@ -1170,7 +1206,7 @@ fn exec_path_depth(
     // The old image goes away from here on: the process's other threads
     // end first.
     if !task::exec_alone() {
-        return SYSERR;
+        return None;
     }
     if let Some(ctx) = new_ctx {
         task::set_sec_ctx(ctx);
@@ -1246,12 +1282,12 @@ fn exec_path_depth(
                         );
                         v
                     } else {
-                        return SYSERR;
+                        return None;
                     }
                 }
             } else {
                 let Some(v) = load_user_elf(bytes, base, relocate) else {
-                    return SYSERR;
+                    return None;
                 };
                 v
             }
@@ -1264,7 +1300,7 @@ fn exec_path_depth(
             let at = mmap_base_va(base, off);
             match map_elf_unrelocated(aspace, ib, at) {
                 Some((ientry, runs)) => Some((at as usize, ientry, runs)),
-                None => return SYSERR,
+                None => return None,
             }
         }
         None => None,
@@ -1275,7 +1311,7 @@ fn exec_path_depth(
     let program_at = match &mapped {
         Some(m) => match m.at(mmap_base_va(base, off)) {
             Some(at) => at,
-            None => return SYSERR,
+            None => return None,
         },
         None => mmap_base_va(base, off),
     };
@@ -1286,7 +1322,7 @@ fn exec_path_depth(
                 (exec_auxv(&m.head, m.lowest_at(program_at), program_entry, Some(base as usize)), entry)
             }
             Some(program_entry) => (exec_auxv(&m.head, m.lowest_at(program_at), program_entry, None), program_entry),
-            None => return SYSERR,
+            None => return None,
         },
         None => (
             exec_auxv(bytes, base, entry, interp_map.as_ref().map(|m| m.0)),
@@ -1296,14 +1332,14 @@ fn exec_path_depth(
     let Some((rsp, argv)) =
         build_argv_stack(aspace, base, off, arg_refs, env_refs, aux.entries())
     else {
-        return SYSERR;
+        return None;
     };
     let argc = arg_refs.len();
     // A zero entry is never a valid userspace image (would sret to NULL → the
     // classic riscv64 `instruction page fault stval=0 sepc=0`). Refuse rather
     // than resume a corrupt realize/expand result.
     if entry == 0 {
-        return SYSERR;
+        return None;
     }
     // expand_user_elf / reload of a large ELF (ripgrep) is deep enough that
     // LLVM may have clobbered tp since the sync above. replace_user and
@@ -1350,10 +1386,7 @@ fn exec_path_depth(
             aspace::sync_icache(mm::hhdm(pa) as usize, PAGE);
         }
     }
-    // aarch64: sret/eret through the live syscall frame (shallow exec);
-    // riscv64 clears the frame instead and falls through (see there).
-    crate::arch::exec_resume(entry, rsp, argc, argv);
-    enter(entry, rsp, argc, argv);
+    Some(ExecResume { entry, rsp, argc, argv })
 }
 
 /// Copy the native exec argument block `[argc, (ptr,len)…, envc, (ptr,len)…]`

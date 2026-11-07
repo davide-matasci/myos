@@ -1137,6 +1137,53 @@ mem_exec_no_leak() {
 }
 t -t mm mem_exec_no_leak mem_exec_no_leak
 
+# The kernel heap's free bytes (`HeapFreeKiB`, docs/proc.md), in KiB.
+heap_free() {
+	while read -r hf_key hf_val _; do
+		[ "$hf_key" = HeapFreeKiB: ] && echo "$hf_val" && return
+	done < /proc/meminfo
+	echo 0
+}
+
+# heap_verdict WHAT COUNT LIMIT_KIB CMD: run CMD COUNT times with a 16 KiB
+# argument and a 16 KiB environment variable, and confirm the kernel heap
+# gives back what each exec took. Every exec used to leave its copies of
+# argv and envp, its paths and a mapped program's headers in the heap for
+# good (exec never returned, so nothing of its was dropped): 17 KiB a
+# native exec, 34 KiB a Linux one, and a laptop's 1 GiB heap went in a day
+# of builds.
+heap_verdict() {
+	hv_big=x
+	hv_i=0
+	while [ $hv_i -lt 14 ]; do
+		hv_big=$hv_big$hv_big
+		hv_i=$((hv_i + 1))
+	done
+	HEAP_BIG=$hv_big
+	export HEAP_BIG
+	eval "$4" # warm: the program's pages cached, its slots' stacks kept
+	before=$(heap_free)
+	if [ "$before" = 0 ]; then
+		echo "heap: no HeapFreeKiB in /proc/meminfo"
+		return 1
+	fi
+	hv_i=0
+	while [ $hv_i -lt $2 ]; do
+		eval "$4"
+		hv_i=$((hv_i + 1))
+	done
+	after=$(heap_free)
+	unset HEAP_BIG
+	echo "heap: $1 x$2 HeapFreeKiB $before -> $after (delta $((before - after)))"
+	[ "$((before - after))" -le "$3" ]
+}
+
+# A native exec with large strings must not grow the heap.
+mem_exec_no_heap_leak() {
+	heap_verdict exec 100 512 '/bin/etc/hello $HEAP_BIG > /dev/null 2>&1'
+}
+t -t mm mem_exec_no_heap_leak mem_exec_no_heap_leak
+
 # A userspace memory hog must never abort the kernel, and its pages must all
 # come back. `memhog` mmaps and touches a large region in chunks; the kernel
 # either serves it in full or, under real memory pressure, fails the fault so
@@ -1765,6 +1812,13 @@ lx_tcp() {
 	cat $OUT/lx-tcp.log $OUT/lx-tcp-root.log
 	contains "LINUX-TCP OK" $OUT/lx-tcp.log && contains "LINUX-TCP OK" $OUT/lx-tcp-root.log
 }
+# Execs under the Linux layer must not grow the heap either (its execve
+# copies the strings once more, and a dynamically linked program's headers
+# went with them): 100 execs of the smoke by itself, with the big strings
+# in its environment.
+lx_exec_no_heap_leak() {
+	heap_verdict linux-exec 100 512 'linux /bin/linux/linux-smoke exec 1 $HEAP_BIG > /dev/null 2>&1'
+}
 lx_unix() {
 	/bin/etc/unix_smoke echo /tmp/.lx-unix > $OUT/lx-unix-server.log 2>&1 &
 	spid=$!
@@ -2082,6 +2136,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,netfs linux_unix lx_unix
 	t -t linux,netfs,ipv6 linux_inet6 lx_inet6
 	t -t linux,netfs linux_tcp lx_tcp
+	t -t linux,mm linux_exec_no_heap_leak lx_exec_no_heap_leak
 	t -t linux,events linux_evfd_root lx_evfd_root
 	t -t linux,netfs linux_dns_root lx_dns_root
 	t -t linux linux_cwd_bind lx_cwd_bind
