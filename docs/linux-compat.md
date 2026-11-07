@@ -352,7 +352,13 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   layer: `rt_sigaction` sets and reports them, and exec and fork treat
   them as Linux does, so a runtime that walks every signal at startup
   (Node resets 1 to 31 and aborts on a refusal, Go installs a handler on
-  all 64) starts. `sigaltstack` offers no stacks.
+  all 64) starts. `sigaltstack` gives each thread its alternate stack,
+  where an `SA_ONSTACK` handler runs (reported `SS_ONSTACK` there, not
+  changeable from it); a new thread starts without one, a forked child
+  keeps its parent's, exec drops it. Go's runtime needs it: it checks in
+  every handler that its stack is still there and aborts otherwise
+  ("non-Go code disabled sigaltstack"), at its first preemption signal.
+  `SS_AUTODISARM` is accepted and the stack stays on.
 - **Sockets**: see Sockets above and Limits. `getsockopt` answers
   `SO_ERROR`, `SO_TYPE`, the buffer sizes (64 KiB unix, 8 KiB otherwise)
   and `SO_PEERCRED` (the caller's pid, ids 0); `SO_PEERSEC`,

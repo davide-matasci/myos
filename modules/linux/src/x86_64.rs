@@ -196,7 +196,7 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         127 => ret(lsig::rt_sigpending(a[0])),
         128 => ret(lsig::rt_sigtimedwait(a[0], a[1], a[2])),
         130 => lsig::rt_sigsuspend(a[0]),
-        131 => ret(lsig::sigaltstack(a[1])),
+        131 => ret(lsig::sigaltstack(a[0], a[1], user_sp(regs))),
         158 => arch_prctl(a[0], a[1]),
         200 => ret(sys::kill(a[0], a[1])), // tkill
         201 => ret(sys::time(a[0])),
@@ -373,9 +373,14 @@ fn get_u64(b: &[u8], off: usize) -> u64 {
 /// Linux `rt_sigframe`: `[restorer][ucontext][siginfo]`, the FP image
 /// (FXSAVE's layout, then XSAVE's header and AVX state) 64-byte aligned
 /// above it, `rsp ≡ 8 (mod 16)` at handler entry.
+/// The user stack pointer at the syscall or interruption.
+pub fn user_sp(regs: &SyscallRegs) -> usize {
+    regs.word(R_RSP) as usize
+}
+
 pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     let sp = regs.word(R_RSP) as usize;
-    let fp_va = sp.checked_sub(RED_ZONE + FP_BYTES)? & !63;
+    let fp_va = f.sp.checked_sub(RED_ZONE + FP_BYTES)? & !63;
     let info_va = fp_va.checked_sub(128)? & !15;
     let uc_va = info_va - UC_BYTES;
     let frame_va = uc_va - 8;
@@ -384,7 +389,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     unsafe { fp_save(fx.0.as_mut_ptr()) };
 
     let mut uc = [0u8; UC_BYTES];
-    uc[24..28].copy_from_slice(&2u32.to_le_bytes()); // uc_stack.ss_flags = SS_DISABLE
+    uc[16..40].copy_from_slice(&f.stack); // uc_stack
     let mut mc = [0u64; 32];
     mc[MC_R8] = regs.word(R_R8);
     mc[MC_R9] = regs.word(R_R9);

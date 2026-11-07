@@ -1002,6 +1002,70 @@ static void check_sigaction_all(char *self) {
     sigaction(SIGRTMIN + 1, &sa, NULL);
 }
 
+/* sigaltstack: an SA_ONSTACK handler runs on the alternate stack, which
+ * reports SS_ONSTACK there and cannot be changed from it (EPERM); a stack
+ * too small is ENOMEM, SS_DISABLE takes it away, and a new thread starts
+ * without one. Go gives every thread a stack and aborts in its handler
+ * ("non-Go code disabled sigaltstack") when the kernel says there is none:
+ * gh, every Go program, died at its first preemption signal. */
+static char *alt_base;
+static size_t alt_size;
+static volatile int alt_on, alt_flags, alt_change;
+
+static void on_alt(int sig) {
+    char here;
+    stack_t now, other;
+    (void)sig;
+    alt_on = &here > alt_base && &here <= alt_base + alt_size;
+    alt_flags = sigaltstack(NULL, &now) == 0 ? now.ss_flags : -1;
+    other.ss_sp = alt_base;
+    other.ss_size = alt_size;
+    other.ss_flags = 0;
+    alt_change = sigaltstack(&other, NULL) == -1 && errno == EPERM;
+}
+
+static void *alt_thread(void *arg) {
+    stack_t st;
+    (void)arg;
+    return (void *)(intptr_t)(sigaltstack(NULL, &st) == 0 && (st.ss_flags & SS_DISABLE));
+}
+
+static void check_sigaltstack(void) {
+    stack_t st, old;
+    struct sigaction sa;
+    alt_size = 64 * 1024;
+    alt_base = malloc(alt_size);
+    check(sigaltstack(NULL, &old) == 0 && (old.ss_flags & SS_DISABLE), "sigaltstack: none at first");
+    st.ss_sp = alt_base;
+    st.ss_size = 1024;
+    st.ss_flags = 0;
+    errno = 0;
+    check(sigaltstack(&st, NULL) == -1 && errno == ENOMEM, "sigaltstack: a stack too small is ENOMEM");
+    st.ss_size = alt_size;
+    check(sigaltstack(&st, NULL) == 0 && sigaltstack(NULL, &old) == 0 && old.ss_sp == alt_base &&
+              old.ss_size == alt_size && old.ss_flags == 0,
+          "sigaltstack: set, and reported off it");
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_alt;
+    sa.sa_flags = SA_ONSTACK;
+    sigaction(SIGUSR2, &sa, NULL);
+    raise(SIGUSR2);
+    check(alt_on, "sigaltstack: an SA_ONSTACK handler runs on the stack");
+    check(alt_flags == SS_ONSTACK, "sigaltstack: SS_ONSTACK in the handler");
+    check(alt_change, "sigaltstack: no change while on it (EPERM)");
+    pthread_t t;
+    void *fresh = NULL;
+    check(pthread_create(&t, NULL, alt_thread, NULL) == 0 && pthread_join(t, &fresh) == 0 && fresh,
+          "sigaltstack: a new thread has none");
+    st.ss_flags = SS_DISABLE;
+    check(sigaltstack(&st, NULL) == 0 && sigaltstack(NULL, &old) == 0 && (old.ss_flags & SS_DISABLE),
+          "sigaltstack: SS_DISABLE takes it away");
+    sa.sa_handler = SIG_DFL;
+    sa.sa_flags = 0;
+    sigaction(SIGUSR2, &sa, NULL);
+    free(alt_base);
+}
+
 static void check_signalfd(void) {
     struct signalfd_siginfo si;
     sigset_t set;
@@ -1516,6 +1580,7 @@ static void check_toolchain_calls(char *self) {
     check_signalfd();
     check_argv_layout(self);
     check_sigaction_all(self);
+    check_sigaltstack();
     check_copy_calls();
     check_sched_policy();
 

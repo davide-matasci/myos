@@ -79,13 +79,18 @@ fn get_u64(b: &[u8], off: usize) -> u64 {
 }
 
 /// Linux `rt_sigframe`: `[siginfo][ucontext]`.
+/// The user stack pointer at the syscall or interruption.
+pub fn user_sp(regs: &SyscallRegs) -> usize {
+    regs.word(R_SP) as usize
+}
+
 pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     let sp = regs.word(R_SP) as usize;
-    let frame_va = sp.checked_sub(SIGINFO_BYTES + UC_BYTES)? & !15;
+    let frame_va = f.sp.checked_sub(SIGINFO_BYTES + UC_BYTES)? & !15;
     let uc_va = frame_va + SIGINFO_BYTES;
 
     let mut uc = vec![0u8; UC_BYTES];
-    uc_head(&mut uc, f.mask);
+    uc_head(&mut uc, &f.stack, f.mask);
     put_u64(&mut uc, MC_GREGS, f.pc as u64);
     for i in 1..32 {
         let v = match i {
