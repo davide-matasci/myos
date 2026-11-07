@@ -341,6 +341,9 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
 /// irqs off; `None` when every slot is taken. The slot is `Claimed` until
 /// the caller installs its task there.
 pub(super) fn claim_slot() -> Option<(usize, usize, usize, usize)> {
+    if crate::heap::low_for_tasks() {
+        return None;
+    }
     let (slot, kept) = {
         let mut tasks = TASKS.lock();
         free_dead_orphans(&mut tasks);

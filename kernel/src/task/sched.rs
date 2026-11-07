@@ -35,6 +35,7 @@ pub fn yield_now() {
 /// Same switch as `yield_now`. No-op until `enable_preempt` so the first-tick
 /// IRQ proof does not leave the Limine stack.
 pub fn schedule() {
+    halt_if_panicked();
     let _ = pick_and_switch();
 }
 

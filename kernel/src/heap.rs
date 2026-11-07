@@ -134,6 +134,39 @@ fn size_for(usable: u64, largest_region: u64) -> u64 {
     (usable / 4).clamp(MIN_SIZE, MAX_SIZE).min((largest_region / 2).max(MIN_SIZE)) & !(2 * 1024 * 1024 - 1)
 }
 
+/// Whether the heap is too full for another task: less free than
+/// [`task_reserve`]. A task's kernel stack, its tables and what it does
+/// next are allocated by paths that cannot fail (a panic on a laptop whose
+/// heap a build had filled, `docs/scheduler.md`); refused here, a fork or
+/// a thread fails with `EAGAIN` and the system stays up. Reported once per
+/// episode (the non-blocking warning: this runs with interrupts off).
+pub fn low_for_tasks() -> bool {
+    let (size, free) = usage();
+    let reserve = task_reserve(size);
+    if free >= reserve {
+        if free >= 2 * reserve {
+            LOW_REPORTED.store(false, Ordering::Relaxed);
+        }
+        return false;
+    }
+    if !LOW_REPORTED.swap(true, Ordering::Relaxed) {
+        let mut line = crate::task::Line::new();
+        let _ = core::fmt::Write::write_fmt(&mut line, format_args!("heap: {free} of {size} bytes free: no new tasks until {reserve} are"));
+        if !crate::console::status_warn_now(line.as_str()) {
+            LOW_REPORTED.store(false, Ordering::Relaxed);
+        }
+    }
+    true
+}
+
+/// What [`low_for_tasks`] keeps free: an eighth of the heap, 32 MiB at
+/// most (a 1 GiB heap keeps 32 MiB, the 64 MiB minimum 8 MiB).
+fn task_reserve(size: usize) -> usize {
+    (size / 8).min(32 << 20)
+}
+
+static LOW_REPORTED: AtomicBool = AtomicBool::new(false);
+
 /// The heap's size, as [`init`] chose it.
 pub fn size() -> usize {
     usage().0

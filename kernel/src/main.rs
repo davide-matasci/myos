@@ -291,10 +291,37 @@ fn prove_heap() {
     }
 }
 
+/// The panic's text, on the stack: the heap may be what failed, and the
+/// panicking CPU may hold the console or the screen, so the line goes out
+/// through the forced path, whatever is held.
+struct PanicLine {
+    buf: [u8; 512],
+    len: usize,
+}
+
+impl core::fmt::Write for PanicLine {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for c in s.chars() {
+            let mut b = [0; 4];
+            let e = c.encode_utf8(&mut b);
+            if self.len + e.len() > self.buf.len() {
+                return Err(core::fmt::Error);
+            }
+            self.buf[self.len..self.len + e.len()].copy_from_slice(e.as_bytes());
+            self.len += e.len();
+        }
+        Ok(())
+    }
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    console::status_fail(&alloc::format!("panic: {info}"));
-    console::flush();
+    use core::fmt::Write;
+    let mut line = PanicLine { buf: [0; 512], len: 0 };
+    let _ = write!(line, "panic: {info}");
+    console::status_fail_force(core::str::from_utf8(&line.buf[..line.len]).unwrap_or("panic"));
+    // The other CPUs halt rather than spin on what this one holds.
+    task::stop_other_cpus();
     arch::exit_qemu(arch::QEMU_FAILURE);
     arch::halt();
 }
