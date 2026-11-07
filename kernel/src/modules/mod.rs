@@ -158,6 +158,7 @@ static API: KernelApi = KernelApi {
     pci_io_map: api_pci_io_map,
     proc_set_reader: api_proc_set_reader,
     user_clock: api_user_clock,
+    exec_resume: api_exec_resume,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -934,10 +935,14 @@ unsafe extern "C" fn api_personality_exec(
     argc: usize,
     envp: *const StrRef,
     envc: usize,
+    resume: *mut myos_abi::ExecResume,
 ) -> usize {
     let Some(path) = str_ref(path) else {
         return myos_abi::MYOS_SYSERR;
     };
+    if resume.is_null() {
+        return myos_abi::MYOS_SYSERR;
+    }
     let strs = |p: *const StrRef, n: usize| -> alloc::vec::Vec<&[u8]> {
         if p.is_null() || n == 0 {
             return alloc::vec::Vec::new();
@@ -949,7 +954,18 @@ unsafe extern "C" fn api_personality_exec(
     };
     let args = strs(argv, argc);
     let env = strs(envp, envc);
-    crate::personality::exec_with(path, &args, &env)
+    match crate::personality::exec_with(path, &args, &env) {
+        Some(r) => {
+            unsafe { resume.write(myos_abi::ExecResume { words: r.words() }) };
+            0
+        }
+        None => myos_abi::MYOS_SYSERR,
+    }
+}
+
+unsafe extern "C" fn api_exec_resume(resume: *const myos_abi::ExecResume) -> ! {
+    let words = unsafe { (*resume).words };
+    crate::user::exec_go(crate::user::ExecResume::from_words(words))
 }
 
 unsafe extern "C" fn api_native_syscall(nr: usize, a0: usize, a1: usize, a2: usize, regs: *mut u64) -> usize {

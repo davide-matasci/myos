@@ -110,14 +110,22 @@ pub mod user {
         resolve(path, myos_abi::MYOS_PATH_REAL_NOFOLLOW)
     }
 
-    /// Exec with the personality kept (`execve`): native result.
-    pub fn exec_linux(path: &str, args: &[&[u8]], env: &[&[u8]]) -> usize {
+    /// Exec with the personality kept (`execve`), prepared: the native
+    /// result, 0 with `resume` filled in for [`exec_resume`] to enter the
+    /// image once the caller has freed the exec's strings.
+    pub fn exec_linux(path: &str, args: &[&[u8]], env: &[&[u8]], resume: &mut myos_abi::ExecResume) -> usize {
         let to_refs = |v: &[&[u8]]| -> alloc::vec::Vec<StrRef> {
             v.iter().map(|s| StrRef::from_bytes(s)).collect()
         };
         let a = to_refs(args);
         let e = to_refs(env);
-        unsafe { (api().personality_exec)(StrRef::new(path), a.as_ptr(), a.len(), e.as_ptr(), e.len()) }
+        unsafe { (api().personality_exec)(StrRef::new(path), a.as_ptr(), a.len(), e.as_ptr(), e.len(), resume) }
+    }
+
+    /// Enter the image [`exec_linux`] prepared. Never returns: nothing
+    /// allocated for the exec may be alive here.
+    pub fn exec_resume(resume: &myos_abi::ExecResume) -> ! {
+        unsafe { (api().exec_resume)(resume) }
     }
 
     /// A read at the file position (`pread` with no offset: the register

@@ -1652,7 +1652,18 @@ pub fn execve(path: usize, argv: usize, envp: usize) -> R {
     let env_refs: Vec<&[u8]> = env.iter().map(|s| s.as_slice()).collect();
     // A file that is there but did not run is not an executable.
     let missing = if fs::stat(&real).is_some() { ENOEXEC } else { ENOENT };
-    native(user::exec_linux(&p, &arg_refs, &env_refs), missing)
+    let mut resume = myos_abi::ExecResume { words: [0; 4] };
+    native(user::exec_linux(&p, &arg_refs, &env_refs, &mut resume), missing)?;
+    // The image is in place; entering it never returns, so what this exec
+    // allocated goes first (the kernel heap kept every exec's copies for
+    // good: a laptop's 1 GiB went in a day of builds).
+    drop(arg_refs);
+    drop(env_refs);
+    drop(args);
+    drop(env);
+    drop(real);
+    drop(p);
+    user::exec_resume(&resume)
 }
 
 pub fn wait4(pid: usize, status: usize, options: usize, rusage: usize) -> R {

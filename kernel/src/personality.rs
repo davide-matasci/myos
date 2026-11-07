@@ -52,8 +52,10 @@ pub fn request_next_exec() -> bool {
 }
 
 /// Exec from a task that already has the personality (`execve`): the new
-/// image keeps it. A failed exec clears the request.
-pub fn exec_with(path: &str, args: &[&[u8]], env: &[&[u8]]) -> usize {
+/// image keeps it. The image is prepared, not entered (`user::exec_go`):
+/// the caller frees the exec's strings first. A failed exec clears the
+/// request.
+pub fn exec_with(path: &str, args: &[&[u8]], env: &[&[u8]]) -> Option<crate::user::ExecResume> {
     let slot = task::current_id();
     PENDING[slot].store(true, Ordering::Relaxed);
     let ret = crate::user::exec_path(path, args, env);

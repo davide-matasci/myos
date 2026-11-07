@@ -161,8 +161,10 @@ kernel call site (`Site*`, for leak hunting), every process's page faults
 (`TlbFlushes`, `TlbPageFlushes`, `TlbShootdowns`), the frames of exited
 processes whose release waits for a CPU to drop their address space and
 such address spaces (`DeferredFrames`, `RetiredAspaces`: both 0 once a
-CPU has run something else), and the caches' sizes (`BlockCacheKiB`,
-`PageCacheKiB`).
+CPU has run something else), the caches' sizes (`BlockCacheKiB`,
+`PageCacheKiB`), and the kernel heap's size and free bytes (`HeapKiB`,
+`HeapFreeKiB`: tmpfs, the modules and the kernel's own structures live
+there; `statvfs` of `/tmp` reads the same numbers).
 
 ## Reading it from a tool
 

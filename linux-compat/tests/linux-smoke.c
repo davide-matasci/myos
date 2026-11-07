@@ -2173,6 +2173,24 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "tcp") == 0) {
         return tcp_server();
     }
+    /* `exec N`: fork and exec this program N times (the `child` mode, exit
+     * status 5), for the kernel heap's growth per exec (kernel.sh). */
+    if (argc > 2 && strcmp(argv[1], "exec") == 0) {
+        for (long i = atol(argv[2]); i > 0; i--) {
+            pid_t p = fork();
+            if (p == 0) {
+                execl(argv[0], argv[0], "child", (char *)0);
+                _exit(9);
+            }
+            int st = 0;
+            if (p < 0 || waitpid(p, &st, 0) != p || !WIFEXITED(st) || WEXITSTATUS(st) != 5) {
+                out("LINUX-EXEC FAIL\n");
+                return 1;
+            }
+        }
+        out("LINUX-EXEC OK\n");
+        return 0;
+    }
     if (argc > 2 && strcmp(argv[1], "unix") == 0) {
         return unix_client(argv[2]);
     }
