@@ -9,6 +9,7 @@
 #define _GNU_SOURCE 1 /* memfd_create */
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -2063,11 +2064,40 @@ static long traced_calls(void) {
     return -1;
 }
 
+/* The vDSO's symbol `name`, from its DT_HASH symbol table (its addresses
+ * are offsets from where it is mapped); NULL when absent. */
+static void *vdso_sym(const char *name) {
+    const unsigned char *base = (const unsigned char *)getauxval(AT_SYSINFO_EHDR);
+    if (!base) return NULL;
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)base;
+    const Elf64_Phdr *ph = (const Elf64_Phdr *)(base + eh->e_phoff);
+    const Elf64_Dyn *dyn = NULL;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type == PT_DYNAMIC) dyn = (const Elf64_Dyn *)(base + ph[i].p_vaddr);
+    }
+    const Elf64_Sym *sym = NULL;
+    const char *str = NULL;
+    const Elf32_Word *hash = NULL;
+    for (; dyn && dyn->d_tag != DT_NULL; dyn++) {
+        if (dyn->d_tag == DT_SYMTAB) sym = (const Elf64_Sym *)(base + dyn->d_un.d_ptr);
+        if (dyn->d_tag == DT_STRTAB) str = (const char *)(base + dyn->d_un.d_ptr);
+        if (dyn->d_tag == DT_HASH) hash = (const Elf32_Word *)(base + dyn->d_un.d_ptr);
+    }
+    if (!sym || !str || !hash) return NULL;
+    for (Elf32_Word i = 0; i < hash[1]; i++) {
+        if (sym[i].st_name && sym[i].st_shndx != SHN_UNDEF && strcmp(str + sym[i].st_name, name) == 0) {
+            return (void *)(base + sym[i].st_value);
+        }
+    }
+    return NULL;
+}
+
 /* The vDSO (docs/linux-compat.md, "vDSO"): AT_SYSINFO_EHDR names it, the
  * monotonic clock read through it agrees with the syscall's and never goes
  * back, and reading it makes no syscall (the trace's count of this thread
  * hardly moves over a thousand reads). The wall clock still answers,
- * through the syscall. */
+ * through the syscall, which the vDSO makes itself for a caller that uses
+ * it directly, as Go does (it never falls back). */
 static void check_vdso(void) {
     const unsigned char *eh = (const unsigned char *)getauxval(AT_SYSINFO_EHDR);
     check(eh && memcmp(eh, "\177ELF", 4) == 0, "AT_SYSINFO_EHDR names the vDSO");
@@ -2085,6 +2115,15 @@ static void check_vdso(void) {
     check(back == 0, "vDSO and syscall monotonic times in order");
     struct timespec r;
     check(clock_gettime(CLOCK_REALTIME, &r) == 0 && r.tv_sec > 1600000000L, "CLOCK_REALTIME through the syscall");
+#if defined(__aarch64__)
+    int (*vdso_cgt)(clockid_t, struct timespec *) = (int (*)(clockid_t, struct timespec *))vdso_sym("__kernel_clock_gettime");
+#else
+    int (*vdso_cgt)(clockid_t, struct timespec *) = (int (*)(clockid_t, struct timespec *))vdso_sym("__vdso_clock_gettime");
+#endif
+    struct timespec v = { 0, -1 }, s;
+    check(vdso_cgt && vdso_cgt(CLOCK_REALTIME, &v) == 0 && syscall(SYS_clock_gettime, CLOCK_REALTIME, &s) == 0 &&
+              v.tv_nsec >= 0 && v.tv_sec <= s.tv_sec && s.tv_sec - v.tv_sec < 5,
+          "the vDSO's clock_gettime answers CLOCK_REALTIME itself (Go's way)");
     long before = traced_calls();
     for (int i = 0; i < 1000; i++) clock_gettime(CLOCK_MONOTONIC, &a);
     long after = traced_calls();

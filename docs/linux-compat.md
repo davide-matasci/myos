@@ -259,7 +259,10 @@ counter the kernel's monotonic clock runs on, read in user mode: x86_64's
 TSC, aarch64's virtual counter (`CNTKCTL_EL1.EL0VCTEN` lets EL0 read it),
 riscv64's `time` CSR (`scounteren.TM`). The arithmetic is the kernel's, so
 its time and the syscall's never disagree. Any other clock (the time of
-day, CPU time) answers `-ENOSYS` and musl makes the syscall.
+day, CPU time) is the syscall's, made by the vDSO itself as on Linux: Go
+uses whatever the vDSO writes and never makes the syscall (`gh` read the
+time of day from an unwritten buffer, decades off, and refused GitHub's
+certificate as expired).
 
 A program that reads the clock all the time needs it: JavaScriptCore's
 collector checks its time slice every few objects it marks, millions of
