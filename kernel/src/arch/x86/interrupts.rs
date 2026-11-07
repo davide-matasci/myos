@@ -562,6 +562,7 @@ extern "x86-interrupt" fn nmi(frame: InterruptStackFrame) {
     unsafe extern "C" {
         static __etext: u8;
     }
+    crate::task::halt_if_panicked();
     let cpu = super::cpu::cpu_id_reg();
     let rip = frame.instruction_pointer.as_u64();
     let user = frame.code_segment.0 & 3 == 3;

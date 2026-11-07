@@ -63,9 +63,33 @@ reports CPU 0 the same way, with the sample on x86:
 Since CPU 0 may hold the console and the module's screen itself and never
 let go, these lines are written whatever is held (`console::status_force`,
 the module's `status_line_force`): a live holder's output may interleave,
-which the last words of a machine are worth. A freeze of every CPU at once
-still says nothing: some CPU has to tick. The boot tests fail on the report
+which the last words of a machine are worth. They go to screen 0, the
+console's, and to the screen shown when that is another one: the keyboard
+that would switch to screen 0 is CPU 0's too (a laptop's freeze on tty1
+showed nothing until the next boot). A freeze of every CPU at once still
+says nothing: some CPU has to tick. The boot tests fail on the report
 (`docs/testing.md`).
+
+## A panic, and a full heap
+
+A kernel panic prints its line the same way, whatever the panicking CPU
+holds and without the heap (which may be what failed), then halts the
+other CPUs: an NMI on x86_64, which reaches a CPU with its interrupts
+off, and a reschedule IPI everywhere, which reaches one whose interrupts
+are on (`task::stop_other_cpus`; `halt_if_panicked` at the tick, the
+scheduler and the NMI). A CPU spinning with its interrupts off on another
+arch spins on. Before, the panicking CPU halted alone, and every other
+spun on a lock it held, reported one by one as stuck.
+
+The kernel heap (a quarter of RAM, 64 MiB to 1 GiB) is where tmpfs, the
+modules and the kernel's own structures live; `HeapFreeKiB` in
+`/proc/meminfo` shows what is left. A new task needs some of it on paths
+that cannot fail (its kernel stack, its tables), so once less than an
+eighth of the heap, 32 MiB at most, is free, `fork`, `posix_spawn` and
+thread creation fail with `EAGAIN` and a `[ WARN ] heap: ... no new
+tasks` line says so, once per episode (`heap::low_for_tasks`), rather
+than the next allocation panicking the kernel. Free the heap (`rm` in
+`/tmp`, exit programs) or reboot.
 
 QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,
 because Limine panics with `missing struct riscv_hart for BSP` at 4; the

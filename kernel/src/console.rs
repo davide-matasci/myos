@@ -345,12 +345,19 @@ pub fn status_warn_now(label: &str) -> bool {
 /// screen through `ModuleConsoleOps::status_line_force`; a live holder's
 /// line may come out garbled, which the report is worth.
 pub fn status_force(label: &str) {
-    serial_status("WARN", label);
+    status_force_kind("WARN", CONSOLE_STATUS_WARN, label);
+}
+
+/// `[ FAIL ] label` whatever is held: the kernel's panic, which may come
+/// with the console or the screen held by the panicking CPU.
+pub fn status_fail_force(label: &str) {
+    status_force_kind("FAIL", CONSOLE_STATUS_FAIL, label);
+}
+
+fn status_force_kind(tag: &str, kind: u32, label: &str) {
+    serial_status(tag, label);
     if let Some(ops) = OPS.get() {
-        let tag = "WARN";
-        unsafe {
-            (ops.status_line_force)(tag.as_ptr(), tag.len(), CONSOLE_STATUS_WARN, label.as_ptr(), label.len())
-        };
+        unsafe { (ops.status_line_force)(tag.as_ptr(), tag.len(), kind, label.as_ptr(), label.len()) };
     }
 }
 

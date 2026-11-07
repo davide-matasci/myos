@@ -55,6 +55,7 @@ static NEXT_BLINK_NS: AtomicU64 = AtomicU64::new(0);
 /// run `n_cpus` times too fast.
 #[inline]
 pub fn note_tick() {
+    crate::task::halt_if_panicked();
     if crate::smp::cpu_id() != 0 {
         crate::task::bsp_check(monotonic_ns());
         return;

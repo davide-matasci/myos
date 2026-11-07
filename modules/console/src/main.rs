@@ -165,8 +165,11 @@ unsafe extern "C" fn status_line_try(
 }
 
 /// [`status_line_try`] whatever holds the screen: the kernel's report of a
-/// dead CPU 0, which may be the holder. A live holder's drawing and this
-/// line interleave on the screen, which the report is worth.
+/// dead CPU 0, or its panic, which may be the holder. A live holder's
+/// drawing and this line interleave on the screen, which the report is
+/// worth. On screen 0, the console's, and on the one shown when that is
+/// another (the keyboard that would switch to screen 0 may be dead with
+/// CPU 0; a laptop's freeze on tty1 showed nothing).
 unsafe extern "C" fn status_line_force(
     tag: *const u8,
     tag_len: usize,
@@ -183,8 +186,14 @@ unsafe extern "C" fn status_line_force(
     // SAFETY: the screen stays usable torn; the holder, if alive, draws
     // on from its own state.
     let screens = unsafe { FB.force() };
+    let shown = screens.active;
     if let Some(w) = screens.get(0) {
         w.put_status_line(text(tag, tag_len), color, text(label, label_len));
+    }
+    if shown != 0 && !fbdev::graphics() {
+        if let Some(w) = screens.get(shown) {
+            w.put_status_line(text(tag, tag_len), color, text(label, label_len));
+        }
     }
     1
 }

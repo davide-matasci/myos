@@ -48,6 +48,32 @@ use core::fmt::Write;
 /// above any wait the kernel makes with interrupts off; a host that stops
 /// a TCG vCPU's thread for this long is past what the boot tests allow.
 const STUCK_NS: u64 = 10_000_000_000;
+
+/// The kernel panicked (`main`'s panic handler): every other CPU halts at
+/// its next tick, scheduling or NMI (`halt_if_panicked`), so none spins
+/// on a lock the panicking CPU holds.
+static PANICKED: AtomicBool = AtomicBool::new(false);
+
+/// From the panic handler: stop the other CPUs. On x86_64 each gets an
+/// NMI, which reaches it with its interrupts off; everywhere a reschedule
+/// IPI, which reaches a CPU whose interrupts are on. One spinning with
+/// them off on another arch spins on, and the report has said so.
+pub fn stop_other_cpus() {
+    PANICKED.store(true, Ordering::SeqCst);
+    let me = crate::smp::cpu_id();
+    for cpu in (0..crate::smp::MAX_CPUS).filter(|&c| c != me && crate::smp::cpu_online(c)) {
+        crate::arch::sample_cpu(cpu);
+    }
+    crate::smp::kick_cpus();
+}
+
+/// Halt this CPU for good once the kernel has panicked: from the tick, the
+/// scheduler and x86_64's NMI handler.
+pub fn halt_if_panicked() {
+    if PANICKED.load(Ordering::SeqCst) {
+        crate::arch::halt();
+    }
+}
 /// How often CPU 0 looks.
 const CHECK_NS: u64 = 1_000_000_000;
 
@@ -222,17 +248,17 @@ fn describe(line: &mut Line, slot: usize) {
 }
 
 /// A report line on the stack: the heap's lock may be the stuck CPU's.
-struct Line {
+pub(crate) struct Line {
     buf: [u8; 240],
     len: usize,
 }
 
 impl Line {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Line { buf: [0; 240], len: 0 }
     }
 
-    fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }
