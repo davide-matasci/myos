@@ -59,11 +59,32 @@ static int box_drawn(void) {
     return blue;
 }
 
+/* How many dark pixels the line under the box has: its text, "script ran
+ * 42" in the default font, black on white (0 when no font draws it). */
+static int text_pixels(void) {
+    GdkPixbuf *pb = gdk_pixbuf_get_from_window(gtk_widget_get_window(view), 0, 100, 200, 60);
+    if (!pb) {
+        return 0;
+    }
+    int n = 0, stride = gdk_pixbuf_get_rowstride(pb), bpp = gdk_pixbuf_get_n_channels(pb);
+    const guchar *px = gdk_pixbuf_read_pixels(pb);
+    for (int y = 0; y < 60; y++) {
+        for (int x = 0; x < 200; x++) {
+            const guchar *p = px + y * stride + x * bpp;
+            n += p[0] < 0x80 && p[1] < 0x80 && p[2] < 0x80;
+        }
+    }
+    g_object_unref(pb);
+    return n;
+}
+
 /* The page reaches the window a frame after it loaded: look a few times. */
 static gboolean look(gpointer data) {
     (void)data;
     if (box_drawn()) {
-        done(NULL);
+        int n = text_pixels();
+        printf("webkitgtk: %d dark pixels of text\n", n);
+        done(n >= 50 ? NULL : "text not drawn");
         return G_SOURCE_REMOVE;
     }
     if (++tries == 300) {
