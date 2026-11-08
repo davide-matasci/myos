@@ -19,6 +19,16 @@ Every path a syscall touches is checked against the security policy
 from the canonical path, so a bind mount gives no second label
 (`docs/security.md`).
 
+A path is at most 4095 bytes: Linux's `PATH_MAX`, 4096 with its NUL
+(`myos_abi::MYOS_PATH_MAX` for the kernel, the Linux layer, libmyos and
+the Rust `std` port alike; newlib's `<limits.h>` says the same). The
+limit counts the whole absolute path a path comes to: joined to the cwd,
+through the caller's namespace (a `linux --root` adds the root's path)
+and its symlinks. A path longer than that, as given or once resolved,
+fails with `ENAMETOOLONG`. A name in a directory is at most 255
+bytes (`NAME_MAX`). The resolver works in heap buffers, not on the kernel
+stack (`fs::vfs::path_buf`).
+
 ### Mounting a disk
 
 ```sh
@@ -91,8 +101,9 @@ initramfs. A directory exists through its files, so an empty one carries a
 
 tmpfs is the writable mount at `/tmp`. Its files live in the kernel heap,
 up to 128 MiB per file (issue #338; a write or truncate past that fails
-with `EFBIG`, a write the heap has no room for with `ENOSPC`). devfs at
-`/dev` holds the device nodes.
+with `EFBIG`, a write the heap has no room for with `ENOSPC`). Its paths
+and symlink targets go up to `PATH_MAX`. devfs at `/dev` holds the device
+nodes.
 
 ### procfs
 

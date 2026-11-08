@@ -21,15 +21,16 @@
 //! that CPU could never run again while the cache spun for it.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use super::vfs::PATH_MAX;
 
 struct Node {
     mount: u16,
-    /// Where the file is in its mount (for a hidden one: where it was).
-    rel: String,
+    /// Where the file is in its mount (for a hidden one: where it was);
+    /// shared with the [`Rel`]s copied out.
+    rel: Arc<str>,
     /// The id its filesystem gave the file (`vfs::FileOps::id`), if it
     /// gives them.
     file: Option<u64>,
@@ -57,7 +58,7 @@ impl Node {
 impl Node {
     /// Reachable by its name: not dead, not hidden.
     fn named(&self, mount: usize, rel: &str) -> bool {
-        !self.dead && !self.hidden && self.mount as usize == mount && self.rel == rel
+        !self.dead && !self.hidden && self.mount as usize == mount && &*self.rel == rel
     }
 }
 
@@ -181,7 +182,7 @@ pub(super) fn get(mount: usize, rel: &str, file: Option<u64>) -> Vnode {
         nodes[id].as_mut().unwrap().refs += 1;
         return Vnode { id: id as u32 };
     }
-    let node = Node { mount: mount as u16, rel: String::from(rel), file, hidden: false, dead: false, refs: 1, opens: 0, cached: false };
+    let node = Node { mount: mount as u16, rel: Arc::from(rel), file, hidden: false, dead: false, refs: 1, opens: 0, cached: false };
     Vnode { id: insert(&mut nodes, node) as u32 }
 }
 
@@ -202,19 +203,17 @@ fn insert(nodes: &mut Vec<Option<Node>>, node: Node) -> usize {
 /// reaches (`vfs::anon_file`): kept, as an unlinked file is, while it is
 /// referenced.
 pub(super) fn kept(mount: usize, file: u64) -> Vnode {
-    let node = Node { mount: mount as u16, rel: String::new(), file: Some(file), hidden: true, dead: false, refs: 1, opens: 0, cached: false };
+    let node = Node { mount: mount as u16, rel: Arc::from(""), file: Some(file), hidden: true, dead: false, refs: 1, opens: 0, cached: false };
     Vnode { id: insert(&mut lock(&NODES), node) as u32 }
 }
 
-/// A path in a mount, copied out of the table (no allocation per read).
-pub struct Rel {
-    len: usize,
-    buf: [u8; PATH_MAX],
-}
+/// A path in a mount, copied out of the table (shared with it: no
+/// allocation per read).
+pub struct Rel(Arc<str>);
 
 impl Rel {
     pub fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        &self.0
     }
 }
 
@@ -236,13 +235,7 @@ pub(super) fn locate(node: &Vnode) -> Option<(usize, Loc)> {
     if let Some(file) = n.file {
         return Some((n.mount as usize, Loc::File(file)));
     }
-    Some((n.mount as usize, Loc::Path(copy_rel(&n.rel)?)))
-}
-
-fn copy_rel(name: &str) -> Option<Rel> {
-    let mut rel = Rel { len: name.len(), buf: [0; PATH_MAX] };
-    rel.buf.get_mut(..name.len())?.copy_from_slice(name.as_bytes());
-    Some(rel)
+    Some((n.mount as usize, Loc::Path(Rel(n.rel.clone()))))
 }
 
 /// Where `node`'s file is named now: its mount and path there. `None` once
@@ -253,7 +246,7 @@ pub(super) fn location(node: &Vnode) -> Option<(usize, Rel)> {
     if n.dead || n.hidden {
         return None;
     }
-    Some((n.mount as usize, copy_rel(&n.rel)?))
+    Some((n.mount as usize, Rel(n.rel.clone())))
 }
 
 /// `node`'s mount, the path it has (or had) there, and whether it is gone
@@ -261,7 +254,7 @@ pub(super) fn location(node: &Vnode) -> Option<(usize, Rel)> {
 pub(super) fn name(node: &Vnode) -> Option<(usize, String, bool)> {
     let nodes = lock(&NODES);
     let n = nodes.get(node.id as usize)?.as_ref()?;
-    Some((n.mount as usize, n.rel.clone(), n.dead || n.hidden))
+    Some((n.mount as usize, String::from(&*n.rel), n.dead || n.hidden))
 }
 
 /// `rel` lies at or below `dir` in a mount.
@@ -273,7 +266,7 @@ fn at_or_below(rel: &str, dir: &str) -> bool {
 pub(super) fn moved(mount: usize, old: &str, new: &str) {
     for n in lock(&NODES).iter_mut().flatten() {
         if n.mount as usize == mount && !n.dead && !n.hidden && at_or_below(&n.rel, old) {
-            n.rel = alloc::format!("{new}{}", &n.rel[old.len()..]);
+            n.rel = Arc::from(alloc::format!("{new}{}", &n.rel[old.len()..]));
         }
     }
 }

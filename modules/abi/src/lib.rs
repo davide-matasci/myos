@@ -120,7 +120,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 67: a filesystem's write hooks and [`KernelApi::vfs_write`] tell a
 /// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
 /// `EFBIG`).
-pub const ABI_VERSION: u32 = 68;
+/// 69: paths up to [`MYOS_PATH_MAX`] (4096) bytes, and one longer is told
+/// apart ([`MYOS_SYSERR_ENAMETOOLONG`], [`MYOS_PATH_TOO_LONG`]).
+pub const ABI_VERSION: u32 = 69;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -548,6 +550,11 @@ pub const MYOS_PAGE: usize = 4096;
 pub const MYOS_MAX_ARGC: usize = 1024;
 pub const MYOS_MAX_ENVC: usize = 1024;
 pub const MYOS_MAX_EXEC_STRINGS: usize = 128 * 1024;
+/// Linux's `PATH_MAX`: a path is at most `MYOS_PATH_MAX - 1` bytes (with
+/// its NUL, `MYOS_PATH_MAX`), counted on the whole absolute path it comes
+/// to (the cwd joined, a namespace's binding and symlinks applied).
+/// libmyos's `MYOS_PATH_MAX` says the same.
+pub const MYOS_PATH_MAX: usize = 4096;
 
 /// Native syscall results: anything from [`MYOS_SYSERR_LOWEST`] up is a
 /// failure sentinel (`usize::MAX` the generic one).
@@ -566,7 +573,9 @@ pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
 pub const MYOS_SYSERR_ENOSPC: usize = usize::MAX - 10;
 /// A write or truncate past the size a file may have (tmpfs's 128 MiB).
 pub const MYOS_SYSERR_EFBIG: usize = usize::MAX - 11;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EFBIG;
+/// A path longer than [`MYOS_PATH_MAX`], as given or once resolved.
+pub const MYOS_SYSERR_ENAMETOOLONG: usize = usize::MAX - 12;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ENAMETOOLONG;
 
 /// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s
 /// result when the filesystem has no room for the bytes (the caller's
@@ -625,6 +634,10 @@ pub struct PathStat {
 pub const MYOS_PATH_VIRTUAL: u32 = 0;
 pub const MYOS_PATH_REAL: u32 = 1;
 pub const MYOS_PATH_REAL_NOFOLLOW: u32 = 2;
+/// [`KernelApi::path_resolve`]'s result for a path that comes to more than
+/// [`MYOS_PATH_MAX`] bytes (the caller's `ENAMETOOLONG`); any other negative
+/// result is one that does not resolve.
+pub const MYOS_PATH_TOO_LONG: i32 = -2;
 
 /// `fd_kind` results.
 pub const MYOS_FD_TTY: i32 = 0;
@@ -934,7 +947,7 @@ pub struct KernelApi {
     pub task_pdeath_signal: unsafe extern "C" fn() -> u32,
     pub task_set_pdeath_signal: unsafe extern "C" fn(sig: u32),
     /// Resolve `path` for the current task (`MYOS_PATH_*`) into `out`: the
-    /// length, or negative.
+    /// length, or negative ([`MYOS_PATH_TOO_LONG`] for a path too long).
     pub path_resolve: unsafe extern "C" fn(path: StrRef, mode: u32, out: *mut u8, cap: usize) -> i32,
     pub vfs_stat: unsafe extern "C" fn(path: StrRef, out: *mut PathStat) -> i32,
     /// Directory listing (newline-separated names) into `buf`: the length.

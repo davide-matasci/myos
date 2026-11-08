@@ -146,9 +146,18 @@ const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const AT_REMOVEDIR: usize = 0x200;
 const MKNOD_DIR: usize = 0;
 
+/// The kernel's lowest failure value (`myos_abi::MYOS_SYSERR_LOWEST`): a
+/// call fails with `usize::MAX` or one of the distinct values below it
+/// (a path call with its own for a path too long, `ENAMETOOLONG`).
+const SYSERR_LOWEST: usize = usize::MAX - 12;
+
+fn failed(ret: usize) -> bool {
+    ret >= SYSERR_LOWEST
+}
+
 pub fn open_flags(path: &[u8], flags: u32) -> Option<usize> {
     let fd = unsafe { sys6(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, path.len(), flags as usize, 0, 0) };
-    if fd == usize::MAX { None } else { Some(fd) }
+    if failed(fd) { None } else { Some(fd) }
 }
 
 pub fn read(fd: usize, buf: &mut [u8]) -> usize {
@@ -258,14 +267,15 @@ pub const LISTDIR_BUF: usize = 4096;
 /// List directory entries at `path` (newline-separated) into `buf`: the
 /// bytes written (all of `buf`: there may be more), `usize::MAX` on error.
 pub fn listdir(path: &[u8], buf: &mut [u8]) -> usize {
-    unsafe {
+    let n = unsafe {
         sys6(SYS_LISTDIRAT, AT_FDCWD, path.as_ptr() as usize, path.len(), buf.as_mut_ptr() as usize, buf.len(), 0)
-    }
+    };
+    if failed(n) { usize::MAX } else { n }
 }
 
 /// A path call on `path` (relative to the cwd) with one more argument.
 fn path_call(nr: usize, path: &[u8], arg: usize) -> bool {
-    unsafe { sys6(nr, AT_FDCWD, path.as_ptr() as usize, path.len(), arg, 0, 0) != usize::MAX }
+    !failed(unsafe { sys6(nr, AT_FDCWD, path.as_ptr() as usize, path.len(), arg, 0, 0) })
 }
 
 pub fn mkdir(path: &[u8]) -> bool {
@@ -282,18 +292,18 @@ pub fn unlink(path: &[u8]) -> bool {
 
 pub fn rename(old: &[u8], new: &[u8]) -> bool {
     let (o, n) = (old.as_ptr() as usize, new.as_ptr() as usize);
-    unsafe { sys6(SYS_RENAMEAT, AT_FDCWD, o, old.len(), AT_FDCWD, n, new.len()) != usize::MAX }
+    !failed(unsafe { sys6(SYS_RENAMEAT, AT_FDCWD, o, old.len(), AT_FDCWD, n, new.len()) })
 }
 
 pub fn symlink(target: &[u8], linkpath: &[u8]) -> bool {
     let (t, l) = (target.as_ptr() as usize, linkpath.as_ptr() as usize);
-    unsafe { sys6(SYS_SYMLINKAT, t, target.len(), AT_FDCWD, l, linkpath.len(), 0) != usize::MAX }
+    !failed(unsafe { sys6(SYS_SYMLINKAT, t, target.len(), AT_FDCWD, l, linkpath.len(), 0) })
 }
 
 pub fn readlink(path: &[u8], buf: &mut [u8]) -> Option<usize> {
     let (p, b) = (path.as_ptr() as usize, buf.as_mut_ptr() as usize);
     let n = unsafe { sys6(SYS_READLINKAT, AT_FDCWD, p, path.len(), b, buf.len(), 0) };
-    if n == usize::MAX { None } else { Some(n) }
+    if failed(n) { None } else { Some(n) }
 }
 
 /// A new conversation of `dir` (`/net/udp`): opening its `clone` makes it,
@@ -406,7 +416,7 @@ pub fn stat_mode(path: &[u8]) -> Option<u32> {
     let mut out = [0u32; 12];
     let (p, o) = (path.as_ptr() as usize, out.as_mut_ptr() as usize);
     let ret = unsafe { sys6(SYS_STATAT, AT_FDCWD, p, path.len(), AT_SYMLINK_NOFOLLOW, o, 0) };
-    (ret != usize::MAX).then_some(out[0])
+    (!failed(ret)).then_some(out[0])
 }
 
 /// Wall-clock time (`SYS_GETTIMEOFDAY` = 33). Returns `(sec, usec)` or `None`.

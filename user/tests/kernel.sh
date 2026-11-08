@@ -57,6 +57,39 @@ c" ]
 }
 t -t fs,smoke fd_offsets fd_offsets
 
+# Paths up to PATH_MAX (docs/fs.md): 4095 bytes, counted on the whole
+# absolute path. A file at 4095 bytes is made, read and stat'ed by its
+# absolute path and by its name from a deep cwd; at 4096, given whole or
+# joined to the cwd (the name alone is short), the calls fail with
+# ENAMETOOLONG ("too long"), not ENOENT. sbase's mkdir -p and rm -r build
+# the paths in PATH_MAX buffers.
+path_max() {
+	s=0123456789
+	s=$s$s$s$s$s$s$s$s$s$s
+	d=/tmp/pathmax
+	while [ $((${#d} + 101)) -le 4000 ]; do d=$d/$s; done
+	f=
+	while [ $((${#d} + 1 + ${#f})) -lt 4095 ]; do f=${f}f; done
+	rm -rf /tmp/pathmax
+	mkdir -p "$d" || { echo "mkdir -p of ${#d} bytes failed"; return 1; }
+	cd "$d" || { echo "cd to ${#d} bytes failed"; return 1; }
+	ok=1
+	{ echo hi > "$f" && [ "$(cat "$d/$f")" = hi ] && [ -f "$d/$f" ] && ls "$f" > /dev/null; } || { echo "4095 bytes failed"; ok=0; }
+	for p in "${f}g" "$d/${f}g"; do
+		for cmd in "echo hi > '$p'" "cat '$p'" "ls '$p'" "mkdir '$p'"; do
+			out=$(eval "$cmd" 2>&1) && { echo "4096 bytes worked: ${cmd%% *}"; ok=0; }
+			case $out in
+			*"too long"*) ;;
+			*) echo "4096 bytes, ${cmd%% *}: $out" | cut -c 1-200; ok=0 ;;
+			esac
+		done
+	done
+	cd /
+	rm -r /tmp/pathmax || { echo "rm -r failed"; ok=0; }
+	[ $ok = 1 ]
+}
+t -t fs,smoke path_max path_max
+
 # An fd holds its file, not its name: it follows a rename (of the file or
 # of a directory above it), a new file that takes the old name is not the
 # one it reads or writes, and a file unlinked under it stays readable,

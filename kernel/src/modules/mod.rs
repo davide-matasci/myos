@@ -1028,23 +1028,22 @@ unsafe extern "C" fn api_path_resolve(path: StrRef, mode: u32, out: *mut u8, cap
     let Some(path) = str_ref(path) else {
         return -1;
     };
-    match mode {
+    let resolved = match mode {
         myos_abi::MYOS_PATH_VIRTUAL => {
-            let mut b = [0u8; 256];
-            match crate::fs::resolve_user_path_virtual(None, path, &mut b) {
-                Some(n) => put_str(out, cap, &b[..n]),
-                None => -1,
-            }
+            let mut b = crate::fs::vfs::path_buf();
+            crate::fs::resolve_user_path_virtual(None, path, &mut b).map(|n| {
+                b.truncate(n);
+                b
+            })
         }
-        myos_abi::MYOS_PATH_REAL => match crate::user::resolve_copied_path(path) {
-            Some(p) => put_str(out, cap, p.as_bytes()),
-            None => -1,
-        },
-        myos_abi::MYOS_PATH_REAL_NOFOLLOW => match crate::user::resolve_copied_path_nofollow(path) {
-            Some(p) => put_str(out, cap, p.as_bytes()),
-            None => -1,
-        },
-        _ => -1,
+        myos_abi::MYOS_PATH_REAL => crate::user::resolve_copied_path(path).map(alloc::string::String::into_bytes),
+        myos_abi::MYOS_PATH_REAL_NOFOLLOW => crate::user::resolve_copied_path_nofollow(path).map(alloc::string::String::into_bytes),
+        _ => return -1,
+    };
+    match resolved {
+        Ok(p) => put_str(out, cap, &p),
+        Err(crate::fs::PathError::TooLong) => myos_abi::MYOS_PATH_TOO_LONG,
+        Err(crate::fs::PathError::Unresolved) => -1,
     }
 }
 

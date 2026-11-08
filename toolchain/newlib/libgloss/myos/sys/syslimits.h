@@ -45,7 +45,7 @@
 #ifndef OPEN_MAX
 #define	OPEN_MAX		  256	/* max open files per process (MYOS_MAX_FDS) */
 #endif
-#define	PATH_MAX		 1024	/* max bytes in pathname */
+#define	PATH_MAX		 4096	/* max bytes in pathname (MYOS_PATH_MAX) */
 #define	PIPE_BUF		  512	/* max bytes for atomic pipe writes */
 #define	IOV_MAX			 1024	/* max elements in i/o vector */
 

@@ -13,6 +13,10 @@ struct winsize;
 
 /* Per-process fd table size (kernel/src/task/mod.rs MAX_FDS). */
 #define MYOS_MAX_FDS 256
+/* Linux's PATH_MAX (modules/abi MYOS_PATH_MAX): a path is at most
+ * MYOS_PATH_MAX - 1 bytes, counted on the whole absolute path it comes to
+ * (joined to the cwd, through a namespace and symlinks). */
+#define MYOS_PATH_MAX 4096
 
 #define MYOS_SYS_EXIT 1
 #define MYOS_SYS_CLOSE 4
@@ -216,6 +220,9 @@ struct myos_lock_range {
 #define MYOS_ENOSPC ((unsigned long)-11)
 /* A write or truncate past the size a file may have (tmpfs's 128 MiB). */
 #define MYOS_EFBIG ((unsigned long)-12)
+/* A path call's path, as given or once resolved (joined to the cwd,
+ * through a namespace or a symlink), longer than MYOS_PATH_MAX - 1. */
+#define MYOS_ENAMETOOLONG ((unsigned long)-13)
 
 /* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
  * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */

@@ -241,8 +241,8 @@ fn keymap_load(text: &[u8]) -> bool {
 /// tree. False when the file cannot be read, is empty or too long, or the
 /// module refuses it; the loaded map stays in those cases.
 pub fn keymap_load_file(path: &str) -> bool {
-    let mut real = [0u8; crate::fs::vfs::PATH_MAX];
-    let Some(n) = crate::fs::resolve_user_path(path, &mut real) else {
+    let mut real = crate::fs::vfs::path_buf();
+    let Ok(n) = crate::fs::resolve_user_path(path, &mut real) else {
         return false;
     };
     let Ok(real) = core::str::from_utf8(&real[..n]) else {

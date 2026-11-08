@@ -91,22 +91,27 @@ pub mod user {
         api().mmap(addr, len, prot, flags, fd, off)
     }
 
-    fn resolve(path: &str, mode: u32) -> Option<String> {
-        let mut b = [0u8; 256];
-        let n = api().path_resolve(path, mode, &mut b);
-        if n < 0 {
-            return None;
+    /// `path` resolved (`myos_abi::MYOS_PATH_*`); when it does not,
+    /// `ENAMETOOLONG` for one too long, else `ENOENT`.
+    fn resolve(path: &str, mode: u32) -> Result<String, usize> {
+        let mut b = alloc::vec![0u8; myos_abi::MYOS_PATH_MAX];
+        match api().path_resolve(path, mode, &mut b) {
+            n if n >= 0 => {
+                b.truncate(n as usize);
+                String::from_utf8(b).map_err(|_| crate::abi::ENOENT)
+            }
+            myos_abi::MYOS_PATH_TOO_LONG => Err(crate::abi::ENAMETOOLONG),
+            _ => Err(crate::abi::ENOENT),
         }
-        Some(String::from(core::str::from_utf8(&b[..n as usize]).ok()?))
     }
 
     /// The VFS path behind `path` (cwd, chroot and symlinks applied).
-    pub fn resolve_copied_path(path: &str) -> Option<String> {
+    pub fn resolve_copied_path(path: &str) -> Result<String, usize> {
         resolve(path, myos_abi::MYOS_PATH_REAL)
     }
 
     /// Like [`resolve_copied_path`], a symlink in the last component not followed.
-    pub fn resolve_copied_path_nofollow(path: &str) -> Option<String> {
+    pub fn resolve_copied_path_nofollow(path: &str) -> Result<String, usize> {
         resolve(path, myos_abi::MYOS_PATH_REAL_NOFOLLOW)
     }
 
@@ -524,6 +529,7 @@ pub mod signal {
     pub const SYSERR_EACCES: usize = myos_abi::MYOS_SYSERR_EACCES;
     pub const SYSERR_ENOSPC: usize = myos_abi::MYOS_SYSERR_ENOSPC;
     pub const SYSERR_EFBIG: usize = myos_abi::MYOS_SYSERR_EFBIG;
+    pub const SYSERR_ENAMETOOLONG: usize = myos_abi::MYOS_SYSERR_ENAMETOOLONG;
     /// The lowest of the native failure sentinels: a result at or above it
     /// failed.
     pub const SYSERR_LOWEST: usize = myos_abi::MYOS_SYSERR_LOWEST;

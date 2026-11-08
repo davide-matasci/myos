@@ -24,6 +24,7 @@ pub const ENOSPC: usize = 28;
 pub const ESPIPE: usize = 29;
 pub const EROFS: usize = 30;
 pub const ERANGE: usize = 34;
+pub const ENAMETOOLONG: usize = 36;
 pub const ENOSYS: usize = 38;
 pub const ENOTEMPTY: usize = 39;
 pub const ELOOP: usize = 40;
@@ -75,6 +76,7 @@ pub fn result(ret: usize, generic: usize) -> usize {
         x if x == crate::k::signal::SYSERR_EACCES => err(EACCES),
         x if x == crate::k::signal::SYSERR_ENOSPC => err(ENOSPC),
         x if x == crate::k::signal::SYSERR_EFBIG => err(EFBIG),
+        x if x == crate::k::signal::SYSERR_ENAMETOOLONG => err(ENAMETOOLONG),
         x => x,
     }
 }

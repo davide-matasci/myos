@@ -404,6 +404,10 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 - **`clone`.** The only `clone` with `CLONE_VM` but not `CLONE_THREAD` is
   posix_spawn's. Its child's memory is a fork's (copy-on-write), not
   shared; posix_spawn and a `vfork` child that only execs do not notice.
+- **Paths** are at most 4095 bytes (`PATH_MAX`, 4096 with the NUL, as on
+  Linux), counted on the whole path the kernel comes to: under `linux --root /data/alpine`,
+  the root's 12 bytes are part of every path. A longer one fails with
+  `ENAMETOOLONG` (`docs/fs.md`).
 - **No System V IPC** from Linux programs (`shmget`, `semget`, `msgget`).
   POSIX shared memory works.
 - **Close-on-exec and `O_NONBLOCK`** (outside sockets) are flags the layer

@@ -12,6 +12,7 @@
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -2139,6 +2140,65 @@ static void check_vdso(void) {
     }
 }
 
+/* Paths up to PATH_MAX, 4096 with the NUL (docs/fs.md): a file at a
+ * 4095-byte path is made and stat'ed, by the path and by its name from a
+ * deep cwd; one of 4096 bytes fails with ENAMETOOLONG. myos counts the
+ * limit on the whole path it comes to, so a short name the cwd makes 4096
+ * bytes long fails too; Linux, counting the path as given, makes it. */
+static void check_path_max(void) {
+    static char dir[PATH_MAX + 2], path[PATH_MAX + 2], name[256];
+    const char *top = "/tmp/linux-smoke-pathmax";
+    int whole = access("/proc/platform", F_OK) == 0;
+    struct stat st;
+    size_t n;
+    int fd, ok;
+
+    strcpy(dir, top);
+    mkdir(dir, 0700);
+    while ((n = strlen(dir)) + 101 <= 4000) {
+        dir[n] = '/';
+        memset(dir + n + 1, 'd', 100);
+        dir[n + 101] = '\0';
+        mkdir(dir, 0700);
+    }
+    n = PATH_MAX - 1 - strlen(dir) - 1;
+    memset(name, 'f', n);
+    name[n] = '\0';
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    ok = fd >= 0 && strlen(path) == PATH_MAX - 1 && stat(path, &st) == 0 && chdir(dir) == 0 && stat(name, &st) == 0;
+    if (fd >= 0) {
+        close(fd);
+    }
+    check(ok, "a 4095-byte path: open, stat, its name from the deep cwd");
+
+    strcat(path, "g");
+    errno = 0;
+    check(open(path, O_WRONLY | O_CREAT, 0600) < 0 && errno == ENAMETOOLONG, "a 4096-byte path: open ENAMETOOLONG");
+    errno = 0;
+    check(stat(path, &st) < 0 && errno == ENAMETOOLONG, "a 4096-byte path: stat ENAMETOOLONG");
+    strcat(name, "g");
+    errno = 0;
+    fd = open(name, O_WRONLY | O_CREAT, 0600);
+    check(whole ? fd < 0 && errno == ENAMETOOLONG : fd >= 0, "4096 bytes with the cwd: open");
+    errno = 0;
+    check(whole ? mkdir(name, 0700) < 0 && errno == ENAMETOOLONG : stat(name, &st) == 0,
+          "4096 bytes with the cwd: mkdir, stat");
+    if (fd >= 0) {
+        close(fd);
+        unlink(name);
+    }
+
+    chdir("/");
+    path[strlen(path) - 1] = '\0';
+    unlink(path);
+    while (strlen(dir) > strlen(top)) {
+        rmdir(dir);
+        *strrchr(dir, '/') = '\0';
+    }
+    rmdir(dir);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
@@ -2567,6 +2627,7 @@ int main(int argc, char **argv) {
     check_toolchain_calls(argv[0]);
     check_fork_vs_fds();
     check_misc_calls();
+    check_path_max();
     check_pdeathsig();
     check_clocks();
 

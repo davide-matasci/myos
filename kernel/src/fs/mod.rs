@@ -14,7 +14,7 @@ mod tmpfs;
 pub mod vfs;
 mod zstd;
 
-pub use vfs::{SetTime, StatInfo, Vnode};
+pub use vfs::{PathError, SetTime, StatInfo, Vnode};
 
 fn path_is_dev_tty(path: &str) -> bool {
     let path = path.trim_start_matches('/');
@@ -248,17 +248,17 @@ pub const S_IFMT: u32 = 0o170000;
 /// own view of the tree; `None`: its cwd) into `out`, in that view
 /// (canonical absolute; in a namespace `/` is its root). `..` is resolved
 /// here, so it can never climb above that `/`.
-pub fn resolve_user_path_virtual(dir: Option<&str>, path: &str, out: &mut [u8]) -> Option<usize> {
-    let mut cwd = [0u8; 256];
+pub fn resolve_user_path_virtual(dir: Option<&str>, path: &str, out: &mut [u8]) -> Result<usize, PathError> {
+    if path.len() > vfs::PATH_MAX {
+        return Err(PathError::TooLong);
+    }
+    let cwd;
     let dir = match dir {
         Some(dir) => dir,
         None if path.starts_with('/') => "/",
         None => {
-            let n = crate::task::cwd(&mut cwd);
-            if n == 0 {
-                return None;
-            }
-            core::str::from_utf8(&cwd[..n]).ok()?
+            cwd = crate::task::cwd().ok_or(PathError::Unresolved)?;
+            cwd.as_str()
         }
     };
     vfs::resolve_against_cwd(dir, path, out)
@@ -268,13 +268,13 @@ pub fn resolve_user_path_virtual(dir: Option<&str>, path: &str, out: &mut [u8]) 
 /// the VFS understands: the virtual path from [`resolve_user_path_virtual`],
 /// with symlinks followed (the last component too), through the task's
 /// namespace.
-pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Option<usize> {
+pub fn resolve_user_path(path: &str, out: &mut [u8]) -> Result<usize, PathError> {
     resolve_user_path_at(None, path, out, true)
 }
 
 /// Like [`resolve_user_path`], but a symlink in the last component is not
 /// followed (`lstat`, `readlink`, `unlink`, `rename`, `symlink`, ...).
-pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Option<usize> {
+pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Result<usize, PathError> {
     resolve_user_path_at(None, path, out, false)
 }
 
@@ -283,10 +283,18 @@ pub fn resolve_user_path_nofollow(path: &str, out: &mut [u8]) -> Option<usize> {
 /// a symlink if `follow_last`. A trailing slash names a directory (POSIX):
 /// the last component is followed then too, and a path to anything else
 /// that exists does not resolve ([`trailing_slash_fails`]).
-pub fn resolve_user_path_at(dir: Option<&str>, path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
+pub fn resolve_user_path_at(
+    dir: Option<&str>,
+    path: &str,
+    out: &mut [u8],
+    follow_last: bool,
+) -> Result<usize, PathError> {
     let n = resolve_user_path_walk(dir, path, out, follow_last || trailing_slash(path))?;
-    let real = core::str::from_utf8(&out[..n]).ok()?;
-    (!(trailing_slash(path) && trailing_slash_fails(real))).then_some(n)
+    let real = core::str::from_utf8(&out[..n]).map_err(|_| PathError::Unresolved)?;
+    match trailing_slash(path) && trailing_slash_fails(real) {
+        true => Err(PathError::Unresolved),
+        false => Ok(n),
+    }
 }
 
 /// `path` ends in `/` after a component (`d/`, not `/`).
@@ -301,24 +309,31 @@ pub fn trailing_slash_fails(real: &str) -> bool {
     stat(real).is_some_and(|st| st.mode & S_IFMT != S_IFDIR)
 }
 
-fn resolve_user_path_walk(dir: Option<&str>, path: &str, out: &mut [u8], follow_last: bool) -> Option<usize> {
+fn resolve_user_path_walk(
+    dir: Option<&str>,
+    path: &str,
+    out: &mut [u8],
+    follow_last: bool,
+) -> Result<usize, PathError> {
     // The whole tree and no symlinks anywhere (the common case): resolve
-    // straight into `out` — no extra buffers on the kernel stack of every
-    // path syscall.
+    // straight into `out`, with no buffers of its own.
     let follow = vfs::symlinks_possible();
     if !crate::task::has_ns() && !follow {
         let n = resolve_user_path_virtual(dir, path, out)?;
         if !out[..n].starts_with(PROC_SELF) {
-            return Some(n);
+            return Ok(n);
         }
         // `/proc/self` holds symlinks (`fd/N`, `tty`) whatever the tmpfs does.
-        let mut virt = [0u8; vfs::PATH_MAX];
+        let mut virt = vfs::path_buf();
         virt[..n].copy_from_slice(&out[..n]);
         let vn = follow_symlinks(&mut virt, n, follow_last)?;
+        if vn > out.len() {
+            return Err(PathError::TooLong);
+        }
         out[..vn].copy_from_slice(&virt[..vn]);
-        return Some(vn);
+        return Ok(vn);
     }
-    let mut virt = [0u8; vfs::PATH_MAX];
+    let mut virt = vfs::path_buf();
     let mut vn = resolve_user_path_virtual(dir, path, &mut virt)?;
     if follow || virt[..vn].starts_with(PROC_SELF) {
         vn = follow_symlinks(&mut virt, vn, follow_last)?;
@@ -331,66 +346,66 @@ const PROC_SELF: &[u8] = b"/proc/self/";
 
 /// The real path behind `virt` (a canonical path in the task's view),
 /// through its namespace: the binding's source, or `@` and `virt` for a
-/// directory the namespace makes up (see [`stat`], [`listdir`]); `None`
-/// when no binding leads there.
-fn virtual_to_real(virt: &[u8], out: &mut [u8]) -> Option<usize> {
-    let virt_s = core::str::from_utf8(virt).ok()?;
+/// directory the namespace makes up (see [`stat`], [`listdir`]);
+/// [`PathError::Unresolved`] when no binding leads there,
+/// [`PathError::TooLong`] when the real path does not fit `out`.
+fn virtual_to_real(virt: &[u8], out: &mut [u8]) -> Result<usize, PathError> {
+    let virt_s = core::str::from_utf8(virt).map_err(|_| PathError::Unresolved)?;
     let mapped = crate::task::with_ns(|n| match n {
         None => Some(None),
         Some(n) => match n.map(virt_s)? {
             crate::task::ns::Mapped::Real(r) => Some(Some(r)),
             crate::task::ns::Mapped::Synthetic => Some(Some(alloc::format!("@{virt_s}"))),
         },
-    })?;
+    })
+    .ok_or(PathError::Unresolved)?;
     let real: &[u8] = match &mapped {
         None => virt,
         Some(r) => r.as_bytes(),
     };
     if real.len() > out.len() {
-        return None;
+        return Err(PathError::TooLong);
     }
     out[..real.len()].copy_from_slice(real);
-    Some(real.len())
+    Ok(real.len())
 }
 
 /// Symlinks followed while resolving one path (Linux's `MAXSYMLINKS`).
 const MAX_SYMLINKS: usize = 40;
 
 /// Replace each symlink along `virt[..vn]` (a canonical path in the task's
-/// view) by its target, the last component only if `follow_last`. Targets
-/// are resolved in the same view, so an absolute one stays inside a chroot
-/// and `..` cannot climb out of it.
-fn follow_symlinks(virt: &mut [u8; vfs::PATH_MAX], mut vn: usize, follow_last: bool) -> Option<usize> {
+/// view, in a [`vfs::path_buf`]) by its target, the last component only if
+/// `follow_last`. Targets are resolved in the same view, so an absolute one
+/// stays inside a chroot and `..` cannot climb out of it.
+fn follow_symlinks(virt: &mut [u8], mut vn: usize, follow_last: bool) -> Result<usize, PathError> {
     let mut hops = 0;
+    let mut real = vfs::path_buf();
+    let mut target = vfs::path_buf();
     // Start of the next component to check; everything before is link-free.
     let mut start = 1;
     while start < vn {
         let end = virt[start..vn].iter().position(|&b| b == b'/').map_or(vn, |i| start + i);
         if end < vn || follow_last {
-            let mut real = [0u8; vfs::PATH_MAX];
             let rn = virtual_to_real(&virt[..end], &mut real)?;
-            let mut target = [0u8; vfs::PATH_MAX];
-            if let Some(tn) = vfs::readlink(core::str::from_utf8(&real[..rn]).ok()?, &mut target) {
+            let real_s = core::str::from_utf8(&real[..rn]).map_err(|_| PathError::Unresolved)?;
+            if let Some(tn) = vfs::readlink(real_s, &mut target) {
                 hops += 1;
                 if hops > MAX_SYMLINKS || tn == 0 {
-                    return None;
+                    return Err(PathError::Unresolved);
                 }
                 // The target, then the rest of the path, relative to the
                 // directory holding the link.
                 let rest = &virt[end..vn];
-                let mut joined = [0u8; vfs::PATH_MAX];
-                if tn + rest.len() > joined.len() {
-                    return None;
+                if tn + rest.len() > vfs::PATH_MAX {
+                    return Err(PathError::TooLong);
                 }
-                joined[..tn].copy_from_slice(&target[..tn]);
-                joined[tn..tn + rest.len()].copy_from_slice(rest);
+                let mut joined = alloc::vec::Vec::with_capacity(tn + rest.len());
+                joined.extend_from_slice(&target[..tn]);
+                joined.extend_from_slice(rest);
                 let dir: &[u8] = if start > 1 { &virt[..start - 1] } else { b"/" };
-                let mut next = [0u8; vfs::PATH_MAX];
-                vn = vfs::resolve_against_cwd(
-                    core::str::from_utf8(dir).ok()?,
-                    core::str::from_utf8(&joined[..tn + rest.len()]).ok()?,
-                    &mut next,
-                )?;
+                let mut next = vfs::path_buf();
+                let utf8 = |b| core::str::from_utf8(b).map_err(|_| PathError::Unresolved);
+                vn = vfs::resolve_against_cwd(utf8(dir)?, utf8(&joined)?, &mut next)?;
                 virt[..vn].copy_from_slice(&next[..vn]);
                 // The target may itself go through links: check from the top.
                 start = 1;
@@ -399,7 +414,7 @@ fn follow_symlinks(virt: &mut [u8; vfs::PATH_MAX], mut vn: usize, follow_last: b
         }
         start = end + 1;
     }
-    Some(vn)
+    Ok(vn)
 }
 
 /// The real path `path` (relative) names beneath the real directory
@@ -407,17 +422,21 @@ fn follow_symlinks(virt: &mut [u8; vfs::PATH_MAX], mut vn: usize, follow_last: b
 /// without ever leaving `base`: a `..` above it, an absolute symlink target
 /// or a relative one leading out fails the walk (a directory fd its
 /// holder's namespace cannot name, `user::at`).
-pub fn resolve_beneath(base: &str, path: &str, follow_last: bool) -> Option<alloc::string::String> {
+pub fn resolve_beneath(base: &str, path: &str, follow_last: bool) -> Result<alloc::string::String, PathError> {
     use alloc::string::String;
     use alloc::vec::Vec;
     if path.starts_with('/') {
-        return None;
+        return Err(PathError::Unresolved);
+    }
+    if path.len() > vfs::PATH_MAX {
+        return Err(PathError::TooLong);
     }
     // The components below `base` walked so far (link-free), and the ones
     // still to walk, the next last.
     let mut done: Vec<String> = Vec::new();
     let mut todo: Vec<String> = path.rsplit('/').map(String::from).collect();
     let mut hops = 0;
+    let mut target = vfs::path_buf();
     let joined = |done: &[String]| {
         let mut real = String::from(base.trim_end_matches('/'));
         for c in done {
@@ -433,7 +452,7 @@ pub fn resolve_beneath(base: &str, path: &str, follow_last: bool) -> Option<allo
         match c.as_str() {
             "" | "." => continue,
             ".." => {
-                done.pop()?;
+                done.pop().ok_or(PathError::Unresolved)?;
                 continue;
             }
             _ => done.push(c),
@@ -441,21 +460,23 @@ pub fn resolve_beneath(base: &str, path: &str, follow_last: bool) -> Option<allo
         if todo.is_empty() && !follow_last {
             continue;
         }
-        let mut target = [0u8; vfs::PATH_MAX];
         let Some(tn) = vfs::readlink(&joined(&done), &mut target) else {
             continue;
         };
         hops += 1;
-        let target = core::str::from_utf8(&target[..tn]).ok()?;
+        let target = core::str::from_utf8(&target[..tn]).map_err(|_| PathError::Unresolved)?;
         if hops > MAX_SYMLINKS || target.is_empty() || target.starts_with('/') {
-            return None;
+            return Err(PathError::Unresolved);
         }
         // The target replaces the link, relative to the directory holding it.
         done.pop();
         todo.extend(target.rsplit('/').map(String::from));
     }
     let real = joined(&done);
-    (real.len() <= vfs::PATH_MAX).then_some(real)
+    match real.len() <= vfs::PATH_MAX {
+        true => Ok(real),
+        false => Err(PathError::TooLong),
+    }
 }
 
 fn reject_mkdir(_path: &str) -> bool {
