@@ -6,7 +6,8 @@
 # mount from /dev/nvme2n1/data, each made by alpine-disk.sh (get-alpine -n
 # on the host):
 #   /rust     rustc (alpine_rustc)
-#   /python   python3 (alpine_python, its sockets, asyncio)
+#   /python   python3 (alpine_python, its sockets, asyncio) and GNU
+#             coreutils (alpine_timeout)
 #   /x11      xdpyinfo (alpine_x11, an X client on the native server)
 # Alpine's latest-stable moves, so the roots are what it had when the disk
 # was made; `--hash` prints the key the disk is cached under in CI (this
@@ -40,5 +41,5 @@ if [[ -f "$out" && -f "$stamp" && "$(cat "$stamp")" == "$(hash)" ]]; then
   exit 0
 fi
 rm -f "$out" "$stamp"
-"$HERE/alpine-disk.sh" "$arch" "$out" rust=rust python=python3 x11=xdpyinfo
+"$HERE/alpine-disk.sh" "$arch" "$out" rust=rust python=python3,coreutils x11=xdpyinfo
 hash > "$stamp"

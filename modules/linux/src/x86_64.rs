@@ -119,6 +119,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         32 => ret(sys::dup(a[0], 0)),
         33 => ret(sys::dup3(a[0], a[1], true, 0)), // dup2
         35 => ret(sys::nanosleep(sys::CLOCK_MONOTONIC, a[0], false)),
+        36 => ret(sys::getitimer(a[0], a[1])),
+        37 => ret(sys::alarm(a[0])),
+        38 => ret(sys::setitimer(a[0], a[1], a[2])),
         39 => task::current_pid(),
         41 => ret(net::socket(a[0], a[1])),
         42 => ret(net::connect(a[0], a[1], a[2])),
@@ -206,6 +209,11 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         326 => ret(sys::copy_file_range(a[0], a[1], a[2], a[3], a[4], a[5])),
         217 => ret(sys::getdents64(a[0], a[1], a[2])),
         218 => thread::set_tid_address(a[0]),
+        222 => ret(sys::timer_create(a[0], a[1], a[2])),
+        223 => ret(sys::timer_settime(a[0], a[1], a[2], a[3])),
+        224 => ret(sys::timer_gettime(a[0], a[1])),
+        225 => ret(sys::timer_getoverrun(a[0])),
+        226 => ret(sys::timer_delete(a[0])),
         228 => ret(sys::clock_gettime(a[0], a[1])),
         229 => ret(sys::clock_getres(a[0], a[1])),
         230 => ret(sys::nanosleep(a[0], a[2], a[1] & 1 != 0)), // clock_nanosleep

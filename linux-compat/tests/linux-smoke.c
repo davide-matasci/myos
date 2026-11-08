@@ -41,6 +41,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/sysinfo.h>
 #include <sys/timerfd.h>
 #include <sys/uio.h>
@@ -1067,6 +1068,179 @@ static void check_sigaltstack(void) {
     free(alt_base);
 }
 
+/* Timers that signal (issue #766): alarm and setitimer (the kernel's
+ * ITIMER_REAL), the POSIX timers to the process and to one thread, and the
+ * overruns; a timer's signal ends a nanosleep with EINTR. */
+static volatile sig_atomic_t timer_hits;
+static volatile long timer_hit_tid;
+static void on_timer(int sig) {
+    (void)sig;
+    timer_hits++;
+    timer_hit_tid = syscall(SYS_gettid);
+}
+
+/* `struct sigevent` as the kernel reads it, for SIGEV_THREAD_ID (musl's
+ * header names the thread id differently across versions). */
+struct ksigevent {
+    union sigval value;
+    int signo, notify, tid;
+    int pad[11];
+};
+
+static volatile long timer_thread_tid;
+static void *timer_thread(void *arg) {
+    (void)arg;
+    timer_thread_tid = syscall(SYS_gettid);
+    struct timespec ts = {5, 0};
+    for (int i = 0; i < 4 && timer_hit_tid != timer_thread_tid; i++) {
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+/* A nanosleep of up to 5 s: whether a signal ended it (EINTR). */
+static int sleep_interrupted(void) {
+    struct timespec ts = {5, 0};
+    errno = 0;
+    return nanosleep(&ts, NULL) == -1 && errno == EINTR;
+}
+
+static void check_timers(char *self) {
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_timer;
+    sigaction(SIGALRM, &sa, &old);
+    sigaction(SIGUSR1, &sa, NULL);
+
+    timer_hits = 0;
+    check(alarm(1) == 0 && alarm(1) == 1, "alarm: none before, then the seconds left");
+    check(sleep_interrupted() && timer_hits == 1, "alarm: SIGALRM ends a nanosleep (EINTR)");
+    check(alarm(0) == 0, "alarm: none left after it fired");
+
+    struct itimerval iv = {{0, 20000}, {0, 20000}}, cur;
+    timer_hits = 0;
+    check(setitimer(ITIMER_REAL, &iv, NULL) == 0 && getitimer(ITIMER_REAL, &cur) == 0 &&
+              cur.it_interval.tv_usec == 20000 && cur.it_value.tv_sec == 0 && cur.it_value.tv_usec > 0,
+          "setitimer, getitimer");
+    for (int i = 0; i < 100 && timer_hits < 3; i++) {
+        sleep_interrupted();
+    }
+    memset(&iv, 0, sizeof iv);
+    check(timer_hits >= 3 && setitimer(ITIMER_REAL, &iv, &cur) == 0 && cur.it_interval.tv_usec == 20000,
+          "setitimer: it re-arms, and is disarmed");
+    errno = 0;
+    check(setitimer(ITIMER_PROF, &iv, NULL) == -1 && errno == EINVAL, "setitimer: ITIMER_PROF is EINVAL");
+
+    /* A fork starts without the timers, exec keeps ITIMER_REAL and drops
+     * the POSIX ones (the `timers-after-exec` mode). */
+    timer_t t;
+    struct sigevent ev;
+    memset(&ev, 0, sizeof ev);
+    ev.sigev_notify = SIGEV_SIGNAL;
+    ev.sigev_signo = SIGALRM;
+    struct itimerspec its = {{0, 0}, {30, 0}}, got, was;
+    check(timer_create(CLOCK_REALTIME, &ev, &t) == 0 && timer_settime(t, 0, &its, NULL) == 0 &&
+              timer_gettime(t, &got) == 0 && got.it_value.tv_sec >= 29 && got.it_value.tv_sec < 30,
+          "timer_create, timer_settime, timer_gettime");
+    /* Armed right before the sleep, with room for a slow emulator: the
+     * signal must come during the sleep to end it. */
+    its.it_value = (struct timespec){0, 200000000};
+    timer_hits = 0;
+    check(timer_settime(t, 0, &its, &was) == 0 && sleep_interrupted() && timer_hits == 1,
+          "timer_create: its signal ends a nanosleep (EINTR)");
+    check(was.it_value.tv_sec >= 29 && timer_gettime(t, &got) == 0 && got.it_value.tv_sec == 0 &&
+              got.it_value.tv_nsec == 0,
+          "timer_settime: the old setting; disarmed after its one expiry");
+
+    /* An absolute time on the monotonic clock. */
+    timer_t m;
+    check(timer_create(CLOCK_MONOTONIC, &ev, &m) == 0, "timer_create: CLOCK_MONOTONIC");
+    clock_gettime(CLOCK_MONOTONIC, &its.it_value);
+    its.it_value.tv_nsec += 300000000;
+    if (its.it_value.tv_nsec >= 1000000000) {
+        its.it_value.tv_sec++;
+        its.it_value.tv_nsec -= 1000000000;
+    }
+    timer_hits = 0;
+    check(timer_settime(m, TIMER_ABSTIME, &its, NULL) == 0 && sleep_interrupted() && timer_hits == 1 &&
+              timer_delete(m) == 0,
+          "timer_settime: TIMER_ABSTIME on CLOCK_MONOTONIC");
+
+    /* The expiries while its signal is blocked are one signal; the
+     * others count as overruns (here while it is still pending). */
+    sigset_t alrm;
+    sigemptyset(&alrm);
+    sigaddset(&alrm, SIGALRM);
+    sigprocmask(SIG_BLOCK, &alrm, NULL);
+    its = (struct itimerspec){{0, 10000000}, {0, 10000000}};
+    struct timespec pause_ts = {0, 150000000};
+    timer_hits = 0;
+    check(timer_settime(t, 0, &its, NULL) == 0 && nanosleep(&pause_ts, NULL) == 0,
+          "timer_settime: a blocked signal does not end a nanosleep");
+    int over = timer_getoverrun(t);
+    memset(&its, 0, sizeof its);
+    timer_settime(t, 0, &its, NULL);
+    sigprocmask(SIG_UNBLOCK, &alrm, NULL);
+    check(over >= 3 && timer_hits == 1, "timer_getoverrun: the expiries while blocked, one signal");
+    check(timer_delete(t) == 0, "timer_delete");
+    errno = 0;
+    check(timer_gettime(t, &got) == -1 && errno == EINVAL, "timer_gettime: a deleted timer is EINVAL");
+
+    /* SIGEV_THREAD_ID: the signal goes to that thread, not to the caller. */
+    pthread_t th;
+    timer_hit_tid = 0;
+    timer_thread_tid = 0;
+    check(pthread_create(&th, NULL, timer_thread, NULL) == 0, "SIGEV_THREAD_ID: thread");
+    while (!timer_thread_tid) {
+        sched_yield();
+    }
+    struct ksigevent kev = {.signo = SIGUSR1, .notify = 4 /* SIGEV_THREAD_ID */, .tid = (int)timer_thread_tid};
+    int kid = -1;
+    struct itimerspec once = {{0, 0}, {0, 100000000}};
+    check(syscall(SYS_timer_create, CLOCK_MONOTONIC, &kev, &kid) == 0 &&
+              syscall(SYS_timer_settime, kid, 0, &once, NULL) == 0,
+          "SIGEV_THREAD_ID: timer_create");
+    pthread_join(th, NULL);
+    check(timer_hit_tid == timer_thread_tid, "SIGEV_THREAD_ID: the thread gets the signal");
+    check(syscall(SYS_timer_delete, kid) == 0, "SIGEV_THREAD_ID: timer_delete");
+
+    /* The real-time signals have no native number (issue #738). */
+    ev.sigev_signo = SIGRTMIN;
+    errno = 0;
+    check(timer_create(CLOCK_MONOTONIC, &ev, &m) == -1 && errno == EINVAL, "timer_create: SIGRTMIN is EINVAL");
+
+    ev.sigev_signo = SIGALRM;
+    iv = (struct itimerval){{0, 0}, {30, 0}};
+    its = (struct itimerspec){{0, 0}, {30, 0}};
+    check(setitimer(ITIMER_REAL, &iv, NULL) == 0 && timer_create(CLOCK_MONOTONIC, &ev, &t) == 0 &&
+              timer_settime(t, 0, &its, NULL) == 0,
+          "timers: armed for the fork and the exec");
+    pid_t pid = fork();
+    if (pid == 0) {
+        errno = 0;
+        int fresh = getitimer(ITIMER_REAL, &cur) == 0 && !cur.it_value.tv_sec && !cur.it_value.tv_usec &&
+                    timer_gettime(t, &got) == -1 && errno == EINVAL;
+        if (!fresh) {
+            _exit(2);
+        }
+        /* The child's own, for the exec to drop. */
+        if (setitimer(ITIMER_REAL, &iv, NULL) || timer_create(CLOCK_MONOTONIC, &ev, &t)) {
+            _exit(3);
+        }
+        execl(self, self, "timers-after-exec", (char *)0);
+        _exit(4);
+    }
+    int st = 0;
+    check(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+          "timers: a fork has none; exec keeps ITIMER_REAL, not timer_create's");
+    memset(&iv, 0, sizeof iv);
+    setitimer(ITIMER_REAL, &iv, NULL);
+    timer_delete(t);
+    sigaction(SIGALRM, &old, NULL);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGUSR1, &sa, NULL);
+}
+
 static void check_signalfd(void) {
     struct signalfd_siginfo si;
     sigset_t set;
@@ -1582,6 +1756,7 @@ static void check_toolchain_calls(char *self) {
     check_argv_layout(self);
     check_sigaction_all(self);
     check_sigaltstack();
+    check_timers(self);
     check_copy_calls();
     check_sched_policy();
 
@@ -2155,6 +2330,17 @@ int main(int argc, char **argv) {
             next = argv[i] + strlen(argv[i]) + 1;
         }
         return environ[0] && environ[0] != next ? 2 : 0;
+    }
+    /* `timers-after-exec`: the exec kept ITIMER_REAL and dropped the POSIX
+     * timer (the child of check_timers made them, timer 0). */
+    if (argc > 1 && strcmp(argv[1], "timers-after-exec") == 0) {
+        struct itimerval cur;
+        struct itimerspec got;
+        if (getitimer(ITIMER_REAL, &cur) || !cur.it_value.tv_sec) {
+            return 5;
+        }
+        errno = 0;
+        return syscall(SYS_timer_gettime, 0, &got) == -1 && errno == EINVAL ? 0 : 6;
     }
     if (argc > 1 && strcmp(argv[1], "extra-signals") == 0) {
         struct sigaction a, b, c;

@@ -370,6 +370,18 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 - **Time**: `clock_gettime` with the realtime, monotonic, boottime and
   CPU-time clocks; `gettimeofday`, `nanosleep`, `clock_nanosleep`
   (absolute times on their clock), `getrusage` (CPU time as user time).
+- **Timers that signal**: `alarm`, `setitimer` and `getitimer` on the
+  kernel's `ITIMER_REAL` (`SIGALRM`, the native programs' too; kept
+  across exec, a forked child starts without one); `ITIMER_VIRTUAL` and
+  `ITIMER_PROF` are `EINVAL`. `timer_create`, `timer_settime`,
+  `timer_gettime`, `timer_getoverrun` and `timer_delete` on the realtime
+  and monotonic clocks, kept by the kernel per process (at most 16;
+  `task::ptimer_create`): `SIGEV_SIGNAL` to the process, `SIGEV_THREAD_ID`
+  to one of its threads, `SIGEV_NONE`. Exec drops them, as does a fork
+  for the child. Only signals with a native number (1 to 31): musl's
+  `SIGEV_THREAD`, which asks for its real-time `SIGTIMER`, is `EINVAL`
+  (issue #738). A signal still pending at the next expiry counts an
+  overrun instead. `timeout(1)` needs them to kill what it runs.
 - **Event fds**: `eventfd`, `timerfd_*`, `epoll_*` and `signalfd` (see
   Limits).
 - **Other**: `getrandom`; `memfd_create` (a `/dev/shm` file; seals are

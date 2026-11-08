@@ -900,6 +900,163 @@ pub fn timerfd_gettime(fd: usize, cur: usize) -> R {
     Ok(0)
 }
 
+// ---- interval and POSIX timers: signals on time (docs/linux-compat.md) -----
+
+/// The process's `ITIMER_REAL`, the kernel's (`SIGALRM`; kept across
+/// exec). `ITIMER_VIRTUAL` and `ITIMER_PROF` count CPU time, which no
+/// timer does here: `EINVAL`.
+const ITIMER_REAL: usize = 0;
+
+/// The `struct timeval` at `tv` in nanoseconds; `EINVAL` for one Linux
+/// refuses.
+fn timeval_ns(tv: usize) -> R2<u64> {
+    let sec = get_u64(tv)?;
+    let usec = get_u64(tv + 8)?;
+    if (sec as i64) < 0 || usec >= 1_000_000 {
+        return Err(EINVAL);
+    }
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(usec * 1000))
+}
+
+/// `(left, interval)` as the `struct itimerval` at `ptr` (interval first),
+/// a time left rounded up to a microsecond so it does not read as disarmed.
+fn put_itimerval(ptr: usize, (left, interval): (u64, u64)) -> R2<()> {
+    let mut b = [0u8; 32];
+    for (i, us) in [interval / 1000, left.div_ceil(1000)].into_iter().enumerate() {
+        b[i * 16..i * 16 + 8].copy_from_slice(&(us / 1_000_000).to_le_bytes());
+        b[i * 16 + 8..i * 16 + 16].copy_from_slice(&(us % 1_000_000).to_le_bytes());
+    }
+    put(ptr, &b)
+}
+
+pub fn getitimer(which: usize, cur: usize) -> R {
+    if which != ITIMER_REAL {
+        return Err(EINVAL);
+    }
+    put_itimerval(cur, crate::k::api().itimer_swap(None))?;
+    Ok(0)
+}
+
+pub fn setitimer(which: usize, new: usize, old: usize) -> R {
+    if which != ITIMER_REAL {
+        return Err(EINVAL);
+    }
+    let interval = timeval_ns(new)?;
+    let value = timeval_ns(new + 16)?;
+    let was = crate::k::api().itimer_swap(Some((value, interval)));
+    if old != 0 {
+        put_itimerval(old, was)?;
+    }
+    Ok(0)
+}
+
+/// `alarm(secs)` (x86_64; the generic table has none, libc uses
+/// `setitimer`): `ITIMER_REAL` once in `secs` (0 cancels); the seconds the
+/// old one had left, rounded as Linux does (to the nearest, at least 1
+/// while one was armed).
+#[cfg(target_arch = "x86_64")]
+pub fn alarm(secs: usize) -> R {
+    let (left, _) = crate::k::api().itimer_swap(Some(((secs as u64).saturating_mul(1_000_000_000), 0)));
+    let s = (left + 500_000_000) / 1_000_000_000;
+    Ok(if left != 0 { s.max(1) } else { 0 } as usize)
+}
+
+/// A POSIX timer's id as userspace sees it: the kernel's, with this bit
+/// for one on the wall clock (whose `TIMER_ABSTIME` times are times of
+/// day). The kernel keeps no clock: both run on the monotonic one.
+const TIMER_WALL: usize = 0x100;
+
+/// The kernel's id of POSIX timer `id` and whether it is on the wall clock.
+fn ptimer_id(id: usize) -> R2<(usize, bool)> {
+    if id & !(TIMER_WALL | 0xff) != 0 {
+        return Err(EINVAL);
+    }
+    Ok((id & 0xff, id & TIMER_WALL != 0))
+}
+
+/// `timer_create(clockid, sevp, idp)`: a timer on the wall or the monotonic
+/// clock that signals the process (`SIGEV_SIGNAL`, and with no `sevp`
+/// `SIGALRM`), one thread of it (`SIGEV_THREAD_ID`) or nobody
+/// (`SIGEV_NONE`). The real-time signals have no native number (issue
+/// #738): musl's `SIGEV_THREAD`, which takes one, fails with `EINVAL`.
+pub fn timer_create(clockid: usize, sevp: usize, idp: usize) -> R {
+    const SIGEV_SIGNAL: u32 = 0;
+    const SIGEV_NONE: u32 = 1;
+    const SIGEV_THREAD_ID: u32 = 4;
+    let wall = match clock(clockid)? {
+        Clock::Wall => true,
+        Clock::Monotonic => false,
+        _ => return Err(EINVAL),
+    };
+    // `struct sigevent`: `sigev_value` (8 bytes), `sigev_signo`,
+    // `sigev_notify`, then the thread id (4 bytes each).
+    let (signo, notify, tid) = if sevp == 0 {
+        (14, SIGEV_SIGNAL, 0) // SIGALRM
+    } else {
+        let mut b = [0u8; 12];
+        get_bytes(sevp + 8, &mut b)?;
+        let word = |i: usize| u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
+        (word(0) as usize, word(1), word(2) as usize)
+    };
+    let (sig, tid) = match notify {
+        SIGEV_NONE => (0, 0),
+        SIGEV_SIGNAL | SIGEV_THREAD_ID => {
+            let sig = sig_from_linux(signo);
+            if sig == 0 {
+                return Err(EINVAL);
+            }
+            if notify == SIGEV_THREAD_ID && tid == 0 {
+                return Err(EINVAL);
+            }
+            (sig, if notify == SIGEV_THREAD_ID { tid } else { 0 })
+        }
+        _ => return Err(EINVAL),
+    };
+    let api = crate::k::api();
+    let id = api.ptimer_create(sig, tid).ok_or(if tid != 0 { EINVAL } else { EAGAIN })?;
+    let user_id = id | if wall { TIMER_WALL } else { 0 };
+    if let Err(e) = put(idp, &(user_id as u32).to_le_bytes()) {
+        api.ptimer_delete(id);
+        return Err(e);
+    }
+    Ok(0)
+}
+
+/// `timer_settime(id, flags, new, old)`: arm (or with a zero `it_value`
+/// disarm) the timer; `TIMER_ABSTIME` takes `it_value` as a time on the
+/// timer's clock.
+pub fn timer_settime(id: usize, flags: usize, new: usize, old: usize) -> R {
+    const TIMER_ABSTIME: usize = 1;
+    let (id, wall) = ptimer_id(id)?;
+    let interval = timespec_ns(new)?;
+    let value = timespec_ns(new + 16)?;
+    let at = match (value, flags & TIMER_ABSTIME != 0) {
+        (0, _) => 0,
+        (_, false) => timespec_deadline(new + 16, None)?,
+        (_, true) => timespec_deadline(new + 16, Some(if wall { Clock::Wall } else { Clock::Monotonic }))?,
+    };
+    let was = crate::k::api().ptimer_set(id, at, interval).ok_or(EINVAL)?;
+    if old != 0 {
+        put_itimerspec(old, was)?;
+    }
+    Ok(0)
+}
+
+pub fn timer_gettime(id: usize, cur: usize) -> R {
+    let (left, every, _) = crate::k::api().ptimer_get(ptimer_id(id)?.0).ok_or(EINVAL)?;
+    put_itimerspec(cur, (left, every))?;
+    Ok(0)
+}
+
+pub fn timer_getoverrun(id: usize) -> R {
+    let (_, _, overrun) = crate::k::api().ptimer_get(ptimer_id(id)?.0).ok_or(EINVAL)?;
+    Ok(overrun.min(i32::MAX as u32) as usize)
+}
+
+pub fn timer_delete(id: usize) -> R {
+    if crate::k::api().ptimer_delete(ptimer_id(id)?.0) { Ok(0) } else { Err(EINVAL) }
+}
+
 // ---- epoll: wait sets (docs/events.md) --------------------------------------
 
 /// `struct epoll_event`: `events` (u32) then `data` (u64), packed on
