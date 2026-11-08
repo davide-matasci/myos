@@ -5,11 +5,18 @@
 //! package root such as Alpine's python3 ~45 MB). So it is sized from the
 //! machine's memory at boot ([`size_for`]) instead of a fixed size.
 //!
-//! Blocks of up to [`SMALL_MAX`] bytes are kept, once freed, on a free list
+//! Blocks of up to [`CLASS_MAX`] bytes are kept, once freed, on a free list
 //! per size class and handed out again from there. `linked_list_allocator`
-//! walks its list of holes on every allocation and free, and the small
-//! blocks (paths, map nodes, boxes) left most of its holes: installing the
-//! 3,500 files of os-test spent most of its kernel time in that walk.
+//! walks its list of holes on every allocation and free, and that walk
+//! grows with the heap's use: the small blocks (paths, map nodes, boxes)
+//! left most of its holes (installing the 3,500 files of os-test spent most
+//! of its kernel time in it), and after an hour of builds every block above
+//! 512 bytes (a Linux `pread`'s buffer, an exec's copies) cost 0.1 to 0.4 ms
+//! each way, with the heap locked and interrupts off: every CPU queued on
+//! it, and a build crawled. A class above [`SMALL_MAX`] keeps at most
+//! [`CLASS_CACHE_MAX`] bytes, the rest going back to the heap, and an
+//! allocation the heap has no room for gets the free lists back first
+//! ([`Classed::drain`]).
 
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
@@ -30,14 +37,24 @@ static ALLOCATOR: IrqSafeHeap = IrqSafeHeap(Mutex::new(Classed::new()));
 
 /// The largest block a size class holds; the classes are the powers of two
 /// from 16 bytes (`linked_list_allocator`'s smallest block) up to it.
+const CLASS_MAX: usize = 1024 * 1024;
+const CLASSES: usize = (CLASS_MAX / 16).trailing_zeros() as usize + 1;
+/// The classes up to this size keep every block freed (most of the heap's
+/// blocks, few of its bytes); a larger one keeps [`CLASS_CACHE_MAX`] bytes.
 const SMALL_MAX: usize = 512;
-const CLASSES: usize = (SMALL_MAX / 16).trailing_zeros() as usize + 1;
+const CLASS_CACHE_MAX: usize = 4 * 1024 * 1024;
+/// The blocks of the classes from a page up are aligned to a page, so a
+/// page-aligned allocation (a kernel stack, a table) takes one too; the
+/// smaller ones to 16 bytes, as every allocation is.
+const PAGE: usize = 4096;
 
-/// The heap and the free lists of its small blocks.
+/// The heap and the free lists of its size classes.
 struct Classed {
     heap: Heap,
     /// Each class's free blocks, linked through their first word.
     free: [*mut u8; CLASSES],
+    /// The bytes in each class's free list.
+    class_cached: [usize; CLASSES],
     /// The bytes in the free lists: free, for [`usage`].
     cached: usize,
 }
@@ -47,37 +64,77 @@ unsafe impl Send for Classed {}
 
 impl Classed {
     const fn new() -> Self {
-        Classed { heap: Heap::empty(), free: [core::ptr::null_mut(); CLASSES], cached: 0 }
+        Classed { heap: Heap::empty(), free: [core::ptr::null_mut(); CLASSES], class_cached: [0; CLASSES], cached: 0 }
     }
 
     /// The class of a block of `layout`, or `None` for a large one (or one
-    /// aligned beyond the 16 bytes every class's blocks have).
+    /// aligned beyond what its class's blocks are).
     fn class(layout: Layout) -> Option<usize> {
-        let size = layout.size().max(16);
-        (size <= SMALL_MAX && layout.align() <= 16).then(|| (size.next_power_of_two() / 16).trailing_zeros() as usize)
+        let size = layout.size().max(16).next_power_of_two();
+        let c = (size / 16).trailing_zeros() as usize;
+        (size <= CLASS_MAX && layout.align() <= Self::class_layout(c).align()).then_some(c)
+    }
+
+    /// The layout of class `c`'s blocks in the heap.
+    fn class_layout(c: usize) -> Layout {
+        let size = 16usize << c;
+        Layout::from_size_align(size, if size >= PAGE { PAGE } else { 16 }).unwrap()
     }
 
     fn alloc(&mut self, layout: Layout) -> *mut u8 {
         let Some(c) = Self::class(layout) else {
-            return self.heap.allocate_first_fit(layout).map_or(core::ptr::null_mut(), |p| p.as_ptr());
+            return self.heap_alloc(layout);
         };
         let block = self.free[c];
         if block.is_null() {
-            let class = Layout::from_size_align(16 << c, 16).unwrap();
-            return self.heap.allocate_first_fit(class).map_or(core::ptr::null_mut(), |p| p.as_ptr());
+            return self.heap_alloc(Self::class_layout(c));
         }
         self.free[c] = unsafe { *(block as *mut *mut u8) };
+        self.class_cached[c] -= 16 << c;
         self.cached -= 16 << c;
         block
+    }
+
+    /// A block from the heap itself; when there is no room for it, the free
+    /// lists go back to the heap first.
+    fn heap_alloc(&mut self, layout: Layout) -> *mut u8 {
+        if let Ok(p) = self.heap.allocate_first_fit(layout) {
+            return p.as_ptr();
+        }
+        if self.cached == 0 {
+            return core::ptr::null_mut();
+        }
+        self.drain();
+        self.heap.allocate_first_fit(layout).map_or(core::ptr::null_mut(), |p| p.as_ptr())
+    }
+
+    /// Give every block of the free lists back to the heap.
+    fn drain(&mut self) {
+        for c in 0..CLASSES {
+            let layout = Self::class_layout(c);
+            let mut block = core::mem::replace(&mut self.free[c], core::ptr::null_mut());
+            while !block.is_null() {
+                let next = unsafe { *(block as *mut *mut u8) };
+                unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(block), layout) };
+                block = next;
+            }
+            self.class_cached[c] = 0;
+        }
+        self.cached = 0;
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         let Some(c) = Self::class(layout) else {
             return unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(ptr), layout) };
         };
+        let size = 16usize << c;
+        if size > SMALL_MAX && self.class_cached[c] + size > CLASS_CACHE_MAX {
+            return unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(ptr), Self::class_layout(c)) };
+        }
         unsafe { *(ptr as *mut *mut u8) = self.free[c] };
         self.free[c] = ptr;
-        self.cached += 16 << c;
+        self.class_cached[c] += size;
+        self.cached += size;
     }
 }
 
