@@ -446,8 +446,11 @@ fn new_unix(ty: usize) -> R {
 
 /// readv / writev / sendmsg / recvmsg on a record socket: one record,
 /// gathered from or scattered over the `iovec`s (a write per piece would
-/// make each its own record); a read waits for one unless `dontwait` (or
-/// the socket is non-blocking). `None` for any other fd.
+/// make each its own record). `msg_flags` are the `MSG_*` flags of a
+/// `sendmsg` / `recvmsg` (0 for readv / writev): a read waits for a record
+/// unless `MSG_DONTWAIT` (or the socket is non-blocking), a write to a
+/// peer that hung up sends `SIGPIPE` unless `MSG_NOSIGNAL` ([`send`]).
+/// `None` for any other fd.
 pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool, msg_flags: usize) -> Option<R> {
     let dontwait = msg_flags & MSG_DONTWAIT != 0;
     let (conv, s) = sock(fd).ok()?;
