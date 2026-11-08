@@ -3,20 +3,25 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-# shellcheck source=ports/lua/versions.env
+# shellcheck source=packages/lua/versions.env
 source "$HERE/versions.env"
 
 TARBALL="$ROOT/target/lua-${LUA_VERSION}.tar.gz"
-URL="$LUA_URL"
 
+# The tarball from the first of LUA_URLS that answers.
 fetch() {
-  echo "==> fetch lua $LUA_VERSION ($URL)"
+  local url
   mkdir -p "$ROOT/target"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$TARBALL" "$URL"
-  else
-    wget -q -O "$TARBALL" "$URL"
-  fi
+  for url in $LUA_URLS; do
+    echo "==> fetch lua $LUA_VERSION ($url)"
+    if curl -fsSL --connect-timeout 20 --retry 2 --retry-all-errors --retry-delay 2 -o "$TARBALL" "$url"; then
+      return
+    fi
+    echo "fetch $url failed; trying the next mirror" >&2
+    rm -f "$TARBALL"
+  done
+  echo "error: cannot fetch lua $LUA_VERSION" >&2
+  exit 1
 }
 
 if [[ -f "$TARBALL" ]]; then
