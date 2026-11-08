@@ -2164,7 +2164,11 @@ static void check_path_max(void) {
     n = PATH_MAX - 1 - strlen(dir) - 1;
     memset(name, 'f', n);
     name[n] = '\0';
-    snprintf(path, sizeof path, "%s/%s", dir, name);
+    /* No stdio: printf's long double needs builtins the static link has
+     * not on aarch64 and riscv64. */
+    strcpy(path, dir);
+    strcat(path, "/");
+    strcat(path, name);
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     ok = fd >= 0 && strlen(path) == PATH_MAX - 1 && stat(path, &st) == 0 && chdir(dir) == 0 && stat(name, &st) == 0;
     if (fd >= 0) {
