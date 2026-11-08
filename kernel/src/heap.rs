@@ -13,10 +13,15 @@
 //! of its kernel time in it), and after an hour of builds every block above
 //! 512 bytes (a Linux `pread`'s buffer, an exec's copies) cost 0.1 to 0.4 ms
 //! each way, with the heap locked and interrupts off: every CPU queued on
-//! it, and a build crawled. A class above [`SMALL_MAX`] keeps at most
-//! [`CLASS_CACHE_MAX`] bytes, the rest going back to the heap, and an
-//! allocation the heap has no room for gets the free lists back first
-//! ([`Classed::drain`]).
+//! it, and a build crawled. The classes up to [`SMALL_MAX`] keep every
+//! block (most of the heap's blocks, few of its bytes); the larger ones
+//! keep [`Classed::class_max`] bytes each and [`Classed::large_max`] in
+//! all, the rest going back to the heap, and an allocation the heap has no
+//! room for gets their blocks back, largest class first, until it fits
+//! ([`Classed::heap_alloc`]). A block's class is its allocation's size
+//! rounded up: to a power of two up to a page, to a whole page above it,
+//! so a large block (a tmpfs file's data, an exec's copy of a program)
+//! wastes under a page, not up to half of itself.
 
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
@@ -35,18 +40,18 @@ const MAX_SIZE: u64 = 1024 * 1024 * 1024;
 #[global_allocator]
 static ALLOCATOR: IrqSafeHeap = IrqSafeHeap(Mutex::new(Classed::new()));
 
-/// The largest block a size class holds; the classes are the powers of two
-/// from 16 bytes (`linked_list_allocator`'s smallest block) up to it.
-const CLASS_MAX: usize = 1024 * 1024;
-const CLASSES: usize = (CLASS_MAX / 16).trailing_zeros() as usize + 1;
-/// The classes up to this size keep every block freed (most of the heap's
-/// blocks, few of its bytes); a larger one keeps [`CLASS_CACHE_MAX`] bytes.
+/// The largest block a size class holds. The classes are the powers of two
+/// from 16 bytes (`linked_list_allocator`'s smallest block) to a page, then
+/// every multiple of a page up to it.
+const CLASS_MAX: usize = 256 * 1024;
+const PAGE: usize = crate::user::PAGE;
+/// The classes up to a page: 16, 32, ..., [`PAGE`] bytes.
+const POW2_CLASSES: usize = (PAGE / 16).trailing_zeros() as usize + 1;
+const CLASSES: usize = POW2_CLASSES + CLASS_MAX / PAGE - 1;
+/// The classes up to this size keep every block freed; a larger one keeps
+/// at most [`Classed::class_max`] bytes.
 const SMALL_MAX: usize = 512;
-const CLASS_CACHE_MAX: usize = 4 * 1024 * 1024;
-/// The blocks of the classes from a page up are aligned to a page, so a
-/// page-aligned allocation (a kernel stack, a table) takes one too; the
-/// smaller ones to 16 bytes, as every allocation is.
-const PAGE: usize = 4096;
+const SMALL_CLASSES: usize = (SMALL_MAX / 16).trailing_zeros() as usize + 1;
 
 /// The heap and the free lists of its size classes.
 struct Classed {
@@ -57,6 +62,15 @@ struct Classed {
     class_cached: [usize; CLASSES],
     /// The bytes in the free lists: free, for [`usage`].
     cached: usize,
+    /// The bytes in the free lists of the classes above [`SMALL_MAX`].
+    large_cached: usize,
+    /// What a class above [`SMALL_MAX`] keeps at most, and what they all
+    /// keep together: a 64th and an eighth of the heap, 4 MiB a class at
+    /// most ([`init`]). Beyond it a freed block goes back to the heap: the
+    /// lists stay a cache of what runs, not a hoard that fragments the
+    /// heap for its large allocations.
+    class_max: usize,
+    large_max: usize,
 }
 
 // The free lists' pointers are the heap's own memory.
@@ -64,21 +78,44 @@ unsafe impl Send for Classed {}
 
 impl Classed {
     const fn new() -> Self {
-        Classed { heap: Heap::empty(), free: [core::ptr::null_mut(); CLASSES], class_cached: [0; CLASSES], cached: 0 }
+        Classed {
+            heap: Heap::empty(),
+            free: [core::ptr::null_mut(); CLASSES],
+            class_cached: [0; CLASSES],
+            cached: 0,
+            large_cached: 0,
+            class_max: 0,
+            large_max: 0,
+        }
     }
 
     /// The class of a block of `layout`, or `None` for a large one (or one
-    /// aligned beyond what its class's blocks are).
+    /// aligned beyond the 16 bytes every class's blocks have: a module's
+    /// image wants pages, and takes them from the heap itself).
     fn class(layout: Layout) -> Option<usize> {
-        let size = layout.size().max(16).next_power_of_two();
-        let c = (size / 16).trailing_zeros() as usize;
-        (size <= CLASS_MAX && layout.align() <= Self::class_layout(c).align()).then_some(c)
+        let size = layout.size();
+        if size > CLASS_MAX || layout.align() > 16 {
+            return None;
+        }
+        Some(if size <= PAGE {
+            (size.max(16).next_power_of_two() / 16).trailing_zeros() as usize
+        } else {
+            POW2_CLASSES - 2 + size.div_ceil(PAGE)
+        })
+    }
+
+    /// The size of class `c`'s blocks.
+    fn class_size(c: usize) -> usize {
+        if c < POW2_CLASSES {
+            16 << c
+        } else {
+            (c + 2 - POW2_CLASSES) * PAGE
+        }
     }
 
     /// The layout of class `c`'s blocks in the heap.
     fn class_layout(c: usize) -> Layout {
-        let size = 16usize << c;
-        Layout::from_size_align(size, if size >= PAGE { PAGE } else { 16 }).unwrap()
+        Layout::from_size_align(Self::class_size(c), 16).unwrap()
     }
 
     fn alloc(&mut self, layout: Layout) -> *mut u8 {
@@ -90,51 +127,69 @@ impl Classed {
             return self.heap_alloc(Self::class_layout(c));
         }
         self.free[c] = unsafe { *(block as *mut *mut u8) };
-        self.class_cached[c] -= 16 << c;
-        self.cached -= 16 << c;
+        self.uncache(c, Self::class_size(c));
         block
     }
 
-    /// A block from the heap itself; when there is no room for it, the free
-    /// lists go back to the heap first.
+    /// A block from the heap itself. When it has no room, the free lists
+    /// of the classes above [`SMALL_MAX`] go back to it, largest class
+    /// first (the most bytes in the fewest blocks: every block given back
+    /// walks the holes), until the block fits. A request for more than the
+    /// heap and those lists hold together is refused without that.
     fn heap_alloc(&mut self, layout: Layout) -> *mut u8 {
         if let Ok(p) = self.heap.allocate_first_fit(layout) {
             return p.as_ptr();
         }
-        if self.cached == 0 {
+        if layout.size() > self.heap.free() + self.large_cached {
             return core::ptr::null_mut();
         }
-        self.drain();
-        self.heap.allocate_first_fit(layout).map_or(core::ptr::null_mut(), |p| p.as_ptr())
+        for c in (SMALL_CLASSES..CLASSES).rev() {
+            if self.free[c].is_null() {
+                continue;
+            }
+            self.drain(c);
+            if let Ok(p) = self.heap.allocate_first_fit(layout) {
+                return p.as_ptr();
+            }
+        }
+        core::ptr::null_mut()
     }
 
-    /// Give every block of the free lists back to the heap.
-    fn drain(&mut self) {
-        for c in 0..CLASSES {
-            let layout = Self::class_layout(c);
-            let mut block = core::mem::replace(&mut self.free[c], core::ptr::null_mut());
-            while !block.is_null() {
-                let next = unsafe { *(block as *mut *mut u8) };
-                unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(block), layout) };
-                block = next;
-            }
-            self.class_cached[c] = 0;
+    /// Give every block of class `c`'s free list back to the heap.
+    fn drain(&mut self, c: usize) {
+        let layout = Self::class_layout(c);
+        let mut block = core::mem::replace(&mut self.free[c], core::ptr::null_mut());
+        while !block.is_null() {
+            let next = unsafe { *(block as *mut *mut u8) };
+            unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(block), layout) };
+            block = next;
         }
-        self.cached = 0;
+        self.uncache(c, self.class_cached[c]);
+    }
+
+    fn uncache(&mut self, c: usize, bytes: usize) {
+        self.class_cached[c] -= bytes;
+        self.cached -= bytes;
+        if c >= SMALL_CLASSES {
+            self.large_cached -= bytes;
+        }
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         let Some(c) = Self::class(layout) else {
             return unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(ptr), layout) };
         };
-        let size = 16usize << c;
-        if size > SMALL_MAX && self.class_cached[c] + size > CLASS_CACHE_MAX {
+        let size = Self::class_size(c);
+        if c >= SMALL_CLASSES && (self.class_cached[c] + size > self.class_max || self.large_cached + size > self.large_max) {
             return unsafe { self.heap.deallocate(core::ptr::NonNull::new_unchecked(ptr), Self::class_layout(c)) };
         }
         unsafe { *(ptr as *mut *mut u8) = self.free[c] };
         self.free[c] = ptr;
         self.class_cached[c] += size;
         self.cached += size;
+        if c >= SMALL_CLASSES {
+            self.large_cached += size;
+        }
     }
 }
 
@@ -161,6 +216,26 @@ unsafe impl GlobalAlloc for IrqSafeHeap {
         crate::arch::irq_off();
         unsafe { self.0.lock().dealloc(ptr, layout) };
         crate::arch::irq_restore(flags);
+    }
+
+    /// A block of a size class is the whole of its class's block, so a
+    /// `Vec` growing or shrinking within the class keeps it (the default
+    /// would take a second block of the class and copy).
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        if let (Some(old), Some(new)) = (Classed::class(layout), Classed::class(new_layout)) {
+            if old == new {
+                return ptr;
+            }
+        }
+        let new_ptr = unsafe { self.alloc(new_layout) };
+        if !new_ptr.is_null() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(ptr, new_ptr, layout.size().min(new_size));
+                self.dealloc(ptr, layout);
+            }
+        }
+        new_ptr
     }
 }
 
@@ -233,9 +308,11 @@ pub fn init() {
     let size = size_for(limine_boot::usable_total(), limine_boot::largest_usable());
     let start = limine_boot::alloc_usable(size as usize);
     PHYS_END.store(start as u64 - limine_boot::hhdm_offset() + size, Ordering::SeqCst);
-    unsafe {
-        ALLOCATOR.0.lock().heap.init(start as *mut u8, size as usize);
-    }
+    let mut classed = ALLOCATOR.0.lock();
+    unsafe { classed.heap.init(start as *mut u8, size as usize) };
+    classed.class_max = (size as usize / 64).min(4 << 20);
+    classed.large_max = size as usize / 8;
+    drop(classed);
     READY.store(true, Ordering::SeqCst);
 }
 

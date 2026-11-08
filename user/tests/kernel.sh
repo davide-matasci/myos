@@ -1184,6 +1184,45 @@ mem_exec_no_heap_leak() {
 }
 t -t mm mem_exec_no_heap_leak mem_exec_no_heap_leak
 
+# Files of 1 to 64 KiB of numbered lines, each written as `seq` buffers it
+# (its data grows through the heap's size classes, `kernel/src/heap.rs`),
+# read back against what wrote them, joined into one 2 MiB file (a block
+# above every class) and deleted: the blocks the classes hand out and take
+# back must keep their contents, and the heap must be as free afterwards
+# as before (a block kept on a class's free list counts as free).
+heap_classes_run() {
+	mkdir -p /tmp/hc || return 1
+	hc_i=1
+	while [ $hc_i -le 64 ]; do
+		# 128 lines of 8 bytes ("1000000\n" on) a KiB
+		seq 1000000 $((1000000 + hc_i * 128 - 1)) > /tmp/hc/f$hc_i
+		hc_i=$((hc_i + 1))
+	done
+	hc_i=1
+	while [ $hc_i -le 64 ]; do
+		seq 1000000 $((1000000 + hc_i * 128 - 1)) | cmp -s - /tmp/hc/f$hc_i \
+			|| { echo "heap: /tmp/hc/f$hc_i ($hc_i KiB) differs"; return 1; }
+		hc_i=$((hc_i + 1))
+	done
+	cat /tmp/hc/f* > /tmp/hc/all
+	cat /tmp/hc/f* | cmp -s - /tmp/hc/all || { echo "heap: /tmp/hc/all differs"; return 1; }
+	rm -r /tmp/hc
+}
+
+mem_heap_classes() {
+	heap_classes_run || return 1 # warm: the shell's and the tools' slots
+	before=$(heap_free)
+	if [ "$before" = 0 ]; then
+		echo "heap: no HeapFreeKiB in /proc/meminfo"
+		return 1
+	fi
+	heap_classes_run || return 1
+	after=$(heap_free)
+	echo "heap: classes HeapFreeKiB $before -> $after (delta $((before - after)))"
+	[ "$((before - after))" -le 512 ]
+}
+t -t mm mem_heap_classes mem_heap_classes
+
 # A userspace memory hog must never abort the kernel, and its pages must all
 # come back. `memhog` mmaps and touches a large region in chunks; the kernel
 # either serves it in full or, under real memory pressure, fails the fault so
