@@ -34,6 +34,14 @@ An ignored signal is dropped when sent, unless it is blocked: a blocked
 signal always stays pending, because the disposition may change before
 it is unblocked (as on Linux).
 
+A write to a pipe or FIFO every reader has closed sends the writing
+thread `SIGPIPE` and fails with `EPIPE`: the default action ends a
+producer whose consumer is done (`yes | head`), and one that ignores or
+catches the signal sees the error (`kernel/src/task/fd.rs`). A Linux
+program's `send`, `sendto` and `sendmsg` on a socket whose peer hung up
+do the same unless called with `MSG_NOSIGNAL` (`docs/linux-compat.md`).
+Native sockets raise no `SIGPIPE`.
+
 `fork` copies the handlers and the blocked mask. `exec` resets caught
 signals to `SIG_DFL` and keeps ignored ones, the blocked mask and the
 pending signals.

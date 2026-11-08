@@ -828,6 +828,9 @@ pub const SYSERR_ESPIPE: usize = usize::MAX - 5;
 pub const SYSERR_ENOSPC: usize = usize::MAX - 10;
 /// A write or truncate past the size a file may have (tmpfs's cap, `EFBIG`).
 pub const SYSERR_EFBIG: usize = usize::MAX - 11;
+/// A write to a pipe every reader has closed (`EPIPE`; the writer also
+/// gets `SIGPIPE`).
+pub const SYSERR_EPIPE: usize = usize::MAX - 12;
 
 /// Distinct syscall error for pty peer-gone (`EIO`): `usize::MAX` is the
 /// generic SYSERR (libgloss maps it to EBADF), so read/write return `MAX-1`
@@ -1168,7 +1171,14 @@ fn write_chunks(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                     let seq = wait_seq();
                     let n = pipe::write(id, &tmp[done..chunk]);
                     if n == usize::MAX {
-                        return if total == 0 { usize::MAX } else { total };
+                        if !pipe::readers_gone(id) {
+                            return if total == 0 { usize::MAX } else { total };
+                        }
+                        // Every reader closed: `SIGPIPE` (its default ends
+                        // the writer: `yes | head` stops with head) and, to
+                        // a writer that ignores or catches it, `EPIPE`.
+                        signal_send(current_id(), crate::signal::SIGPIPE);
+                        return if total == 0 { SYSERR_EPIPE } else { total };
                     }
                     if n == 0 && pipe::write_would_block(id) {
                         // See PipeRead wait. With nothing written yet this is
