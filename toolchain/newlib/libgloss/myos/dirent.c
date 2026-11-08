@@ -18,24 +18,8 @@
 #define AT_EMPTY_PATH 0x0010
 #endif
 
-#define MYOS_DIR_POOL 16
 /* The largest listing read (the kernel's LISTDIR_MAX). */
 #define MYOS_DIR_MAX (256 * 1024)
-
-static DIR dir_pool[MYOS_DIR_POOL];
-static unsigned char dir_used[MYOS_DIR_POOL];
-
-static int
-dir_slot_index(DIR *d)
-{
-	if (d == NULL) {
-		return -1;
-	}
-	if (d < &dir_pool[0] || d >= &dir_pool[MYOS_DIR_POOL]) {
-		return -1;
-	}
-	return (int)(d - &dir_pool[0]);
-}
 
 /* Read the directory's names into d->buf, growing it until they fit. */
 static int
@@ -80,10 +64,10 @@ dir_list(DIR *d)
 static void
 myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 {
-	char full[512];
+	char *full;
 	struct stat st;
 	size_t plen;
-	int need_slash;
+	int need_slash, found;
 
 	d->ent.d_ino = 0;
 	d->ent.d_type = DT_UNKNOWN;
@@ -98,7 +82,8 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 			plen--;
 		}
 		need_slash = !(plen == 0 || (plen == 1 && d->path[0] == '/'));
-		if (plen + (need_slash ? 1u : 0u) + namelen + 1u > sizeof(full)) {
+		full = malloc(plen + 1 + namelen + 1);
+		if (full == NULL) {
 			return;
 		}
 		memcpy(full, d->path, plen);
@@ -107,7 +92,9 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 		}
 		memcpy(full + plen, d->ent.d_name, namelen);
 		full[plen + namelen] = '\0';
-		if (stat(full, &st) != 0) {
+		found = stat(full, &st) == 0;
+		free(full);
+		if (!found) {
 			return;
 		}
 	}
@@ -121,40 +108,31 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 	}
 }
 
-/* A DIR on `fd` (owned from here on), or on `path` when there is no fd. */
+/* A DIR on `fd` (owned from here on), or on `path` when there is no fd.
+ * Each is allocated: as many can be open as there are fds (`rm -r` keeps
+ * one per level of the tree it walks). */
 static DIR *
 dir_new(int fd, const char *path)
 {
-	int i;
-	size_t n;
+	DIR *d = calloc(1, sizeof(*d));
 
-	/* Claimed with a compare-and-swap: two threads opening directories
-	 * at once get two slots. */
-	for (i = 0; i < MYOS_DIR_POOL; i++) {
-		unsigned char free_slot = 0;
-		if (__atomic_compare_exchange_n(&dir_used[i], &free_slot, 1, 0,
-						__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
-			break;
-		}
-	}
-	if (i >= MYOS_DIR_POOL) {
-		errno = EMFILE;
+	if (d == NULL) {
+		errno = ENOMEM;
 		return NULL;
 	}
-	memset(&dir_pool[i], 0, sizeof(dir_pool[i]));
-	dir_pool[i].fd = fd;
-	n = strlen(path);
-	if (n >= sizeof(dir_pool[i].path)) {
-		n = sizeof(dir_pool[i].path) - 1;
-	}
-	memcpy(dir_pool[i].path, path, n);
-	dir_pool[i].path[n] = '\0';
-	if (dir_list(&dir_pool[i]) != 0) {
-		free(dir_pool[i].buf);
-		__atomic_store_n(&dir_used[i], 0, __ATOMIC_RELEASE);
+	d->fd = fd;
+	if (fd < 0 && (d->path = strdup(path)) == NULL) {
+		free(d);
+		errno = ENOMEM;
 		return NULL;
 	}
-	return &dir_pool[i];
+	if (dir_list(d) != 0) {
+		free(d->buf);
+		free(d->path);
+		free(d);
+		return NULL;
+	}
+	return d;
 }
 
 DIR *
@@ -211,9 +189,7 @@ fdopendir(int fd)
 struct dirent *
 readdir(DIR *d)
 {
-	int slot = dir_slot_index(d);
-
-	if (slot < 0 || !dir_used[slot]) {
+	if (d == NULL) {
 		errno = EBADF;
 		return NULL;
 	}
@@ -273,9 +249,7 @@ readdir_r(DIR *d, struct dirent *entry, struct dirent **result)
 int
 closedir(DIR *d)
 {
-	int slot = dir_slot_index(d);
-
-	if (slot < 0 || !dir_used[slot]) {
+	if (d == NULL) {
 		errno = EBADF;
 		return -1;
 	}
@@ -283,8 +257,8 @@ closedir(DIR *d)
 		close(d->fd);
 	}
 	free(d->buf);
-	d->buf = NULL;
-	__atomic_store_n(&dir_used[slot], 0, __ATOMIC_RELEASE);
+	free(d->path);
+	free(d);
 	return 0;
 }
 
@@ -292,9 +266,7 @@ closedir(DIR *d)
 void
 rewinddir(DIR *d)
 {
-	int slot = dir_slot_index(d);
-
-	if (slot < 0 || !dir_used[slot]) {
+	if (d == NULL) {
 		return;
 	}
 	if (dir_list(d) != 0) {
@@ -307,9 +279,7 @@ rewinddir(DIR *d)
 long
 telldir(DIR *d)
 {
-	int slot = dir_slot_index(d);
-
-	if (slot < 0 || !dir_used[slot]) {
+	if (d == NULL) {
 		errno = EBADF;
 		return -1;
 	}
@@ -319,9 +289,7 @@ telldir(DIR *d)
 void
 seekdir(DIR *d, long loc)
 {
-	int slot = dir_slot_index(d);
-
-	if (slot < 0 || !dir_used[slot] || loc < 0) {
+	if (d == NULL || loc < 0) {
 		return;
 	}
 	d->pos = (unsigned long)loc > d->len ? d->len : (unsigned long)loc;
@@ -330,9 +298,7 @@ seekdir(DIR *d, long loc)
 int
 dirfd(DIR *d)
 {
-	int slot = dir_slot_index(d);
-
-	if (slot < 0 || !dir_used[slot]) {
+	if (d == NULL) {
 		errno = EINVAL;
 		return -1;
 	}

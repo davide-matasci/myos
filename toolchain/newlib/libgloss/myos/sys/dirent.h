@@ -32,15 +32,15 @@ struct dirent {
 	char d_name[256];
 };
 
-/* An open directory (dirent.c): its fd, or -1 for one a namespace makes up
- * (it cannot be opened, only listed by its path), and its names, one per
- * line, read at opendir and rewinddir (the buffer grows from MYOS_DIRBUF to
- * hold them). */
+/* An open directory (dirent.c, allocated by opendir): its fd, or -1 for one
+ * a namespace makes up (it cannot be opened, only listed by its path, held
+ * then), and its names, one per line, read at opendir and rewinddir (the
+ * buffer grows from MYOS_DIRBUF to hold them). */
 typedef struct {
 	int fd;
 	char *buf;
 	unsigned long cap;
-	char path[256];
+	char *path;
 	unsigned long len;
 	unsigned long pos;
 	struct dirent ent;
