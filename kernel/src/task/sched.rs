@@ -969,6 +969,135 @@ pub fn itimer_swap(pid: usize, new: Option<(u64, u64)>) -> (u64, u64) {
     old
 }
 
+/// Process `pid`'s POSIX timers due at `now`: each sends its signal (or,
+/// while the last one is still pending, counts an overrun) and re-arms or
+/// disarms; one whose thread is gone disarms. The earliest expiry left,
+/// which becomes the leader's `ptimer_at` (`u64::MAX`: none).
+fn ptimer_tick(tasks: &mut TaskTable, pid: usize, now: u64, kicks: &mut u64) -> u64 {
+    let mut next = u64::MAX;
+    for k in 0..super::process::MAX_PTIMERS {
+        let Some(mut t) = tasks.proc_opt(pid).map(|p| p.timers[k]) else {
+            break;
+        };
+        if t.at == 0 || t.at > now {
+            if t.at != 0 {
+                next = next.min(t.at);
+            }
+            continue;
+        }
+        let to = t.tid as usize;
+        // Late by more than one interval: the expiries missed are overruns.
+        let missed = if t.every == 0 { 0 } else { (now - t.at) / t.every };
+        if !super::signals::signal_live(&tasks[to]) || tasks[to].tgid != pid {
+            t.at = 0;
+        } else if t.sig == 0 {
+            // `SIGEV_NONE`: it only runs, for `timer_gettime`.
+        } else if tasks[to].sig_pending & (1 << t.sig) != 0 {
+            t.overrun = t.overrun.saturating_add(1 + missed as u32);
+        } else if let Some(kick) = super::signals::signal_send_locked(tasks, to, t.sig as u32) {
+            *kicks |= kick;
+            t.overrun = missed as u32;
+        } else {
+            next = next.min(t.at); // the handler tables are busy: next tick
+            continue;
+        }
+        if t.at != 0 {
+            t.at = if t.every == 0 { 0 } else { t.at + t.every * (missed + 1) };
+        }
+        if t.at != 0 {
+            next = next.min(t.at);
+        }
+        if let Some(p) = tasks.proc_opt_mut(pid) {
+            p.timers[k] = t;
+        }
+    }
+    next
+}
+
+/// Run `f` on the current process's block and its leader's `ptimer_at`
+/// under `TASKS`, interrupts off (as `itimer_swap`); the leader's earliest
+/// timer is worked out again afterwards.
+fn with_ptimers<R>(f: impl FnOnce(&mut TaskTable, usize, &mut [super::process::PTimer]) -> R) -> R {
+    let flags = irq_save();
+    irq_off();
+    let out = {
+        let mut tasks = TASKS.lock();
+        let pid = tasks[super::current_slot()].tgid;
+        let mut timers = tasks.proc(pid).timers;
+        let out = f(&mut tasks, pid, &mut timers);
+        tasks.proc_mut(pid).timers = timers;
+        let next = timers.iter().filter(|t| t.at != 0).map(|t| t.at).min().unwrap_or(0);
+        tasks[pid].ptimer_at = next;
+        if next != 0 {
+            NEXT_DEADLINE.fetch_min(next, Ordering::SeqCst);
+        }
+        out
+    };
+    irq_restore(flags);
+    out
+}
+
+/// A new, disarmed POSIX timer of the current process that sends `sig`
+/// (native, 1..31; 0: none) to its thread `tid`, or to the process with
+/// `tid` 0:
+/// its id. `None` when `tid` is not one of its threads or all
+/// [`MAX_PTIMERS`](super::process::MAX_PTIMERS) are taken.
+pub fn ptimer_create(sig: u32, tid: usize) -> Option<usize> {
+    if sig > 31 || tid >= MAX_TASKS {
+        return None;
+    }
+    with_ptimers(|tasks, pid, timers| {
+        let to = if tid == 0 { pid } else { tid };
+        if tasks[to].tgid != pid || !super::signals::signal_live(&tasks[to]) {
+            return None;
+        }
+        let id = timers.iter().position(|t| !t.used)?;
+        timers[id] = super::process::PTimer { used: true, sig: sig as u8, tid: to as u16, ..super::process::PTimer::FREE };
+        Some(id)
+    })
+}
+
+/// Arm POSIX timer `id` of the current process to expire at monotonic ns
+/// `at` (0: disarm), then every `every` ns; what was left of the old
+/// setting and its interval, or `None` for no such timer.
+pub fn ptimer_set(id: usize, at: u64, every: u64) -> Option<(u64, u64)> {
+    let now = crate::time::monotonic_ns();
+    with_ptimers(|_, _, timers| {
+        let t = timers.get_mut(id).filter(|t| t.used)?;
+        let old = (if t.at == 0 { 0 } else { t.at.saturating_sub(now).max(1) }, t.every);
+        t.at = at;
+        t.every = if at == 0 { 0 } else { every };
+        t.overrun = 0;
+        Some(old)
+    })
+}
+
+/// POSIX timer `id` of the current process: the time to its next expiry
+/// (0: disarmed), its interval and its overrun count.
+pub fn ptimer_get(id: usize) -> Option<(u64, u64, u32)> {
+    let now = crate::time::monotonic_ns();
+    with_ptimers(|_, _, timers| {
+        let t = timers.get(id).filter(|t| t.used)?;
+        Some((if t.at == 0 { 0 } else { t.at.saturating_sub(now).max(1) }, t.every, t.overrun))
+    })
+}
+
+/// Delete POSIX timer `id` of the current process; false for no such timer.
+pub fn ptimer_delete(id: usize) -> bool {
+    with_ptimers(|_, _, timers| match timers.get_mut(id).filter(|t| t.used) {
+        Some(t) => {
+            *t = super::process::PTimer::FREE;
+            true
+        }
+        None => false,
+    })
+}
+
+/// The current process's POSIX timers go (exec; `ITIMER_REAL` stays).
+pub fn ptimer_clear_all() {
+    with_ptimers(|_, _, timers| timers.fill(super::process::PTimer::FREE));
+}
+
 /// Called from every timer IRQ (before `schedule`): wake tasks whose
 /// deadline passed. One atomic load on the common path.
 pub fn timer_tick() {
@@ -986,6 +1115,15 @@ pub fn timer_tick() {
         for i in tasks.slots() {
             if tasks[i].alarm_at != 0 {
                 next = next.min(alarm_tick(&mut tasks, i, now, &mut kicks));
+            }
+            if tasks[i].ptimer_at != 0 {
+                if tasks[i].ptimer_at <= now {
+                    let at = ptimer_tick(&mut tasks, i, now, &mut kicks);
+                    tasks[i].ptimer_at = if at == u64::MAX { 0 } else { at };
+                }
+                if tasks[i].ptimer_at != 0 {
+                    next = next.min(tasks[i].ptimer_at);
+                }
             }
             if tasks[i].state != State::Blocked || tasks[i].wake_at == 0 {
                 continue;

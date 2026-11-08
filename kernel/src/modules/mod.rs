@@ -159,6 +159,11 @@ static API: KernelApi = KernelApi {
     proc_set_reader: api_proc_set_reader,
     user_clock: api_user_clock,
     exec_resume: api_exec_resume,
+    itimer_swap: api_itimer_swap,
+    ptimer_create: api_ptimer_create,
+    ptimer_set: api_ptimer_set,
+    ptimer_get: api_ptimer_get,
+    ptimer_delete: api_ptimer_delete,
 };
 
 /// Modules that print their own `[ OK ]` line (only when they found a
@@ -1419,6 +1424,39 @@ unsafe extern "C" fn api_signal_pending(id: usize) -> u32 {
 
 unsafe extern "C" fn api_signal_take(id: usize, set: u32) -> i32 {
     crate::task::signal_take_from(id, set).map_or(-1, |s| s as i32)
+}
+
+unsafe extern "C" fn api_itimer_swap(set: i32, value: u64, interval: u64, left: *mut u64, every: *mut u64) {
+    let old = crate::task::itimer_swap(crate::task::current_pid(), (set != 0).then_some((value, interval)));
+    unsafe { (*left, *every) = old };
+}
+
+unsafe extern "C" fn api_ptimer_create(sig: u32, tid: usize) -> i32 {
+    crate::task::ptimer_create(sig, tid).map_or(-1, |id| id as i32)
+}
+
+unsafe extern "C" fn api_ptimer_set(id: usize, at: u64, every_ns: u64, left: *mut u64, every: *mut u64) -> i32 {
+    match crate::task::ptimer_set(id, at, every_ns) {
+        Some(old) => {
+            unsafe { (*left, *every) = old };
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_ptimer_get(id: usize, left: *mut u64, every: *mut u64, overrun: *mut u32) -> i32 {
+    match crate::task::ptimer_get(id) {
+        Some(t) => {
+            unsafe { (*left, *every, *overrun) = t };
+            0
+        }
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn api_ptimer_delete(id: usize) -> i32 {
+    if crate::task::ptimer_delete(id) { 0 } else { -1 }
 }
 
 unsafe extern "C" fn api_signal_kill(pid: isize, sig: u32) -> i32 {
