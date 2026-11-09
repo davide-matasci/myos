@@ -15,7 +15,9 @@
  * mapping, is its own, also two forks deep and after a store the kernel
  * makes (a read into the page). A large program exec'ing a smaller one
  * that is still too large to be reloaded in place leaves the new program
- * an empty heap (the old image's pages past the new span are gone).
+ * an empty heap (the old image's pages past the new span are gone). A
+ * write to a pipe whose reader closed ends the writer with SIGPIPE at
+ * the default action, and is EPIPE to one that ignores or catches it.
  * Prints [ OK ] child.
  */
 #include <errno.h>
@@ -365,6 +367,55 @@ static int many_children(void) {
     return bad ? fail("80 children's exits") : 0;
 }
 
+static volatile sig_atomic_t pipe_signals;
+
+static void on_pipe(int sig) {
+    (void)sig;
+    pipe_signals++;
+}
+
+/* A pipe whose reader closed: the writer dies of SIGPIPE at the default
+ * action (a forked child, so this process survives), gets EPIPE with the
+ * signal ignored, and the handler plus EPIPE with one caught. */
+static int sigpipe(void) {
+    int p[2];
+    int status;
+    pid_t pid;
+    char ch = 'x';
+    if (pipe(p) != 0 || close(p[0]) != 0) {
+        return fail("sigpipe: pipe");
+    }
+    pid = fork();
+    if (pid == 0) {
+        write(p[1], &ch, 1);
+        _exit(3); /* survived: not killed */
+    }
+    if (pid < 0 || waitpid(pid, &status, 0) != pid) {
+        return fail("sigpipe: fork");
+    }
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGPIPE) {
+        printf("[ FAIL ] child sigpipe: the writer's status is 0x%x, not death by SIGPIPE\n", status);
+        return 1;
+    }
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        return fail("sigpipe: SIG_IGN");
+    }
+    errno = 0;
+    if (write(p[1], &ch, 1) != -1 || errno != EPIPE) {
+        return fail("sigpipe: ignored, the write is not EPIPE");
+    }
+    if (signal(SIGPIPE, on_pipe) == SIG_ERR) {
+        return fail("sigpipe: handler");
+    }
+    errno = 0;
+    if (write(p[1], &ch, 1) != -1 || errno != EPIPE || pipe_signals != 1) {
+        return fail("sigpipe: caught, the write is not EPIPE with the handler run once");
+    }
+    signal(SIGPIPE, SIG_DFL);
+    close(p[1]);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -413,6 +464,9 @@ int main(void) {
         return 1;
     }
     if (exec_shrink() != 0) {
+        return 1;
+    }
+    if (sigpipe() != 0) {
         return 1;
     }
 

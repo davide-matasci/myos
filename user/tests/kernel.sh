@@ -1184,6 +1184,65 @@ mem_exec_no_heap_leak() {
 }
 t -t mm mem_exec_no_heap_leak mem_exec_no_heap_leak
 
+# Files of 1 to 64 KiB of numbered lines, each written as `seq` buffers it
+# (its data grows through the heap's size classes, `kernel/src/heap.rs`),
+# read back against what wrote them, joined into one 2 MiB file (a block
+# above every class) and deleted: the blocks the classes hand out and take
+# back must keep their contents, and the heap must be as free afterwards
+# as before (a block kept on a class's free list counts as free).
+heap_classes_run() {
+	mkdir -p /tmp/hc || return 1
+	hc_i=1
+	while [ $hc_i -le 64 ]; do
+		# 128 lines of 8 bytes ("1000000\n" on) a KiB
+		seq 1000000 $((1000000 + hc_i * 128 - 1)) > /tmp/hc/f$hc_i
+		hc_i=$((hc_i + 1))
+	done
+	hc_i=1
+	while [ $hc_i -le 64 ]; do
+		seq 1000000 $((1000000 + hc_i * 128 - 1)) | cmp -s - /tmp/hc/f$hc_i \
+			|| { echo "heap: /tmp/hc/f$hc_i ($hc_i KiB) differs"; return 1; }
+		hc_i=$((hc_i + 1))
+	done
+	cat /tmp/hc/f* > /tmp/hc/all
+	cat /tmp/hc/f* | cmp -s - /tmp/hc/all || { echo "heap: /tmp/hc/all differs"; return 1; }
+	rm -r /tmp/hc
+}
+
+mem_heap_classes() {
+	heap_classes_run || return 1 # warm: the shell's and the tools' slots
+	before=$(heap_free)
+	if [ "$before" = 0 ]; then
+		echo "heap: no HeapFreeKiB in /proc/meminfo"
+		return 1
+	fi
+	heap_classes_run || return 1
+	after=$(heap_free)
+	echo "heap: classes HeapFreeKiB $before -> $after (delta $((before - after)))"
+	[ "$((before - after))" -le 512 ]
+}
+t -t mm mem_heap_classes mem_heap_classes
+
+# A producer that never checks its writes ends with its consumer: `head`
+# exits, the next write of `yes` has no reader, and SIGPIPE's default
+# action ends `yes` (docs/signals.md). Without it `yes` spun forever.
+sigpipe_pipeline() {
+	(yes | head -n 1 > /dev/null) &
+	sp_pid=$!
+	sp_i=0
+	while kill -0 $sp_pid 2> /dev/null && [ $sp_i -lt 20 ]; do
+		sleep 1
+		sp_i=$((sp_i + 1))
+	done
+	if kill -0 $sp_pid 2> /dev/null; then
+		echo "yes | head still running after ${sp_i}s"
+		kill -9 $sp_pid
+		return 1
+	fi
+	wait $sp_pid
+}
+t -t signal sigpipe_pipeline sigpipe_pipeline
+
 # A userspace memory hog must never abort the kernel, and its pages must all
 # come back. `memhog` mmaps and touches a large region in chunks; the kernel
 # either serves it in full or, under real memory pressure, fails the fault so
@@ -1783,6 +1842,15 @@ lx_nopie() {
 	cat $OUT/linux-dyn-nopie.log
 	contains "LINUX-DYN OK" $OUT/linux-dyn-nopie.log
 }
+# SIGPIPE for a Linux program (docs/signals.md): a write to a pipe whose
+# reader closed ends the writer, or is EPIPE with the handler run; a
+# stream socket's closed peer is EPIPE without the signal under
+# MSG_NOSIGNAL and with it on a plain write.
+lx_sigpipe() {
+	capture $OUT/lx-sigpipe.log linux /bin/linux/linux-smoke sigpipe
+	cat $OUT/lx-sigpipe.log
+	contains "LINUX-SIGPIPE OK" $OUT/lx-sigpipe.log
+}
 # The vDSO (docs/linux-compat.md, "vDSO"): AT_SYSINFO_EHDR names it, its
 # monotonic time and the syscall's interleave in order, and a thousand
 # reads of it make no syscall (counted in the trace, which it turns on).
@@ -2133,6 +2201,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux linux_dyn lx_dyn
 	t -t linux linux_nopie lx_nopie
 	t -t linux,vdso linux_vdso lx_vdso
+	t -t linux,signal linux_sigpipe lx_sigpipe
 	t -t linux,netfs linux_unix lx_unix
 	t -t linux,netfs,ipv6 linux_inet6 lx_inet6
 	t -t linux,netfs linux_tcp lx_tcp

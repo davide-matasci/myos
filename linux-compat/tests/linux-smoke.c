@@ -2139,7 +2139,63 @@ static void check_vdso(void) {
     }
 }
 
+static volatile sig_atomic_t pipe_signals;
+
+static void on_pipe(int sig) {
+    (void)sig;
+    pipe_signals++;
+}
+
+/* SIGPIPE: a write to a pipe whose reader closed kills the writer (a
+ * forked child) at the default action, and is EPIPE with the handler run
+ * when caught; on a stream socket whose peer closed, send with
+ * MSG_NOSIGNAL is EPIPE alone, a plain write EPIPE with the signal. */
+static void check_sigpipe(void) {
+    int p[2], sv[2], status;
+    char ch = 'x';
+    pid_t pid;
+    if (pipe(p) != 0 || close(p[0]) != 0) {
+        check(0, "sigpipe: pipe");
+        return;
+    }
+    pid = fork();
+    if (pid == 0) {
+        write(p[1], &ch, 1);
+        _exit(3);
+    }
+    check(pid > 0 && waitpid(pid, &status, 0) == pid && WIFSIGNALED(status) && WTERMSIG(status) == SIGPIPE,
+          "sigpipe: a write without a reader ends the writer");
+    signal(SIGPIPE, on_pipe);
+    errno = 0;
+    check(write(p[1], &ch, 1) == -1 && errno == EPIPE && pipe_signals == 1, "sigpipe: caught, EPIPE and the handler");
+    close(p[1]);
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 || close(sv[1]) != 0) {
+        check(0, "sigpipe: socketpair");
+        return;
+    }
+    /* The hangup reaches the other end through netd: give it a moment. */
+    for (int i = 0; i < 50; i++) {
+        struct pollfd pfd = { sv[0], POLLOUT, 0 };
+        if (poll(&pfd, 1, 100) == 1 && (pfd.revents & (POLLHUP | POLLERR))) {
+            break;
+        }
+    }
+    errno = 0;
+    check(send(sv[0], &ch, 1, MSG_NOSIGNAL) == -1 && errno == EPIPE && pipe_signals == 1,
+          "sigpipe: send MSG_NOSIGNAL to a closed peer is EPIPE without the signal");
+    errno = 0;
+    check(write(sv[0], &ch, 1) == -1 && errno == EPIPE && pipe_signals == 2,
+          "sigpipe: write to a closed peer is EPIPE with the signal");
+    close(sv[0]);
+    signal(SIGPIPE, SIG_DFL);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "sigpipe") == 0) {
+        check_sigpipe();
+        out(failures ? "LINUX-SIGPIPE FAIL\n" : "LINUX-SIGPIPE OK\n");
+        return failures != 0;
+    }
     if (argc > 1 && strcmp(argv[1], "child") == 0) {
         return 5;
     }

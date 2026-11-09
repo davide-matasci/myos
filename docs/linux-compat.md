@@ -447,6 +447,9 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
     A `SOCK_SEQPACKET` record is at most 8 KiB (`EMSGSIZE`). No
     `SOCK_DGRAM`.
   - No half-close: `shutdown` hangs up only for `SHUT_RDWR`.
+  - A write to a socket whose peer hung up is `EPIPE`, with `SIGPIPE` to
+    the writing thread unless the call was a `send`, `sendto` or
+    `sendmsg` with `MSG_NOSIGNAL` (`docs/signals.md`).
   - A TCP socket's local address is the one it was bound to (a
     listener's port netd's choice, an accepted socket's its listener's),
     else the any address, port 0; a UDP one's is netd's.
