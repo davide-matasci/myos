@@ -149,7 +149,7 @@ const MKNOD_DIR: usize = 0;
 /// The kernel's lowest failure value (`myos_abi::MYOS_SYSERR_LOWEST`): a
 /// call fails with `usize::MAX` or one of the distinct values below it
 /// (a path call with its own for a path too long, `ENAMETOOLONG`).
-const SYSERR_LOWEST: usize = usize::MAX - 12;
+const SYSERR_LOWEST: usize = usize::MAX - 13;
 
 fn failed(ret: usize) -> bool {
     ret >= SYSERR_LOWEST

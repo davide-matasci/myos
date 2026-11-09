@@ -42,6 +42,8 @@ pub const SIGFPE: u32 = 8;
 pub const SIGKILL: u32 = 9;
 pub const SIGBUS: u32 = 10;
 pub const SIGSEGV: u32 = 11;
+/// A write to a pipe or FIFO every reader has closed (`EPIPE` with it).
+pub const SIGPIPE: u32 = 13;
 pub const SIGALRM: u32 = 14;
 pub const SIGTERM: u32 = 15;
 pub const SIGURG: u32 = 16;

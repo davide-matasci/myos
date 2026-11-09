@@ -3,7 +3,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-# shellcheck source=packages/lua/versions.env
+# shellcheck source=ports/lua/versions.env
 source "$HERE/versions.env"
 
 TARBALL="$ROOT/target/lua-${LUA_VERSION}.tar.gz"

@@ -529,6 +529,7 @@ pub mod signal {
     pub const SYSERR_EACCES: usize = myos_abi::MYOS_SYSERR_EACCES;
     pub const SYSERR_ENOSPC: usize = myos_abi::MYOS_SYSERR_ENOSPC;
     pub const SYSERR_EFBIG: usize = myos_abi::MYOS_SYSERR_EFBIG;
+    pub const SYSERR_EPIPE: usize = myos_abi::MYOS_SYSERR_EPIPE;
     pub const SYSERR_ENAMETOOLONG: usize = myos_abi::MYOS_SYSERR_ENAMETOOLONG;
     /// The lowest of the native failure sentinels: a result at or above it
     /// failed.

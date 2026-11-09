@@ -202,8 +202,9 @@ t -t netfs,ipv6,dns ipv6_dns_refused $SMOKES/ipv6_smoke dnsrefused
 # setsid: its own session, no controlling terminal; SIGINT ends a child
 # spinning without syscalls; fork shares the pages copy-on-write: each
 # side's stores are its own, two forks deep; the shell exec'd from a larger
-# image gets an empty heap (child_smoke.c).
-t -t sched child $SMOKES/child_smoke
+# image gets an empty heap; a write to a pipe without a reader is SIGPIPE,
+# and EPIPE when that is ignored or caught (child_smoke.c).
+t -t sched,signal child $SMOKES/child_smoke
 # getrandom, vfork, daemon, the netdb service lookups and the termios
 # constants libgloss gained for the ports, the resolver (localhost without
 # a lookup, a name no server knows failing in bounded time), and the soft

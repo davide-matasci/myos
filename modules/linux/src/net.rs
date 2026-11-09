@@ -36,6 +36,10 @@ const SOCK_NONBLOCK: usize = 0o4000;
 const SOCK_CLOEXEC: usize = 0o2000000;
 const MSG_TRUNC: u32 = 0x20;
 const MSG_DONTWAIT: usize = 0x40;
+/// `send*`: no `SIGPIPE` for a peer that hung up, `EPIPE` alone.
+const MSG_NOSIGNAL: usize = 0x4000;
+/// Linux's `SIGPIPE` (13, as the native one; `sig_from_linux`).
+const SIGPIPE: usize = 13;
 const SHUT_RDWR: usize = 2;
 const SOL_SOCKET: usize = 1;
 const SO_TYPE: usize = 3;
@@ -62,7 +66,6 @@ const ECONNRESET: usize = 104;
 const ENOTCONN: usize = 107;
 const ECONNREFUSED: usize = 111;
 const EINPROGRESS: usize = 115;
-const EPIPE: usize = 32;
 
 /// How long a blocking `connect` waits for the handshake.
 const CONNECT_TIMEOUT_NS: u64 = 60_000_000_000;
@@ -443,9 +446,13 @@ fn new_unix(ty: usize) -> R {
 
 /// readv / writev / sendmsg / recvmsg on a record socket: one record,
 /// gathered from or scattered over the `iovec`s (a write per piece would
-/// make each its own record); a read waits for one unless `dontwait` (or
-/// the socket is non-blocking). `None` for any other fd.
-pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool, dontwait: bool) -> Option<R> {
+/// make each its own record). `msg_flags` are the `MSG_*` flags of a
+/// `sendmsg` / `recvmsg` (0 for readv / writev): a read waits for a record
+/// unless `MSG_DONTWAIT` (or the socket is non-blocking), a write to a
+/// peer that hung up sends `SIGPIPE` unless `MSG_NOSIGNAL` ([`send`]).
+/// `None` for any other fd.
+pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool, msg_flags: usize) -> Option<R> {
+    let dontwait = msg_flags & MSG_DONTWAIT != 0;
     let (conv, s) = sock(fd).ok()?;
     if !s.records {
         return None;
@@ -475,7 +482,7 @@ pub fn record_rw(fd: usize, iov: usize, cnt: usize, write: bool, dontwait: bool)
             }
             at += len;
         }
-        return Some(send(fd, || fs::write(&data, 0, &rec).ok_or(EAGAIN)));
+        return Some(send(fd, msg_flags, || fs::write(&data, 0, &rec).ok_or(EAGAIN)));
     }
     let mut rec = alloc::vec![0u8; total.min(RECORD_MAX)];
     Some(recv(fd, dontwait, || {
@@ -601,15 +608,23 @@ pub fn recv(fd: usize, dontwait: bool, io: impl FnOnce() -> R) -> R {
 }
 
 /// Write a connected socket with `io` (a native write). netd's request ring
-/// may be full: a blocking socket retries as netd drains it.
-pub fn send(fd: usize, mut io: impl FnMut() -> R) -> R {
+/// may be full: a blocking socket retries as netd drains it. A peer that
+/// hung up is `EPIPE`, with `SIGPIPE` to the writing thread as on Linux
+/// unless `msg_flags` has `MSG_NOSIGNAL` (`write` and `writev` have no
+/// flags: always the signal).
+pub fn send(fd: usize, msg_flags: usize, mut io: impl FnMut() -> R) -> R {
     loop {
         let (conv, s) = sock(fd)?;
         match state(&conv) {
             State::Connected => {}
             State::Pending if !s.stream && s.peer.is_some() => {}
             State::Pending | State::Listening => return Err(ENOTCONN),
-            State::HungUp => return Err(EPIPE),
+            State::HungUp => {
+                if msg_flags & MSG_NOSIGNAL == 0 {
+                    signal::kill(task::current_tid() as isize, sig_from_linux(SIGPIPE));
+                }
+                return Err(EPIPE);
+            }
             State::Failed => return Err(ECONNRESET),
         }
         let seq = task::wait_seq();
@@ -702,7 +717,7 @@ fn is_datagram(s: &Sock) -> bool {
     !s.stream && s.unix.is_none()
 }
 
-pub fn sendto(fd: usize, buf: usize, len: usize, to: usize, tolen: usize) -> R {
+pub fn sendto(fd: usize, buf: usize, len: usize, flags: usize, to: usize, tolen: usize) -> R {
     let s = sock(fd)?.1;
     if to != 0 && is_datagram(&s) {
         if len > UDP_MAX {
@@ -712,7 +727,7 @@ pub fn sendto(fd: usize, buf: usize, len: usize, to: usize, tolen: usize) -> R {
         get_bytes(buf, &mut data)?;
         return send_datagram(fd, &data, to, tolen);
     }
-    super::sys::write(fd, buf, len)
+    super::sys::write_msg(fd, buf, len, flags)
 }
 
 pub fn recvfrom(fd: usize, buf: usize, len: usize, flags: usize, from: usize, fromlen: usize) -> R {
@@ -788,7 +803,7 @@ fn sent_rights(msg: usize) -> Result<Vec<i32>, usize> {
 /// `sendmsg`: the data, with the fds of an `SCM_RIGHTS` message on a unix
 /// socket (`/net/unix`'s `rights`, `docs/sockets-unix.md`): they come with
 /// its first byte.
-pub fn sendmsg(fd: usize, msg: usize) -> R {
+pub fn sendmsg(fd: usize, msg: usize, flags: usize) -> R {
     let [name, namelen, iov, iovlen] = msghdr(msg)?;
     let fds = sent_rights(msg)?;
     if name != 0 && is_datagram(&sock(fd)?.1) {
@@ -809,7 +824,7 @@ pub fn sendmsg(fd: usize, msg: usize) -> R {
         return send_datagram(fd, &data, name, namelen);
     }
     if fds.is_empty() {
-        return super::sys::rw_vec(fd, iov, iovlen, true);
+        return super::sys::rw_vec_msg(fd, iov, iovlen, true, flags);
     }
     let (conv, s) = sock(fd)?;
     if s.unix.is_none() {
@@ -821,7 +836,7 @@ pub fn sendmsg(fd: usize, msg: usize) -> R {
     }
     let ctl = format!("{conv}/ctl");
     fs::write(&ctl, 0, cmd.as_bytes()).ok_or(EBADF)?;
-    let r = super::sys::rw_vec(fd, iov, iovlen, true);
+    let r = super::sys::rw_vec_msg(fd, iov, iovlen, true, flags);
     if !matches!(r, Ok(n) if n > 0) {
         // Not sent: a retry sends them again.
         let _ = fs::write(&ctl, 0, b"norights");
@@ -910,7 +925,7 @@ pub fn recvmsg(fd: usize, msg: usize, flags: usize) -> R {
     }
     // A record socket's read waits (or not) once, in record_rw.
     let dontwait = flags & MSG_DONTWAIT != 0;
-    let n = match record_rw(fd, iov, iovlen, false, dontwait) {
+    let n = match record_rw(fd, iov, iovlen, false, flags) {
         Some(r) => r?,
         None => recv(fd, dontwait, || super::sys::rw_vec(fd, iov, iovlen, false))?,
     };

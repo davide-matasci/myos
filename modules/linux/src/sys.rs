@@ -207,6 +207,11 @@ pub fn read(fd: usize, buf: usize, len: usize) -> R {
 }
 
 pub fn write(fd: usize, buf: usize, len: usize) -> R {
+    write_msg(fd, buf, len, 0)
+}
+
+/// `write`, with a `send`'s `MSG_*` flags for a socket (`MSG_NOSIGNAL`).
+pub fn write_msg(fd: usize, buf: usize, len: usize, msg_flags: usize) -> R {
     let io = || native(task::fd_write(fd, buf, len), EBADF);
     if would_block(fd, 2) {
         return Err(EAGAIN);
@@ -214,7 +219,7 @@ pub fn write(fd: usize, buf: usize, len: usize) -> R {
     if net::record_too_big(fd, len) {
         return Err(EMSGSIZE);
     }
-    if is_socket(fd) { net::send(fd, io) } else { io() }
+    if is_socket(fd) { net::send(fd, msg_flags, io) } else { io() }
 }
 
 fn is_socket(fd: usize) -> bool {
@@ -223,11 +228,16 @@ fn is_socket(fd: usize) -> bool {
 
 /// readv / writev: one native call per `iovec`, stopping at a short one.
 pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
+    rw_vec_msg(fd, iov, cnt, write, 0)
+}
+
+/// [`rw_vec`] with a `sendmsg`'s `MSG_*` flags for a socket (`MSG_NOSIGNAL`).
+pub fn rw_vec_msg(fd: usize, iov: usize, cnt: usize, write: bool, msg_flags: usize) -> R {
     if cnt > 1024 {
         return Err(EINVAL);
     }
     // A record socket's `iovec`s make one record.
-    if let Some(r) = super::net::record_rw(fd, iov, cnt, write, false) {
+    if let Some(r) = super::net::record_rw(fd, iov, cnt, write, msg_flags) {
         return r;
     }
     let io = || {
@@ -250,7 +260,7 @@ pub fn rw_vec(fd: usize, iov: usize, cnt: usize, write: bool) -> R {
         Ok(total)
     };
     match (is_socket(fd), write) {
-        (true, true) => net::send(fd, io),
+        (true, true) => net::send(fd, msg_flags, io),
         (true, false) => net::recv(fd, false, io),
         (false, _) => io(),
     }

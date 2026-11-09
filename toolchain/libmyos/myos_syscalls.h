@@ -220,9 +220,11 @@ struct myos_lock_range {
 #define MYOS_ENOSPC ((unsigned long)-11)
 /* A write or truncate past the size a file may have (tmpfs's 128 MiB). */
 #define MYOS_EFBIG ((unsigned long)-12)
+/* A write to a pipe every reader has closed (SIGPIPE came with it). */
+#define MYOS_EPIPE ((unsigned long)-13)
 /* A path call's path, as given or once resolved (joined to the cwd,
  * through a namespace or a symlink), longer than MYOS_PATH_MAX - 1. */
-#define MYOS_ENAMETOOLONG ((unsigned long)-13)
+#define MYOS_ENAMETOOLONG ((unsigned long)-14)
 
 /* Sleep `ns` nanoseconds (sleep.c). 0 = slept (or an event with
  * MYOS_SLEEP_ANY_EVENT); -1 with errno = EINTR when a caught signal ran. */

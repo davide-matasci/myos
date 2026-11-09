@@ -120,9 +120,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 67: a filesystem's write hooks and [`KernelApi::vfs_write`] tell a
 /// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
 /// `EFBIG`).
-/// 69: paths up to [`MYOS_PATH_MAX`] (4096) bytes, and one longer is told
+/// 69: a write to a pipe without readers is [`MYOS_SYSERR_EPIPE`] (and
+/// `SIGPIPE` to the writer), no longer the generic failure.
+/// 70: paths up to [`MYOS_PATH_MAX`] (4096) bytes, and one longer is told
 /// apart ([`MYOS_SYSERR_ENAMETOOLONG`], [`MYOS_PATH_TOO_LONG`]).
-pub const ABI_VERSION: u32 = 69;
+pub const ABI_VERSION: u32 = 70;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -573,8 +575,10 @@ pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
 pub const MYOS_SYSERR_ENOSPC: usize = usize::MAX - 10;
 /// A write or truncate past the size a file may have (tmpfs's 128 MiB).
 pub const MYOS_SYSERR_EFBIG: usize = usize::MAX - 11;
+/// A write to a pipe every reader has closed (the writer also gets `SIGPIPE`).
+pub const MYOS_SYSERR_EPIPE: usize = usize::MAX - 12;
 /// A path longer than [`MYOS_PATH_MAX`], as given or once resolved.
-pub const MYOS_SYSERR_ENAMETOOLONG: usize = usize::MAX - 12;
+pub const MYOS_SYSERR_ENAMETOOLONG: usize = usize::MAX - 13;
 pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ENAMETOOLONG;
 
 /// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s

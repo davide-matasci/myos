@@ -75,7 +75,7 @@ pub const O_CLOEXEC: usize = 0x80000;
 pub const SYSERR_EEXIST: isize = (usize::MAX - 4) as isize;
 /// A path call's result for a path of [`PATH_MAX`] bytes or more, as given
 /// or once resolved (`myos_abi::MYOS_SYSERR_ENAMETOOLONG`).
-pub const SYSERR_ENAMETOOLONG: isize = (usize::MAX - 12) as isize;
+pub const SYSERR_ENAMETOOLONG: isize = (usize::MAX - 13) as isize;
 
 /// Linux's `PATH_MAX` (`myos_abi::MYOS_PATH_MAX`): a path is at most
 /// `PATH_MAX - 1` bytes.
