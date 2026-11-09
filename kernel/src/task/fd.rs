@@ -574,6 +574,15 @@ pub fn fd_poll(fd: usize) -> (u16, bool) {
     }
 }
 
+/// Whether a pipe's traffic may make one of `fds` ready for `poll`: a
+/// pipe's end, or a wait set, whose members may be one. A poller of none
+/// sleeps through every pipe's reads and writes (`block_until_any`).
+pub fn fds_watch_pipes(mut fds: impl Iterator<Item = usize>) -> bool {
+    with_process_mut(|t| {
+        fds.any(|fd| matches!(t.fds.get(fd), Some(FdEntry::PipeRead(_) | FdEntry::PipeWrite(_) | FdEntry::Wait(_))))
+    })
+}
+
 /// [`fd_poll`] of what an fd refers to (a wait set's member, `crate::evfd`).
 pub fn entry_poll(entry: FdEntry) -> (u16, bool) {
     let (bits, tty, _) = entry_poll_changes(entry);
@@ -1188,8 +1197,16 @@ fn write_chunks(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                         Err(crate::fs::WriteError::Failed) => return usize::MAX,
                     };
                     // A poller (select/poll sleeping on "any event") may be
-                    // waiting for this device/channel traffic.
-                    wake_any();
+                    // waiting for this device/channel traffic. Only a file
+                    // of a filesystem with a `poll` hook can be waited on
+                    // (a device, a channel to a daemon): a plain file is
+                    // always ready, and a wake for each write to one sent
+                    // every poller in the system (netd, the sound server)
+                    // round its fds on another CPU, which cost the writer
+                    // the task table's lock and an IPI each.
+                    if crate::fs::vfs::pollable(&node) {
+                        wake_any();
+                    }
                     if n == 0 {
                         return if total == 0 { usize::MAX } else { total };
                     }

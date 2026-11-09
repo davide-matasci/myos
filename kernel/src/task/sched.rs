@@ -513,6 +513,11 @@ pub const WAIT_ANY: usize = usize::MAX;
 pub const fn key_pipe(id: usize) -> usize {
     0x1_0000 + id
 }
+/// Whether `key` is a pipe's ([`key_pipe`]; the next key space starts at
+/// `key_pty(0)`).
+const fn is_key_pipe(key: usize) -> bool {
+    key >= key_pipe(0) && key < key_pty(0)
+}
 pub const fn key_pty(id: usize) -> usize {
     0x2_0000 + id
 }
@@ -550,6 +555,10 @@ pub(super) static WAIT_SEQ: AtomicU64 = AtomicU64::new(0);
 static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Number of tasks blocked with `WAIT_ANY` (lets producers skip the scan).
 static ANY_WAITERS: AtomicUsize = AtomicUsize::new(0);
+/// Those of them a pipe's traffic wakes: all but the pollers that said no
+/// pipe is among their fds ([`block_until_any`]). With none, a pipe's write
+/// or read wakes its own waiters alone ([`wake_any_pipe`]).
+static PIPE_WAITERS: AtomicUsize = AtomicUsize::new(0);
 /// Per CPU: a task for this CPU became runnable while it may be about to
 /// halt; its idle loop re-checks instead of sleeping.
 static NEED_RESCHED: [AtomicBool; crate::smp::MAX_CPUS] =
@@ -636,6 +645,20 @@ pub fn deadline_ms(ms: u64) -> u64 {
 /// once if a wake happened since `seq` was read. Callers re-check their
 /// condition afterwards.
 pub fn block_until(key: usize, seq: u64, deadline: u64) {
+    block_on(key, seq, deadline, false);
+}
+
+/// [`block_until`] on `WAIT_ANY` for a waiter that knows what it waits for
+/// (`poll`, with its fds): with `pipes` false no pipe is among it, and a
+/// pipe's traffic does not wake it. Every byte through any pipe woke every
+/// poller in the system otherwise, netd and the sound server among them,
+/// each on its CPU, for a look at fds that had not changed: a pipeline's
+/// writer paid the task table's lock and an IPI for each.
+pub fn block_until_any(seq: u64, deadline: u64, pipes: bool) {
+    block_on(WAIT_ANY, seq, deadline, !pipes);
+}
+
+fn block_on(key: usize, seq: u64, deadline: u64, pipe_blind: bool) {
     if !PREEMPT_ON.load(Ordering::SeqCst) {
         return;
     }
@@ -648,8 +671,12 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         // `wake_any` bumps WAIT_SEQ before it reads ANY_WAITERS, so either
         // it sees us (and wakes us once we are Blocked: it takes TASKS) or
         // we see its bump and return.
+        // `PIPE_WAITERS` the same way, for `wake_any_pipe`.
         if key == WAIT_ANY {
             ANY_WAITERS.fetch_add(1, Ordering::SeqCst);
+            if !pipe_blind {
+                PIPE_WAITERS.fetch_add(1, Ordering::SeqCst);
+            }
         }
         tasks[me].key_woken = false;
         let early = WAIT_SEQ.load(Ordering::SeqCst) != seq
@@ -658,6 +685,9 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         if early {
             if key == WAIT_ANY {
                 ANY_WAITERS.fetch_sub(1, Ordering::SeqCst);
+                if !pipe_blind {
+                    PIPE_WAITERS.fetch_sub(1, Ordering::SeqCst);
+                }
             }
             drop(tasks);
             // The wake that ends this wait before it began may have made a
@@ -677,6 +707,7 @@ pub fn block_until(key: usize, seq: u64, deadline: u64) {
         let t = &mut tasks[me];
         t.state = State::Blocked;
         t.wait_key = key;
+        t.pipe_blind = pipe_blind;
         t.wake_at = deadline;
         t.wake_pending = false;
         if deadline != 0 {
@@ -739,6 +770,9 @@ fn wake_locked(tasks: &mut TaskTable, slot: usize, kicks: &mut u64) {
     }
     if t.wait_key == WAIT_ANY {
         ANY_WAITERS.fetch_sub(1, Ordering::SeqCst);
+        if !t.pipe_blind {
+            PIPE_WAITERS.fetch_sub(1, Ordering::SeqCst);
+        }
     }
     // Keep a stale key from matching a later wake once the task runs again.
     t.wait_key = 0;
@@ -797,12 +831,17 @@ pub fn wake(key: usize) {
 }
 
 /// `wake` under `TASKS`: every task blocked on `key`, and the `WAIT_ANY`
-/// waiters; true when any was (the caller bumps `WAIT_SEQ` then).
+/// waiters (for a pipe's key, those a pipe wakes: [`block_until_any`]);
+/// true when any was (the caller bumps `WAIT_SEQ` then).
 pub(super) fn wake_key_locked(tasks: &mut TaskTable, key: usize, kicks: &mut u64) -> bool {
-    let any = ANY_WAITERS.load(Ordering::SeqCst) != 0;
+    let pipe = is_key_pipe(key);
+    let any = if pipe { &PIPE_WAITERS } else { &ANY_WAITERS }.load(Ordering::SeqCst) != 0;
     let mut woke = false;
     for i in tasks.slots() {
-        if tasks[i].state == State::Blocked && (tasks[i].wait_key == key || (any && tasks[i].wait_key == WAIT_ANY)) {
+        let t = &tasks[i];
+        if t.state == State::Blocked
+            && (t.wait_key == key || (any && t.wait_key == WAIT_ANY && !(pipe && t.pipe_blind)))
+        {
             tasks[i].key_woken = true;
             wake_locked(tasks, i, kicks);
             woke = true;
@@ -860,6 +899,18 @@ pub fn wake_any() {
         return;
     }
     wake(WAIT_ANY);
+}
+
+/// [`wake_any`] for an event on pipe `id` (more data, more room) that none
+/// of its own waiters is blocked for: the `WAIT_ANY` waiters a pipe wakes.
+/// With only pollers of other things asleep (netd on its sockets), nothing
+/// is scanned and no lock taken.
+pub fn wake_any_pipe(id: usize) {
+    WAIT_SEQ.fetch_add(1, Ordering::SeqCst);
+    if PIPE_WAITERS.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    wake(key_pipe(id));
 }
 
 /// Wake one task whatever it waits for (a signal arrived): if it is

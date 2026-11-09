@@ -1544,7 +1544,11 @@ fn sys_poll(fds_ptr: usize, nfds: usize, timeout_ms: isize) -> usize {
             let keyboard = task::deadline_ms(10);
             until = if until == 0 { keyboard } else { until.min(keyboard) };
         }
-        task::block_until(task::WAIT_ANY, seq, until);
+        // A pipe's traffic wakes this poll only with a pipe (or a wait
+        // set, which may hold one) among its fds.
+        let polled = fds.chunks_exact(8).filter_map(|pfd| usize::try_from(i32::from_ne_bytes([pfd[0], pfd[1], pfd[2], pfd[3]])).ok());
+        let pipes = task::fds_watch_pipes(polled);
+        task::block_until_any(seq, until, pipes);
     }
 }
 

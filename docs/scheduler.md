@@ -246,10 +246,23 @@ loop {
 
 `WAIT_ANY` waiters (`poll`, `nanosleep` with `SLEEP_ANY_EVENT`, the Linux
 `ppoll`) are woken by every wake, and by `wake_any`, which runs after
-device and file writes, the last close of a module file, and exits. That
-is what lets `poll` and `netd` sleep instead of spinning. `block_until`
-registers a `WAIT_ANY` waiter before it checks the sequence, so either
-the producer sees the waiter or the waiter sees the bump.
+writes to devices and module files, the last close of a module file, and
+exits. That is what lets `poll` and `netd` sleep instead of spinning.
+`block_until` registers a `WAIT_ANY` waiter before it checks the sequence,
+so either the producer sees the waiter or the waiter sees the bump.
+
+Two producers leave out the waiters they cannot concern, because every
+wake costs each waiter a pass over its fds on its CPU, and the producer
+the task table's lock and an IPI per halted CPU:
+
+- A write to a file of a filesystem without a `poll` hook (tmpfs, ext2,
+  FAT: plain files, always ready) wakes no one (`fs::vfs::pollable`).
+- A pipe's traffic wakes its own waiters and the `WAIT_ANY` waiters that
+  may watch a pipe: all of them but a `poll` whose fds hold no pipe end
+  and no wait set (`block_until_any`, `task::fds_watch_pipes`). `netd` and
+  the sound server, polling their devices, sleep through a pipeline.
+  `PIPE_WAITERS` counts the others, as `ANY_WAITERS` counts all, so a pipe
+  write with none asleep takes no lock (`wake_any_pipe`).
 
 ### poll
 

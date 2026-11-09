@@ -135,8 +135,8 @@ pub fn drop_writer(id: usize) -> bool {
 /// lock is released so the woken side can take it at once.
 fn notify(id: usize) {
     changed(id);
+    // The pollers that may watch a pipe too (`task::wake`).
     crate::task::wake(crate::task::key_pipe(id));
-    crate::task::wake_any();
 }
 
 /// The pipe changed: its count moves, for the `et` members on it.
@@ -282,7 +282,7 @@ pub fn write(id: usize, data: &[u8]) -> usize {
         // `et` member, and its poller may wait for it (Linux wakes a polled
         // pipe's readers on every write too).
         changed(id);
-        crate::task::wake_any();
+        crate::task::wake_any_pipe(id);
     }
     n
 }
