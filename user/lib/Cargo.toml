@@ -12,6 +12,10 @@ description = "Userspace syscall wrappers for myos."
 name = "myos_user"
 path = "src/lib.rs"
 
+[dependencies]
+# The syscall failure values (`MYOS_SYSERR_LOWEST`), the kernel's own.
+myos-abi = { path = "../../modules/abi" }
+
 [profile.dev]
 panic = "abort"
 opt-level = "s"
