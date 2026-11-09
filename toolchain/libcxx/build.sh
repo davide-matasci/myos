@@ -4,8 +4,10 @@
 # headers, with this build's __config_site), lib/libc++.a (libc++abi
 # merged in), libc++abi.a and libunwind.a. Static, with exceptions and
 # RTTI (libunwind's DWARF unwinder finds the frames through mlibc's
-# dl_iterate_phdr), threads on mlibc's pthreads. Then the C++ smoke
-# against them (smoke.cpp, /bin/etc/mlibc/cxx_smoke).
+# dl_iterate_phdr), threads on mlibc's pthreads. The C++ smoke against
+# them is the mlibc smokes' (user/c-mlibc/cxx_smoke.cpp,
+# /bin/etc/mlibc/cxx_smoke): a library port ships no program
+# (docs/ports.md "Cache keys").
 #
 # mlibc is neither glibc nor musl, and the target is myos's bare triple
 # (<arch>-unknown-none, as every mlibc program's), which libc++ knows no
@@ -105,12 +107,7 @@ build_arch() {
     >"$build/cmake.log" 2>&1 || { tail -40 "$build/cmake.log" >&2; exit 1; }
   ninja -C "$build" install-unwind install-cxxabi install-cxx \
     >"$build/ninja.log" 2>&1 || { grep -m1 -B2 -A20 "error:" "$build/ninja.log" >&2 || tail -40 "$build/ninja.log" >&2; exit 1; }
-
-  local out="$ROOT/target/cxx-smoke-mlibc-${arch}-unknown-none"
-  # shellcheck disable=SC2046
-  "$CLANGXX" $(myos_libcxx_cxxflags "$arch") -O2 -std=c++23 -c "$HERE/smoke.cpp" -o "$build/smoke.o"
-  myos_libcxx_link "$arch" "$out" "$build/smoke.o"
-  echo "libc++ -> $prefix, smoke -> $out"
+  echo "libc++ -> $prefix"
 }
 
 for arch in ${MYOS_LIBCXX_ARCHES:-x86_64 aarch64 riscv64}; do

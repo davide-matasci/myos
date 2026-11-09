@@ -26,11 +26,13 @@ What myos lacks is left out:
 - no Wayland or Broadway backend, no colord, cloudproviders, tracker,
   sysprof or introspection, no demos, examples or tests.
 
-The app is the package's smoke, `gtk3-smoke` (`smoke.c`, its test, with
-TinyX, x11-xft's `fonts.conf` and the x11-fonts package): on Xfbdev a
+A library package: nothing to install. Its smoke, `gtk3-smoke`, is the
+gtk3-smoke package's (`packages/gtk3-smoke`): a library port ships no
+program (`docs/ports.md` "Cache keys"). The smoke (with TinyX, x11-xft's
+`fonts.conf` and the x11-fonts package): on Xfbdev a
 window holds a label, a button and an entry; once it has drawn, the button
 is clicked, text goes into the entry and is read back, and the label's
 pixels are read from the window.
 
-GTK and ATK are LGPL (`THIRD_PARTY_NOTICES.md`); the smoke links them
-statically.
+GTK and ATK are LGPL (`THIRD_PARTY_NOTICES.md`); the smoke's package
+links them statically.

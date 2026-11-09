@@ -12,9 +12,10 @@ run-myos webkitgtk-smoke,x11-xft,x11-fonts:webkitgtk-smoke https://example.org
 ```
 
 It is a package of its own, not WebKit's, so that what it links and WebKit
-never compiles against (GIO's TLS backend in `packages/libsoup`, and
-LibreSSL) can change with a relink of this program and no WebKit build
-(issue #664, `docs/ports.md` "Cache keys"). ICU's data is the webkitgtk
+never compiles against (the libc's C, GIO's TLS backend in
+`packages/libsoup`, LibreSSL) can change with a relink of this program
+and no WebKit build (issues #664 and #773, `docs/ports.md` "Cache
+keys"). ICU's data is the webkitgtk
 prefix's file, installed in the app as `/lib/webkitgtk/icudt79l.dat`.
 
 ## The test

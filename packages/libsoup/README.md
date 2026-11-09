@@ -24,7 +24,9 @@ into the program, which registers it before its first TLS connection with
 `g_io_openssl_load (NULL)`. The default certificates are LibreSSL's
 default file, the image's CA bundle (`/lib/cacert.pem`).
 
-The app is the package's smoke, `libsoup-smoke` (`smoke.c`, its test):
+A library package: nothing to install. Its smoke, `libsoup-smoke`, is the
+libsoup-smoke package's (`packages/libsoup-smoke`): a library port ships
+no program (`docs/ports.md` "Cache keys"). The smoke:
 libsoup GETs `/hello.txt` from the launcher's test server
 (`src/test_www.rs`) over HTTP, and over HTTPS with the test CA as the
 session's TLS database; with the image's bundle instead, the handshake
@@ -33,4 +35,4 @@ finds a registrable domain.
 
 libsoup and glib-networking are LGPL, glib-networking with an OpenSSL
 linking exception that covers LibreSSL; libpsl's built-in list is MPL-2.0
-(`THIRD_PARTY_NOTICES.md`). The smoke links them statically.
+(`THIRD_PARTY_NOTICES.md`). The smoke's package links them statically.

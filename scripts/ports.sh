@@ -59,7 +59,7 @@ myos_port_load() {
   local want="$1" role name dir
   PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES="" PORT_TEST_FILES=""
   PORT_READY="" PORT_BIN="" PORT_WATCH="" PORT_PREPARE="" PORT_TEST="" PORT_HOST=""
-  PORT_ARCH_JOBS=0 PORT_TIMEOUT=45 PORT_LINK_OUTPUTS=""
+  PORT_ARCH_JOBS=0 PORT_TIMEOUT=45 PORT_LINK_OUTPUTS="" PORT_LIBRARY=0
   while read -r role name dir; do
     if [[ "$name" == "$want" ]]; then
       PORT_NAME="$name" PORT_DIR="$dir" PORT_ROLE="$role"

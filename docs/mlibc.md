@@ -115,8 +115,9 @@ C++ programs get exceptions and RTTI, threads and `thread_local`, the
 locales, `<filesystem>`, `<random>` and `<chrono>`, but no time zone
 database (there is no tzdata in the image). A C++ compile is hosted, not
 freestanding as the C one is, and defines `_GNU_SOURCE` as g++ does on
-Linux. The smoke (`toolchain/libcxx/smoke.cpp`, the `cxx` test) covers
-the runtime's main features.
+Linux. The smoke (`user/c-mlibc/cxx_smoke.cpp`, the `cxx` test, one of
+the mlibc smokes: libc++ is a library port and ships no program,
+`docs/ports.md` "Cache keys") covers the runtime's main features.
 
 ## Ports on mlibc
 
@@ -125,7 +126,11 @@ Most ports are newlib's. On mlibc are the smokes, python
 CPython's build the libc shaped) and the libraries it and the GTK stack
 need: LibreSSL, ncurses, SQLite, libedit, GLib, the X libraries, zlib,
 the image and text libraries, GTK 3, libsoup. Some are built for both
-libcs (`target/<name>-mlibc-<arch>`). tcc's sysroot is newlib's.
+libcs (`target/<name>-mlibc-<arch>`). The libraries are library ports,
+keyed on what they compile against; their programs (`gio` and the
+smokes) are packages of their own, `glib-tools`, `image-libs-smoke`,
+`cairo-pango-smoke`, `gtk3-smoke` and `libsoup-smoke`, relinked when the
+libc changes (`docs/ports.md` "Cache keys"). tcc's sysroot is newlib's.
 
 ## Limits
 

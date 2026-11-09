@@ -79,6 +79,10 @@ pub struct Port {
     /// (`PORT_HOST`, docs/testing.md): what the launcher runs on a
     /// `HOST <name> <args>` line from the guest.
     pub host: Option<String>,
+    /// A library port (`PORT_LIBRARY=1`): its cache key takes what it
+    /// compiles against, not what it links, so it ships no program
+    /// (docs/ports.md "Cache keys").
+    pub library: bool,
     /// Cargo bin name (`User` kind).
     pub bin: String,
     /// Extra files whose change rebuilds the program (`User` kind, port-relative).
@@ -233,10 +237,23 @@ fn load_one(dir: &Path, role: Role) -> Option<Port> {
     let host = Some(get("PORT_HOST"))
         .filter(|s| !s.is_empty())
         .map(|h| format!("{}/{h}", dir.to_string_lossy()));
+    let test_files = parse_files(&name, &get("PORT_TEST_FILES"));
+    // A library port's key leaves out what it links (the libc among it),
+    // so a program it shipped would carry a stale one: its programs are
+    // packages of their own (docs/ports.md "Cache keys").
+    let library = get("PORT_LIBRARY") == "1";
+    if library {
+        let program = |f: &FileSpec| matches!(f, FileSpec::Bin { .. } | FileSpec::Manifest { .. } | FileSpec::Multicall { .. });
+        assert!(
+            !files.iter().chain(test_files.iter()).any(program),
+            "port {name}: a library port (PORT_LIBRARY=1) ships no program; link it in a package of its own (docs/ports.md \"Cache keys\")"
+        );
+    }
     Some(Port {
         files,
-        test_files: parse_files(&name, &get("PORT_TEST_FILES")),
+        test_files,
         host,
+        library,
         name,
         dir: dir.to_path_buf(),
         role,

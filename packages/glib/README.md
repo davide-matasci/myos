@@ -36,11 +36,12 @@ build configures them.
 `glib-myos.myos.patch` gives myos `g_unix_fd_query_path`, through
 `/proc/self/fd` as on Linux (`__myos__`, which the build defines).
 
-The app is `gio` (GIO's command: `run-myos glib:gio cat FILE`) and
-`glib-smoke` (`smoke.c`), the package's test: the main loop with a
-thread feeding it, threads over an async queue, a GObject's property and
-signal, `GRegex`, GIO's files, a `GSocket` echo over loopback, `g_spawn`
-and `g_convert`.
+A library package: nothing to install. Its programs, `gio` (GIO's
+command) and `glib-smoke` (the test), are the glib-tools package's
+(`packages/glib-tools`), linked from this prefix: a library port ships
+no program, so that its cache key can leave out what it links and never
+compiles against, the libc's C first (`docs/ports.md` "Cache keys"). gio's
+objects are left in `lib/gio-tool` for that link.
 
 GLib, GNU libiconv and proxy-libintl are LGPL (`THIRD_PARTY_NOTICES.md`);
-the programs link them statically.
+glib-tools' programs link them statically.

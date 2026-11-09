@@ -68,9 +68,12 @@ the archive, `webkitgtk-smoke` (WebKit's program and boot test,
 archive gathers. What the programs link and WebKit never compiles
 against, GIO's TLS backend and LibreSSL, is so theirs to link: a change
 to glib-networking or LibreSSL relinks them and leaves WebKit's build
-alone. Its cache key takes libsoup's compile flavour, which leaves those
-out (`docs/ports.md` "Cache keys", issue #664). ICU's data,
-`share/icu-data`, is shipped by each program's package.
+alone. WebKit is a library port: its cache key takes the compile
+flavours of what it compiles against, the libc's headers and symbols
+among them, not the archives a program links, so a fix in the libc's C
+relinks the programs and leaves the build alone too (`docs/ports.md`
+"Cache keys", issues #664 and #773). ICU's data, `share/icu-data`, is
+shipped by each program's package.
 
 WebKit's WebCore, libgpg-error, libgcrypt and libtasn1 are LGPL
 (`THIRD_PARTY_NOTICES.md`); the programs link them statically.

@@ -4,8 +4,8 @@
 # assembly needs nasm on x86), libwebp and pixman, static, into one prefix
 # per arch, target/image-libs-mlibc-<arch> (lib/ with the archives and their
 # pkg-config files, include/), what cairo, gdk-pixbuf and GTK (issue #616)
-# link. Then the package's smoke (smoke.c) over them and x11-libs' mlibc
-# build.
+# link. The smoke over them is the image-libs-smoke package's: a library
+# port ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -62,7 +62,6 @@ build_arch() {
   local arch="$1"
   local build="$T/image-libs-build-$arch"
   local out="$T/image-libs-mlibc-${arch}"
-  local x11="$T/x11-libs-mlibc-${arch}/lib/x11"
   local cc="$build/cc" ar="${arch}-unknown-myos-ar" ranlib="${arch}-unknown-myos-ranlib"
   local cpu="$arch"
   echo "==> image libraries ($arch, mlibc)"
@@ -133,15 +132,6 @@ EOC
   ninja -C "$build/pixman" install >"$build/pixman-ninja.log" 2>&1 \
     || { grep -n "error" "$build/pixman-ninja.log" | head -20 >&2; tail -20 "$build/pixman-ninja.log" >&2; exit 1; }
   echo "pixman ($arch) -> $out"
-
-  # The smoke: the four libraries, and X through x11-libs' mlibc build.
-  # shellcheck disable=SC2046
-  "$cc" -Wall -Werror "$HERE/smoke.c" -o "$T/image-smoke-mlibc-${arch}-unknown-none" \
-    -I"$x11/include" $(PKG_CONFIG_LIBDIR="$out/lib/pkgconfig" pkg-config --cflags --libs --static \
-      libpng libjpeg libwebp pixman-1) \
-    -L"$x11/lib" -lXcursor -lXrender -lXfixes -lXrandr -lXi -lXinerama -lXcomposite -lXdamage \
-    -lXext -lX11 -lxcb -lXau -lm
-  "${arch}-unknown-myos-strip" "$T/image-smoke-mlibc-${arch}-unknown-none"
   rm -rf "$build"
   echo "image libraries ($arch) -> $out"
 }

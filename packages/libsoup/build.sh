@@ -5,7 +5,8 @@
 # glib-networking (its OpenSSL backend over LibreSSL, static), into one
 # prefix per arch, target/libsoup-mlibc-<arch> (lib/ with the archives and
 # their pkg-config files, include/). Over the mlibc builds of GLib,
-# LibreSSL and SQLite. Then the package's smoke (smoke.c) over all of them.
+# LibreSSL and SQLite. The smoke over all of them is the libsoup-smoke
+# package's: a library port ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -96,17 +97,6 @@ build_arch() {
   myos_mlibc_meson_build "$build" "$T/glib-networking-src" "$out" -Dgnutls=disabled \
     -Dopenssl=enabled -Dlibproxy=disabled -Dgnome_proxy=disabled -Denvironment_proxy=disabled \
     -Dtests=false -Dinstalled_tests=false
-
-  # The smoke.
-  local p="$out/lib/pkgconfig:$out/lib/gio/modules/pkgconfig:$T/glib-mlibc-$arch/lib/pkgconfig:$build/pc"
-  local mods="libsoup-3.0 libxml-2.0 libpsl gioopenssl"
-  # shellcheck disable=SC2046,SC2086
-  "$build/cc" -Wall -Werror -c "$HERE/smoke.c" -o "$build/smoke.o" \
-    $(PKG_CONFIG_LIBDIR="$p" pkg-config --cflags $mods)
-  # shellcheck disable=SC2046,SC2086
-  "$build/cc" "$build/smoke.o" -o "$T/libsoup-smoke-mlibc-${arch}-unknown-none" \
-    $(PKG_CONFIG_LIBDIR="$p" pkg-config --libs --static $mods)
-  "${arch}-unknown-myos-strip" "$T/libsoup-smoke-mlibc-${arch}-unknown-none"
   rm -rf "$build"
   echo "libsoup ($arch) -> $out"
 }

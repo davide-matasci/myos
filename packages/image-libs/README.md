@@ -15,7 +15,9 @@ with the archives and their pkg-config files, `include/`):
 libjpeg-turbo with CMake and pixman with meson, all with the cross cc of
 `myos_write_cross_cc`.
 
-The app is the package's smoke, `image-smoke` (`smoke.c`, its test): pixman
+A library package: nothing to install. Its smoke, `image-smoke`, is the
+image-libs-smoke package's (`packages/image-libs-smoke`): a library port
+ships no program (`docs/ports.md` "Cache keys"). The smoke: pixman
 draws an image, libpng and libwebp round-trip it exactly, libjpeg-turbo a
 gradient within its loss; then, on Xfbdev, through `packages/x11-libs`'
 mlibc build, the image goes up over MIT-SHM, RENDER fills beside it,
