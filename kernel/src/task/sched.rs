@@ -961,6 +961,7 @@ pub fn itimer_swap(pid: usize, new: Option<(u64, u64)>) -> (u64, u64) {
             t.alarm_every = if value == 0 { 0 } else { interval };
             if t.alarm_at != 0 {
                 NEXT_DEADLINE.fetch_min(t.alarm_at, Ordering::SeqCst);
+                crate::arch::timer_deadline(t.alarm_at);
             }
         }
         old
@@ -1037,7 +1038,10 @@ fn with_ptimers<R>(f: impl FnOnce(&mut TaskTable, usize, &mut [super::process::P
         let next = timers.iter().filter(|t| t.at != 0).map(|t| t.at).min().unwrap_or(0);
         tasks[pid].ptimer_at = next;
         if next != 0 {
+            // This CPU's timer fires at the expiry, not at the next tick
+            // (as `deadline_soon`; the other CPUs' ticks look at it too).
             NEXT_DEADLINE.fetch_min(next, Ordering::SeqCst);
+            crate::arch::timer_deadline(next);
         }
         out
     };
