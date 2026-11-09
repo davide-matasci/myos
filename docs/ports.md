@@ -74,7 +74,8 @@ minimal port needs only `PORT_FILES`.
 | `PORT_TIMEOUT` | `45` | the CI ports job's limit for the port, in minutes; at most 360 |
 | `PORT_OUTPUTS` | | what the script leaves under `target/` (what the registry caches); globs are allowed |
 | `PORT_READY` | every output but the globs | the `target/` files whose presence means the port was built |
-| `PORT_LINK_OUTPUTS` | | the outputs the ports over it only link, never compile against (libsoup's TLS backend and smoke): left out of its compile flavour ("Cache keys" below) |
+| `PORT_LINK_OUTPUTS` | | the outputs the ports over it only link, never compile against (libsoup's TLS backend): left out of its compile flavour ("Cache keys" below) |
+| `PORT_LIBRARY` | `0` | `1` for a library port: its key takes its dependencies' compile flavours (what it compiles against, the libc's headers and symbols), so it ships no program ("Cache keys" below) |
 | `PORT_FILES` | | what the image (or the package) gets, below |
 | `PORT_TEST_FILES` | | what the tests module gets instead (`docs/testing.md`), same syntax |
 | `PORT_BIN`, `PORT_WATCH`, `PORT_PREPARE` | | `user` only: the binary name, extra watched sources, a script run before the build (netd's patched smoltcp) |
@@ -171,23 +172,51 @@ must be reproducible for this: x11-libs's was not until xcb-proto's
 byte-compiled Python module (`__pycache__`, timestamps inside) was taken
 out of its stage.
 
-A port some of whose outputs its dependents only link, never compile
-against, names them in `PORT_LINK_OUTPUTS` and has a **compile
-flavour**, its other outputs: its record carries `compile=<hash>`, and a
-port keyed on what it compiles against takes that alone
-(`myos_dep_hash <dep> compile`). libsoup's TLS backend (glib-networking
-over LibreSSL) and its smoke are such outputs: WebKit's key takes
-libsoup's compile flavour, and WebKit's programs (`webkitgtk-smoke`,
-surf), linked from its archive in packages of their own, take libsoup's
-whole hash and LibreSSL's, so a glib-networking patch or a LibreSSL bump
-relinks them and does not rebuild WebKit (issue #664). Such a port's
-programs must be linked outside it for this: a program it built would be
-stale under a key that leaves out what it links.
+Every port has a **compile flavour** too, its interface: what a port over
+it compiles against, as opposed to what a program links. It takes a
+static library or an object (`.a`, `.o`) by the names and kinds of the
+symbols it defines (`nm`), not its bytes; leaves out the programs among
+the outputs (an ELF executable, but a build host's tools under a
+`<name>-host/` tree, which the dependents' builds run) and what
+`PORT_LINK_OUTPUTS` names (libsoup's TLS backend, glib-networking over
+LibreSSL, which WebKit links and never compiles against: issue #664);
+and takes the rest, the headers, the pkg-config files and the data, by
+content. Its record carries `compile=<hash>`.
+
+A **library port** (`PORT_LIBRARY=1`: mlibc, libc++, SQLite, libedit,
+GLib, the image, text and drawing libraries, GTK 3, libsoup, WebKitGTK)
+keys itself on the compile flavour of every port it compiles against
+(`myos_dep_hash <dep> compile`; the `mlibc` flavour of a port built for
+both libraries, whose archives are bytes of its own), a **program**
+(python, the smokes, surf) on the whole hash of every port it links, the
+libc first. A static library contains none of the libc: WebKit's archive
+refers to `malloc` and `write` by name, and the libc's code is copied in
+only when a program is linked. So a change to the libc's C that leaves
+its headers and its symbols the same (a fix in `toolchain/libmyos`, a
+sysdep) rebuilds mlibc and libgloss and relinks the programs, minutes,
+and no library over them: before, it rebuilt every port over the libc,
+WebKitGTK's three jobs of hours among them, for an archive that came out
+the same (#773). A header change still rebuilds everything over it, as a
+header can carry a struct's layout or inline code; a function the libc
+gains changes its symbols, so a dependent whose configure probes for it
+by linking is rebuilt too.
+
+For that a library port ships no program: one it built would carry the
+libc of its own build under a key that leaves the libc's bytes out. Its
+programs are packages of their own, linked from its prefix (`glib-tools`
+for GLib's `gio` and smoke, from the objects GLib's build leaves in
+`lib/gio-tool`; `image-libs-smoke`, `cairo-pango-smoke`, `gtk3-smoke`,
+`libsoup-smoke`; `webkitgtk-smoke` and surf for WebKit), and libc++'s
+smoke is the mlibc smokes' (`user/c-mlibc`). `src/ports.rs` refuses a
+`bin:`, `manifest:` or `multicall:` entry in a library port's files. The
+programs a library's own build links into its prefix (`bin/`) stay
+there, used by nothing.
 
 The output hash is recorded beside the stamp, in
 `target/.myos-<name>-outputs` (one per arch, `.myos-<name>-<arch>-outputs`,
 for a port built an arch at a time), as `<input hash> <output hash>`, with
-`newlib=<hash> mlibc=<hash>` after them for a dual port: the
+`newlib=<hash> mlibc=<hash>` after them for a dual port and
+`compile=<hash>` for every port: the
 registry push writes it (`myos_outputs_record`) and packs it with the
 port, and puts the record on the artifact's manifest as the annotation
 `org.myos.ci.outputs`, which a pull and the CI plan read, without a
@@ -223,10 +252,9 @@ get a key per job and nothing finds anything. The build job's pulls
 in parallel, each port's hash finding its dependencies' records through
 the registry when their pulls have not landed yet. tcc installs `libtcc1.a` into newlib's
 tree (its own output, in the kernels hash): newlib's output hash leaves it
-out. Every key names the scheme (`keys=outputs-1` in `myos_hash`): a
-change to how keys are computed rebuilds everything once. What WebKitGTK
-compiles against is still every output of libsoup (issue #664: the
-GIO TLS backend and LibreSSL it only links are in the hash too).
+out. Every key names the scheme (`keys=outputs-2` in `myos_hash`): a
+change to how keys are computed rebuilds everything once (`outputs-2`:
+the compile flavours of the library ports).
 
 ## What reads the descriptors
 

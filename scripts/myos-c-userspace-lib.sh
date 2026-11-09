@@ -25,7 +25,7 @@ MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 # local setup").
 myos_hash() {
   local input
-  input="keys=outputs-1"$'\n'"$(sha256sum "$MYOS_ROOT/Dockerfile")"$'\n'"$(cat)"
+  input="keys=outputs-2"$'\n'"$(sha256sum "$MYOS_ROOT/Dockerfile")"$'\n'"$(cat)"
   if grep -q '^dep-hash-unknown:' <<<"$input"; then
     grep '^dep-hash-unknown:' <<<"$input" | sort -u \
       | sed 's/^dep-hash-unknown:/myos: cache key undefined: the outputs of /; s/$/ are neither built here nor in the registry/' >&2
@@ -120,12 +120,20 @@ myos_piece_is_current() {
 # the mlibc flavour alone (`myos_dep_hash <dep> mlibc`): a libgloss change
 # rebuilds the dual ports, whose newlib flavour changes, and nothing in the
 # mlibc world (CI #2371 rebuilt WebKitGTK for the resolver fix of #680).
-# A port whose dependents only link some of its outputs (PORT_LINK_OUTPUTS:
-# libsoup's TLS backend and smoke) has a compile flavour too, the rest:
-# what a port keyed on it (`myos_dep_hash <dep> compile`) compiles against,
-# so that a change to what it only links leaves it current (issue #664,
-# WebKit for a glib-networking patch). Such a port's linked programs are
-# keyed on the whole hash.
+# Every piece has a **compile flavour** too, its interface: what a port over
+# it compiles against. It takes a static library or an object by the names
+# and kinds of the symbols it defines (myos_elf_interface), not its bytes,
+# leaves out the programs among the outputs (an ELF executable, but a build
+# host's tools under a `<name>-host/` tree, which the dependents' builds
+# run) and what PORT_LINK_OUTPUTS names (libsoup's TLS backend: what its
+# dependents link and never compile against, issue #664), and takes the
+# rest (the headers, the pkg-config files, the data) by content. A library
+# port (PORT_LIBRARY=1: it ships no program) keys itself on its
+# dependencies' compile flavours (`myos_dep_hash <dep> compile`), a program
+# on their whole hashes (what it links): a change to the libc's C that
+# leaves its headers and its symbols the same rebuilds the libc and
+# relinks the programs, and no library over it (CI rebuilt WebKitGTK and
+# the GTK stack for a libmyos fix, #773; docs/ports.md "Cache keys").
 # Args: FLAVOUR, and for `compile` the piece's NAME and ARCH.
 myos_outputs_flavour_filter() {
   case "${1:-}" in
@@ -140,8 +148,27 @@ myos_outputs_flavour_filter() {
   esac
 }
 
+# Whether FILE is an ELF executable (ET_EXEC, or ET_DYN: myos's programs
+# are static PIEs, and there are no shared objects).
+myos_elf_program() {
+  local magic type
+  magic="$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  [[ "$magic" == 7f454c46 ]] || return 1
+  type="$(od -An -tu2 -j16 -N2 "$1" 2>/dev/null | tr -d ' ')"
+  [[ "$type" == 2 || "$type" == 3 ]]
+}
+
+# The interface of a static library or an object FILE, what a program over
+# it can be linked with: the name and kind of every symbol it defines (GNU
+# nm, which reads every arch's ELF; the archive's members' names left
+# out), one per line, sorted.
+myos_elf_interface() {
+  nm -g --defined-only -P "$1" 2>/dev/null | awk 'NF >= 3 { print $1, $2 }' | LC_ALL=C sort -u
+}
+
 # The output hash of a piece: its PORT_OUTPUTS files by path and content, the
-# stamps left out; of FLAVOUR's files alone (`newlib`, `mlibc`) when given.
+# stamps left out; of FLAVOUR's files alone (`newlib`, `mlibc`) when given,
+# or of its interface (`compile`, above).
 myos_outputs_hash_files() {
   local name="${1%%:*}" arch="" flavour="${2:-}"
   [[ "$1" == *:* ]] && arch="${1#*:}"
@@ -168,17 +195,16 @@ myos_outputs_hash_files() {
             printf '%s  %s\n' "$(readlink "$f" | sha256sum | awk '{print $1}')" "$f"
           elif [[ "$f" == *-manifest-*.txt ]]; then
             printf '%s  %s\n' "$(sed "s|$MYOS_ROOT/||g" "$f" | sha256sum | awk '{print $1}')" "$f"
+          elif [[ "$flavour" == compile && "$f" == *.[ao] ]]; then
+            printf '%s  %s\n' "$(myos_elf_interface "$f" | sha256sum | awk '{print $1}')" "$f"
+          elif [[ "$flavour" == compile && "$f" != target/*-host/* ]] && myos_elf_program "$f"; then
+            : # a program is not part of the interface
           else
             sha256sum "$f"
           fi
         done \
       | sha256sum | awk '{print $1}'
   )
-}
-
-# Whether a piece has a compile flavour (PORT_LINK_OUTPUTS).
-myos_outputs_link_only() {
-  (myos_ports_lib && myos_port_load "${1%%:*}" && [[ -n "$PORT_LINK_OUTPUTS" ]])
 }
 
 # Whether a piece's outputs come in both flavours (files under a `-mlibc-`
@@ -193,10 +219,10 @@ myos_outputs_dual() {
 }
 
 # Record a current piece's output hash in its outputs stamp (the registry
-# push, after a build): the hash and, for a dual port, each flavour's
-# (`<hash> newlib=<hash> mlibc=<hash>`), for a port with link-only outputs
-# its compile flavour's (`compile=<hash>`): what the stamp holds after the
-# input hash, and the registry's annotation.
+# push, after a build): the hash, for a dual port each flavour's
+# (`newlib=<hash> mlibc=<hash>`), and its compile flavour's
+# (`compile=<hash>`): what the stamp holds after the input hash, and the
+# registry's annotation.
 myos_outputs_record() {
   local piece="$1" fn h stamp
   fn="myos_${piece%%:*}_version_hash"
@@ -209,9 +235,7 @@ myos_outputs_record() {
   if myos_outputs_dual "$piece"; then
     h="$h newlib=$(myos_outputs_hash_files "$piece" newlib) mlibc=$(myos_outputs_hash_files "$piece" mlibc)"
   fi
-  if myos_outputs_link_only "$piece"; then
-    h="$h compile=$(myos_outputs_hash_files "$piece" compile)"
-  fi
+  h="$h compile=$(myos_outputs_hash_files "$piece" compile)"
   stamp="$(myos_outputs_stamp "$piece")"
   mkdir -p "$(dirname "$stamp")"
   printf '%s %s\n' "$("$fn")" "$h" >"$stamp.tmp.$$"
@@ -279,11 +303,10 @@ myos_piece_flavour_hash() {
 # as `outputs:<piece>:<hash>` lines (one per arch for a port built an arch
 # at a time), or the `dep-hash-unknown:` line myos_hash turns into an
 # undefined key. With FLAVOUR (`mlibc`: an mlibc port over a port built for
-# both libraries; `compile`: a port over one with link-only outputs), that
-# flavour's hash, `outputs-<flavour>:<piece>:<hash>`, so that the other
-# files are not in the key; the whole hash as
-# before while the dependency's record has no flavours (one made before
-# they were recorded), which keeps the keys of the registry's artifacts.
+# both libraries; `compile`: a library port over what it compiles against),
+# that flavour's hash, `outputs-<flavour>:<piece>:<hash>`, so that the
+# other files are not in the key; the whole hash while the dependency's
+# record has no such flavour (one made before it was recorded).
 myos_dep_hash() {
   local name="$1" flavour="${2:-}" fn vh piece h fh lines=""
   fn="myos_${name//-/_}_version_hash"
@@ -484,16 +507,18 @@ myos_mlibc_is_current() {
 }
 
 # libc++, libc++abi and libunwind against mlibc (toolchain/libcxx): its
-# pins and scripts, the smoke, and mlibc's inputs.
+# pins and scripts, and mlibc's interface (a library port: what it
+# compiles against, docs/ports.md "Cache keys"; its smoke is the mlibc
+# smokes').
 myos_libcxx_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
+      myos_dep_hash mlibc compile
       find "$MYOS_ROOT/toolchain/libcxx" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      # The flags and the link the build and the smoke take (below).
-      declare -f myos_mlibc_hosted_cflags myos_libcxx_cxxflags myos_mlibc_link myos_libcxx_link
+      # The flags the build takes (below).
+      declare -f myos_mlibc_hosted_cflags myos_libcxx_cxxflags
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -506,7 +531,6 @@ myos_libcxx_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/libcxx-${arch}/lib/libc++.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/cxx-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
   return 0
 }
@@ -1873,8 +1897,7 @@ myos_glib_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/libgio-2.0.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
+    [[ -d "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/gio-tool" ]] || return 1
   done
   [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ]] \
     && [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ]] \
@@ -1882,13 +1905,13 @@ myos_glib_is_current() {
 }
 
 # The image libraries (packages/image-libs), against mlibc: their pins and
-# scripts, mlibc, the mlibc builds of zlib and the X libraries (the smoke)
-# and the compiler flags.
+# scripts, mlibc's interface (a library port), the mlibc builds of zlib and
+# the X libraries and the compiler flags.
 myos_image_libs_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
+      myos_dep_hash mlibc compile
       myos_dep_hash zlib mlibc
       myos_dep_hash x11-libs mlibc
       find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
@@ -1906,21 +1929,21 @@ myos_image_libs_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/image-libs-mlibc-${arch}/lib/libpixman-1.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/image-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
 # The text and drawing libraries (packages/cairo-pango), against mlibc:
-# their pins and scripts, and what they build over: mlibc, libc++, GLib,
-# the image libraries, the X libraries and font stack, the compiler flags.
+# their pins and scripts, and the interfaces of what they compile against
+# (a library port): mlibc, libc++, GLib, the image libraries, the X
+# libraries and font stack; the compiler flags.
 myos_cairo_pango_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
-      myos_dep_hash libcxx
-      myos_dep_hash glib
-      myos_dep_hash image-libs
+      myos_dep_hash mlibc compile
+      myos_dep_hash libcxx compile
+      myos_dep_hash glib compile
+      myos_dep_hash image-libs compile
       myos_dep_hash x11-xft mlibc
       find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
@@ -1938,18 +1961,23 @@ myos_cairo_pango_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/cairo-pango-mlibc-${arch}/lib/libpangocairo-1.0.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/cairo-pango-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
 # GTK 3 and ATK (packages/gtk3), against mlibc: their pins, patch and
-# scripts, and the text and drawing libraries they build over (with all
-# that those hash).
+# scripts, and the interfaces of what they compile against (a library
+# port): mlibc, libc++, GLib, the image, text and drawing libraries, the
+# X libraries and font stack.
 myos_gtk3_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash cairo-pango
+      myos_dep_hash mlibc compile
+      myos_dep_hash libcxx compile
+      myos_dep_hash glib compile
+      myos_dep_hash image-libs compile
+      myos_dep_hash cairo-pango compile
+      myos_dep_hash x11-xft mlibc
       find "$(myos_port_dir gtk3)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1964,22 +1992,22 @@ myos_gtk3_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/gtk3-mlibc-${arch}/lib/libgtk-3.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/gtk3-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
 # The network libraries (packages/libsoup), against mlibc: their pins,
-# patch and scripts, and what they build over: mlibc, GLib, LibreSSL,
-# SQLite, the cross compilers and the meson helpers.
+# patch and scripts, and the interfaces of what they compile against (a
+# library port): mlibc, libc++, GLib, LibreSSL, SQLite; the cross
+# compilers and the meson helpers.
 myos_libsoup_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
-      myos_dep_hash libcxx
-      myos_dep_hash glib
+      myos_dep_hash mlibc compile
+      myos_dep_hash libcxx compile
+      myos_dep_hash glib compile
       myos_dep_hash libressl mlibc
-      myos_dep_hash sqlite
+      myos_dep_hash sqlite compile
       find "$(myos_port_dir libsoup)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -1996,23 +2024,30 @@ myos_libsoup_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/libsoup-mlibc-${arch}/lib/libsoup-3.0.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/libsoup-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
 # WebKitGTK (packages/webkitgtk), against mlibc: its pins, patches and
-# scripts, cairo-pango's pins (its HarfBuzz is built again), and what it
-# compiles against: GTK 3 (and so the text, image and X libraries),
-# libsoup's compile flavour (libsoup, libxml2, libpsl and nghttp2, not GIO's
-# TLS backend or LibreSSL, which only its programs link: issue #664),
-# SQLite, and the cross compilers and meson helpers.
+# scripts, cairo-pango's pins (its HarfBuzz is built again), and the
+# interfaces of what it compiles against (a library port, docs/ports.md
+# "Cache keys"): mlibc and libc++, GLib, the image, text and drawing
+# libraries, the X libraries and font stack, GTK 3, libsoup (libsoup,
+# libxml2, libpsl and nghttp2; not GIO's TLS backend or LibreSSL, which
+# only its programs link: issue #664), SQLite; the cross compilers and
+# meson helpers. A libc fix rebuilds none of it (#773).
 myos_webkitgtk_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash gtk3
+      myos_dep_hash mlibc compile
+      myos_dep_hash libcxx compile
+      myos_dep_hash glib compile
+      myos_dep_hash image-libs compile
+      myos_dep_hash cairo-pango compile
+      myos_dep_hash x11-xft mlibc
+      myos_dep_hash gtk3 compile
       myos_dep_hash libsoup compile
-      myos_dep_hash sqlite
+      myos_dep_hash sqlite compile
       find "$(myos_port_dir webkitgtk)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
@@ -2066,13 +2101,16 @@ myos_webkitgtk_smoke_is_current() {
   done
 }
 
-# surf (packages/surf), against mlibc: its pin, patch and scripts, the
-# WebKit it links (and so everything under it) and what WebKit leaves to its
-# programs to link: libsoup whole (GIO's TLS backend) and LibreSSL.
+# surf (packages/surf), against mlibc: its pin, patch and scripts, and the
+# whole of what it links: mlibc and libc++, the WebKit archive (keyed on
+# everything under it) and what WebKit leaves to its programs: libsoup
+# whole (GIO's TLS backend) and LibreSSL.
 myos_surf_version_hash() {
   local h
   h="$(
     {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
       myos_dep_hash webkitgtk
       myos_dep_hash libsoup
       myos_dep_hash libressl mlibc
@@ -2093,6 +2131,162 @@ myos_surf_is_current() {
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/surf-mlibc-${arch}-unknown-none" ]] || return 1
     [[ -f "$MYOS_ROOT/target/surf-check-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# GLib's programs (packages/glib-tools), against mlibc: its sources, and
+# the whole of what they link: mlibc, GLib's prefix (gio's objects among
+# it), the mlibc builds of zlib and PCRE2; the cc.
+myos_glib_tools_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash glib
+      myos_dep_hash zlib mlibc
+      myos_dep_hash pcre2 mlibc
+      find "$(myos_port_dir glib-tools)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_glib_tools_is_current() {
+  local arch
+  [[ -f "$MYOS_GLIB_TOOLS_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GLIB_TOOLS_VERSION")" == "$(myos_glib_tools_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# The image libraries' smoke (packages/image-libs-smoke), against mlibc:
+# its source, and the whole of what it links: mlibc, the image libraries,
+# the mlibc builds of zlib and the X libraries; the cc.
+myos_image_libs_smoke_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash image-libs
+      myos_dep_hash zlib mlibc
+      myos_dep_hash x11-libs mlibc
+      find "$(myos_port_dir image-libs-smoke)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_image_libs_smoke_is_current() {
+  local arch
+  [[ -f "$MYOS_IMAGE_LIBS_SMOKE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_IMAGE_LIBS_SMOKE_VERSION")" == "$(myos_image_libs_smoke_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/image-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# The text and drawing libraries' smoke (packages/cairo-pango-smoke),
+# against mlibc: its source, and the whole of what it links: mlibc and
+# libc++, cairo-pango's prefix, GLib, the image libraries, the X libraries
+# and font stack; the cross compilers.
+myos_cairo_pango_smoke_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      myos_dep_hash cairo-pango
+      myos_dep_hash glib
+      myos_dep_hash image-libs
+      myos_dep_hash x11-xft mlibc
+      find "$(myos_port_dir cairo-pango-smoke)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver myos_mlibc_meson_cross
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_cairo_pango_smoke_is_current() {
+  local arch
+  [[ -f "$MYOS_CAIRO_PANGO_SMOKE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_CAIRO_PANGO_SMOKE_VERSION")" == "$(myos_cairo_pango_smoke_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/cairo-pango-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# GTK 3's smoke (packages/gtk3-smoke), against mlibc: its source, and the
+# whole of what it links: mlibc and libc++, GTK 3's prefix, the text,
+# image and X libraries, GLib; the cross compilers.
+myos_gtk3_smoke_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      myos_dep_hash gtk3
+      myos_dep_hash cairo-pango
+      myos_dep_hash glib
+      myos_dep_hash image-libs
+      myos_dep_hash x11-xft mlibc
+      find "$(myos_port_dir gtk3-smoke)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver myos_mlibc_meson_cross
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_gtk3_smoke_is_current() {
+  local arch
+  [[ -f "$MYOS_GTK3_SMOKE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_GTK3_SMOKE_VERSION")" == "$(myos_gtk3_smoke_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/gtk3-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+  done
+}
+
+# The network libraries' smoke (packages/libsoup-smoke), against mlibc:
+# its source, and the whole of what it links: mlibc and libc++, libsoup's
+# prefix (GIO's TLS backend among it), GLib, LibreSSL, SQLite; the cc.
+myos_libsoup_smoke_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      myos_dep_hash libsoup
+      myos_dep_hash glib
+      myos_dep_hash libressl mlibc
+      myos_dep_hash sqlite
+      find "$(myos_port_dir libsoup-smoke)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+myos_libsoup_smoke_is_current() {
+  local arch
+  [[ -f "$MYOS_LIBSOUP_SMOKE_VERSION" ]] \
+    && [[ "$(cat "$MYOS_LIBSOUP_SMOKE_VERSION")" == "$(myos_libsoup_smoke_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/libsoup-smoke-mlibc-${arch}-unknown-none" ]] || return 1
   done
 }
 
