@@ -47,6 +47,57 @@ static int fail(const char *what, int rc) {
     return 1;
 }
 
+/* exec from a process with threads (issue #761): the leader may, the other
+ * threads end first (it used to be killed along with them: SIGKILL, exit
+ * 137); a thread other than the leader may not, EAGAIN (Linux lets it take
+ * over the pid; not supported). `exec-ok` is the image, this program. */
+static void *exec_park(void *arg) {
+    (void)arg;
+    for (;;) {
+        sleep(1);
+    }
+    return NULL;
+}
+
+static void *exec_from_thread(void *arg) {
+    char *self = arg;
+    errno = 0;
+    execl(self, self, "exec-ok", (char *)0);
+    _exit(errno == EAGAIN ? 7 : 8);
+}
+
+static int exec_threads(char *self) {
+    pthread_t t;
+    int st = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (pthread_create(&t, NULL, exec_park, NULL) != 0) {
+            _exit(9);
+        }
+        usleep(50000);
+        execl(self, self, "exec-ok", (char *)0);
+        _exit(10);
+    }
+    if (pid < 0 || waitpid(pid, &st, 0) != pid || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+        printf("[ FAIL ] pthread exec from the leader with a thread alive: status 0x%x\n", st);
+        return 1;
+    }
+    pid = fork();
+    if (pid == 0) {
+        if (pthread_create(&t, NULL, exec_from_thread, self) != 0) {
+            _exit(9);
+        }
+        for (;;) {
+            sleep(1);
+        }
+    }
+    if (pid < 0 || waitpid(pid, &st, 0) != pid || !WIFEXITED(st) || WEXITSTATUS(st) != 7) {
+        printf("[ FAIL ] pthread exec from a thread: status 0x%x, not EAGAIN\n", st);
+        return 1;
+    }
+    return 0;
+}
+
 static long now_ms(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -917,8 +968,12 @@ static int many_threads(void) {
     return bad ? fail("joining 100 threads", bad) : 0;
 }
 
-int main(void) {
-    if (alone() || with_threads() || locks() || cancellation()) {
+int main(int argc, char **argv) {
+    /* `exec-ok`: the image exec_threads execs into. */
+    if (argc > 1 && strcmp(argv[1], "exec-ok") == 0) {
+        return 0;
+    }
+    if (alone() || with_threads() || locks() || cancellation() || exec_threads(argv[0])) {
         return 1;
     }
 #ifndef __MLIBC_POSIX_OPTION

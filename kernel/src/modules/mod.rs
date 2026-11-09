@@ -959,6 +959,11 @@ unsafe extern "C" fn api_personality_exec(
     };
     let args = strs(argv, argc);
     let env = strs(envp, envc);
+    // Linux lets any thread exec and that thread takes over the pid; here
+    // only the leader may while there are others (`docs/threads.md`).
+    if crate::task::exec_from_thread() {
+        return myos_abi::MYOS_SYSERR_EAGAIN;
+    }
     match crate::personality::exec_with(path, &args, &env) {
         Some(r) => {
             unsafe { resume.write(myos_abi::ExecResume { words: r.words() }) };

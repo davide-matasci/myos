@@ -1317,6 +1317,55 @@ static void check_dev_fd(void) {
     check(open("/dev/fd/250", O_RDONLY) == -1 && errno == ENOENT, "/dev/fd/N: a closed fd is ENOENT");
 }
 
+/* execve from a process with threads (issue #761): from the leader (the
+ * main thread) it ends the others and runs the new image, where it used
+ * to die of their SIGKILL (`Killed`, exit 137: rustup's proxies); from
+ * another thread it is EAGAIN here (Linux lets that thread take over the
+ * pid: on a Linux host the exec goes through). */
+static void *exec_park(void *arg) {
+    (void)arg;
+    for (;;) {
+        pause();
+    }
+    return NULL;
+}
+
+static void *exec_from_thread(void *arg) {
+    char *self = arg;
+    errno = 0;
+    execl(self, self, "exec-threaded-ok", (char *)0);
+    _exit(errno == EAGAIN ? 7 : 8);
+}
+
+static void check_exec_threads(char *self) {
+    int myos = access("/proc/platform", F_OK) == 0;
+    int st = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, exec_park, NULL) != 0) {
+            _exit(9);
+        }
+        usleep(50000);
+        execl(self, self, "exec-threaded-ok", (char *)0);
+        _exit(10);
+    }
+    check(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+          "execve from the leader of a process with threads runs the new image");
+    pid = fork();
+    if (pid == 0) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, exec_from_thread, self) != 0) {
+            _exit(9);
+        }
+        for (;;) {
+            pause();
+        }
+    }
+    check(pid > 0 && waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == (myos ? 7 : 0),
+          "execve from another thread of a process with threads: EAGAIN (runs on Linux)");
+}
+
 static void check_signalfd(void) {
     struct signalfd_siginfo si;
     sigset_t set;
@@ -1833,6 +1882,7 @@ static void check_toolchain_calls(char *self) {
     check_sigaction_all(self);
     check_sigaltstack();
     check_timers(self);
+    check_exec_threads(self);
     check_dev_fd();
     check_copy_calls();
     check_sched_policy();
@@ -2529,6 +2579,10 @@ int main(int argc, char **argv) {
     }
     /* `timers-after-exec`: the exec kept ITIMER_REAL and dropped the POSIX
      * timer (the child of check_timers made them, timer 0). */
+    /* `exec-threaded-ok`: the image check_exec_threads execs into. */
+    if (argc > 1 && strcmp(argv[1], "exec-threaded-ok") == 0) {
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "timers-after-exec") == 0) {
         struct itimerval cur;
         struct itimerspec got;

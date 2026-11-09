@@ -317,6 +317,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         key_woken: false,
         tgid: slot,
         group_exit: false,
+        exec_ending: false,
         syscall_frame: 0,
         name: tasks[current_slot()].name,
     };
@@ -551,6 +552,7 @@ fn spawn_inner(
         key_woken: false,
         tgid: slot,
         group_exit: false,
+        exec_ending: false,
         syscall_frame: 0,
         name: [0; NAME_MAX],
     };

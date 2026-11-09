@@ -351,7 +351,10 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   namespaces (`unshare`, `CLONE_NEW*` are `EINVAL`), no capabilities, no
   seccomp. `/proc/sys/kernel/overflowuid` and `overflowgid` read 65534.
 - **Threads**: `clone` with `CLONE_THREAD` makes a native thread
-  (`docs/threads.md`). `futex` maps onto the core's `wait_addr` /
+  (`docs/threads.md`). `execve` from a process with threads ends the
+  others first, as on Linux, when the leader (the main thread) calls it;
+  from another thread it fails with `EAGAIN` (Linux lets that thread take
+  over the pid; not supported). `futex` maps onto the core's `wait_addr` /
   `wake_addr`; a bitset is "all" and a requeue wakes every waiter.
   `clone` without `CLONE_THREAD` is a fork, including musl's `vfork` and
   `posix_spawn`'s `CLONE_VM | CLONE_VFORK` with a stack (the child starts
