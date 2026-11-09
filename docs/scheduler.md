@@ -108,7 +108,7 @@ APs stay online into userspace. The per-arch entry code is in
 
 | Arch | CPU id | Timer | IPI |
 |------|--------|-------|-----|
-| x86_64 | TSC_AUX / APIC id | LAPIC timer (x2APIC when present; TCG has none, so CI runs the xAPIC path) | LAPIC ICR |
+| x86_64 | `IA32_TSC_AUX` (read with `RDPID`, else `RDTSCP`, else `RDMSR`) / APIC id | LAPIC timer (x2APIC when present; TCG has none, so CI runs the xAPIC path) | LAPIC ICR |
 | aarch64 | `TPIDR_EL1` / `MPIDR_EL1` | generic timer PPI | GIC SGI |
 | riscv64 | `tp` / Limine `hartid` | `stimecmp` | SBI IPI |
 
