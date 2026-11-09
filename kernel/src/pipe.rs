@@ -13,9 +13,12 @@ const ANON_PIPES: usize = 64;
 /// `pipe()` for shells and dropbear sessions.
 const MAX_PIPES: usize = ANON_PIPES + 24;
 /// Ring size per pipe. 512 made every `cat | cat` byte stream a 128-byte
-/// syscall ping-pong; 4 KiB (Linux PIPE_BUF) lets a writer hand over a
-/// whole `FILE_IO_TMP` chunk per syscall.
-const PIPE_BUF: usize = 4096;
+/// syscall ping-pong, and 4 KiB still held half of a writer's
+/// `FILE_IO_TMP` chunk: the writer blocked on every chunk and the reader
+/// woke it for each, a task switch and an IPI per 4 KiB (a stream between
+/// two CPUs moved 50 MiB/s under TCG). 64 KiB, Linux's pipe size, lets the
+/// two run side by side (430 MiB/s).
+const PIPE_BUF: usize = 65536;
 
 struct Pipe {
     /// The ring, on the heap while the pipe exists.
