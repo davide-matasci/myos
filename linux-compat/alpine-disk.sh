@@ -37,16 +37,28 @@ fi
 
 # get-alpine for the host, with the zlib port's sources (inflate only).
 # Several boot jobs make the disk at once on a cache miss, and GitHub's
-# release downloads answer 503 now and then: retry, as get-alpine's own
-# downloads do.
-for try in 1 2 3 4 5; do
+# release downloads fail now and then, for minutes at a time (504s): three
+# tries, then the same tarball from zlib.net, which keeps every release,
+# checked against the port's pin.
+zsrc="$ROOT/target/zlib-src"
+work="$ROOT/target/alpine-disk-$arch"
+for try in 1 2 3; do
   "$ROOT/ports/zlib/fetch.sh" > /dev/null && break
-  [[ $try -lt 5 ]] || exit 1
+  if [[ $try -eq 3 ]]; then
+    # shellcheck source=../ports/zlib/versions.env
+    source "$ROOT/ports/zlib/versions.env"
+    echo "alpine-disk: zlib from zlib.net instead" >&2
+    rm -rf "$work.zlib" && mkdir -p "$work.zlib"
+    curl -fsSL --retry 3 --retry-all-errors -o "$work.zlib/zlib.tgz" \
+      "https://zlib.net/fossils/zlib-$ZLIB_VERSION.tar.gz"
+    echo "$ZLIB_SHA256  $work.zlib/zlib.tgz" | sha256sum -c - > /dev/null
+    tar -xzf "$work.zlib/zlib.tgz" -C "$work.zlib"
+    zsrc="$work.zlib/zlib-$ZLIB_VERSION"
+    break
+  fi
   echo "alpine-disk: zlib fetch failed, retrying in $((try * 10)) s" >&2
   sleep $((try * 10))
 done
-zsrc="$ROOT/target/zlib-src"
-work="$ROOT/target/alpine-disk-$arch"
 rm -rf "$work"
 mkdir -p "$work/root"
 cc -O2 -DALPINE_ARCH="\"$arch\"" -I"$ROOT/user/get-myos" -I"$zsrc" \
@@ -70,4 +82,4 @@ size="$(( $(du -sm "$work/root" | cut -f1) * 13 / 10 + 32 ))M"
 mke2fs -q -F -t ext2 -b 4096 -O ^resize_inode,^dir_index,^ext_attr \
   -d "$work/root" "$out.tmp" "$size"
 mv "$out.tmp" "$out"
-rm -rf "$work"
+rm -rf "$work" "$work.zlib"
