@@ -91,8 +91,11 @@ initramfs. A directory exists through its files, so an empty one carries a
 
 tmpfs is the writable mount at `/tmp`. Its files live in the kernel heap,
 up to 128 MiB per file (issue #338; a write or truncate past that fails
-with `EFBIG`, a write the heap has no room for with `ENOSPC`). devfs at
-`/dev` holds the device nodes.
+with `EFBIG`, a write the heap has no room for with `ENOSPC`). A file's
+data takes a block of the heap's size classes (`kernel/src/heap.rs`): up to
+256 KiB its size rounded up, to a power of two below a page and to a whole
+page above it; larger files take their exact size. devfs at `/dev` holds
+the device nodes.
 
 ### procfs
 

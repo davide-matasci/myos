@@ -128,9 +128,9 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         43 => ret(net::accept(a[0], a[1], a[2], 0)),
         50 => ret(net::listen(a[0])),
         288 => ret(net::accept(a[0], a[1], a[2], a[3])), // accept4
-        44 => ret(net::sendto(a[0], a[1], a[2], a[4], a[5])),
+        44 => ret(net::sendto(a[0], a[1], a[2], a[3], a[4], a[5])),
         45 => ret(net::recvfrom(a[0], a[1], a[2], a[3], a[4], a[5])),
-        46 => ret(net::sendmsg(a[0], a[1])),
+        46 => ret(net::sendmsg(a[0], a[1], a[2])),
         47 => ret(net::recvmsg(a[0], a[1], a[2])),
         48 => ret(net::shutdown(a[0], a[1])),
         49 => ret(net::bind(a[0], a[1], a[2])),

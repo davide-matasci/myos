@@ -121,9 +121,11 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
 /// `EFBIG`).
 /// 68: an exec in two steps ([`KernelApi::exec_resume`]).
-/// 69: the process's `ITIMER_REAL` ([`KernelApi::itimer_swap`]) and its
+/// 69: a write to a pipe without readers is [`MYOS_SYSERR_EPIPE`] (and
+/// `SIGPIPE` to the writer), no longer the generic failure.
+/// 70: the process's `ITIMER_REAL` ([`KernelApi::itimer_swap`]) and its
 /// POSIX timers ([`KernelApi::ptimer_create`] and the calls after it).
-pub const ABI_VERSION: u32 = 69;
+pub const ABI_VERSION: u32 = 70;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -569,7 +571,9 @@ pub const MYOS_SYSERR_EACCES: usize = usize::MAX - 9;
 pub const MYOS_SYSERR_ENOSPC: usize = usize::MAX - 10;
 /// A write or truncate past the size a file may have (tmpfs's 128 MiB).
 pub const MYOS_SYSERR_EFBIG: usize = usize::MAX - 11;
-pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EFBIG;
+/// A write to a pipe every reader has closed (the writer also gets `SIGPIPE`).
+pub const MYOS_SYSERR_EPIPE: usize = usize::MAX - 12;
+pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_EPIPE;
 
 /// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s
 /// result when the filesystem has no room for the bytes (the caller's
@@ -1256,7 +1260,7 @@ pub struct KernelApi {
     /// Enter the image [`KernelApi::personality_exec`] prepared, with
     /// everything the exec allocated freed. Never returns.
     pub exec_resume: unsafe extern "C" fn(resume: *const ExecResume) -> !,
-    // --- ABI 69: timers that signal ---
+    // --- ABI 70: timers that signal ---
     /// The current process's `ITIMER_REAL` (`SIGALRM`): with `set`, armed
     /// to fire in `value_ns` (0 disarms), then every `interval_ns`. What
     /// was left of the old one and its interval into `*old_left` and
