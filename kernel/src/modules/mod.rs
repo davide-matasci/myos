@@ -1436,7 +1436,11 @@ unsafe extern "C" fn api_itimer_swap(set: i32, value: u64, interval: u64, left: 
 }
 
 unsafe extern "C" fn api_ptimer_create(sig: u32, tid: usize) -> i32 {
-    crate::task::ptimer_create(sig, tid).map_or(-1, |id| id as i32)
+    match crate::task::ptimer_create(sig, tid) {
+        Ok(id) => id as i32,
+        Err(crate::task::PtimerError::NoThread) => -1,
+        Err(crate::task::PtimerError::Full) => myos_abi::PTIMER_FULL,
+    }
 }
 
 unsafe extern "C" fn api_ptimer_set(id: usize, at: u64, every_ns: u64, left: *mut u64, every: *mut u64) -> i32 {

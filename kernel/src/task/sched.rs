@@ -1049,23 +1049,30 @@ fn with_ptimers<R>(f: impl FnOnce(&mut TaskTable, usize, &mut [super::process::P
     out
 }
 
+/// Why [`ptimer_create`] made no timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PtimerError {
+    /// `tid` is not a live thread of the process, or `sig` is no signal.
+    NoThread,
+    /// All [`MAX_PTIMERS`](super::process::MAX_PTIMERS) are taken.
+    Full,
+}
+
 /// A new, disarmed POSIX timer of the current process that sends `sig`
 /// (native, 1..31; 0: none) to its thread `tid`, or to the process with
-/// `tid` 0:
-/// its id. `None` when `tid` is not one of its threads or all
-/// [`MAX_PTIMERS`](super::process::MAX_PTIMERS) are taken.
-pub fn ptimer_create(sig: u32, tid: usize) -> Option<usize> {
+/// `tid` 0: its id, or why not.
+pub fn ptimer_create(sig: u32, tid: usize) -> Result<usize, PtimerError> {
     if sig > 31 || tid >= MAX_TASKS {
-        return None;
+        return Err(PtimerError::NoThread);
     }
     with_ptimers(|tasks, pid, timers| {
         let to = if tid == 0 { pid } else { tid };
         if tasks[to].tgid != pid || !super::signals::signal_live(&tasks[to]) {
-            return None;
+            return Err(PtimerError::NoThread);
         }
-        let id = timers.iter().position(|t| !t.used)?;
+        let id = timers.iter().position(|t| !t.used).ok_or(PtimerError::Full)?;
         timers[id] = super::process::PTimer { used: true, sig: sig as u8, tid: to as u16, ..super::process::PTimer::FREE };
-        Some(id)
+        Ok(id)
     })
 }
 
