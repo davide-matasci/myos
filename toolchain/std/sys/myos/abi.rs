@@ -73,6 +73,13 @@ pub const O_CLOEXEC: usize = 0x80000;
 
 /// [`openat`]'s result for an `O_CREAT|O_EXCL` open of a name that is taken.
 pub const SYSERR_EEXIST: isize = (usize::MAX - 4) as isize;
+/// A path call's result for a path of [`PATH_MAX`] bytes or more, as given
+/// or once resolved (`myos_abi::MYOS_SYSERR_ENAMETOOLONG`).
+pub const SYSERR_ENAMETOOLONG: isize = (usize::MAX - 13) as isize;
+
+/// Linux's `PATH_MAX` (`myos_abi::MYOS_PATH_MAX`): a path is at most
+/// `PATH_MAX - 1` bytes.
+pub const PATH_MAX: usize = 4096;
 
 pub const EBADF: i32 = 9;
 pub const F_DUPFD_CLOEXEC: i32 = 1030;

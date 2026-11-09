@@ -507,21 +507,19 @@ fn sys_nanosleep(ns: usize, flags: usize) -> usize {
 }
 
 /// The real path behind `path`, symlinks followed.
-pub(crate) fn resolve_copied_path(path: &str) -> Option<alloc::string::String> {
-    let mut abs = [0u8; MAX_PATH];
+pub(crate) fn resolve_copied_path(path: &str) -> Result<alloc::string::String, fs::PathError> {
+    let mut abs = fs::vfs::path_buf();
     let n = fs::resolve_user_path(path, &mut abs)?;
-    core::str::from_utf8(&abs[..n])
-        .ok()
-        .map(|s| alloc::string::String::from(s))
+    abs.truncate(n);
+    alloc::string::String::from_utf8(abs).map_err(|_| fs::PathError::Unresolved)
 }
 
 /// The real path behind `path`, a symlink in the last component not followed.
-pub(crate) fn resolve_copied_path_nofollow(path: &str) -> Option<alloc::string::String> {
-    let mut abs = [0u8; MAX_PATH];
+pub(crate) fn resolve_copied_path_nofollow(path: &str) -> Result<alloc::string::String, fs::PathError> {
+    let mut abs = fs::vfs::path_buf();
     let n = fs::resolve_user_path_nofollow(path, &mut abs)?;
-    core::str::from_utf8(&abs[..n])
-        .ok()
-        .map(|s| alloc::string::String::from(s))
+    abs.truncate(n);
+    alloc::string::String::from_utf8(abs).map_err(|_| fs::PathError::Unresolved)
 }
 
 use crate::sec::Rights;
@@ -558,16 +556,17 @@ const O_NOFOLLOW: u32 = 0o400000;
 const O_DIRECTORY: u32 = 0o200000;
 const S_IFLNK: u32 = 0o120000;
 
-pub(super) fn copy_user_path(ptr: usize, len: usize) -> Option<[u8; MAX_PATH]> {
+/// The `len` bytes of a path at user `ptr` (at most [`MAX_PATH`]).
+pub(super) fn copy_user_path(ptr: usize, len: usize) -> Option<Vec<u8>> {
     if len == 0 || len > MAX_PATH {
         return None;
     }
     if !user_range_ok(ptr, len) {
         return None;
     }
-    let mut buf = [0u8; MAX_PATH];
+    let mut buf = alloc::vec![0u8; len];
     let aspace = task::current_aspace();
-    if !read_user_bytes(aspace, ptr, &mut buf[..len]) {
+    if !read_user_bytes(aspace, ptr, &mut buf) {
         return None;
     }
     Some(buf)
@@ -580,7 +579,7 @@ fn sys_insmod(ptr: usize, path_len: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(path) = resolve_copied_path(path) else {
+    let Ok(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
     if !may(&path, Rights::READ) || !crate::sec::allowed_object("kernel.modules", None, Rights::WRITE) {
@@ -620,8 +619,9 @@ pub(crate) fn open_path(path: &str, flags: usize) -> usize {
     let tree = if excl { fs::vfs::hold_write() } else { fs::vfs::hold_read() };
     let real = if open_follows(flags) { resolve_copied_path(path) } else { resolve_copied_path_nofollow(path) };
     match real {
-        Some(real) => open_real(real, None, flags, tree),
-        None => SYSERR,
+        Ok(real) => open_real(real, None, flags, tree),
+        Err(fs::PathError::TooLong) => SYSERR_ENAMETOOLONG,
+        Err(fs::PathError::Unresolved) => SYSERR,
     }
 }
 
@@ -849,13 +849,13 @@ fn sys_ns(ptr: usize, len: usize) -> usize {
         let Some(rights) = Rights::parse_list(rights) else {
             return SYSERR;
         };
-        let mut t = [0u8; MAX_PATH];
-        let Some(tn) = fs::vfs::resolve_against_cwd("/", target, &mut t) else {
+        let mut t = fs::vfs::path_buf();
+        let Ok(tn) = fs::vfs::resolve_against_cwd("/", target, &mut t) else {
             return SYSERR;
         };
         // The source as the caller names it now, with no more rights than
         // the caller has there.
-        let Some(real) = resolve_copied_path(source) else {
+        let Ok(real) = resolve_copied_path(source) else {
             return SYSERR;
         };
         if real.starts_with('@') || fs::stat(&real).is_none() {
@@ -868,7 +868,7 @@ fn sys_ns(ptr: usize, len: usize) -> usize {
     // The cwd stays where it is when the new namespace still names it, and
     // is its `/` otherwise (`chroot`).
     let ns = task::ns::Namespace { binds };
-    let keeps = resolve_copied_path(".").is_some_and(|c| ns.to_virtual(&c).is_some());
+    let keeps = resolve_copied_path(".").is_ok_and(|c| ns.to_virtual(&c).is_some());
     task::set_ns(Some(ns));
     if keeps { 0 } else { chdir_path("/") }
 }
@@ -880,7 +880,7 @@ fn sys_policy_load(ptr: usize, len: usize) -> usize {
     let Ok(path) = core::str::from_utf8(&buf[..len]) else {
         return SYSERR;
     };
-    let Some(path) = resolve_copied_path(path) else {
+    let Ok(path) = resolve_copied_path(path) else {
         return SYSERR;
     };
     if !may(&path, Rights::READ) {
@@ -1101,14 +1101,14 @@ fn exec_path_depth(
 ) -> Option<ExecResume> {
     // The program's name in the caller's view: what a script's interpreter
     // is handed (the real path may be one the caller's namespace lacks).
-    let mut virt = [0u8; MAX_PATH];
-    let Some(vn) = fs::resolve_user_path_virtual(None, path, &mut virt) else {
+    let mut virt = fs::vfs::path_buf();
+    let Ok(vn) = fs::resolve_user_path_virtual(None, path, &mut virt) else {
         return None;
     };
     let Ok(virt) = core::str::from_utf8(&virt[..vn]) else {
         return None;
     };
-    let Some(path) = resolve_copied_path(path) else {
+    let Ok(path) = resolve_copied_path(path) else {
         return None;
     };
     // `exec` on the program (a script's interpreter too); its `exec` rule
@@ -1678,17 +1678,18 @@ pub(crate) fn sys_getcwd(buf_ptr: usize, buf_len: usize) -> usize {
     if !user_range_ok(buf_ptr, buf_len) {
         return SYSERR;
     }
-    let mut cwd = [0u8; MAX_PATH];
-    let n = task::cwd(&mut cwd);
     // POSIX getcwd needs room for the pathname and a trailing NUL. The cwd
     // may be gone (removed).
-    if n == 0 || n + 1 > buf_len {
+    let Some(cwd) = task::cwd() else {
+        return SYSERR;
+    };
+    let n = cwd.len();
+    if n + 1 > buf_len {
         return SYSERR;
     }
-    let mut tmp = [0u8; MAX_PATH + 1];
-    tmp[..n].copy_from_slice(&cwd[..n]);
-    tmp[n] = 0;
-    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
+    let mut tmp = cwd.into_bytes();
+    tmp.push(0);
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp) {
         return SYSERR;
     }
     n
@@ -1710,20 +1711,17 @@ fn sys_realpath(path_ptr: usize, path_len: usize, buf_ptr: usize, buf_len: usize
     let Ok(path) = core::str::from_utf8(&buf[..path_len]) else {
         return SYSERR;
     };
-    let Some(real) = resolve_copied_path(path) else {
+    let Ok(real) = resolve_copied_path(path) else {
         return SYSERR;
     };
-    let bytes = real.as_bytes();
-    let n = bytes.len();
-    // resolve_copied_path builds the path in a MAX_PATH buffer, so it fits;
-    // the caller needs room for it and the trailing NUL.
-    if n > MAX_PATH || n + 1 > buf_len {
+    // The caller needs room for the path and the trailing NUL.
+    let n = real.len();
+    if n + 1 > buf_len {
         return SYSERR;
     }
-    let mut tmp = [0u8; MAX_PATH + 1];
-    tmp[..n].copy_from_slice(bytes);
-    tmp[n] = 0;
-    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp[..n + 1]) {
+    let mut tmp = real.into_bytes();
+    tmp.push(0);
+    if !write_user_bytes(task::current_aspace(), buf_ptr, &tmp) {
         return SYSERR;
     }
     n
@@ -2298,10 +2296,10 @@ fn sys_mount(args_ptr: usize) -> usize {
     let Ok(fstype) = core::str::from_utf8(&fs_buf[..words[5]]) else {
         return SYSERR;
     };
-    let Some(src) = resolve_copied_path(src) else {
+    let Ok(src) = resolve_copied_path(src) else {
         return SYSERR;
     };
-    let Some(tgt) = resolve_copied_path(tgt) else {
+    let Ok(tgt) = resolve_copied_path(tgt) else {
         return SYSERR;
     };
     // A mount changes the tree for every process: `write` on kernel.mounts,
@@ -2353,10 +2351,10 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
     };
     // A bind is named as it was made: a symlink bound there (a program's
     // alias, `get-myos --global`) is not followed.
-    let Some(bound) = resolve_copied_path_nofollow(name) else {
+    let Ok(bound) = resolve_copied_path_nofollow(name) else {
         return SYSERR;
     };
-    let Some(path) = resolve_copied_path(name) else {
+    let Ok(path) = resolve_copied_path(name) else {
         return SYSERR;
     };
     if !crate::sec::allowed_object("kernel.mounts", None, Rights::WRITE)
@@ -2456,7 +2454,7 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
         return None;
     }
     let name = name.split(|&b| b == 0).next()?;
-    let interp_path = resolve_copied_path(core::str::from_utf8(name).ok()?)?;
+    let interp_path = resolve_copied_path(core::str::from_utf8(name).ok()?).ok()?;
     // The dynamic linker runs as the image: `exec` on it, as on the program.
     if !may(&interp_path, Rights::EXEC) {
         return None;
@@ -2694,7 +2692,7 @@ fn exec_interp(elf_bytes: &[u8]) -> Result<Option<alloc::borrow::Cow<'static, [u
         return Ok(None);
     };
     let path = core::str::from_utf8(path).map_err(|_| ())?;
-    let real = resolve_copied_path(path).ok_or(())?;
+    let real = resolve_copied_path(path).map_err(|_| ())?;
     // The dynamic linker runs as the image: `exec` on it, as on the program.
     if !may(&real, Rights::EXEC) {
         return Err(());

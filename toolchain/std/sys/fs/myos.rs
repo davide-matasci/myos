@@ -28,23 +28,34 @@ const EROFS: i32 = 30;
 const ENAMETOOLONG: i32 = 36;
 const ENOTEMPTY: i32 = 39;
 
-/// The longest path the kernel takes.
-const PATH_MAX: usize = 256;
-
 fn os_err<T>(code: i32) -> io::Result<T> {
     Err(io::Error::from_raw_os_error(code))
 }
 
-/// The kernel's stat of `path` (the last component not followed), if any.
-fn kstat(bytes: &[u8]) -> Option<abi::StatBuf> {
+/// The kernel's stat of `path` (the last component not followed), or why
+/// there is none: `ENAMETOOLONG` for a path too long, else `ENOENT`.
+fn kstat_or(bytes: &[u8]) -> Result<abi::StatBuf, i32> {
     let mut buf = abi::StatBuf::default();
-    (abi::statat(abi::AT_FDCWD, bytes, abi::AT_SYMLINK_NOFOLLOW, &mut buf) == 0).then_some(buf)
+    match abi::statat(abi::AT_FDCWD, bytes, abi::AT_SYMLINK_NOFOLLOW, &mut buf) {
+        0 => Ok(buf),
+        abi::SYSERR_ENAMETOOLONG => Err(ENAMETOOLONG),
+        _ => Err(ENOENT),
+    }
 }
 
-/// Why a call that needed `path` to exist failed: it does not, or it does
-/// and the filesystem refused (read-only, or no such operation there).
+/// The kernel's stat of `path` (the last component not followed), if any.
+fn kstat(bytes: &[u8]) -> Option<abi::StatBuf> {
+    kstat_or(bytes).ok()
+}
+
+/// Why a call that needed `path` to exist failed: it does not (or is too
+/// long), or it does and the filesystem refused (read-only, or no such
+/// operation there).
 fn missing_or(bytes: &[u8], code: i32) -> i32 {
-    if kstat(bytes).is_some() { code } else { ENOENT }
+    match kstat_or(bytes) {
+        Ok(_) => code,
+        Err(e) => e,
+    }
 }
 
 fn path_bytes(path: &Path) -> io::Result<&[u8]> {
@@ -52,7 +63,7 @@ fn path_bytes(path: &Path) -> io::Result<&[u8]> {
     if bytes.is_empty() {
         return os_err(ENOENT);
     }
-    if bytes.len() > PATH_MAX {
+    if bytes.len() >= abi::PATH_MAX {
         return os_err(ENAMETOOLONG);
     }
     Ok(bytes)
@@ -118,7 +129,7 @@ pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
 
 pub fn readlink(p: &Path) -> io::Result<PathBuf> {
     let bytes = path_bytes(p)?;
-    let mut buf = [0u8; 1024];
+    let mut buf = crate::vec![0u8; abi::PATH_MAX];
     let n = abi::readlinkat(bytes, &mut buf);
     if n < 0 {
         return os_err(missing_or(bytes, EINVAL));
@@ -128,9 +139,10 @@ pub fn readlink(p: &Path) -> io::Result<PathBuf> {
 
 pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
     let bytes = path_bytes(p)?;
-    // The kernel resolves the path (symlinks and `.`/`..` followed) into a
-    // MAX_PATH buffer, so PATH_MAX + 1 always holds the answer and its NUL.
-    let mut buf = [0u8; PATH_MAX + 1];
+    // The kernel resolves the path (symlinks and `.`/`..` followed) to at
+    // most PATH_MAX - 1 bytes, so PATH_MAX always holds the answer and its
+    // NUL.
+    let mut buf = crate::vec![0u8; abi::PATH_MAX];
     let n = abi::realpath(bytes, &mut buf);
     if n < 0 {
         // A component (or a symlink target) along the way is missing.
@@ -227,10 +239,12 @@ const S_IFLNK: u32 = 0o120000;
 /// `stat` of `path` relative to `dirfd`, with `statat`'s flags.
 fn stat_at(dirfd: usize, bytes: &[u8], flags: usize) -> io::Result<FileAttr> {
     let mut buf = abi::StatBuf::default();
-    if abi::statat(dirfd, bytes, flags, &mut buf) < 0 {
-        // The kernel's one stat error: the path does not resolve (libgloss
-        // says ENOENT too). uutils touch creates a file only on NotFound.
-        return Err(io::Error::from_raw_os_error(2));
+    match abi::statat(dirfd, bytes, flags, &mut buf) {
+        abi::SYSERR_ENAMETOOLONG => return os_err(ENAMETOOLONG),
+        // The path does not resolve (libgloss says ENOENT too). uutils
+        // touch creates a file only on NotFound.
+        r if r < 0 => return os_err(ENOENT),
+        _ => {}
     }
     let fmt = buf.st_mode & S_IFMT;
     Ok(FileAttr {
@@ -468,10 +482,10 @@ fn open_path(path: &Path, opts: &OpenOptions) -> io::Result<File> {
         return os_err(EEXIST);
     }
     if fd < 0 {
-        return os_err(match kstat(bytes) {
-            None => ENOENT,
-            Some(st) if st.st_mode & S_IFMT == S_IFDIR => EISDIR,
-            Some(_) => EROFS,
+        return os_err(match kstat_or(bytes) {
+            Err(e) => e,
+            Ok(st) if st.st_mode & S_IFMT == S_IFDIR => EISDIR,
+            Ok(_) => EROFS,
         });
     }
     Ok(File(unsafe { FileDesc::from_raw_fd(fd as RawFd) }))

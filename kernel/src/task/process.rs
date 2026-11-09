@@ -35,9 +35,9 @@ pub(super) struct Process {
     /// `None` for one a namespace makes up. Survives exec; shared on fork.
     pub cwd_node: Option<crate::fs::Vnode>,
     /// The cwd as an absolute path in the process's view when it was set:
-    /// what it is without a node. Always starts with `/`.
-    pub cwd: [u8; 256],
-    pub cwd_len: u16,
+    /// what it is without a node. Starts with `/`; empty for `/` itself (a
+    /// fresh process, before its first `chdir`).
+    pub cwd: alloc::string::String,
     /// The mmap regions (in the window after the brk heap), sorted by
     /// address, none empty; at most [`MAX_MMAP_REGIONS`].
     pub mmap: Vec<MmapRegion>,
@@ -105,12 +105,6 @@ impl PTimer {
     pub const FREE: PTimer = PTimer { used: false, sig: 0, tid: 0, overrun: 0, at: 0, every: 0 };
 }
 
-const fn root_cwd_buf() -> [u8; 256] {
-    let mut c = [0u8; 256];
-    c[0] = b'/';
-    c
-}
-
 /// A fresh process: no fds, cwd `/`, no chroot, its own session and group
 /// (set by the spawner).
 static EMPTY_PROC: Process = Process {
@@ -126,8 +120,7 @@ static EMPTY_PROC: Process = Process {
     exec_name_len: 0,
     exe: alloc::string::String::new(),
     cwd_node: None,
-    cwd: root_cwd_buf(),
-    cwd_len: 1,
+    cwd: alloc::string::String::new(),
     mmap: Vec::new(),
     mapped_files: Vec::new(),
     sid: 0,
@@ -146,8 +139,8 @@ static EMPTY_PROC: Process = Process {
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
 /// `Process` is several KiB). The bitwise copy of [`EMPTY_PROC`] is sound:
-/// its owning fields, the empty `mmap`, `ns`, `mapped_files` and `cwd_node`,
-/// own nothing.
+/// its owning fields, the empty `mmap`, `ns`, `mapped_files`, `exe`, `cwd`
+/// and `cwd_node`, own nothing.
 pub(super) fn new_process() -> Box<Process> {
     let mut b = Box::<Process>::new_uninit();
     unsafe {
@@ -170,6 +163,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
         core::ptr::write(&raw mut (*p).mapped_files, src.mapped_files.clone());
         core::ptr::write(&raw mut (*p).cwd_node, src.cwd_node.clone());
         core::ptr::write(&raw mut (*p).exe, src.exe.clone());
+        core::ptr::write(&raw mut (*p).cwd, src.cwd.clone());
         b.assume_init()
     };
     for fd in b.fds.iter_mut() {

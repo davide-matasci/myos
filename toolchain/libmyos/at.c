@@ -30,9 +30,6 @@
 #define AT_EMPTY_PATH 0x0010
 #endif
 
-/* The longest path the kernel takes (kernel/src/user/mod.rs MAX_PATH). */
-#define MYOS_MAX_PATH 256
-
 void myos_fd_nonblock_set(int fd, int on);
 
 static long k_dirfd(int dirfd) {
@@ -62,7 +59,7 @@ static long k_len(const char *path) {
         return -1;
     }
     n = strlen(path);
-    if (n > MYOS_MAX_PATH) {
+    if (n >= MYOS_PATH_MAX) {
         errno = ENAMETOOLONG;
         return -1;
     }
@@ -75,10 +72,10 @@ static long k_len(const char *path) {
 int __myos_fstatat(int dirfd, const char *path, struct stat *st, int flags);
 
 static int missing(int dirfd, const char *path) {
-    char trimmed[MYOS_MAX_PATH + 1];
+    char trimmed[MYOS_PATH_MAX];
     size_t n = path != NULL ? strlen(path) : 0;
     struct stat st;
-    if (n == 0 || n > MYOS_MAX_PATH || path[n - 1] != '/') {
+    if (n == 0 || n >= MYOS_PATH_MAX || path[n - 1] != '/') {
         return ENOENT;
     }
     while (n > 0 && path[n - 1] == '/') {
@@ -103,7 +100,17 @@ static long k_len_named(const char *path) {
 }
 
 static int failed(long ret) {
-    return ret == (long)MYOS_SYSERR;
+    return ret == (long)MYOS_SYSERR || ret == (long)MYOS_ENAMETOOLONG;
+}
+
+/* A path call the kernel failed for a path too long (as given, or joined to
+ * the cwd, through a namespace or a symlink): errno ENAMETOOLONG. */
+static int too_long(long ret) {
+    if (ret != (long)MYOS_ENAMETOOLONG) {
+        return 0;
+    }
+    errno = ENAMETOOLONG;
+    return 1;
 }
 
 /* ---- stat ---------------------------------------------------------------- */
@@ -128,6 +135,7 @@ static void fill_stat(struct stat *st, const struct myos_stat *src) {
 int __myos_fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     struct myos_stat buf;
     long len = (flags & AT_EMPTY_PATH) ? k_len(path) : k_len_named(path);
+    long ret;
     if (len < 0) {
         return -1;
     }
@@ -135,8 +143,12 @@ int __myos_fstatat(int dirfd, const char *path, struct stat *st, int flags) {
         errno = EFAULT;
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_STATAT, k_dirfd(dirfd), (long)(uintptr_t)path, len,
-                             k_flags(flags), (long)(uintptr_t)&buf, 0))) {
+    ret = myos_syscall6(MYOS_SYS_STATAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags),
+                        (long)(uintptr_t)&buf, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         errno = len == 0 ? EBADF : missing(dirfd, path);
         return -1;
     }
@@ -247,6 +259,9 @@ int __myos_openat(int dirfd, const char *path, int flags, ...) {
         errno = ENXIO; /* FIFO: O_WRONLY|O_NONBLOCK and no reader */
         return -1;
     }
+    if (too_long(ret)) {
+        return -1;
+    }
     if (failed(ret)) {
         /* No controlling terminal → ENXIO (Linux open(/dev/tty) semantics);
          * a directory opened to write, create or truncate: EISDIR; another
@@ -282,7 +297,7 @@ int __myos_open(const char *path, int flags, ...) {
  * already, its directory is missing, or the filesystem refused. */
 static int make_errno(int dirfd, const char *path, int refused) {
     struct stat st;
-    char dir[MYOS_MAX_PATH + 1];
+    char dir[MYOS_PATH_MAX];
     const char *slash;
     size_t n;
     if (__myos_fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) == 0) {
@@ -300,11 +315,16 @@ static int make_errno(int dirfd, const char *path, int refused) {
 
 int __myos_mkdirat(int dirfd, const char *path, mode_t mode) {
     long len = k_len_named(path);
+    long ret;
     (void)mode;
     if (len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_MKNODAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, MYOS_MKNOD_DIR, 0, 0))) {
+    ret = myos_syscall6(MYOS_SYS_MKNODAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, MYOS_MKNOD_DIR, 0, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         /* `mkdir -p` tolerates EEXIST only. */
         errno = make_errno(dirfd, path, EROFS);
         return -1;
@@ -319,11 +339,16 @@ int __myos_mkdir(const char *path, mode_t mode) {
 /* Named pipes live on tmpfs (/tmp); other mounts refuse them. */
 int __myos_mkfifoat(int dirfd, const char *path, mode_t mode) {
     long len = k_len_named(path);
+    long ret;
     (void)mode;
     if (len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_MKNODAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, MYOS_MKNOD_FIFO, 0, 0))) {
+    ret = myos_syscall6(MYOS_SYS_MKNODAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, MYOS_MKNOD_FIFO, 0, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         errno = make_errno(dirfd, path, EPERM);
         return -1;
     }
@@ -351,11 +376,16 @@ int __myos_mknod(const char *path, mode_t mode, dev_t dev) {
 int __myos_symlinkat(const char *target, int dirfd, const char *path) {
     long tlen = k_len_named(target);
     long len = k_len_named(path);
+    long ret;
     if (tlen < 0 || len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_SYMLINKAT, (long)(uintptr_t)target, tlen, k_dirfd(dirfd),
-                             (long)(uintptr_t)path, len, 0))) {
+    ret = myos_syscall6(MYOS_SYS_SYMLINKAT, (long)(uintptr_t)target, tlen, k_dirfd(dirfd), (long)(uintptr_t)path,
+                        len, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         errno = make_errno(dirfd, path, EROFS);
         return -1;
     }
@@ -369,10 +399,15 @@ int __myos_symlink(const char *target, const char *path) {
 int __myos_unlinkat(int dirfd, const char *path, int flags) {
     struct stat st;
     long len = k_len_named(path);
+    long ret;
     if (len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_UNLINKAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags), 0, 0))) {
+    ret = myos_syscall6(MYOS_SYS_UNLINKAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags), 0, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         if (__myos_fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) != 0) {
             errno = missing(dirfd, path);
         } else if (flags & AT_REMOVEDIR) {
@@ -397,11 +432,16 @@ int __myos_renameat(int olddirfd, const char *oldpath, int newdirfd, const char 
     struct stat st;
     long olen = k_len_named(oldpath);
     long nlen = k_len_named(newpath);
+    long ret;
     if (olen < 0 || nlen < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_RENAMEAT, k_dirfd(olddirfd), (long)(uintptr_t)oldpath, olen,
-                             k_dirfd(newdirfd), (long)(uintptr_t)newpath, nlen))) {
+    ret = myos_syscall6(MYOS_SYS_RENAMEAT, k_dirfd(olddirfd), (long)(uintptr_t)oldpath, olen, k_dirfd(newdirfd),
+                        (long)(uintptr_t)newpath, nlen);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         errno = __myos_fstatat(olddirfd, oldpath, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EACCES : missing(olddirfd, oldpath);
         return -1;
     }
@@ -424,6 +464,9 @@ ssize_t __myos_readlinkat(int dirfd, const char *path, char *buf, size_t size) {
     }
     ret = myos_syscall6(MYOS_SYS_READLINKAT, k_dirfd(dirfd), (long)(uintptr_t)path, len,
                         (long)(uintptr_t)buf, (long)size, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
     if (failed(ret)) {
         struct stat st;
         errno = __myos_fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) == 0 ? EINVAL : missing(dirfd, path);
@@ -459,6 +502,7 @@ int __myos_utimensat(int dirfd, const char *path, const struct timespec times[2]
     struct stat st;
     int64_t t[2];
     long len;
+    long ret;
     if (times != NULL && times_from_timespec(times, t) < 0) {
         return -1;
     }
@@ -471,8 +515,12 @@ int __myos_utimensat(int dirfd, const char *path, const struct timespec times[2]
     if (len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_UTIMENSAT, k_dirfd(dirfd), (long)(uintptr_t)path, len,
-                             (long)(uintptr_t)(times != NULL ? t : NULL), k_flags(flags), 0))) {
+    ret = myos_syscall6(MYOS_SYS_UTIMENSAT, k_dirfd(dirfd), (long)(uintptr_t)path, len,
+                        (long)(uintptr_t)(times != NULL ? t : NULL), k_flags(flags), 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         /* A missing file, or a filesystem that keeps no times. */
         errno = __myos_fstatat(dirfd, path, &st, flags) == 0 ? EROFS : len == 0 ? EBADF : missing(dirfd, path);
         return -1;
@@ -489,10 +537,15 @@ int __myos_futimens(int fd, const struct timespec times[2]) {
 static int chdirat(int dirfd, const char *path, int flags) {
     struct stat st;
     long len = (flags & AT_EMPTY_PATH) ? k_len(path) : k_len_named(path);
+    long ret;
     if (len < 0) {
         return -1;
     }
-    if (failed(myos_syscall6(MYOS_SYS_CHDIRAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags), 0, 0))) {
+    ret = myos_syscall6(MYOS_SYS_CHDIRAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, k_flags(flags), 0, 0);
+    if (too_long(ret)) {
+        return -1;
+    }
+    if (failed(ret)) {
         if (__myos_fstatat(dirfd, path, &st, flags) != 0) {
             errno = len == 0 ? EBADF : missing(dirfd, path);
         } else {
@@ -518,7 +571,7 @@ char *__myos_getcwd(char *buf, size_t size) {
     }
     if (failed(myos_syscall3(MYOS_SYS_GETCWD, (long)(uintptr_t)buf, (long)size, 0))) {
         /* Too small a buffer, or a cwd that has been removed. */
-        errno = size < MYOS_MAX_PATH + 1 ? ERANGE : ENOENT;
+        errno = size < MYOS_PATH_MAX ? ERANGE : ENOENT;
         return NULL;
     }
     return buf;
@@ -527,7 +580,7 @@ char *__myos_getcwd(char *buf, size_t size) {
 /* chroot: a namespace of one binding, `path` at `/` (docs/security.md). */
 int __myos_chroot(const char *path) {
     struct stat st;
-    char spec[MYOS_MAX_PATH + 16];
+    char spec[MYOS_PATH_MAX + 16];
     long len = k_len_named(path);
     if (len < 0) {
         return -1;
@@ -560,6 +613,9 @@ long myos_listdirat(int dirfd, const char *path, char *buf, size_t cap, int flag
     }
     ret = myos_syscall6(MYOS_SYS_LISTDIRAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, (long)(uintptr_t)buf,
                         (long)cap, k_flags(flags));
+    if (too_long(ret)) {
+        return -1;
+    }
     if (failed(ret)) {
         struct stat st;
         if (__myos_fstatat(dirfd, path, &st, flags) != 0) {
@@ -629,6 +685,7 @@ static unsigned long *exec_pack(char *const argv[], char *const envp[]) {
 static int execat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags) {
     struct stat st;
     unsigned long *pack;
+    long ret;
     long len = (flags & AT_EMPTY_PATH) ? k_len(path) : k_len_named(path);
     if (len < 0) {
         return -1;
@@ -637,11 +694,15 @@ static int execat(int dirfd, const char *path, char *const argv[], char *const e
     if (pack == NULL) {
         return -1;
     }
-    myos_syscall6(MYOS_SYS_EXECAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, (long)(uintptr_t)pack,
-                  k_flags(flags), 0);
-    /* Only reached on failure: a missing file, or one the caller may not
-     * run (never ENOEXEC, on which a shell runs the file as a script). */
+    ret = myos_syscall6(MYOS_SYS_EXECAT, k_dirfd(dirfd), (long)(uintptr_t)path, len, (long)(uintptr_t)pack,
+                        k_flags(flags), 0);
+    /* Only reached on failure: a path too long, a missing file, or one the
+     * caller may not run (never ENOEXEC, on which a shell runs the file as
+     * a script). */
     free(pack);
+    if (too_long(ret)) {
+        return -1;
+    }
     errno = __myos_fstatat(dirfd, path, &st, flags) != 0 ? missing(dirfd, path) : EACCES;
     return -1;
 }

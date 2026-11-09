@@ -24,12 +24,14 @@ use crate::fs::StatInfo;
 // arbitrary cap (creat fails with ENOENT once mkdir stops succeeding).
 const MAX_ENTRIES: usize = 16384;
 const COMP_CAP: usize = 255;
-const PATH_CAP: usize = 255;
+/// A path in the tmpfs, like the whole one the VFS resolves.
+const PATH_CAP: usize = super::vfs::PATH_MAX;
 /// File data lives in the kernel heap (sized from memory, see `heap`), which
 /// bounds the whole tmpfs; this caps one file: twice the largest the system
 /// keeps there (the rust app's libcore rlib, 67 MB, in `/tmp/apps`).
 const FILE_CAP: usize = 128 * 1024 * 1024;
-const LINK_CAP: usize = 255;
+/// A symlink target (Linux takes one up to `PATH_MAX`).
+const LINK_CAP: usize = super::vfs::PATH_MAX;
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;

@@ -396,7 +396,7 @@ pub fn socket(domain: usize, ty: usize) -> R {
 /// `/net/{proto}`'s VFS path. `/net` is the system's, also inside a
 /// `linux --root` chroot (a bind): conversations are kept by VFS path.
 fn net_dir(proto: &str) -> Result<String, usize> {
-    user::resolve_copied_path(&format!("/net/{proto}")).ok_or(EAFNOSUPPORT)
+    user::resolve_copied_path(&format!("/net/{proto}")).map_err(|_| EAFNOSUPPORT)
 }
 
 /// The conversation number read from `file` (a `listen`).

@@ -59,7 +59,8 @@ const MAX_RELOAD_PAGES: usize = 40;
 /// Minimum code pages reserved below the user stack so post-fork `exec` can
 /// `reload_user_elf` the small newlib ELFs (the C smokes).
 const USER_EXEC_RELOAD_PAGES: usize = 36;
-const MAX_PATH: usize = 256;
+/// Longest path a syscall takes or resolves (`fs::vfs::PATH_MAX`).
+const MAX_PATH: usize = fs::vfs::PATH_MAX;
 /// exec argument and environment limits: at most this many strings each, and
 /// this many bytes for all of them together (NULs included), which also bounds
 /// what the new image's stack gives up to them.
@@ -79,6 +80,9 @@ const SYSERR_ENOTDIR: usize = usize::MAX - 7;
 const SYSERR_EAGAIN: usize = usize::MAX - 8;
 /// `setpgid` of a child that has exec'd (`myos_abi::MYOS_SYSERR_EACCES`).
 const SYSERR_EACCES: usize = usize::MAX - 9;
+/// A path longer than [`MAX_PATH`], as given or once resolved
+/// (ENAMETOOLONG, `myos_abi::MYOS_SYSERR_ENAMETOOLONG`).
+const SYSERR_ENAMETOOLONG: usize = myos_abi::MYOS_SYSERR_ENAMETOOLONG;
 /// The first process, from the initramfs.
 const INIT_PATH: &str = "/bin/custom/init";
 

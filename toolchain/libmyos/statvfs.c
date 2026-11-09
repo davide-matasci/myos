@@ -23,9 +23,6 @@ struct myos_statfs {
 
 #define MYOS_ST_RDONLY 1
 
-/* The longest path the kernel takes (kernel/src/user/mod.rs MAX_PATH). */
-#define MYOS_MAX_PATH 256
-
 /* fsfilcnt_t is 32 bits in newlib: a larger count reads as its largest. */
 static fsfilcnt_t files(uint64_t n) {
     return n > (fsfilcnt_t)-1 ? (fsfilcnt_t)-1 : (fsfilcnt_t)n;
@@ -37,9 +34,10 @@ static int statfsat(long dirfd, const char *path, long len, long flags, struct s
         errno = EFAULT;
         return -1;
     }
-    if ((unsigned long)myos_syscall6(MYOS_SYS_STATFSAT, dirfd, (long)(uintptr_t)path, len, flags,
-                                     (long)(uintptr_t)&k, 0) == MYOS_SYSERR) {
-        errno = err;
+    unsigned long ret = (unsigned long)myos_syscall6(MYOS_SYS_STATFSAT, dirfd, (long)(uintptr_t)path, len, flags,
+                                                     (long)(uintptr_t)&k, 0);
+    if (ret == MYOS_SYSERR || ret == MYOS_ENAMETOOLONG) {
+        errno = ret == MYOS_ENAMETOOLONG ? ENAMETOOLONG : err;
         return -1;
     }
     memset(buf, 0, sizeof(*buf));
@@ -67,7 +65,7 @@ int __myos_statvfs(const char *__restrict path, struct statvfs *__restrict buf) 
         errno = ENOENT;
         return -1;
     }
-    if (n > MYOS_MAX_PATH) {
+    if (n >= MYOS_PATH_MAX) {
         errno = ENAMETOOLONG;
         return -1;
     }

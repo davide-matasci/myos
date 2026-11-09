@@ -10,7 +10,7 @@ use crate::sys::myos::abi;
 use crate::fmt;
 
 pub fn getcwd() -> io::Result<PathBuf> {
-    let mut buf = crate::vec![0u8; 257];
+    let mut buf = crate::vec![0u8; abi::PATH_MAX];
     let n = abi::getcwd(&mut buf);
     if n < 0 {
         // A cwd that has been removed.

@@ -533,31 +533,20 @@ pub fn exec_name(out: &mut [u8]) -> usize {
 }
 
 /// The cwd, in the process's view of the tree: where its directory is now,
-/// as its namespace names it. 0 when that directory is gone (or the
-/// namespace no longer names it): relative paths then lead nowhere.
-pub fn cwd(out: &mut [u8]) -> usize {
-    let (node, n) = with_process_mut(|t| {
-        let n = (t.cwd_len as usize).min(out.len()).min(t.cwd.len());
-        out[..n].copy_from_slice(&t.cwd[..n]);
-        (t.cwd_node.clone(), n)
-    });
+/// as its namespace names it. `None` when that directory is gone (or the
+/// namespace no longer names it, or it is now further down than
+/// `fs::vfs::PATH_MAX` allows): relative paths then lead nowhere.
+pub fn cwd() -> Option<alloc::string::String> {
+    let (node, path) = with_process_mut(|t| (t.cwd_node.clone(), t.cwd.clone()));
     let Some(node) = node else {
-        return n;
+        return Some(if path.is_empty() { alloc::string::String::from("/") } else { path });
     };
-    let Some(real) = crate::fs::vfs::node_path(&node) else {
-        return 0;
-    };
+    let real = crate::fs::vfs::node_path(&node)?;
     let virt = with_ns(|ns| match ns {
         None => Some(real),
         Some(ns) => ns.to_virtual(&real),
-    });
-    match virt {
-        Some(v) if v.len() <= out.len() => {
-            out[..v.len()].copy_from_slice(v.as_bytes());
-            v.len()
-        }
-        _ => 0,
-    }
+    })?;
+    (virt.len() <= crate::fs::vfs::PATH_MAX).then_some(virt)
 }
 
 /// True when the current process has a namespace (sees part of the tree).
@@ -645,16 +634,12 @@ pub fn remap_sec_ctx(mut f: impl FnMut(crate::sec::Ctx) -> crate::sec::Ctx) {
 /// Set the cwd: the directory `node`, which it follows wherever it moves,
 /// or, for a directory a namespace makes up (no node), the canonical
 /// absolute `path` in the process's view (`/` or `/…`).
-pub fn set_cwd(path: &[u8], node: Option<crate::fs::Vnode>) -> bool {
-    if path.is_empty() || path[0] != b'/' || path.len() > 256 {
+pub fn set_cwd(path: &str, node: Option<crate::fs::Vnode>) -> bool {
+    if !path.starts_with('/') || path.len() > crate::fs::vfs::PATH_MAX {
         return false;
     }
-    let old = with_process_mut(|t| {
-        t.cwd = [0; 256];
-        t.cwd[..path.len()].copy_from_slice(path);
-        t.cwd_len = path.len() as u16;
-        core::mem::replace(&mut t.cwd_node, node)
-    });
+    let path = alloc::string::String::from(path);
+    let old = with_process_mut(|t| (core::mem::replace(&mut t.cwd, path), core::mem::replace(&mut t.cwd_node, node)));
     drop(old);
     true
 }

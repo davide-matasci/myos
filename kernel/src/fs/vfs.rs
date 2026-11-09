@@ -2005,133 +2005,61 @@ fn normalize_path(path: &str) -> &str {
     path.trim_start_matches('/')
 }
 
-/// Longest absolute path the VFS resolves (as the syscalls' `MAX_PATH`).
-pub const PATH_MAX: usize = 256;
+/// Longest absolute path the VFS resolves, in bytes: Linux's `PATH_MAX`
+/// (4096) without its NUL (the syscalls' and the Linux layer's limit too,
+/// `docs/fs.md`).
+pub const PATH_MAX: usize = myos_abi::MYOS_PATH_MAX - 1;
+
+/// A buffer for a path of up to [`PATH_MAX`] bytes, on the heap: several
+/// are live at once while a path resolves, too much for a kernel stack.
+pub fn path_buf() -> alloc::vec::Vec<u8> {
+    alloc::vec![0u8; PATH_MAX]
+}
+
+/// Why a path does not resolve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathError {
+    /// It comes to more than [`PATH_MAX`] bytes (`ENAMETOOLONG`): as
+    /// given, joined to the cwd, through a namespace or a symlink.
+    TooLong,
+    /// Anything else: a name nothing has, a loop, a namespace that does
+    /// not name it (`ENOENT` and the like).
+    Unresolved,
+}
 
 /// Join `cwd` (absolute) with `path` (absolute or relative) into `out`.
 ///
-/// Returns the length of the canonical absolute path written to `out`, or
-/// `None` if the result would not fit / is invalid. Handles `.` / `..` and
-/// redundant slashes. Result is always absolute (`/` or `/…`).
-pub fn resolve_against_cwd(cwd: &str, path: &str, out: &mut [u8]) -> Option<usize> {
-    if out.is_empty() {
-        return None;
-    }
+/// Returns the length of the canonical absolute path written to `out`
+/// ([`PathError::TooLong`] when it is longer than `out`). Handles `.` /
+/// `..` and redundant slashes; `..` at `/` stays there. Result is always
+/// absolute (`/` or `/…`).
+pub fn resolve_against_cwd(cwd: &str, path: &str, out: &mut [u8]) -> Result<usize, PathError> {
     let cwd = if cwd.is_empty() { "/" } else { cwd };
     if !cwd.starts_with('/') {
-        return None;
+        return Err(PathError::Unresolved);
     }
-
-    // Build an absolute candidate before canonicalizing.
-    let mut raw = [0u8; PATH_MAX];
-    let mut n = 0usize;
-    let push = |raw: &mut [u8], n: &mut usize, b: u8| -> bool {
-        if *n >= raw.len() {
-            return false;
-        }
-        raw[*n] = b;
-        *n += 1;
-        true
-    };
-    let push_str = |raw: &mut [u8], n: &mut usize, s: &str| -> bool {
-        for &b in s.as_bytes() {
-            if !push(raw, n, b) {
-                return false;
+    let parts = if path.starts_with('/') { [path, ""] } else { [cwd, path] };
+    let mut comps: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+    for comp in parts.iter().flat_map(|p| p.split('/')) {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                comps.pop();
             }
-        }
-        true
-    };
-
-    if path.is_empty() || path == "." {
-        if !push_str(&mut raw, &mut n, cwd) {
-            return None;
-        }
-    } else if path.starts_with('/') {
-        if !push_str(&mut raw, &mut n, path) {
-            return None;
-        }
-    } else if cwd == "/" {
-        if !push(&mut raw, &mut n, b'/') {
-            return None;
-        }
-        if !push_str(&mut raw, &mut n, path) {
-            return None;
-        }
-    } else {
-        if !push_str(&mut raw, &mut n, cwd) {
-            return None;
-        }
-        if !push(&mut raw, &mut n, b'/') {
-            return None;
-        }
-        if !push_str(&mut raw, &mut n, path) {
-            return None;
+            comp => comps.push(comp),
         }
     }
-
-    let Ok(raw_s) = core::str::from_utf8(&raw[..n]) else {
-        return None;
-    };
-    canonicalize_absolute(raw_s, out)
-}
-
-fn canonicalize_absolute(path: &str, out: &mut [u8]) -> Option<usize> {
-    // Stack of component byte ranges into a scratch buffer.
-    let mut scratch = [0u8; PATH_MAX];
-    let mut sn = 0usize;
-    // component starts in scratch
-    let mut starts = [0usize; 64];
-    let mut lens = [0usize; 64];
-    let mut depth = 0usize;
-
-    for comp in path.split('/') {
-        if comp.is_empty() || comp == "." {
-            continue;
-        }
-        if comp == ".." {
-            if depth > 0 {
-                depth -= 1;
-                sn = starts[depth];
-            }
-            continue;
-        }
-        if depth >= starts.len() {
-            return None;
-        }
-        if sn + comp.len() > scratch.len() {
-            return None;
-        }
-        starts[depth] = sn;
-        lens[depth] = comp.len();
-        scratch[sn..sn + comp.len()].copy_from_slice(comp.as_bytes());
-        sn += comp.len();
-        depth += 1;
-    }
-
-    if depth == 0 {
-        if out.is_empty() {
-            return None;
-        }
-        out[0] = b'/';
-        return Some(1);
-    }
-
     // '/' + components joined by '/'
-    let mut need = 0usize;
-    for i in 0..depth {
-        need += 1 + lens[i];
-    }
+    let need = comps.iter().map(|c| 1 + c.len()).sum::<usize>().max(1);
     if need > out.len() {
-        return None;
+        return Err(PathError::TooLong);
     }
+    out[0] = b'/';
     let mut o = 0usize;
-    for i in 0..depth {
+    for comp in comps {
         out[o] = b'/';
-        o += 1;
-        let s = starts[i];
-        let l = lens[i];
-        out[o..o + l].copy_from_slice(&scratch[s..s + l]);
-        o += l;
+        out[o + 1..o + 1 + comp.len()].copy_from_slice(comp.as_bytes());
+        o += 1 + comp.len();
     }
-    Some(o)
+    Ok(need)
 }

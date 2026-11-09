@@ -19,8 +19,8 @@ const AT_FDCWD: usize = -100isize as usize;
 const AT_EMPTY_PATH: usize = 0x1000;
 const AT_REMOVEDIR: usize = 0x200;
 pub const AT_SYMLINK_NOFOLLOW: usize = 0x100;
-const MAX_PATH: usize = 256;
-const ENAMETOOLONG: usize = 36;
+/// The longest path, in bytes: Linux's `PATH_MAX` without its NUL.
+const MAX_PATH: usize = myos_abi::MYOS_PATH_MAX - 1;
 const EISDIR: usize = 21;
 
 pub(super) type R = Result<usize, usize>;
@@ -140,7 +140,7 @@ fn path_at(dirfd: usize, ptr: usize) -> R2<String> {
 
 /// The task's absolute view of `path` (what the fd table records).
 fn view_path(path: &str) -> String {
-    let mut b = [0u8; MAX_PATH];
+    let mut b = alloc::vec![0u8; MAX_PATH];
     match fs::resolve_user_path_virtual(path, &mut b) {
         Some(n) => String::from(core::str::from_utf8(&b[..n]).unwrap_or(path)),
         None => String::from(path),
@@ -149,7 +149,7 @@ fn view_path(path: &str) -> String {
 
 /// The VFS path behind `path` (cwd, chroot and symlinks applied).
 fn real_path(path: &str) -> R2<String> {
-    user::resolve_copied_path(path).ok_or_else(|| unresolved(path))
+    user::resolve_copied_path(path).map_err(|e| unresolved(path, e))
 }
 
 /// A file of the kernel's that the layer answers a call from (`/proc/meminfo`
@@ -166,14 +166,17 @@ fn kernel_file(path: &str) -> String {
 
 /// Like [`real_path`], but a symlink in the last component is not followed.
 fn real_path_nofollow(path: &str) -> R2<String> {
-    user::resolve_copied_path_nofollow(path).ok_or_else(|| unresolved(path))
+    user::resolve_copied_path_nofollow(path).map_err(|e| unresolved(path, e))
 }
 
-/// Why `path` did not resolve: `ENOTDIR` for `FILE/` (a trailing slash
-/// resolves to directories only: the path without it does), else `ENOENT`.
-fn unresolved(path: &str) -> usize {
+/// Why `path` did not resolve, given the kernel's `e`: `ENAMETOOLONG` for
+/// one too long, `ENOTDIR` for `FILE/` (a trailing slash resolves to
+/// directories only: the path without it does), else `ENOENT`.
+fn unresolved(path: &str, e: usize) -> usize {
     let trimmed = path.trim_end_matches('/');
-    if trimmed.len() < path.len() && !trimmed.is_empty() && user::resolve_copied_path(trimmed).is_some() {
+    if e == ENAMETOOLONG {
+        ENAMETOOLONG
+    } else if trimmed.len() < path.len() && !trimmed.is_empty() && user::resolve_copied_path(trimmed).is_ok() {
         ENOTDIR
     } else {
         ENOENT
@@ -763,7 +766,7 @@ pub fn pipe2(fds: usize, flags: usize) -> R {
 /// `linux --root` chroot (a bind): the objects' `ctl` and `status` are
 /// reached by VFS path, as `/net`'s conversations are.
 fn evfd_root(kind: &str) -> R2<String> {
-    user::resolve_copied_path(&alloc::format!("/dev/{kind}")).ok_or(ENOMEM)
+    user::resolve_copied_path(&alloc::format!("/dev/{kind}")).map_err(|_| ENOMEM)
 }
 
 /// An fd on a new object of `kind` (its `data`: opening `/dev/<kind>/clone`
@@ -1447,7 +1450,7 @@ pub fn symlinkat(target: usize, newdir: usize, link: usize) -> R {
 
 pub fn readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> R {
     let real = real_path_nofollow(&path_at(dirfd, path)?)?;
-    let mut tmp = [0u8; MAX_PATH];
+    let mut tmp = alloc::vec![0u8; MAX_PATH];
     let cap = size.min(tmp.len());
     // Not a symlink is EINVAL, no such file ENOENT (musl's dynamic linker
     // reads /proc/self/exe for an $ORIGIN rpath, and takes ENOENT, which
