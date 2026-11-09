@@ -309,11 +309,13 @@ pub(super) fn sys_statat(dirfd: usize, ptr: usize, len: usize, flags: usize, out
         let _tree = fs::vfs::hold_read();
         let f = or_fail!(resolve(dirfd, &path, flags & AT_SYMLINK_NOFOLLOW == 0));
         // A file the caller has no right at all on is not there for it.
-        match crate::sec::rights_in(&f.real, f.ns_rights()).is_empty() {
+        let (rights, uid) = crate::sec::stat_in(&f.real, f.ns_rights());
+        match rights.is_empty() {
             true => None,
             false => fs::stat(&f.real).map(|mut info| {
-                info.mode = checked_mode(&f, info.mode);
-                MyosStat::new(&info, crate::sec::owner_uid(&f.real))
+                let is_dir = info.mode & fs::S_IFMT == S_IFDIR;
+                info.mode = (info.mode & !0o777) | crate::sec::mode_bits_of(rights, is_dir);
+                MyosStat::new(&info, uid)
             }),
         }
     };
