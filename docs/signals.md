@@ -121,6 +121,13 @@ process, on the monotonic clock. It sends `SIGALRM` when due and re-arms
 by its interval; expiries missed under load are one signal, as on Linux.
 A fork starts without a timer; exec keeps it.
 
+The Linux layer's POSIX timers (`timer_create`, `docs/linux-compat.md`)
+are the kernel's too, up to 16 per process in its process block
+(`task::ptimer_create`): each sends its signal to the process or one of
+its threads when due and re-arms by its interval, and counts an overrun
+instead while its last signal is still pending. A fork starts without
+them and exec drops them.
+
 ## Interrupted syscalls
 
 Blocking waits (console, pty and pipe reads, full-pipe writes, FIFO

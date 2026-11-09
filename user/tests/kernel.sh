@@ -2086,6 +2086,16 @@ lx_python() {
 	echo "$out"
 	[ "$out" = "PYTHON 42" ]
 }
+# GNU timeout (coreutils, in the Python root) kills what it runs when the
+# time is up, through its timer_create (issue #766): 124 after a second,
+# where it used to wait for the command and exit 0.
+lx_timeout() {
+	alpine_disk || return 1
+	s=$(date +%s)
+	linux --root /tmp/alpine/python timeout 1 sleep 5
+	rc=$? e=$(($(date +%s) - s))
+	[ $rc = 124 ] && [ $e -lt 4 ] || { echo "timeout: exit $rc after ${e}s"; return 1; }
+}
 # ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP) from the
 # launcher's test server (src/test_www.rs).
 lx_python_net() {
@@ -2250,6 +2260,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	# The Alpine packages (get-alpine, an app: the packages and the network).
 	t -t linux,net,pkg,heavy,alpine,get-alpine alpine_jq lx_alpine
 	t -t linux,python,alpine-disk alpine_python lx_python
+	t -t linux,alpine-disk,timers alpine_timeout lx_timeout
 	t -t linux,python,alpine-disk,net,netfs alpine_python_net lx_python_net
 	t -t linux,python,alpine-disk,events alpine_python_asyncio lx_python_asyncio
 	t -t linux,x11,pkg,alpine-disk,tinyx alpine_x11 lx_x11

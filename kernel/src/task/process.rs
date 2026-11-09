@@ -78,6 +78,31 @@ pub(super) struct Process {
     /// Nanoseconds of CPU time of its children it has reaped, theirs
     /// included (`wait`).
     pub child_cpu_ns: u64,
+    /// Its POSIX timers (`timer_create`, `sched::ptimer_create`). Neither
+    /// inherited on fork nor kept across exec.
+    pub timers: [PTimer; MAX_PTIMERS],
+}
+
+/// The POSIX timers a process may have at once.
+pub const MAX_PTIMERS: usize = 16;
+
+/// A POSIX timer (`used`: not a free entry): the signal it sends (0:
+/// none, `SIGEV_NONE`) to the thread `tid` (the leader for one directed at
+/// the process) at monotonic ns `at` (0: disarmed), then every `every` ns
+/// (0: once); `overrun` counts the expiries the last signal stood for
+/// beyond its own (`timer_getoverrun`).
+#[derive(Clone, Copy)]
+pub struct PTimer {
+    pub used: bool,
+    pub sig: u8,
+    pub tid: u16,
+    pub overrun: u32,
+    pub at: u64,
+    pub every: u64,
+}
+
+impl PTimer {
+    pub const FREE: PTimer = PTimer { used: false, sig: 0, tid: 0, overrun: 0, at: 0, every: 0 };
 }
 
 /// A fresh process: no fds, cwd `/`, no chroot, its own session and group
@@ -109,6 +134,7 @@ static EMPTY_PROC: Process = Process {
     ended_cpu_ns: 0,
     ended_faults: 0,
     child_cpu_ns: 0,
+    timers: [PTimer::FREE; MAX_PTIMERS],
 };
 
 /// A new, empty process block (heap; never staged on the kernel stack: a
@@ -150,6 +176,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
     b.ended_cpu_ns = 0;
     b.ended_faults = 0;
     b.child_cpu_ns = 0;
+    b.timers = [PTimer::FREE; MAX_PTIMERS];
     b
 }
 

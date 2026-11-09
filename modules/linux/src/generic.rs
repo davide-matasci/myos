@@ -67,6 +67,13 @@ pub fn syscall(nr: usize, a: [usize; 6], regs: &mut SyscallRegs) -> usize {
         98 => ret(thread::futex(a[0], a[1], a[2], a[3], a[5])),
         99 => 0, // set_robust_list
         101 => ret(sys::nanosleep(sys::CLOCK_MONOTONIC, a[0], false)),
+        102 => ret(sys::getitimer(a[0], a[1])),
+        103 => ret(sys::setitimer(a[0], a[1], a[2])),
+        107 => ret(sys::timer_create(a[0], a[1], a[2])),
+        108 => ret(sys::timer_gettime(a[0], a[1])),
+        109 => ret(sys::timer_getoverrun(a[0])),
+        110 => ret(sys::timer_settime(a[0], a[1], a[2], a[3])),
+        111 => ret(sys::timer_delete(a[0])),
         113 => ret(sys::clock_gettime(a[0], a[1])),
         114 => ret(sys::clock_getres(a[0], a[1])),
         115 => ret(sys::nanosleep(a[0], a[2], a[1] & 1 != 0)), // clock_nanosleep

@@ -36,7 +36,15 @@ if [[ -f "$out" ]]; then
 fi
 
 # get-alpine for the host, with the zlib port's sources (inflate only).
-"$ROOT/ports/zlib/fetch.sh" > /dev/null
+# Several boot jobs make the disk at once on a cache miss, and GitHub's
+# release downloads answer 503 now and then: retry, as get-alpine's own
+# downloads do.
+for try in 1 2 3 4 5; do
+  "$ROOT/ports/zlib/fetch.sh" > /dev/null && break
+  [[ $try -lt 5 ]] || exit 1
+  echo "alpine-disk: zlib fetch failed, retrying in $((try * 10)) s" >&2
+  sleep $((try * 10))
+done
 zsrc="$ROOT/target/zlib-src"
 work="$ROOT/target/alpine-disk-$arch"
 rm -rf "$work"
