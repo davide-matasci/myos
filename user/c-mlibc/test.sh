@@ -6,7 +6,11 @@
 # the ones that run no smoke program (kbd_burst, caps_lock, usb_keyboard). What each one checks
 # is said there; a difference between the two libcs' results is mlibc's
 # sysdeps' (toolchain/mlibc/sysdeps/myos) or the shared C's
-# (toolchain/libmyos), docs/mlibc.md.
+# (toolchain/libmyos), docs/mlibc.md. And the C++ runtimes' smoke
+# (cxx_smoke.cpp, toolchain/libcxx): exceptions through frames and across
+# threads, RTTI, a global's constructor, threads and thread_locals, atomic
+# waits, the containers, iostream and std::format, <filesystem>, <chrono>
+# and <random>.
 MLIBC=/bin/etc/mlibc
 # mlibc_run COMMAND...: a function of user/c/test.sh on the mlibc smokes.
 mlibc_run() {
@@ -17,6 +21,7 @@ mlibc_run() {
 	return $mlibc_rc
 }
 t -t smoke,mlibc,hello mlibc_hello $MLIBC/hello
+t -t mlibc,cxx,libcxx cxx $MLIBC/cxx_smoke
 t -t tty,mlibc,pty mlibc_pty $MLIBC/pty_smoke 2
 t -t tty,mlibc,ptys mlibc_ptys $MLIBC/pty_smoke 4
 t -t tty,mlibc,pty_flood mlibc_pty_flood $MLIBC/pty_smoke 5

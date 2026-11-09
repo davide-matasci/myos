@@ -7,6 +7,8 @@
 # against mlibc instead (user/c-mlibc, the `c-smokes-mlibc` port):
 # target/<name>-mlibc-<arch>-unknown-none. The same sources, so a test
 # that passes with both libcs covers the kernel's interface through either.
+# And the C++ runtimes' smoke (user/c-mlibc/cxx_smoke.cpp) over libc++
+# (toolchain/libcxx), which ships no program of its own.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
@@ -29,6 +31,7 @@ case "$libc" in
       exit 0
     fi
     "$ROOT/toolchain/mlibc/build.sh"
+    "$ROOT/toolchain/libcxx/build.sh"
     smokes=("c-hello user/c/hello.c" "c-socket_smoke user/c/socket_smoke.c" "${MYOS_C_SMOKES[@]}")
     suffix="-mlibc" ;;
   *) echo "usage: $0 [newlib|mlibc]" >&2; exit 2 ;;
@@ -67,6 +70,13 @@ for arch in x86_64 aarch64 riscv64; do
       myos_mlibc_link "$arch" "$out" "$obj"
     fi
   done
+  if [[ "$libc" == mlibc ]]; then
+    echo "==> cxx-smoke ($triple / mlibc, libc++)"
+    obj="$ROOT/target/cxx-smoke-mlibc-${arch}.o"
+    # shellcheck disable=SC2046
+    clang++ $(myos_libcxx_cxxflags "$arch") -O2 -std=c++23 -c "$ROOT/user/c-mlibc/cxx_smoke.cpp" -o "$obj"
+    myos_libcxx_link "$arch" "$ROOT/target/cxx-smoke-mlibc-${arch}-unknown-none" "$obj"
+  fi
 done
 
 if [[ "$libc" == newlib ]]; then

@@ -370,6 +370,11 @@ MYOS_GTK3_VERSION="$MYOS_ROOT/target/.myos-gtk3-version"
 MYOS_LIBSOUP_VERSION="$MYOS_ROOT/target/.myos-libsoup-version"
 MYOS_SURF_VERSION="$MYOS_ROOT/target/.myos-surf-version"
 MYOS_WEBKITGTK_SMOKE_VERSION="$MYOS_ROOT/target/.myos-webkitgtk-smoke-version"
+MYOS_GLIB_TOOLS_VERSION="$MYOS_ROOT/target/.myos-glib-tools-version"
+MYOS_IMAGE_LIBS_SMOKE_VERSION="$MYOS_ROOT/target/.myos-image-libs-smoke-version"
+MYOS_CAIRO_PANGO_SMOKE_VERSION="$MYOS_ROOT/target/.myos-cairo-pango-smoke-version"
+MYOS_GTK3_SMOKE_VERSION="$MYOS_ROOT/target/.myos-gtk3-smoke-version"
+MYOS_LIBSOUP_SMOKE_VERSION="$MYOS_ROOT/target/.myos-libsoup-smoke-version"
 MYOS_OPENSSL_VERSION="$MYOS_ROOT/target/.myos-openssl-version"
 MYOS_ACME_VERSION="$MYOS_ROOT/target/.myos-acme-version"
 MYOS_RUST_VERSION="$MYOS_ROOT/target/.myos-rust-version"
@@ -656,16 +661,21 @@ myos_c_smokes_is_current() {
 # The same programs against mlibc (user/c-mlibc, the `c-smokes-mlibc`
 # port, `scripts/build-c-smokes.sh mlibc`): target/<name>-mlibc-<arch>-unknown-none,
 # c-hello and socket_smoke included.
+# The C smokes against mlibc and the C++ smoke against libc++
+# (user/c-mlibc): programs, keyed on the whole of what they link.
 myos_c_smokes_mlibc_version_hash() {
   local h entry
   h="$(
     {
       myos_dep_hash mlibc
+      myos_dep_hash libcxx
       sha256sum "$MYOS_ROOT/user/c/hello.c" "$MYOS_ROOT/user/c/socket_smoke.c"
       for entry in "${MYOS_C_SMOKES[@]}"; do
         sha256sum "$MYOS_ROOT/${entry#* }"
       done
+      sha256sum "$MYOS_ROOT/user/c-mlibc/cxx_smoke.cpp"
       sha256sum "$MYOS_ROOT/scripts/build-c-smokes.sh"
+      declare -f myos_libcxx_cxxflags myos_libcxx_link myos_mlibc_link
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -676,7 +686,7 @@ myos_c_smokes_mlibc_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_MLIBC_VERSION")" == "$(myos_c_smokes_mlibc_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
+    for bin in cxx-smoke c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
       [[ -f "$MYOS_ROOT/target/${bin}-mlibc-${arch}-unknown-none" ]] || return 1
     done
   done
@@ -1787,11 +1797,13 @@ myos_lua_is_current() {
 }
 
 # SQLite (packages/sqlite), against mlibc: its pin and scripts, and mlibc.
+# SQLite (packages/sqlite), against mlibc: its pin and scripts, and
+# mlibc's interface (a library port).
 myos_sqlite_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
+      myos_dep_hash mlibc compile
       find "$(myos_port_dir sqlite)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
     } | myos_hash
@@ -1809,13 +1821,13 @@ myos_sqlite_is_current() {
   done
 }
 
-# libedit (packages/libedit), against mlibc: its pin and scripts, mlibc and
-# the ncurses it links.
+# libedit (packages/libedit), against mlibc: its pin and scripts, mlibc's
+# interface and the ncurses it compiles against (a library port).
 myos_libedit_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
+      myos_dep_hash mlibc compile
       myos_dep_hash ncurses mlibc
       find "$(myos_port_dir libedit)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
@@ -1834,13 +1846,15 @@ myos_libedit_is_current() {
   done
 }
 
-# GLib (packages/glib), against mlibc: its pins and scripts, mlibc, the
-# mlibc builds of zlib and PCRE2 and the compiler flags.
+# GLib (packages/glib), against mlibc: its pins and scripts, mlibc's
+# interface (a library port: what it compiles against, not the libc it
+# never links; docs/ports.md "Cache keys"), the mlibc builds of zlib and
+# PCRE2 and the compiler flags. Its programs are glib-tools' (below).
 myos_glib_version_hash() {
   local h
   h="$(
     {
-      myos_dep_hash mlibc
+      myos_dep_hash mlibc compile
       myos_dep_hash zlib mlibc
       myos_dep_hash pcre2 mlibc
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
@@ -2021,13 +2035,15 @@ myos_webkitgtk_is_current() {
 }
 
 # WebKitGTK's program (packages/webkitgtk-smoke), against mlibc: its
-# sources, the WebKit it links (and so everything under it) and what WebKit
-# leaves to its programs to link: libsoup whole (GIO's TLS backend) and
-# LibreSSL.
+# sources, and the whole of what it links: mlibc and libc++, the WebKit
+# archive (keyed on everything under it) and what WebKit leaves to its
+# programs: libsoup whole (GIO's TLS backend) and LibreSSL.
 myos_webkitgtk_smoke_version_hash() {
   local h
   h="$(
     {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
       myos_dep_hash webkitgtk
       myos_dep_hash libsoup
       myos_dep_hash libressl mlibc

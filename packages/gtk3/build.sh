@@ -5,7 +5,8 @@
 # files, include/), what WebKitGTK and surf (issue #616) link. Over the
 # mlibc builds of GLib, the image libraries, the text and drawing
 # libraries (packages/cairo-pango) and the X libraries and font stack.
-# Then the package's smoke (smoke.c) over all of them.
+# The smoke over all of them is the gtk3-smoke package's: a library port
+# ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -58,19 +59,6 @@ build_arch() {
     -Dbuiltin_immodules=all -Dprint_backends= -Dcolord=no -Dcloudproviders=false \
     -Dprofiler=false -Dtracker3=false -Dintrospection=false -Ddemos=false \
     -Dexamples=false -Dtests=false -Dinstalled_tests=false -Dman=false -Dgtk_doc=false
-
-  # The smoke: a GTK window on Xfbdev; C, linked as C++ (HarfBuzz is).
-  local pc="$out/lib/pkgconfig" d
-  for d in $libs "$build/x11-pc"; do
-    pc="$pc:$d"
-  done
-  # shellcheck disable=SC2046
-  "$build/cc" -Wall -Werror -c "$HERE/smoke.c" -o "$build/smoke.o" \
-    $(PKG_CONFIG_LIBDIR="$pc" pkg-config --cflags gtk+-3.0)
-  # shellcheck disable=SC2046
-  "$build/c++" "$build/smoke.o" -o "$T/gtk3-smoke-mlibc-${arch}-unknown-none" \
-    $(PKG_CONFIG_LIBDIR="$pc" pkg-config --libs --static gtk+-3.0) -lm
-  "${arch}-unknown-myos-strip" "$T/gtk3-smoke-mlibc-${arch}-unknown-none"
   rm -rf "$build"
   echo "gtk3 ($arch) -> $out"
 }

@@ -21,12 +21,14 @@ stack (`packages/x11-xft`'s mlibc stage, its pkg-config files rewritten
 from `/lib/x11` to the stage). `prefer_static` makes meson ask pkg-config
 for the static libraries' own dependencies, so its link checks pass.
 
-The app is the package's smoke, `cairo-pango-smoke` (`smoke.c`, its test,
-with x11-xft's `fonts.conf` and the x11-fonts package): fribidi reorders a
+A library package: nothing to install. Its smoke, `cairo-pango-smoke`, is
+the cairo-pango-smoke package's (`packages/cairo-pango-smoke`): a library
+port ships no program (`docs/ports.md` "Cache keys"). The smoke (with
+x11-xft's `fonts.conf` and the x11-fonts package): fribidi reorders a
 mixed line, HarfBuzz shapes a word, pango lays out a line that cairo draws
 into a PNG, which gdk-pixbuf loads back (and as a JPEG through memory);
 then, on Xfbdev, cairo's Xlib surface fills a rectangle that `XGetImage`
 reads back.
 
 fribidi, cairo, pango and gdk-pixbuf are LGPL (`THIRD_PARTY_NOTICES.md`);
-the smoke links them statically.
+the smoke's package links them statically.

@@ -9,7 +9,9 @@
 # And GLib's tools that run on the build host, built natively from the
 # same pins into target/glib-host (bin/glib-compile-resources and the
 # others): the libraries over GLib compile their resources, schemas and
-# D-Bus interfaces with them.
+# D-Bus interfaces with them. The programs on myos, GIO's gio and the
+# smoke, are the glib-tools package's to link (packages/glib-tools): a
+# library port ships none (docs/ports.md "Cache keys").
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -154,12 +156,11 @@ EOC
   ninja -C "$build/glib" install >"$build/install.log" 2>&1 || { tail -20 "$build/install.log" >&2; exit 1; }
   rm -f "$out"/lib/*.la
 
-  # The app: the smoke (smoke.c, the package's test) and GIO's gio.
-  # shellcheck disable=SC2046
-  "${cc[@]}" -Wall -Werror "$HERE/smoke.c" -o "$T/glib-smoke-mlibc-${arch}-unknown-none" \
-    $(PKG_CONFIG_LIBDIR="$out/lib/pkgconfig" pkg-config --cflags --libs --static gio-2.0)
-  cp "$out/bin/gio" "$T/gio-mlibc-${arch}-unknown-none"
-  "${arch}-unknown-myos-strip" "$T/glib-smoke-mlibc-${arch}-unknown-none" "$T/gio-mlibc-${arch}-unknown-none"
+  # gio's objects (GIO's command; meson's gio/gio.p), for glib-tools to
+  # link against the libc of its own build. The programs this build links
+  # into bin/ stay there, used by nothing.
+  mkdir -p "$out/lib/gio-tool"
+  cp "$build/glib/gio/gio.p/"*.o "$out/lib/gio-tool/"
   rm -rf "$build"
   echo "glib ($arch) -> $out"
 }

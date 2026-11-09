@@ -7,8 +7,9 @@
 # per arch, target/cairo-pango-mlibc-<arch> (lib/ with the archives and
 # their pkg-config files, include/). Over the mlibc builds of GLib, the
 # image libraries, the X libraries and the font stack (their prefixes on
-# pkg-config's path), and GLib's host glib-compile-resources. Then the
-# package's smoke (smoke.c) over all of them.
+# pkg-config's path), and GLib's host glib-compile-resources. The smoke
+# over all of them is the cairo-pango-smoke package's: a library port
+# ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -59,7 +60,6 @@ build_arch() {
   echo "==> cairo-pango ($arch, mlibc)"
   rm -rf "$build" "$out"
   mkdir -p "$out/lib/pkgconfig" "$out/include"
-  local pc="$out/lib/pkgconfig:$T/glib-mlibc-$arch/lib/pkgconfig:$T/image-libs-mlibc-$arch/lib/pkgconfig:$build/x11-pc"
   myos_mlibc_meson_cross "$arch" "$build" "$out/lib/pkgconfig" "$T/glib-mlibc-$arch/lib/pkgconfig" \
     "$T/image-libs-mlibc-$arch/lib/pkgconfig"
 
@@ -98,17 +98,6 @@ build_arch() {
     "$out/include/"
   meson_build "libepoxy-$LIBEPOXY_VERSION" -Dglx=yes -Degl=yes -Dx11=true -Dtests=false -Ddocs=false \
     -Dc_args="-D_GNU_SOURCE -DEGL_NO_PLATFORM_SPECIFIC_TYPES -I$out/include"
-
-  # The smoke: pango and cairo, gdk-pixbuf, and cairo's Xlib surface; C,
-  # linked as C++ (harfbuzz is).
-  local mods="pangocairo pangoft2 gdk-pixbuf-2.0 cairo-xlib epoxy"
-  # shellcheck disable=SC2046,SC2086
-  "$build/cc" -Wall -Werror -c "$HERE/smoke.c" -o "$build/smoke.o" \
-    $(PKG_CONFIG_LIBDIR="$pc" pkg-config --cflags $mods)
-  # shellcheck disable=SC2046,SC2086
-  "$build/c++" "$build/smoke.o" -o "$T/cairo-pango-smoke-mlibc-${arch}-unknown-none" \
-    $(PKG_CONFIG_LIBDIR="$pc" pkg-config --libs --static $mods) -lm
-  "${arch}-unknown-myos-strip" "$T/cairo-pango-smoke-mlibc-${arch}-unknown-none"
   rm -rf "$build"
   echo "cairo-pango ($arch) -> $out"
 }
