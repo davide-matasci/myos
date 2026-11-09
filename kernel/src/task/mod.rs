@@ -182,6 +182,9 @@ struct Task {
     /// re-arms with (0 = once). A fork starts disarmed; exec keeps it.
     alarm_at: u64,
     alarm_every: u64,
+    /// The earliest expiry of the process's POSIX timers (in the leader's
+    /// slot; `Process::timers`), monotonic ns; 0 while none is armed.
+    ptimer_at: u64,
     /// A wake arrived while the task was still leaving a CPU (mid task
     /// switch); `finish_switch` turns it into `Ready`.
     wake_pending: bool,
@@ -228,6 +231,7 @@ const EMPTY: Task = Task {
     wake_at: 0,
     alarm_at: 0,
     alarm_every: 0,
+    ptimer_at: 0,
     wake_pending: false,
     key_woken: false,
     tgid: 0,

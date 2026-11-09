@@ -1217,6 +1217,8 @@ fn exec_path_depth(
     // the child exec'd (`setpgid`: EACCES from here on).
     task::mark_execd();
     task::set_exe(&path);
+    // POSIX timers do not survive exec (`ITIMER_REAL` does).
+    task::ptimer_clear_all();
     // What the new image may not inherit (`FD_CLOEXEC`).
     task::fd_close_on_exec();
     // Large in-place expand (ripgrep) can clobber tp; re-sync before any

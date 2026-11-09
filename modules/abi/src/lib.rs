@@ -120,9 +120,12 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// 67: a filesystem's write hooks and [`KernelApi::vfs_write`] tell a
 /// file that cannot grow further apart ([`VFS_EFBIG`], the caller's
 /// `EFBIG`).
+/// 68: an exec in two steps ([`KernelApi::exec_resume`]).
 /// 69: a write to a pipe without readers is [`MYOS_SYSERR_EPIPE`] (and
 /// `SIGPIPE` to the writer), no longer the generic failure.
-pub const ABI_VERSION: u32 = 69;
+/// 70: the process's `ITIMER_REAL` ([`KernelApi::itimer_swap`]) and its
+/// POSIX timers ([`KernelApi::ptimer_create`] and the calls after it).
+pub const ABI_VERSION: u32 = 70;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1257,6 +1260,27 @@ pub struct KernelApi {
     /// Enter the image [`KernelApi::personality_exec`] prepared, with
     /// everything the exec allocated freed. Never returns.
     pub exec_resume: unsafe extern "C" fn(resume: *const ExecResume) -> !,
+    // --- ABI 70: timers that signal ---
+    /// The current process's `ITIMER_REAL` (`SIGALRM`): with `set`, armed
+    /// to fire in `value_ns` (0 disarms), then every `interval_ns`. What
+    /// was left of the old one and its interval into `*old_left` and
+    /// `*old_every`.
+    pub itimer_swap:
+        unsafe extern "C" fn(set: i32, value_ns: u64, interval_ns: u64, old_left: *mut u64, old_every: *mut u64),
+    /// A new, disarmed POSIX timer of the current process that sends
+    /// native signal `sig` (0: none) to its thread `tid` (0: to the process): its
+    /// id, or negative (no such thread, no free timer, a bad signal).
+    pub ptimer_create: unsafe extern "C" fn(sig: u32, tid: usize) -> i32,
+    /// Arm timer `id` to expire at monotonic ns `at` (0 disarms), then
+    /// every `every_ns`; the old time left and interval as
+    /// [`KernelApi::itimer_swap`]'s. 0, or negative for no such timer.
+    pub ptimer_set:
+        unsafe extern "C" fn(id: usize, at: u64, every_ns: u64, old_left: *mut u64, old_every: *mut u64) -> i32,
+    /// Timer `id`'s time left (0: disarmed), interval and overrun count
+    /// (`timer_getoverrun`). 0, or negative for no such timer.
+    pub ptimer_get: unsafe extern "C" fn(id: usize, left: *mut u64, every: *mut u64, overrun: *mut u32) -> i32,
+    /// Delete timer `id`. 0, or negative for no such timer.
+    pub ptimer_delete: unsafe extern "C" fn(id: usize) -> i32,
 }
 
 /// A PCI function's I/O registers ([`KernelApi::pci_io_map`]): ports on
@@ -1774,6 +1798,32 @@ impl KernelApi {
 
     pub fn signal_take(&self, id: usize, set: u32) -> i32 {
         unsafe { (self.signal_take)(id, set) }
+    }
+
+    pub fn itimer_swap(&self, new: Option<(u64, u64)>) -> (u64, u64) {
+        let (mut left, mut every) = (0, 0);
+        let (value, interval) = new.unwrap_or((0, 0));
+        unsafe { (self.itimer_swap)(new.is_some() as i32, value, interval, &mut left, &mut every) };
+        (left, every)
+    }
+
+    pub fn ptimer_create(&self, sig: u32, tid: usize) -> Option<usize> {
+        let id = unsafe { (self.ptimer_create)(sig, tid) };
+        (id >= 0).then_some(id as usize)
+    }
+
+    pub fn ptimer_set(&self, id: usize, at: u64, every_ns: u64) -> Option<(u64, u64)> {
+        let (mut left, mut every) = (0, 0);
+        (unsafe { (self.ptimer_set)(id, at, every_ns, &mut left, &mut every) } == 0).then_some((left, every))
+    }
+
+    pub fn ptimer_get(&self, id: usize) -> Option<(u64, u64, u32)> {
+        let (mut left, mut every, mut overrun) = (0, 0, 0);
+        (unsafe { (self.ptimer_get)(id, &mut left, &mut every, &mut overrun) } == 0).then_some((left, every, overrun))
+    }
+
+    pub fn ptimer_delete(&self, id: usize) -> bool {
+        unsafe { (self.ptimer_delete)(id) == 0 }
     }
 
     pub fn signal_kill(&self, pid: isize, sig: u32) -> i32 {
