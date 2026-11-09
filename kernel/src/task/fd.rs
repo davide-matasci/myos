@@ -815,6 +815,36 @@ const FILE_IO_TMP: usize = 8192;
 /// dropped the request. curl reads 16 KiB at a time.
 const FILE_READ_TMP: usize = 16384;
 
+/// A kernel-stack buffer for the bytes of one read or write, of which a
+/// call uses, and zeroes, only what it moves: `[0u8; FILE_READ_TMP]` zeroed
+/// all 16 KiB for a read of one byte, several times the cost of the rest
+/// of the call.
+struct IoBuf<const N: usize>(core::mem::MaybeUninit<[u8; N]>);
+
+impl<const N: usize> IoBuf<N> {
+    fn new() -> Self {
+        Self(core::mem::MaybeUninit::uninit())
+    }
+
+    /// The first `len` bytes (`N` at most), zeroed.
+    fn zeroed(&mut self, len: usize) -> &mut [u8] {
+        let len = len.min(N);
+        let p = self.0.as_mut_ptr() as *mut u8;
+        unsafe {
+            core::ptr::write_bytes(p, 0, len);
+            core::slice::from_raw_parts_mut(p, len)
+        }
+    }
+
+    /// The first `len` bytes (`N` at most), copied from the current
+    /// process's memory at `va`; `None` when that is not all readable.
+    fn from_user(&mut self, va: usize, len: usize) -> Option<&mut [u8]> {
+        let len = len.min(N);
+        let p = self.0.as_mut_ptr() as *mut u8;
+        unsafe { user::copy_from_user_raw(current_aspace(), va, p, len).then(|| core::slice::from_raw_parts_mut(p, len)) }
+    }
+}
+
 /// Read/write on a pty end whose peer has hung up. `usize::MAX` stays the
 /// generic SYSERR (EBADF in libgloss); this distinct value lets libgloss map
 /// the hangup to `EIO` (Linux: read on a hung-up pty returns EIO).
@@ -882,8 +912,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                     return usize::MAX;
                 };
                 let pos = at.unwrap_or(pos);
-                let mut tmp = [0u8; FILE_READ_TMP];
-                let want = len.min(tmp.len());
+                let want = len.min(FILE_READ_TMP);
+                let mut tmp = IoBuf::<FILE_READ_TMP>::new();
+                let tmp = tmp.zeroed(want);
                 let seq = wait_seq();
                 let n = match open_file_read_text(id, &node, pos, &mut tmp[..want]) {
                     Some(n) => Some(n),
@@ -934,8 +965,9 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
                 return total;
             }
             FdEntry::PipeRead(id) => {
-                let mut tmp = [0u8; FILE_IO_TMP];
-                let want = len.min(tmp.len());
+                let want = len.min(FILE_IO_TMP);
+                let mut tmp = IoBuf::<FILE_IO_TMP>::new();
+                let tmp = tmp.zeroed(want);
                 let seq = wait_seq();
                 let Some(n) = pipe::read(id, &mut tmp[..want]) else {
                     // A signal that terminates or is caught breaks the wait
@@ -1115,10 +1147,10 @@ fn write_chunks(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
         if at.is_some() && !matches!(entry, FdEntry::File(_) | FdEntry::Empty) {
             return SYSERR_ESPIPE;
         }
-        let mut tmp = [0u8; FILE_IO_TMP];
-        if !user::copy_from_user(current_aspace(), buf + total, &mut tmp[..chunk]) {
+        let mut tmp = IoBuf::<FILE_IO_TMP>::new();
+        let Some(tmp) = tmp.from_user(buf + total, chunk) else {
             return if total == 0 { usize::MAX } else { total };
-        }
+        };
         // Bytes of this chunk a pipe took so far (a full ring takes part of it).
         let mut done = 0usize;
         loop {
