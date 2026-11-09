@@ -2038,28 +2038,27 @@ pub fn resolve_against_cwd(cwd: &str, path: &str, out: &mut [u8]) -> Result<usiz
     if !cwd.starts_with('/') {
         return Err(PathError::Unresolved);
     }
+    if out.is_empty() {
+        return Err(PathError::TooLong);
+    }
     let parts = if path.starts_with('/') { [path, ""] } else { [cwd, path] };
-    let mut comps: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+    // Written into `out` as the components come: `/` then `/comp` each,
+    // `..` cutting the last one back (nothing allocated per path).
+    out[0] = b'/';
+    let mut o = 0usize;
     for comp in parts.iter().flat_map(|p| p.split('/')) {
         match comp {
             "" | "." => {}
-            ".." => {
-                comps.pop();
+            ".." => o = out[..o].iter().rposition(|&b| b == b'/').unwrap_or(0),
+            comp => {
+                if o + 1 + comp.len() > out.len() {
+                    return Err(PathError::TooLong);
+                }
+                out[o] = b'/';
+                out[o + 1..o + 1 + comp.len()].copy_from_slice(comp.as_bytes());
+                o += 1 + comp.len();
             }
-            comp => comps.push(comp),
         }
     }
-    // '/' + components joined by '/'
-    let need = comps.iter().map(|c| 1 + c.len()).sum::<usize>().max(1);
-    if need > out.len() {
-        return Err(PathError::TooLong);
-    }
-    out[0] = b'/';
-    let mut o = 0usize;
-    for comp in comps {
-        out[o] = b'/';
-        out[o + 1..o + 1 + comp.len()].copy_from_slice(comp.as_bytes());
-        o += 1 + comp.len();
-    }
-    Ok(need)
+    Ok(o.max(1))
 }

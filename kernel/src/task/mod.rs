@@ -200,6 +200,12 @@ struct Task {
     /// Set in the leader once the process is ending (`exit_group`): its
     /// other threads are being killed, and the exit status is final.
     group_exit: bool,
+    /// Set in the leader while it ends its other threads for an exec
+    /// (`exec_alone`): each of them dies through `exit_group`, whose
+    /// `SIGKILL` to the rest of the process must leave the leader alone
+    /// (it killed the exec'ing thread too: issue #761, a `Killed` for an
+    /// `execve` from a process with threads).
+    exec_ending: bool,
     /// The trap frame of the syscall the task is in while it is off its CPU
     /// (`arch::syscall_frame`, which `schedule` saves and restores): a
     /// syscall that blocks resumes with its own frame wherever it runs.
@@ -236,6 +242,7 @@ const EMPTY: Task = Task {
     key_woken: false,
     tgid: 0,
     group_exit: false,
+    exec_ending: false,
     syscall_frame: 0,
     name: [0; NAME_MAX],
 };

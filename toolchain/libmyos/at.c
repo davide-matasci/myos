@@ -703,6 +703,10 @@ static int execat(int dirfd, const char *path, char *const argv[], char *const e
     if (too_long(ret)) {
         return -1;
     }
+    if (ret == (long)MYOS_EAGAIN) {
+        errno = EAGAIN; /* from a thread other than the leader while there are others (docs/threads.md) */
+        return -1;
+    }
     errno = __myos_fstatat(dirfd, path, &st, flags) != 0 ? missing(dirfd, path) : EACCES;
     return -1;
 }

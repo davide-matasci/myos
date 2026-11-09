@@ -961,6 +961,7 @@ pub fn itimer_swap(pid: usize, new: Option<(u64, u64)>) -> (u64, u64) {
             t.alarm_every = if value == 0 { 0 } else { interval };
             if t.alarm_at != 0 {
                 NEXT_DEADLINE.fetch_min(t.alarm_at, Ordering::SeqCst);
+                crate::arch::timer_deadline(t.alarm_at);
             }
         }
         old
@@ -985,7 +986,15 @@ fn ptimer_tick(tasks: &mut TaskTable, pid: usize, now: u64, kicks: &mut u64) -> 
             }
             continue;
         }
-        let to = t.tid as usize;
+        let mut to = t.tid as usize;
+        // One directed at the process goes to the leader, or, once the
+        // leader has ended (`pthread_exit` in `main`), to any live thread
+        // of it, as on Linux.
+        if to == pid && !super::signals::signal_live(&tasks[pid]) {
+            if let Some(j) = tasks.slots().find(|&j| j != pid && tasks[j].tgid == pid && super::signals::signal_live(&tasks[j])) {
+                to = j;
+            }
+        }
         // Late by more than one interval: the expiries missed are overruns.
         let missed = if t.every == 0 { 0 } else { (now - t.at) / t.every };
         if !super::signals::signal_live(&tasks[to]) || tasks[to].tgid != pid {
@@ -1029,7 +1038,10 @@ fn with_ptimers<R>(f: impl FnOnce(&mut TaskTable, usize, &mut [super::process::P
         let next = timers.iter().filter(|t| t.at != 0).map(|t| t.at).min().unwrap_or(0);
         tasks[pid].ptimer_at = next;
         if next != 0 {
+            // This CPU's timer fires at the expiry, not at the next tick
+            // (as `deadline_soon`; the other CPUs' ticks look at it too).
             NEXT_DEADLINE.fetch_min(next, Ordering::SeqCst);
+            crate::arch::timer_deadline(next);
         }
         out
     };
@@ -1037,23 +1049,30 @@ fn with_ptimers<R>(f: impl FnOnce(&mut TaskTable, usize, &mut [super::process::P
     out
 }
 
+/// Why [`ptimer_create`] made no timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PtimerError {
+    /// `tid` is not a live thread of the process, or `sig` is no signal.
+    NoThread,
+    /// All [`MAX_PTIMERS`](super::process::MAX_PTIMERS) are taken.
+    Full,
+}
+
 /// A new, disarmed POSIX timer of the current process that sends `sig`
 /// (native, 1..31; 0: none) to its thread `tid`, or to the process with
-/// `tid` 0:
-/// its id. `None` when `tid` is not one of its threads or all
-/// [`MAX_PTIMERS`](super::process::MAX_PTIMERS) are taken.
-pub fn ptimer_create(sig: u32, tid: usize) -> Option<usize> {
+/// `tid` 0: its id, or why not.
+pub fn ptimer_create(sig: u32, tid: usize) -> Result<usize, PtimerError> {
     if sig > 31 || tid >= MAX_TASKS {
-        return None;
+        return Err(PtimerError::NoThread);
     }
     with_ptimers(|tasks, pid, timers| {
         let to = if tid == 0 { pid } else { tid };
         if tasks[to].tgid != pid || !super::signals::signal_live(&tasks[to]) {
-            return None;
+            return Err(PtimerError::NoThread);
         }
-        let id = timers.iter().position(|t| !t.used)?;
+        let id = timers.iter().position(|t| !t.used).ok_or(PtimerError::Full)?;
         timers[id] = super::process::PTimer { used: true, sig: sig as u8, tid: to as u16, ..super::process::PTimer::FREE };
-        Some(id)
+        Ok(id)
     })
 }
 

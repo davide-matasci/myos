@@ -127,7 +127,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// POSIX timers ([`KernelApi::ptimer_create`] and the calls after it).
 /// 71: paths up to [`MYOS_PATH_MAX`] (4096) bytes, and one longer is told
 /// apart ([`MYOS_SYSERR_ENAMETOOLONG`], [`MYOS_PATH_TOO_LONG`]).
-pub const ABI_VERSION: u32 = 71;
+/// 72: [`KernelApi::ptimer_create`] tells a full timer table apart
+/// ([`PTIMER_FULL`], the caller's `EAGAIN`).
+pub const ABI_VERSION: u32 = 72;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -583,6 +585,10 @@ pub const MYOS_SYSERR_EPIPE: usize = usize::MAX - 12;
 /// A path longer than [`MYOS_PATH_MAX`], as given or once resolved.
 pub const MYOS_SYSERR_ENAMETOOLONG: usize = usize::MAX - 13;
 pub const MYOS_SYSERR_LOWEST: usize = MYOS_SYSERR_ENAMETOOLONG;
+
+/// [`KernelApi::ptimer_create`]'s result when the process has every one of
+/// its POSIX timers taken (the caller's `EAGAIN`).
+pub const PTIMER_FULL: i32 = -2;
 
 /// A filesystem's `write` / `write_ino` hook's and [`KernelApi::vfs_write`]'s
 /// result when the filesystem has no room for the bytes (the caller's
@@ -1282,7 +1288,8 @@ pub struct KernelApi {
         unsafe extern "C" fn(set: i32, value_ns: u64, interval_ns: u64, old_left: *mut u64, old_every: *mut u64),
     /// A new, disarmed POSIX timer of the current process that sends
     /// native signal `sig` (0: none) to its thread `tid` (0: to the process): its
-    /// id, or negative (no such thread, no free timer, a bad signal).
+    /// id, or negative: [`PTIMER_FULL`] when every timer is taken (the
+    /// caller's `EAGAIN`), else no such thread or a bad signal (`EINVAL`).
     pub ptimer_create: unsafe extern "C" fn(sig: u32, tid: usize) -> i32,
     /// Arm timer `id` to expire at monotonic ns `at` (0 disarms), then
     /// every `every_ns`; the old time left and interval as
@@ -1820,9 +1827,11 @@ impl KernelApi {
         (left, every)
     }
 
-    pub fn ptimer_create(&self, sig: u32, tid: usize) -> Option<usize> {
+    /// The new timer's id, or the negative result ([`PTIMER_FULL`], or -1
+    /// for no such thread or a bad signal).
+    pub fn ptimer_create(&self, sig: u32, tid: usize) -> Result<usize, i32> {
         let id = unsafe { (self.ptimer_create)(sig, tid) };
-        (id >= 0).then_some(id as usize)
+        if id >= 0 { Ok(id as usize) } else { Err(id) }
     }
 
     pub fn ptimer_set(&self, id: usize, at: u64, every_ns: u64) -> Option<(u64, u64)> {

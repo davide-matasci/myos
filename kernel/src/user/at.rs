@@ -612,6 +612,11 @@ fn with_bound_names(real: &str, names: &mut [u8], mut n: usize) -> usize {
 
 pub(super) fn sys_execat(dirfd: usize, ptr: usize, len: usize, args: usize, flags: usize) -> usize {
     let path = or_fail!(user_path(ptr, len));
+    // Only the leader may exec while the process has other threads
+    // (`docs/threads.md`): refused before anything is touched.
+    if task::exec_from_thread() {
+        return SYSERR_EAGAIN;
+    }
     // The program as an absolute path in the caller's view: exec reads it
     // and hands it to a script's interpreter.
     let virt = {

@@ -1083,7 +1083,7 @@ pub fn timer_create(clockid: usize, sevp: usize, idp: usize) -> R {
         _ => return Err(EINVAL),
     };
     let api = crate::k::api();
-    let id = api.ptimer_create(sig, tid).ok_or(if tid != 0 { EINVAL } else { EAGAIN })?;
+    let id = api.ptimer_create(sig, tid).map_err(|e| if e == myos_abi::PTIMER_FULL { EAGAIN } else { EINVAL })?;
     let user_id = id | if wall { TIMER_WALL } else { 0 };
     if let Err(e) = put(idp, &(user_id as u32).to_le_bytes()) {
         api.ptimer_delete(id);

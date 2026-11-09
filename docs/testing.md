@@ -43,7 +43,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `alpine-disk` | mount the Alpine roots the host prepares: rustc, Python (with GNU coreutils, bash and diffutils), an X client (`linux-compat/alpine-disks.sh`, built once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
 | `install` | change the boot disk: `get-myos --upgrade` and `--install` on the scratch disk (`docs/install.md`) |
 | `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
-| a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
+| a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `timers`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
 | a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port's `test.sh`. The runner sets it on every test of the file. |
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests). Each is also tagged with its newlib test's name (`docs/mlibc.md`). |
 | `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |

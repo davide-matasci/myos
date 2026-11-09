@@ -381,6 +381,7 @@ fn follow_symlinks(virt: &mut [u8], mut vn: usize, follow_last: bool) -> Result<
     let mut hops = 0;
     let mut real = vfs::path_buf();
     let mut target = vfs::path_buf();
+    let mut next = vfs::path_buf();
     // Start of the next component to check; everything before is link-free.
     let mut start = 1;
     while start < vn {
@@ -403,7 +404,6 @@ fn follow_symlinks(virt: &mut [u8], mut vn: usize, follow_last: bool) -> Result<
                 joined.extend_from_slice(&target[..tn]);
                 joined.extend_from_slice(rest);
                 let dir: &[u8] = if start > 1 { &virt[..start - 1] } else { b"/" };
-                let mut next = vfs::path_buf();
                 let utf8 = |b| core::str::from_utf8(b).map_err(|_| PathError::Unresolved);
                 vn = vfs::resolve_against_cwd(utf8(dir)?, utf8(&joined)?, &mut next)?;
                 virt[..vn].copy_from_slice(&next[..vn]);

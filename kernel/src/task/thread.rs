@@ -150,7 +150,8 @@ pub fn exit_group(code: u8, sig: u32) -> ! {
 
 /// Before exec replaces the process image: end its other threads. Only the
 /// leader may exec while there are others (Linux lets any thread, which then
-/// takes over the pid; not supported). False if the caller may not.
+/// takes over the pid; not supported, [`exec_from_thread`]). False if the
+/// caller may not.
 pub fn exec_alone() -> bool {
     let (me, pid) = with_thread_mut(|t| (current_slot(), t.tgid));
     if !has_other_threads(pid) {
@@ -159,16 +160,32 @@ pub fn exec_alone() -> bool {
     if me != pid {
         return false;
     }
-    // `group_exit` keeps the killed threads from setting an exit status.
-    kill_other_threads(|leader| leader.group_exit = true);
+    // `group_exit` keeps the killed threads from setting an exit status;
+    // `exec_ending` keeps their `exit_group` from killing the leader too.
+    kill_other_threads(|leader| {
+        leader.group_exit = true;
+        leader.exec_ending = true;
+    });
     wait_for_threads(pid);
-    with_leader_mut(|t| t.group_exit = false);
+    with_leader_mut(|t| {
+        t.group_exit = false;
+        t.exec_ending = false;
+    });
     true
+}
+
+/// Whether an exec by the calling thread is refused for its process's
+/// other threads: it is not the leader, and there are others (the syscall
+/// fails with `EAGAIN` then, before anything is touched).
+pub fn exec_from_thread() -> bool {
+    let (me, pid) = with_thread_mut(|t| (current_slot(), t.tgid));
+    me != pid && has_other_threads(pid)
 }
 
 /// Under TASKS: apply `mark` to the current process's leader, then send
 /// `SIGKILL` to every other thread of it (they end at their next syscall
-/// exit, or at once if preempted in user mode). Returns the pid.
+/// exit, or at once if preempted in user mode), the leader excepted while
+/// it is the one ending them for an exec (`exec_ending`). Returns the pid.
 fn kill_other_threads(mark: impl FnOnce(&mut Task)) -> usize {
     let flags = irq_save();
     irq_off();
@@ -178,8 +195,9 @@ fn kill_other_threads(mark: impl FnOnce(&mut Task)) -> usize {
         let me = current_slot();
         let pid = tasks[me].tgid;
         mark(&mut tasks[pid]);
+        let exec_ending = tasks[pid].exec_ending;
         for j in tasks.slots() {
-            if j != me && is_thread_of(&tasks, j, pid) {
+            if j != me && is_thread_of(&tasks, j, pid) && !(j == pid && exec_ending) {
                 tasks[j].sig_pending |= 1 << crate::signal::SIGKILL;
                 tasks[j].sig_changes += 1;
                 kicks |= wake_task_locked(&mut tasks, j);

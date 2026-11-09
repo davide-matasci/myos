@@ -146,13 +146,11 @@ const AT_SYMLINK_NOFOLLOW: usize = 0x100;
 const AT_REMOVEDIR: usize = 0x200;
 const MKNOD_DIR: usize = 0;
 
-/// The kernel's lowest failure value (`myos_abi::MYOS_SYSERR_LOWEST`): a
-/// call fails with `usize::MAX` or one of the distinct values below it
-/// (a path call with its own for a path too long, `ENAMETOOLONG`).
-const SYSERR_LOWEST: usize = usize::MAX - 13;
-
+/// A call fails with `usize::MAX` or one of the distinct values below it
+/// (a path call with its own for a path too long, `ENAMETOOLONG`): the
+/// kernel's lowest, from the ABI crate, so a new one counts here too.
 fn failed(ret: usize) -> bool {
-    ret >= SYSERR_LOWEST
+    ret >= myos_abi::MYOS_SYSERR_LOWEST
 }
 
 pub fn open_flags(path: &[u8], flags: u32) -> Option<usize> {

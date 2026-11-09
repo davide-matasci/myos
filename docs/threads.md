@@ -66,8 +66,10 @@ rules also cover a task an idle CPU pulls.
   sets the exit status and the other threads get `SIGKILL`.
 - A signal also acts when an interrupt preempts a thread in user mode, so
   a thread spinning without syscalls cannot keep its process alive.
-- `exec` first ends the other threads; only the leader may exec while
-  there are others (see "Limits").
+- `exec` first ends the other threads (each dies as `exit_group` ends
+  it, its `SIGKILL` to the rest of the process sparing the exec'ing
+  leader); only the leader may exec while there are others (see
+  "Limits").
 - `fork` from any thread makes a single-threaded child that resumes with
   the calling thread's registers.
 
@@ -178,6 +180,7 @@ Test: `pthread` (`/bin/etc/pthread_smoke`, `user/c/pthread_smoke.c`).
 
 ## Limits
 
-- Only the leader may `exec` while the process has other threads. Linux
-  lets any thread exec, and that thread then takes over the pid; myos
-  does not support this yet.
+- Only the leader may `exec` while the process has other threads: an
+  exec by another thread then fails with `EAGAIN`, before anything is
+  touched. Linux lets any thread exec, and that thread then takes over
+  the pid; myos does not support this yet.
