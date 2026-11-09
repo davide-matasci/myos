@@ -985,7 +985,15 @@ fn ptimer_tick(tasks: &mut TaskTable, pid: usize, now: u64, kicks: &mut u64) -> 
             }
             continue;
         }
-        let to = t.tid as usize;
+        let mut to = t.tid as usize;
+        // One directed at the process goes to the leader, or, once the
+        // leader has ended (`pthread_exit` in `main`), to any live thread
+        // of it, as on Linux.
+        if to == pid && !super::signals::signal_live(&tasks[pid]) {
+            if let Some(j) = tasks.slots().find(|&j| j != pid && tasks[j].tgid == pid && super::signals::signal_live(&tasks[j])) {
+                to = j;
+            }
+        }
         // Late by more than one interval: the expiries missed are overruns.
         let missed = if t.every == 0 { 0 } else { (now - t.at) / t.every };
         if !super::signals::signal_live(&tasks[to]) || tasks[to].tgid != pid {
