@@ -2096,6 +2096,19 @@ lx_timeout() {
 	rc=$? e=$(($(date +%s) - s))
 	[ $rc = 124 ] && [ $e -lt 4 ] || { echo "timeout: exit $rc after ${e}s"; return 1; }
 }
+# /dev/fd and /dev/std* (issue #770), with the Python root's bash and GNU
+# tools: bash's process substitution (/dev/fd/63, a pipe), cat and tee
+# opening /dev/stdin and /dev/stderr. (bash itself would make up
+# /dev/std* in its own redirections, so those go through the tools.)
+lx_dev_fd() {
+	alpine_disk || return 1
+	out=$(linux --root /tmp/alpine/python bash -c 'cat <(echo subst)
+		echo stdin | cat /dev/stdin
+		diff <(printf "a\n") <(printf "a\n") && echo same
+		echo stderr | tee /dev/stderr > /dev/null' 2>&1)
+	want=$(printf 'subst\nstdin\nsame\nstderr')
+	[ "$out" = "$want" ] || { echo "$out"; return 1; }
+}
 # ... and its sockets: DNS (musl over UDP) and an HTTP GET (TCP) from the
 # launcher's test server (src/test_www.rs).
 lx_python_net() {
@@ -2261,6 +2274,7 @@ if linux_loaded && [ -x /bin/linux/linux-smoke ]; then
 	t -t linux,net,pkg,heavy,alpine,get-alpine alpine_jq lx_alpine
 	t -t linux,python,alpine-disk alpine_python lx_python
 	t -t linux,alpine-disk,timers alpine_timeout lx_timeout
+	t -t linux,alpine-disk,dev-fd alpine_dev_fd lx_dev_fd
 	t -t linux,python,alpine-disk,net,netfs alpine_python_net lx_python_net
 	t -t linux,python,alpine-disk,events alpine_python_asyncio lx_python_asyncio
 	t -t linux,x11,pkg,alpine-disk,tinyx alpine_x11 lx_x11

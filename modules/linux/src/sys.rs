@@ -128,13 +128,58 @@ fn path_at(dirfd: usize, ptr: usize) -> R2<String> {
     if s.is_empty() {
         return Err(ENOENT);
     }
-    if s.starts_with('/') || dirfd == AT_FDCWD {
+    if s.starts_with('/') {
+        return Ok(fd_alias(s));
+    }
+    if dirfd == AT_FDCWD {
         return Ok(s);
     }
     match files::get(dirfd) {
         Some(d) if d.dir => Ok(join(&d.path, &s)),
         Some(_) => Err(ENOTDIR),
         None => Err(EBADF),
+    }
+}
+
+/// The names Linux gives a process's own fds, which the system's `/dev`
+/// has not, bound where they lead as a namespace binds a directory:
+/// `/dev/fd` is `/proc/self/fd` (bash's process substitution opens
+/// `/dev/fd/63`), `/dev/stdin`, `/dev/stdout` and `/dev/stderr` its 0, 1
+/// and 2. Not links: `lstat` and `readlink` see `/proc/self/fd`'s.
+fn fd_alias(path: String) -> String {
+    let fd = match path.as_str() {
+        "/dev/stdin" => "0",
+        "/dev/stdout" => "1",
+        "/dev/stderr" => "2",
+        p => match p.strip_prefix("/dev/fd") {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                return alloc::format!("/proc/self/fd{rest}");
+            }
+            _ => return path,
+        },
+    };
+    alloc::format!("/proc/self/fd/{fd}")
+}
+
+/// The fd `path` names as `/proc/self/fd/N` (the target of [`fd_alias`]),
+/// when it is open and not a file or directory: a pipe, a socket, a
+/// terminal, an event fd. Its link names no path such an fd opens again
+/// by (`pipe:[N]`), so it is opened as BSD's `/dev/fd` does, as a `dup`;
+/// so is a file that was unlinked. A file reopens by its link's path, as
+/// on Linux: its own offset and flags.
+fn self_fd_dup(path: &str) -> Option<usize> {
+    let n = path.strip_prefix("/proc/self/fd/")?;
+    let fd: usize = n.parse().ok().filter(|_| n.bytes().all(|b| b.is_ascii_digit()))?;
+    let kind = task::fd_kind(fd);
+    match files::get(fd) {
+        Some(e) if e.sock.is_some() => Some(fd),
+        Some(e) if e.dir => None,
+        // One that was unlinked (a memfd) has no path left: a dup too.
+        _ if matches!(kind, Some(task::FdKind::File { .. })) => {
+            real_path(path).ok().and_then(|p| fs::stat(&p)).is_none().then_some(fd)
+        }
+        _ if kind.is_some() || task::fd_path(fd).is_some() => Some(fd),
+        _ => None,
     }
 }
 
@@ -271,6 +316,11 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
     const O_CREAT: usize = 0o100;
     const O_NONBLOCK: usize = 0o4000;
     let p = pty_alias(path_at(dirfd, path)?);
+    if let Some(fd) = self_fd_dup(&p) {
+        let new = dup(fd, 0)?;
+        files::set_cloexec(new, flags & O_CLOEXEC != 0);
+        return Ok(new);
+    }
     if flags & O_NOFOLLOW != 0
         && fs::stat(&real_path_nofollow(&p)?).is_some_and(|s| s.mode & fs::S_IFMT == 0o120000)
     {
@@ -515,6 +565,9 @@ pub fn fstatat(dirfd: usize, path: usize, buf: usize, flags: usize) -> R {
         return fstat(dirfd, buf);
     }
     let p = path_at(dirfd, path)?;
+    if let Some(fd) = self_fd_dup(&p).filter(|_| flags & AT_SYMLINK_NOFOLLOW == 0) {
+        return fstat(fd, buf);
+    }
     let real = if flags & AT_SYMLINK_NOFOLLOW != 0 { real_path_nofollow(&p)? } else { real_path(&p)? };
     let st = fs::stat(&real).ok_or(ENOENT)?;
     put_stat(buf, &st)
@@ -742,7 +795,11 @@ pub fn ioctl(fd: usize, req: usize, arg: usize) -> R {
 }
 
 pub fn faccessat(dirfd: usize, path: usize) -> R {
-    let real = real_path(&path_at(dirfd, path)?)?;
+    let p = path_at(dirfd, path)?;
+    if self_fd_dup(&p).is_some() {
+        return Ok(0);
+    }
+    let real = real_path(&p)?;
     fs::stat(&real).map(|_| 0).ok_or(ENOENT)
 }
 

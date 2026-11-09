@@ -1242,6 +1242,81 @@ static void check_timers(char *self) {
     sigaction(SIGUSR1, &sa, NULL);
 }
 
+/* /dev/fd, /dev/stdin, /dev/stdout and /dev/stderr (issue #770): the
+ * process's own fds, as /proc/self/fd names them. A pipe opens as a dup of
+ * its end, a file again by its name (its own offset). */
+static int read_is(int fd, const char *want) {
+    char b[16] = {0};
+    size_t n = strlen(want);
+    return fd >= 0 && read(fd, b, sizeof b - 1) == (ssize_t)n && memcmp(b, want, n) == 0;
+}
+
+/* `prefix` and fd `n` into `name` (no printf here). */
+static void fd_name(char *name, const char *prefix, int n) {
+    char digits[12];
+    int i = sizeof digits;
+    digits[--i] = 0;
+    do {
+        digits[--i] = '0' + n % 10;
+        n /= 10;
+    } while (n);
+    strcpy(name, prefix);
+    strcat(name, digits + i);
+}
+
+static void check_dev_fd(void) {
+    char name[32];
+    int p[2];
+    struct stat st;
+    check(pipe(p) == 0 && write(p[1], "pipe", 4) == 4, "/dev/fd: a pipe");
+    fd_name(name, "/dev/fd/", p[0]);
+    int fd = open(name, O_RDONLY | O_CLOEXEC);
+    check(read_is(fd, "pipe"), "/dev/fd/N: a pipe's end opens, and reads");
+    check(fd >= 0 && (fcntl(fd, F_GETFD) & FD_CLOEXEC), "/dev/fd/N: O_CLOEXEC on the new fd");
+    close(fd);
+    check(stat(name, &st) == 0 && S_ISFIFO(st.st_mode), "/dev/fd/N: stat of a pipe is a FIFO");
+    fd_name(name, "/proc/self/fd/", p[1]);
+    fd = open(name, O_WRONLY);
+    check(fd >= 0 && write(fd, "proc", 4) == 4 && read_is(p[0], "proc"), "/proc/self/fd/N: a pipe's end opens");
+    close(fd);
+
+    /* /dev/stdin is fd 0, here a pipe. */
+    int saved = dup(0);
+    check(write(p[1], "stdin", 5) == 5 && dup2(p[0], 0) == 0, "/dev/stdin: a pipe on fd 0");
+    fd = open("/dev/stdin", O_RDONLY);
+    check(read_is(fd, "stdin"), "/dev/stdin: opens fd 0");
+    close(fd);
+    dup2(saved, 0);
+    close(saved);
+    check(access("/dev/stdout", F_OK) == 0 && access("/dev/stderr", W_OK) == 0, "/dev/stdout, /dev/stderr: there");
+    close(p[0]);
+    close(p[1]);
+
+    /* A file opens by its name again, with an offset of its own. */
+    int f = open("/tmp/linux-smoke.devfd", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(f >= 0 && write(f, "file", 4) == 4, "/dev/fd: a file");
+    fd_name(name, "/dev/fd/", f);
+    fd = open(name, O_RDONLY);
+    check(read_is(fd, "file") && lseek(f, 0, SEEK_CUR) == 4, "/dev/fd/N: a file reopens at offset 0");
+    close(fd);
+
+    /* /dev/fd lists the open fds. */
+    DIR *d = opendir("/dev/fd");
+    int seen = 0;
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        seen |= atoi(e->d_name) == f;
+    }
+    check(d && seen, "/dev/fd: lists the open fds");
+    if (d) {
+        closedir(d);
+    }
+    close(f);
+    unlink("/tmp/linux-smoke.devfd");
+    errno = 0;
+    check(open("/dev/fd/250", O_RDONLY) == -1 && errno == ENOENT, "/dev/fd/N: a closed fd is ENOENT");
+}
+
 static void check_signalfd(void) {
     struct signalfd_siginfo si;
     sigset_t set;
@@ -1758,6 +1833,7 @@ static void check_toolchain_calls(char *self) {
     check_sigaction_all(self);
     check_sigaltstack();
     check_timers(self);
+    check_dev_fd();
     check_copy_calls();
     check_sched_policy();
 

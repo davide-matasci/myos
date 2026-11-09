@@ -772,8 +772,27 @@ fn run_aarch64() {
 /// manual download names the same tag and checksum.
 const OVMF: Source = Source::EDK2_STABLE202505_R2;
 
+/// The [`OVMF`] release in `target/ovmf`, downloaded on the first boot.
+/// Each CI boot job downloads it, and GitHub's release downloads answer 5xx
+/// now and then (a 504 failed a boot before its first test): five tries,
+/// a growing pause between them.
+fn ovmf_prebuilt() -> Result<Prebuilt, ovmf_prebuilt::Error> {
+    let mut tries = 1;
+    loop {
+        match Prebuilt::fetch(OVMF, "target/ovmf") {
+            Ok(p) => return Ok(p),
+            Err(e) if tries >= 5 => return Err(e),
+            Err(e) => {
+                eprintln!("OVMF download failed ({e:?}), retrying in {} s", tries * 10);
+                std::thread::sleep(Duration::from_secs(tries * 10));
+                tries += 1;
+            }
+        }
+    }
+}
+
 fn ovmf_files(arch: Arch) -> (PathBuf, PathBuf) {
-    let prebuilt = Prebuilt::fetch(OVMF, "target/ovmf").expect("failed to fetch OVMF prebuilt");
+    let prebuilt = ovmf_prebuilt().expect("failed to fetch OVMF prebuilt");
     (
         prebuilt.get_file(arch, FileType::Code),
         prebuilt.get_file(arch, FileType::Vars),
@@ -781,7 +800,7 @@ fn ovmf_files(arch: Arch) -> (PathBuf, PathBuf) {
 }
 
 fn aarch64_firmware() -> (PathBuf, PathBuf) {
-    if let Ok(prebuilt) = Prebuilt::fetch(OVMF, "target/ovmf") {
+    if let Ok(prebuilt) = ovmf_prebuilt() {
         let code = prebuilt.get_file(Arch::Aarch64, FileType::Code);
         let vars = prebuilt.get_file(Arch::Aarch64, FileType::Vars);
         if code.is_file() && vars.is_file() {

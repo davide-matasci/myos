@@ -329,6 +329,15 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   starts with them). `fallocate` takes mode 0 only. The
   xattr calls behave as on a filesystem without attributes (`ENODATA`,
   `EOPNOTSUPP`). `statfs` has no filesystem magic.
+  `/dev/fd` is the layer's name for `/proc/self/fd`, and `/dev/stdin`,
+  `/dev/stdout` and `/dev/stderr` for its 0, 1 and 2: bound in the
+  layer's path lookup, not links in `/dev` (`lstat` and `readlink` see
+  the `/proc` entries). bash's process substitution (`<(...)`, which
+  opens `/dev/fd/63`) needs them. Opening `/dev/fd/N` (or
+  `/proc/self/fd/N`) opens a file again by its name, with an offset of its
+  own, as on Linux; a pipe, a socket, a terminal, an event fd or an
+  unlinked file (a memfd) has no such name, and is dup'd, as BSD's
+  `/dev/fd` does (one offset and status flags with fd N).
 - **Memory**: `brk`, `mmap`, `munmap`, `mprotect`, `msync`;
   `madvise(MADV_DONTNEED)` drops pages, other advice is ignored. `mremap`
   only shrinks (issue #421: musl's `realloc` copies instead).
