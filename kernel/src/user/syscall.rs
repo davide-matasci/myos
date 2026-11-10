@@ -653,7 +653,9 @@ pub(super) fn open_real(
     // A new file needs `create` (and what it is opened for) on the label
     // its path gives it.
     let mut need = open_rights(flags as u32);
-    let exists = fs::stat(&path).is_some();
+    // Not followed (`open_follows`): what the name is itself.
+    let kind = fs::stat(&path).map(|st| st.mode & fs::S_IFMT);
+    let exists = kind.is_some();
     if flags as u32 & O_CREAT != 0 && !exists {
         need = need | Rights::CREATE;
     }
@@ -664,8 +666,6 @@ pub(super) fn open_real(
     if exists && open_excl(flags) {
         return SYSERR_EEXIST;
     }
-    // Not followed (`open_follows`): what the name is itself.
-    let kind = fs::stat(&path).map(|st| st.mode & fs::S_IFMT);
     if flags as u32 & O_NOFOLLOW != 0 && kind == Some(S_IFLNK) {
         return SYSERR_ELOOP;
     }

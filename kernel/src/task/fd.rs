@@ -348,6 +348,13 @@ fn user_buf_ok(buf: usize, len: usize, t: &Process) -> bool {
     mmap_range_in(&t.mmap, buf, len)
 }
 
+/// Whether `[buf, buf + len)` is user memory of the current process: one
+/// hold of `TASKS` (the check took it for the image, again for the heap's
+/// end and again for the mappings, on every syscall with a buffer).
+pub fn user_range_ok(buf: usize, len: usize) -> bool {
+    with_process_mut(|t| user_buf_ok(buf, len, t))
+}
+
 /// An fd on `node`, opened with `flags`, granting `rights` beneath it (see
 /// [`OpenFile::rights`]). `Err(Some(name))`: its module put the fd on
 /// another file, `name` beside `node` (`OpenHook::Instead`), for the

@@ -195,6 +195,15 @@ pub fn signal_next(id: usize) -> SigNext {
     if id >= MAX_TASKS {
         return SigNext::None;
     }
+    // Nearly every syscall returns with nothing to deliver: that much is
+    // known under `TASKS` alone, without the handler tables' lock.
+    let flags = irq_save();
+    irq_off();
+    let none = deliverable(&TASKS.lock()[id]) == 0;
+    irq_restore(flags);
+    if none {
+        return SigNext::None;
+    }
     with_sig(|tasks, tabs| {
         loop {
             let set = deliverable(&tasks[id]);

@@ -524,6 +524,7 @@ fn ro_ops(
         symlink: reject_symlink,
         readlink: reject_readlink,
         poll: None,
+        write_wakes: None,
         set_times: None,
         set_size: None,
         files: None,
@@ -566,6 +567,7 @@ fn rw_ops(
         symlink,
         readlink,
         poll: None,
+        write_wakes: None,
         set_times: None,
         set_size: None,
         files: None,
@@ -643,6 +645,7 @@ pub fn init() {
             reject_readlink,
         );
         ops.poll = Some(devfs::poll);
+        ops.write_wakes = Some(devfs::write_wakes);
         ops.waits = Some(devfs::read_waits);
         vfs::mount("devfs", "dev", ops);
     }

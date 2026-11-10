@@ -91,6 +91,15 @@ tasks` line says so, once per episode (`heap::low_for_tasks`), rather
 than the next allocation panicking the kernel. Free the heap (`rm` in
 `/tmp`, exit programs) or reboot.
 
+The heap is one allocator behind one lock, taken with interrupts off. Each
+CPU keeps a few blocks of every size class up to a page for itself (at
+most 32 KiB or 64 blocks a class, `kernel/src/heap.rs`) and takes and
+gives those without the lock; a cache is filled from, and emptied into,
+the class's list half at a time. `HeapFreeKiB` counts the cached blocks
+as free. The mount table, the bind table and tmpfs's tree are behind
+reader-writer locks: resolving a path, `stat` and `read` on several CPUs
+do not wait for each other, only for a mount, a create or a write.
+
 QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,
 because Limine panics with `missing struct riscv_hart for BSP` at 4; the
 packed `boot/virt.dtb` is dumped with `-smp 2` too, so that OpenSBI's

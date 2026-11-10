@@ -148,6 +148,46 @@ fetches `https://github.com/robots.txt`. In a sandbox behind a
 TLS-intercepting proxy, append its CA to `target/cacert.pem` for local
 runs only, and restore it afterwards.
 
+## Measuring
+
+`/bin/etc/bench` (`user/c/bench.c`, in the tests module) times the kernel's
+common paths: a bare syscall, small and 16 KiB reads and writes of a tmpfs
+file, `stat`, `open`, pipes, `fork`, `mmap`, a path loop in one process and
+in three at once, TCP over loopback. It is no test. Its numbers are a
+machine's and an emulator's, and say something only beside those of another
+kernel on the same machine: boot the tree before the change and the tree
+after it, and compare. Boots differ by a tenth or more on a shared host, so
+give a named benchmark several times in one run (`bench 2 par3 par1 par3
+par1`) and look at all of them.
+
+```sh
+cargo run                         # log in, then: /bin/etc/bench
+/bin/etc/bench 3 stat open        # these two, three times as long
+```
+
+`scripts/prof.py` says where the time goes: it samples every CPU's program
+counter through the QEMU monitor while a boot runs, and splits the samples
+at each `BENCH` line of the console, so each phase of the benchmark has its
+own profile.
+
+```sh
+cargo run -- test --tags NAME > boot.log 2>&1 &     # a boot that runs bench (below)
+scripts/prof.py sample boot.log boot.prof           # until QEMU exits
+scripts/prof.py report boot.prof target/x86_64-unknown-none/debug/deps/artifact/kernel-*/bin/kernel-* stat
+```
+
+For a boot that runs it unattended, add a line to `user/c/test.sh` for the
+time of the measurement (`t -t NAME NAME $SMOKES/bench 3 stat open`; bench
+writes to the console, fd 3, when it is open) and take it out again.
+
+The report names the innermost function with its inlined callers. A CPU
+spinning on a lock shows as `is_locked < lock < ...` under the function
+that wanted it, which is how the heap's lock, the mount table's and the
+task table's were found to be what processes on several CPUs waited for.
+Under TCG an MMIO write or an instruction that leaves a guest under KVM
+costs what the emulator makes it cost: the profile does not tell what they
+cost on hardware.
+
 ## In the guest
 
 ### The tests module

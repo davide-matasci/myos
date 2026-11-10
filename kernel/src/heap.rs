@@ -22,10 +22,19 @@
 //! rounded up: to a power of two up to a page, to a whole page above it,
 //! so a large block (a tmpfs file's data, an exec's copy of a program)
 //! wastes under a page, not up to half of itself.
+//!
+//! Each CPU keeps a few blocks of the classes up to a page for itself
+//! ([`CpuCache`]) and takes and gives those without the heap's lock: with
+//! every path a syscall resolves allocating its strings, the lock was what
+//! three processes working on files at once waited for most (a fifth of
+//! their time under TCG). A CPU's cache is its own, touched with interrupts
+//! off; it is filled from the class's list and emptied into it a batch at
+//! a time.
 
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use linked_list_allocator::Heap;
 use spin::Mutex;
@@ -193,6 +202,104 @@ impl Classed {
     }
 }
 
+/// The classes a CPU caches blocks of: the powers of two up to a page.
+const CPU_CLASSES: usize = POW2_CLASSES;
+/// What a CPU keeps of one class at most, in bytes, and in blocks.
+const CPU_CLASS_BYTES: usize = 32 * 1024;
+const CPU_CLASS_BLOCKS: usize = 64;
+
+/// One CPU's blocks of each cached class, linked through their first word
+/// like the classes' own lists.
+struct CpuCache {
+    free: [*mut u8; CPU_CLASSES],
+    count: [usize; CPU_CLASSES],
+}
+
+/// The CPUs' caches. Each is its CPU's alone, and only with interrupts off
+/// (an interrupt's handler allocates too).
+struct CpuCaches([UnsafeCell<CpuCache>; crate::smp::MAX_CPUS]);
+
+unsafe impl Sync for CpuCaches {}
+
+static CPU_CACHES: CpuCaches = CpuCaches(
+    [const { UnsafeCell::new(CpuCache { free: [core::ptr::null_mut(); CPU_CLASSES], count: [0; CPU_CLASSES] }) };
+        crate::smp::MAX_CPUS],
+);
+/// The bytes in each CPU's cache: free, for [`usage`].
+static CPU_CACHED: [AtomicUsize; crate::smp::MAX_CPUS] = [const { AtomicUsize::new(0) }; crate::smp::MAX_CPUS];
+
+/// How many blocks of class `c` a CPU keeps at most.
+fn cpu_class_max(c: usize) -> usize {
+    (CPU_CLASS_BYTES / Classed::class_size(c)).clamp(2, CPU_CLASS_BLOCKS)
+}
+
+/// This CPU's cache and its index. Interrupts are off.
+#[allow(clippy::mut_from_ref)]
+fn cpu_cache() -> (&'static mut CpuCache, usize) {
+    let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
+    (unsafe { &mut *CPU_CACHES.0[cpu].get() }, cpu)
+}
+
+impl IrqSafeHeap {
+    /// A block of class `c` from this CPU's cache; when that is empty, one
+    /// from the class's list or the heap, with half a cache of the list's
+    /// blocks for the next ones. Interrupts are off.
+    fn alloc_cpu(&self, c: usize) -> *mut u8 {
+        let (cache, cpu) = cpu_cache();
+        let size = Classed::class_size(c);
+        let block = cache.free[c];
+        if !block.is_null() {
+            cache.free[c] = unsafe { *(block as *mut *mut u8) };
+            cache.count[c] -= 1;
+            CPU_CACHED[cpu].fetch_sub(size, Ordering::Relaxed);
+            return block;
+        }
+        let mut classed = self.0.lock();
+        let block = classed.alloc(Classed::class_layout(c));
+        // Only what the list holds: the heap itself is walked for one
+        // block at a time, when it must be.
+        let mut taken = 0;
+        while taken < cpu_class_max(c) / 2 && !classed.free[c].is_null() {
+            let more = classed.alloc(Classed::class_layout(c));
+            if more.is_null() {
+                break;
+            }
+            unsafe { *(more as *mut *mut u8) = cache.free[c] };
+            cache.free[c] = more;
+            taken += 1;
+        }
+        cache.count[c] += taken;
+        CPU_CACHED[cpu].fetch_add(taken * size, Ordering::Relaxed);
+        block
+    }
+
+    /// Give a block of class `c` to this CPU's cache; a full cache gives
+    /// half of itself back to the class's list first. Interrupts are off.
+    fn dealloc_cpu(&self, c: usize, ptr: *mut u8) {
+        let (cache, cpu) = cpu_cache();
+        let size = Classed::class_size(c);
+        if cache.count[c] >= cpu_class_max(c) {
+            let mut classed = self.0.lock();
+            let mut given = 0;
+            while given < cpu_class_max(c) / 2 {
+                let block = cache.free[c];
+                if block.is_null() {
+                    break;
+                }
+                cache.free[c] = unsafe { *(block as *mut *mut u8) };
+                unsafe { classed.dealloc(block, Classed::class_layout(c)) };
+                given += 1;
+            }
+            cache.count[c] -= given;
+            CPU_CACHED[cpu].fetch_sub(given * size, Ordering::Relaxed);
+        }
+        unsafe { *(ptr as *mut *mut u8) = cache.free[c] };
+        cache.free[c] = ptr;
+        cache.count[c] += 1;
+        CPU_CACHED[cpu].fetch_add(size, Ordering::Relaxed);
+    }
+}
+
 /// The heap with interrupts off while its lock is held. Otherwise a task
 /// preempted inside `alloc` keeps the lock, and the next one on its CPU to
 /// allocate with interrupts off (under `TASKS`, in `with_process_mut`)
@@ -206,7 +313,10 @@ unsafe impl GlobalAlloc for IrqSafeHeap {
         }
         let flags = crate::arch::irq_save();
         crate::arch::irq_off();
-        let p = self.0.lock().alloc(layout);
+        let p = match Classed::class(layout) {
+            Some(c) if c < CPU_CLASSES => self.alloc_cpu(c),
+            _ => self.0.lock().alloc(layout),
+        };
         crate::arch::irq_restore(flags);
         p
     }
@@ -214,7 +324,10 @@ unsafe impl GlobalAlloc for IrqSafeHeap {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let flags = crate::arch::irq_save();
         crate::arch::irq_off();
-        unsafe { self.0.lock().dealloc(ptr, layout) };
+        match Classed::class(layout) {
+            Some(c) if c < CPU_CLASSES => self.dealloc_cpu(c, ptr),
+            _ => unsafe { self.0.lock().dealloc(ptr, layout) },
+        }
         crate::arch::irq_restore(flags);
     }
 
@@ -330,7 +443,8 @@ pub fn usage() -> (usize, usize) {
         (classed.heap.size(), classed.heap.free() + classed.cached)
     };
     crate::arch::irq_restore(flags);
-    (size, free)
+    let in_cpus: usize = CPU_CACHED.iter().map(|n| n.load(Ordering::Relaxed)).sum();
+    (size, free + in_cpus)
 }
 
 /// `len` zero bytes, or `None` when the heap has no room for them in one

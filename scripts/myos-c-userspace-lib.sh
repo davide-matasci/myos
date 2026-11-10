@@ -641,6 +641,7 @@ MYOS_C_SMOKES=(
   "ctor-smoke user/c/ctor_smoke.c"
   "sched-smoke user/c/sched_smoke.c"
   "memhog user/c/memhog.c"
+  "bench user/c/bench.c"
   "evfd-smoke user/c/evfd_smoke.c"
   "epoll-smoke user/c/epoll_smoke.c"
   "sigfd-smoke user/c/sigfd_smoke.c"
