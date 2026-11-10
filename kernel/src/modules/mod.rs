@@ -1709,5 +1709,5 @@ unsafe extern "C" fn api_thread_spawn(
 }
 
 unsafe extern "C" fn api_wake(key: usize) {
-    crate::task::wake(key);
+    crate::task::wake_only(key);
 }

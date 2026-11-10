@@ -129,7 +129,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// apart ([`MYOS_SYSERR_ENAMETOOLONG`], [`MYOS_PATH_TOO_LONG`]).
 /// 72: [`KernelApi::ptimer_create`] tells a full timer table apart
 /// ([`PTIMER_FULL`], the caller's `EAGAIN`).
-pub const ABI_VERSION: u32 = 72;
+/// 73: [`KernelApi::wake`] wakes the tasks blocked on its key alone, no
+/// longer the `poll` sleepers with them ([`KernelApi::wake_any`] does).
+pub const ABI_VERSION: u32 = 73;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -1073,8 +1075,9 @@ pub struct KernelApi {
         entry: unsafe extern "C" fn(ctx: *mut core::ffi::c_void),
         ctx: *mut core::ffi::c_void,
     ) -> i32,
-    /// Wake the tasks blocked on `key` (`block_until`), and the `poll`
-    /// sleepers. Safe from interrupt context.
+    /// Wake the tasks blocked on `key` (`block_until`), and no one else:
+    /// a lock let go, a transfer completed. What a `poll` sleeper may wait
+    /// for is announced with `wake_any`. Safe from interrupt context.
     pub wake: unsafe extern "C" fn(key: usize),
     // --- ABI 22 ---
     /// Fork, the child resuming like the caller of the syscall in `regs`

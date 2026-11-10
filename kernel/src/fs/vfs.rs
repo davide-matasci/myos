@@ -1131,7 +1131,7 @@ impl Drop for TreeGuard {
             TreeGuard::Nested => return,
         }
         if TREE_WAITERS.load(core::sync::atomic::Ordering::SeqCst) != 0 {
-            crate::task::wake(tree_key());
+            crate::task::wake_only(tree_key());
         }
     }
 }

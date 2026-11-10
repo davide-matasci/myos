@@ -260,6 +260,15 @@ exits. That is what lets `poll` and `netd` sleep instead of spinning.
 `block_until` registers a `WAIT_ANY` waiter before it checks the sequence,
 so either the producer sees the waiter or the waiter sees the bump.
 
+A wake that is news for no poller wakes its key's waiters alone
+(`task::wake_only`): the release of a lock (the VFS tree's, a file
+lock, a module's `SleepLock`) and every `wake` of a module, which are
+completions (a USB transfer's, a controller's interrupt). A module
+announces what a poller may wait for with `wake_any`. Before, each of
+them also sent every poller round its fds: eight processes writing to
+a USB stick on riscv64's two CPUs took 55 s, most of it netd and the
+sound server looking at nothing, and 5 s after.
+
 Two producers leave out the waiters they cannot concern, because every
 wake costs each waiter a pass over its fds on its CPU, and the producer
 the task table's lock and an IPI per halted CPU:

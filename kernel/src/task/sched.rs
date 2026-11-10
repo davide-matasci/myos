@@ -887,6 +887,17 @@ pub fn wake_n(key: usize, max: usize) -> usize {
     n
 }
 
+/// Wake the tasks blocked on `key` and no one else: for what is news for
+/// no poller, a lock let go or a transfer that completed. [`wake`] makes
+/// every `poll` sleeper runnable too, for a look round its fds; from each
+/// release of a contended lock and each completion of a USB transfer that
+/// kept netd and the sound server on a CPU, which on a machine with two
+/// (riscv64's) the tasks doing the work then waited for: eight processes
+/// writing to a USB stick took 55 s there, 6 s with four CPUs.
+pub fn wake_only(key: usize) {
+    wake_n(key, usize::MAX);
+}
+
 /// Wake `WAIT_ANY` waiters only (something happened that a poller may care
 /// about: console input, pipe/pty/device traffic, an exit). Cheap when nobody
 /// waits that way.
