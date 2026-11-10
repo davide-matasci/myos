@@ -2,7 +2,7 @@
 """A sampling profile of a booted kernel, through the QEMU monitor
 (docs/testing.md, "Measuring").
 
-    scripts/prof.py sample LOG OUT          # beside the boot, until QEMU exits
+    scripts/prof.py sample LOG OUT [MARK]   # beside the boot, until QEMU exits
     scripts/prof.py report OUT KERNEL_ELF [PHASE [LINES]]
 
 `sample` connects to the monitor socket the launcher gives every boot
@@ -11,7 +11,8 @@ hundred times a second: a line of program counters per sample in OUT. LOG is
 the boot's console output, being written (`cargo run -- ... > LOG`): each new
 line of it with `BENCH` in it goes into OUT as a mark, so the samples
 between two marks are those of one phase of user/c/bench.c, which prints a
-line as each ends.
+line as each ends. MARK is another word to mark at (`TEST`: a profile per
+test of a boot test); the samples after the last mark are a phase too.
 
 `report` names the functions the samples fall in, with addr2line on the
 kernel the boot ran (x86_64: target/x86_64-unknown-none/debug/deps/artifact/
@@ -34,7 +35,7 @@ import sys
 import time
 
 
-def sample(log, out):
+def sample(log, out, mark="BENCH"):
     sock = None
     while sock is None:
         for path in glob.glob("/tmp/myos-monitor-*.sock"):
@@ -82,7 +83,7 @@ def sample(log, out):
                 except OSError:
                     lines = []
                 for line in lines[seen:]:
-                    if "BENCH" in line:
+                    if mark in line:
                         o.write("MARK " + line.strip() + "\n")
                 seen = max(seen, len(lines) - 1)
                 o.write("S " + " ".join(pcs) + " H " + "".join(halted) + "\n")
@@ -102,6 +103,7 @@ def report(prof, elf, want, lines):
             elif line.startswith("S "):
                 pcs, _, halted = line[2:].partition(" H ")
                 cur.append((pcs.split(), halted.strip()))
+    phases.append(("(after the last mark)", cur))
     phases = [(mark, samples) for mark, samples in phases if len(samples) > 20]
     if want:
         phases = [p for p in phases if want in p[0]][-1:]
@@ -136,8 +138,8 @@ def report(prof, elf, want, lines):
 
 
 def main(argv):
-    if len(argv) == 4 and argv[1] == "sample":
-        sample(argv[2], argv[3])
+    if len(argv) in (4, 5) and argv[1] == "sample":
+        sample(argv[2], argv[3], *argv[4:5])
     elif len(argv) in (4, 5, 6) and argv[1] == "report":
         report(argv[2], argv[3], argv[4] if len(argv) > 4 else "", int(argv[5]) if len(argv) > 5 else 20)
     else:

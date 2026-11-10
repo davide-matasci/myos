@@ -762,7 +762,7 @@ pub(super) fn retire(then_wake: Option<usize>) -> ! {
         tasks[id].sp = 0;
     }
     if let Some(key) = then_wake {
-        wake(key);
+        wake_only(key);
     }
     // IRQs stay off from Dead to the switch: a preemption here would never be
     // resumed.

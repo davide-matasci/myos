@@ -168,7 +168,10 @@ cargo run                         # log in, then: /bin/etc/bench
 `scripts/prof.py` says where the time goes: it samples every CPU's program
 counter through the QEMU monitor while a boot runs, and splits the samples
 at each `BENCH` line of the console, so each phase of the benchmark has its
-own profile.
+own profile. `sample LOG OUT TEST` splits at the tests' result lines
+instead: a profile per test of a boot test, which is how a test ten times
+slower on one arch than on the others is looked into (`usb_fs_parallel` on
+riscv64: both CPUs in the pollers' wakes, `docs/scheduler.md`).
 
 ```sh
 cargo run -- test --tags NAME > boot.log 2>&1 &     # a boot that runs bench (below)
@@ -331,6 +334,13 @@ in a boot of its own: `ostest` (the curated os-test list), `alpine` (the
 apk installs), `rust` (the rust package's tests) and `pkg` (the packages'
 install, their tests and get-myos's, and the `install` tests). One light
 boot runs everything else. A full run is thus five boots per machine.
+
+The x86 boots run under KVM, on the runner's CPU; the aarch64 and riscv64
+ones under TCG, every instruction emulated. That, not the kernel, is most
+of why a riscv64 light boot takes 12 minutes where an x86 one takes 2: with
+both under TCG on one host the same list takes 410 s on riscv64 and 336 s
+on x86. riscv64 booted with two CPUs then, where the others had four
+(`docs/scheduler.md`), so what kept a CPU busy for nothing cost it most.
 
 On aarch64 and riscv64, under TCG, the long groups take two to three
 times what the light boot does (16 minutes against 9 on riscv64). So a

@@ -40,10 +40,19 @@ use std::time::Duration;
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
-/// QEMU `-smp` for riscv64 (CI and interactive). Packed `virt.dtb` must use the
-/// same count: a single-hart DTB plus OpenSBI BSP hartid=1 →
-/// `PANIC: riscv: missing struct riscv_hart for BSP`.
-const RISCV_SMP: &str = "2";
+/// QEMU `-smp` for riscv64 (CI and interactive): four, as on x86 and
+/// aarch64. Packed `virt.dtb` must use the same count: a single-hart DTB
+/// plus OpenSBI BSP hartid=1 → `PANIC: riscv: missing struct riscv_hart for
+/// BSP`. That panic was long put down to `-smp 4` and the boots kept at 2;
+/// with the DTB dumped at the same count, Limine boots whichever of the
+/// four harts OpenSBI picks.
+const RISCV_SMP: &str = "4";
+
+/// For the test boots under EDK2 (aarch64, riscv64): no wait at the
+/// firmware's "Press ESCAPE within 5 seconds for boot options", five
+/// seconds of every boot. The firmware takes its wait from QEMU's `-boot
+/// splash-time` (ms); x86's OVMF has none. An interactive boot keeps it.
+const EDK2_NO_PROMPT: [&str; 2] = ["-boot", "menu=on,splash-time=0"];
 
 /// QEMU `virt` machine options for aarch64 (boot and the DTB dump alike).
 /// QEMU `virt` for the aarch64 boots. `gic-version` is `$MYOS_AARCH64_GIC`
@@ -1100,6 +1109,9 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    if ci {
+        cmd.args(EDK2_NO_PROMPT);
+    }
     // The screen in every boot, the headless CI ones too: it is `/dev/fb`
     // (docs/fb.md), which the boot tests draw on.
     cmd.arg("-device").arg("ramfb");
@@ -1495,8 +1507,6 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg(if ci { "4096" } else { "2048" })
         .arg("-smp")
-        // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
-        // Keep 2 + dual-hart DTB + parked APs (OpenSBI may pick hartid=1 as BSP).
         // Do not drop CI to -smp 1 to hide the ripgrep sepc=0 IPF — fix the kernel.
         .arg(RISCV_SMP)
         .arg("-drive")
@@ -1527,6 +1537,9 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    if ci {
+        cmd.args(EDK2_NO_PROMPT);
+    }
     // Multi-threaded TCG, as on x86 and aarch64: one host thread per hart.
     // Single-threaded TCG (MYOS_TCG_SINGLE=1, local-ci.sh) runs one hart at a
     // time, so an IPI to a halted hart waits for QEMU's 100 ms round-robin

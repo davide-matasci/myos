@@ -98,7 +98,7 @@ pub fn set(node: usize, owner: Owner, kind: Option<Kind>, start: u64, end: u64, 
                 replace(&mut locks, node, owner, kind, start, end);
                 drop(locks);
                 // Someone may wait for what was let go.
-                crate::task::wake(crate::task::key_lock(node));
+                crate::task::wake_only(crate::task::key_lock(node));
                 return Ok(());
             }
         }
@@ -159,6 +159,6 @@ fn release_where(gone: impl Fn(&Lock) -> bool) {
     nodes.sort_unstable();
     nodes.dedup();
     for node in nodes {
-        crate::task::wake(crate::task::key_lock(node));
+        crate::task::wake_only(crate::task::key_lock(node));
     }
 }
