@@ -357,6 +357,30 @@ if new not in s:
     print("patched main.cpp: ld.so's base from its ELF header on aarch64")
 PY
 
+# ld.so takes each object's place from mmap (the kernel maps only inside
+# a process's mmap window, not at mlibc's fixed library base) and maps its
+# segments from the file, a page at a time as they are touched, the
+# unwritten ones the page cache's own. In ld.so alone, not through the
+# build's configuration: the static program's linker loads no object, and
+# libc.a's symbols stay what the ports over it are keyed on.
+python3 - "$SRC/options/rtld/generic/linker.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "#include <internal-config.h>\n"
+new = old + """#ifndef MLIBC_STATIC_BUILD /* myos: ld.so */
+#undef MLIBC_MMAP_ALLOCATE_DSO
+#define MLIBC_MMAP_ALLOCATE_DSO 1
+#undef MLIBC_MAP_DSO_SEGMENTS
+#define MLIBC_MAP_DSO_SEGMENTS 1
+#endif
+"""
+if new not in s:
+    assert s.count(old) == 1, "linker.cpp: the internal-config.h include not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched linker.cpp: ld.so maps objects with mmap, from their files")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose
@@ -368,15 +392,9 @@ s = open(path).read()
 if "host_machine.system() == 'myos'" not in s:
     anchor = "# ANCHOR: demo-sysdeps\nelif host_machine.system() == 'demo'"
     assert s.count(anchor) == 1, "meson.build: demo sysdeps anchor not found"
-    # The dynamic linker takes each object's place from mmap (the kernel
-    # maps only inside a process's mmap window, not at mlibc's fixed
-    # library base) and maps its segments from the file, a page at a time
-    # as they are touched, the unwritten ones the page cache's own.
     s = s.replace(anchor, """elif host_machine.system() == 'myos'
 	rtld_include_dirs += include_directories('sysdeps/myos/include')
 	libc_include_dirs += include_directories('sysdeps/myos/include')
-	internal_conf.set10('MLIBC_MAP_DSO_SEGMENTS', true)
-	internal_conf.set10('MLIBC_MMAP_ALLOCATE_DSO', true)
 	subdir('sysdeps/myos')
 """ + anchor)
     open(path, "w").write(s)
