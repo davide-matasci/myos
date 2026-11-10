@@ -3,10 +3,9 @@
     .text
     .globl __mlibc_thread_entry
 __mlibc_thread_entry:
-    .option push
-    .option norelax
-    lla gp, __global_pointer$
-    .option pop
+    // gp is the creator's: the kernel starts a thread with its creator's
+    // registers (thread_spawn), and the global pointer is the program's,
+    // which this code cannot name once it is in libc.so.
     ld a0, 0(sp)
     ld a1, 8(sp)
     ld a2, 16(sp)

@@ -8,7 +8,8 @@ myos builds two C libraries from the same tree:
   v7.0.0) is the second one. A port opts into it with `PORT_LIBC=mlibc` in
   its descriptor (`docs/ports.md`).
 
-Both are static: a program is a static PIE with the libc's crt0. The C
+A program is a static PIE with the libc's crt0, unless it opts into
+mlibc's shared objects ("Shared objects" below). The C
 smokes are built against both (`user/c`, `user/c-mlibc`) and the boot
 tests run them both ways, so the kernel's interface is tested through two
 libcs. Read this page when you port a program to mlibc or change the C
@@ -22,8 +23,9 @@ both libcs share.
 | `toolchain/newlib/libgloss/myos/` | what is newlib's alone: the reent hooks over `__myos_*`, signals, pthreads, stubs |
 | `toolchain/mlibc/versions.env`, `fetch.sh` | the pins of mlibc, its meson subprojects and the compiler-rt builtins |
 | `toolchain/mlibc/patch.sh` | installs the sysdeps and `libmyos` into mlibc's tree and edits upstream where myos needs other behaviour; its comments give each change's reason |
-| `toolchain/mlibc/build.sh` | meson + ninja, clang 19 or later (C++23), for the three arches: `target/mlibc-<arch>/{include,lib}` |
+| `toolchain/mlibc/build.sh` | meson + ninja, clang 19 or later (C++23), for the three arches: `target/mlibc-<arch>/{include,lib}`, and the dynamic linker and the shared libc in `shared/` |
 | `toolchain/mlibc/sysdeps/myos/` | the sysdeps (below) and the ABI headers (`toolchain/mlibc/README.md` says how they were made) |
+| `toolchain/mlibc/sysdeps/myos/generic/rtld.cpp` | the dynamic linker's own sysdeps, on the raw syscalls |
 | `user/c-mlibc/` | the smokes of `user/c` built against mlibc, `/bin/etc/mlibc/*`, and their tests |
 | `scripts/myos-c-userspace-lib.sh` | `myos_mlibc_cflags`, `myos_mlibc_link`, `PORT_LIBC` in `myos_write_cross_cc` |
 
@@ -38,7 +40,8 @@ myos_mlibc_link x86_64 prog prog.o    # crt0.o prog.o -lc -lbuiltins, a static P
 - Everything is in `libc.a`; libm, libpthread and the rest are empty
   archives. `libbuiltins.a` holds the compiler-rt builtins a link needs,
   among them the software binary128 `long double` of aarch64 and riscv64.
-- Programs are static, so the image carries none of the sysroot.
+- Programs are static by default, and need nothing of the sysroot on the
+  running system.
 - Without a feature macro a program sees POSIX 2008 with the XSI
   extensions, as with newlib (`patch.sh` widens mlibc's default).
   `_GNU_SOURCE` adds the GNU calls.
@@ -50,6 +53,47 @@ To put a port on mlibc, set `PORT_LIBC=mlibc` and add `mlibc` to
 In CI mlibc is an ordinary port (kind `port`, not `toolchain`): the ports
 job builds and caches it, and a port built on it builds it first when the
 registry lacks it.
+
+## Shared objects
+
+A program may link the shared mlibc instead, and load objects at run time:
+
+```sh
+clang $(myos_mlibc_cflags x86_64) -O2 -c plugin.c -o plugin.o
+myos_mlibc_link_shared x86_64 plugin.so plugin.o       # a shared object
+myos_mlibc_link_dynamic x86_64 prog prog.o             # needs libc.so; --dynamic-linker=/lib/ld.so
+```
+
+- Every image carries the dynamic linker and the shared libc, `/lib/ld.so`
+  and `/lib/libc.so` (mlibc's `rtld`), and the empty `libm.so`,
+  `libpthread.so`, `libdl.so`, `librt.so`, `libutil.so` and `libresolv.so`
+  a link's `-lm` names. They are built with the archives and kept apart
+  from them (`target/mlibc-<arch>/shared`), so that a plain `-lc` goes on
+  finding `libc.a`: static stays the default, and a program opts in by how
+  it is linked.
+- `exec` of a program with a `PT_INTERP` maps the interpreter beside it
+  and starts there, as for a Linux program (`docs/linux-compat.md`
+  "Dynamic linking"); the auxiliary vector gives the linker `AT_BASE`,
+  `AT_PHDR`, `AT_ENTRY` and `AT_EXECFN` (the program's path, for
+  `$ORIGIN`). The security policy's `exec` covers the interpreter.
+- The linker looks for an object in the `DT_RUNPATH` of the object that
+  names it (`$ORIGIN` is that object's directory), in `LD_LIBRARY_PATH`,
+  then in `/lib` and `/usr/lib`. It maps each object's segments from its
+  file, inside the process's mmap window: pages come in as
+  they are touched, and an unwritten one is the page cache's.
+- `dlopen`, `dlsym`, `dladdr`, `dl_iterate_phdr` and thread-local
+  variables in loaded objects work on the three arches. `dlclose` succeeds
+  and unloads nothing: an object stays until the program ends, when its
+  destructors run (mlibc's).
+- An object's undefined symbols resolve against the program too, which
+  `myos_mlibc_link_dynamic` links with `--export-dynamic`.
+- The C++ runtimes, GLib and the libraries over them are still static
+  only: a shared object in C++ has no shared libc++ to link (issue #658
+  lists what moving them takes).
+
+`user/c-mlibc/dl_smoke.c` (the `dl` test) covers it: an object named in
+`DT_NEEDED` and found through `$ORIGIN`, one loaded with `dlopen`, calls
+in both directions, and a thread-local variable of each in two threads.
 
 ## The sysdeps
 
@@ -134,7 +178,8 @@ libc changes (`docs/ports.md` "Cache keys"). tcc's sysroot is newlib's.
 
 ## Limits
 
-- No shared objects or `dlopen`: mlibc is built static, as newlib is.
+- Shared objects are mlibc's alone, and C only so far ("Shared objects");
+  newlib has no dynamic linker.
 - No Rust `std` on mlibc: the Rust port is newlib's.
 - A fork while another thread holds one of mlibc's own locks (the
   allocator's, stdio's) hangs the child in its first `malloc` or

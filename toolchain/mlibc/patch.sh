@@ -335,6 +335,28 @@ __UINT32_TYPE__ arc4random_uniform(__UINT32_TYPE__ __upper_bound);
     print("patched bsd_stdlib.h: the arc4random family")
 PY
 
+# ld.so finds its own load address before it has relocated itself: on
+# aarch64 through the first GOT entry, which upstream takes to hold the
+# link-time address of _DYNAMIC. ld.lld leaves it zero there (upstream's
+# TODO says as much), and the self-relocation ran off with _DYNAMIC's
+# address as the base. Its ELF header's address instead, PC-relative, as
+# on riscv64.
+python3 - "$SRC/options/rtld/generic/main.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__) || defined(__m68k__) || defined(__loongarch64)\n\t// On x86_64, the first GOT entry"
+new = "#if defined(__x86_64__) || defined(__i386__) || defined(__m68k__) || defined(__loongarch64)\n\t// On x86_64, the first GOT entry"
+if new not in s:
+    assert s.count(old) == 1, "main.cpp: getLdsoBase's arch list not found"
+    s = s.replace(old, new)
+    old = "#elif defined(__riscv)\n\treturn reinterpret_cast<uintptr_t>(&__ehdr_start);"
+    assert s.count(old) == 1, "main.cpp: getLdsoBase's riscv branch not found"
+    s = s.replace(old, "#elif defined(__riscv) || defined(__aarch64__)\n\treturn reinterpret_cast<uintptr_t>(&__ehdr_start);")
+    open(path, "w").write(s)
+    print("patched main.cpp: ld.so's base from its ELF header on aarch64")
+PY
+
 # The top-level meson.build picks the sysdeps by host_machine.system().
 # The kernel relocates a static PIE itself and applies RELATIVE relocations
 # only (kernel/src/modules/elf.rs): no ifuncs (x86_64's strcmp), whose
@@ -346,9 +368,15 @@ s = open(path).read()
 if "host_machine.system() == 'myos'" not in s:
     anchor = "# ANCHOR: demo-sysdeps\nelif host_machine.system() == 'demo'"
     assert s.count(anchor) == 1, "meson.build: demo sysdeps anchor not found"
+    # The dynamic linker takes each object's place from mmap (the kernel
+    # maps only inside a process's mmap window, not at mlibc's fixed
+    # library base) and maps its segments from the file, a page at a time
+    # as they are touched, the unwritten ones the page cache's own.
     s = s.replace(anchor, """elif host_machine.system() == 'myos'
 	rtld_include_dirs += include_directories('sysdeps/myos/include')
 	libc_include_dirs += include_directories('sysdeps/myos/include')
+	internal_conf.set10('MLIBC_MAP_DSO_SEGMENTS', true)
+	internal_conf.set10('MLIBC_MMAP_ALLOCATE_DSO', true)
 	subdir('sysdeps/myos')
 """ + anchor)
     open(path, "w").write(s)
@@ -359,6 +387,17 @@ if off not in s:
     assert s.count(check) == 1, "meson.build: the ifunc check not found"
     open(path, "w").write(s.replace(check, check + off))
     print("patched meson.build: no ifuncs")
+    s = open(path).read()
+# libc.so links the compiler-rt builtins its own code calls (the complex
+# multiplications of libm, binary128 on aarch64 and riscv64), which
+# build.sh makes first and names in the cross file: after libc's objects,
+# where a link argument of the cross file would come before them.
+old = "\t\t\tlink_args: ['-Wl,--version-script,' + hide_everything_ld, mlibc_link_args],\n"
+new = "\t\t\tlink_args: ['-Wl,--version-script,' + hide_everything_ld, mlibc_link_args, meson.get_external_property('myos_builtins', [])],\n"
+if new not in s:
+    assert s.count(old) == 1, "meson.build: libc.so's link arguments not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched meson.build: libc.so links the builtins")
 PY
 
 # inet_pton's IPv6 with an embedded IPv4 address (::ffff:10.0.2.2) checks

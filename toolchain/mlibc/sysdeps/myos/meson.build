@@ -50,10 +50,13 @@ libmyos_sources = files(
 )
 
 # The static ld (the TLS setup of a static program) calls the sysdeps it
-# needs from sysdeps.cpp; its raw syscalls are in libmyos/myos_raw.c.
+# needs from sysdeps.cpp, over the libc.a it is part of. ld.so, the
+# dynamic linker, has its own in rtld.cpp, over the raw syscalls alone (no
+# libc under it; it includes libmyos/myos_raw.c): each of the two files is
+# empty in the other's build.
 rtld_sources += files(
 	'generic/sysdeps.cpp',
-	'libmyos/myos_raw.c',
+	'generic/rtld.cpp',
 )
 rtld_include_dirs += include_directories('libmyos')
 

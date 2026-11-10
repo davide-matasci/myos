@@ -3,6 +3,8 @@
 // (-1 with errno), turned into the errno value mlibc's calls take. The
 // ones mlibc's startup and allocator need before the TLS is up (the
 // logger, the anonymous memory, the thread pointer) use the raw syscalls.
+// Not ld.so's: the dynamic linker has rtld.cpp.
+#if !defined(MLIBC_BUILDING_RTLD) || defined(MLIBC_STATIC_BUILD)
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -1066,3 +1068,5 @@ int Sysdeps<Shmctl>::operator()(int *idx, int shmid, int cmd, struct shmid_ds *b
 }
 
 } // namespace mlibc
+
+#endif // not ld.so

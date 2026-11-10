@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Cross-build mlibc for x86_64, aarch64 and riscv64 with clang: libc.a, the
 # crt objects and the headers go to target/mlibc-<arch> (lib/, include/),
-# the sysroot a program is compiled and linked against (docs/mlibc.md).
+# the sysroot a program is compiled and linked against (docs/mlibc.md), and
+# the dynamic linker with the shared libc to shared/ (ld.so, libc.so and
+# the empty libm.so and its like: what a program that opts into shared
+# objects links and the image carries in /lib). Apart from lib/, where a
+# plain -lc must go on finding the archive.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -56,6 +60,12 @@ build_one() {
     riscv64) cpu="rv64gc"; arch_flags="$(printf "'%s', " $MYOS_RISCV64_ISA)'-mno-relax'," ;;
   esac
 
+  # The links (the shared objects: ld.so, libc.so) as clang drives them
+  # for a Linux target, straight to ld.lld with that arch's emulation and
+  # nothing of a libc of its own (-nostdlib): for the bare target clang
+  # hands a link to the host's gcc, which links for the host.
+  local link_args="'--target=${arch}-unknown-linux-gnu', '-fuse-ld=lld', '-nostdlib'"
+
   # The cross file's C compiler, as a command.
   CROSS_CC=("$CLANG" "--target=$elf")
   [[ -n "$arch_flags" ]] && CROSS_CC+=($(printf '%s' "$arch_flags" | tr -d "',"))
@@ -78,11 +88,12 @@ strip = '$STRIP_BIN'
 [built-in options]
 c_args = ['-O2']
 cpp_args = ['-O2']
-c_link_args = ['-fuse-ld=lld', '-nostdlib']
-cpp_link_args = ['-fuse-ld=lld', '-nostdlib']
+c_link_args = [$link_args]
+cpp_link_args = [$link_args]
 
 [properties]
 needs_exe_wrapper = true
+myos_builtins = ['$build/libbuiltins-so.a']
 
 [host_machine]
 system = 'myos'
@@ -90,17 +101,26 @@ cpu_family = '$arch'
 cpu = '$cpu'
 endian = 'little'
 EOC
-  meson setup "$build" "$SRC" \
-    --cross-file "$build/cross.txt" \
-    --prefix "$prefix" --libdir lib --includedir include \
-    --buildtype release \
-    -Ddefault_library=static \
-    -Dlibgcc_dependency=false \
-    -Duse_freestnd_hdrs=enabled \
-    -Dbuild_tests=false >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
-  ninja -C "$build" >"$build/ninja.log" 2>&1 || { tail -60 "$build/ninja.log" >&2; exit 1; }
-  ninja -C "$build" install >"$build/install.log" 2>&1 || { tail -40 "$build/install.log" >&2; exit 1; }
+  # The headers first: the builtins are compiled against them, and
+  # libc.so links the builtins (the cross file's myos_builtins).
+  local common=(--cross-file "$build/cross.txt" --prefix "$prefix" --libdir lib --includedir include
+    --buildtype release -Dlibgcc_dependency=false -Duse_freestnd_hdrs=enabled -Dbuild_tests=false)
+  meson setup "$build/headers" "$SRC" "${common[@]}" -Dheaders_only=true \
+    >"$build/headers.log" 2>&1 || { tail -40 "$build/headers.log" >&2; exit 1; }
+  ninja -C "$build/headers" install >>"$build/headers.log" 2>&1 || { tail -40 "$build/headers.log" >&2; exit 1; }
   build_builtins "$arch" "$prefix"
+  meson setup "$build/libc" "$SRC" "${common[@]}" -Ddefault_library=both \
+    >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
+  ninja -C "$build/libc" >"$build/ninja.log" 2>&1 || { tail -60 "$build/ninja.log" >&2; exit 1; }
+  ninja -C "$build/libc" install >"$build/install.log" 2>&1 || { tail -40 "$build/install.log" >&2; exit 1; }
+  # The shared objects out of lib/, stripped of their debug sections (the
+  # image carries them).
+  mkdir -p "$prefix/shared"
+  local so
+  for so in "$prefix"/lib/*.so; do
+    "$STRIP_BIN" --strip-debug "$so"
+    mv "$so" "$prefix/shared/"
+  done
   echo "mlibc -> $prefix"
 }
 
@@ -125,7 +145,7 @@ build_builtins() {
         floatditf.c floatsitf.c floatunditf.c floatunsitf.c multc3.c fe_stubs.c) ;;
   esac
   rm -rf "$obj"
-  mkdir -p "$obj"
+  mkdir -p "$obj" "$prefix/lib"
   # The binary128 helpers round to nearest and raise no exception flags
   # (the FPU's own mode and flags are for float and double).
   cat >"$obj/fe_stubs.c" <<'C'
@@ -141,6 +161,18 @@ C
       -c "$src" -o "$obj/${f%.c}.o"
   done
   "$AR_BIN" rcs "$prefix/lib/libbuiltins.a" "$obj"/*.o
+  # What libc.so links (the cross file's myos_builtins): the same, and on
+  # x86_64 the complex multiplication of the x87 `long double`, which
+  # libm's cmull-users call and a shared object may not leave undefined.
+  # Not in the installed archive: the ports over mlibc key on its symbols
+  # (docs/ports.md "Cache keys").
+  cp "$prefix/lib/libbuiltins.a" "$ROOT/target/mlibc-build-$arch/libbuiltins-so.a"
+  if [[ "$arch" == x86_64 ]]; then
+    "${CROSS_CC[@]}" -O2 -nostdinc -isystem "$prefix/include" \
+      -isystem "$("$CLANG" -print-resource-dir)/include" -I"$CRT" \
+      -c "$CRT/mulxc3.c" -o "$obj/so-mulxc3.o"
+    "$AR_BIN" rs "$ROOT/target/mlibc-build-$arch/libbuiltins-so.a" "$obj/so-mulxc3.o" 2>/dev/null
+  fi
 }
 
 build_one x86_64
