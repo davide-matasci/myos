@@ -81,7 +81,7 @@ non-basic suites (`limits`, `io`, `malloc`, `paths`, `process`, `signal`,
 non-basic, signal handlers, and the myos `chroot`/FIFO suite) **plus**
 `misc/ci-expansion-2.tests` (593: every other test that builds and passes on
 all three arches) **plus** `misc/ci-udp.tests` (the 207 of the udp suite,
-over netd's loopback interface). 1131 tests, all host-prebuilt. See `SUITES.md` for the full
+over netd's loopback interface). 1132 tests, all host-prebuilt. See `SUITES.md` for the full
 suite inventory, the selection rationale and the deferred tests.
 
 Guest staging uses a thin copy (not the whole suite):
