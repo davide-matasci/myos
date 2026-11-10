@@ -175,7 +175,8 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
   leaves its outputs the same rebuilds nothing above it,
   `scripts/ci-registry.sh`, `docs/ports.md` "Cache keys";
   its plan job, `scripts/ci-ports-plan.sh`, starts a toolchain or port job
-  only for what the registry lacks; a port too long for one job, WebKitGTK,
+  only for what the registry lacks, the ports over a changed one in a
+  second stage, once its outputs are known; a port too long for one job, WebKitGTK,
   is built and cached an arch at a time, `PORT_ARCH_JOBS` in
   `docs/ports.md`) and `ci-runtime.yml` (build job → boot jobs).
 - Pull requests boot **what the change needs**: the `plan` job
