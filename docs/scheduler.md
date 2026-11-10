@@ -203,7 +203,9 @@ online CPUs and waits briefly for their acks.
 - An idle CPU runs no user code, so it is not interrupted: it is flagged
   (`TLB_STALE`) and flushes when it next resumes a task.
 - A CPU waiting with IRQs off still serves a shootdown: `schedule` calls
-  `tlb_service`.
+  `tlb_service`, and so does a blocking wait that returns before it
+  began, which its caller may repeat pass after pass with interrupts off
+  ("Blocking waits" below).
 - No IPI is sent when no other CPU has the address space loaded
   (`task::aspace_loaded_elsewhere`).
 - It runs with interrupts off, whatever its caller's. Its lock is a spin
@@ -238,7 +240,15 @@ loop {
   wakes a waiter of its own on every pass (a `poll` whose scan takes and
   lets go of a module's `SleepLock`, as sndd's does) would otherwise see
   its own wake, look again and never sleep, and with interrupts masked in
-  its syscall nothing would preempt it for the waiter.
+  its syscall nothing would preempt it for the waiter. With the waiter
+  queued on another CPU the caller loops until that CPU runs it, and
+  answers the TLB shootdowns from the loop (`smp::tlb_service`): the
+  other CPU, in a shootdown of its own with the waiter queued behind it,
+  waited for this one's answer otherwise, and neither moved until the
+  `poll` timed out. netd's does after a second; on riscv64 every
+  shootdown of an exec cost that second, and the packages boot stood
+  still for 39 s (CI #2604; `shootdown` is the test). The loop itself
+  keeps its CPU's interrupts off for as long as it lasts (issue #788).
 - Spurious wakes are fine: every caller re-checks its condition.
   `wait_addr` builds on this (`docs/threads.md`, "Waiting on an address").
 - A lock whose holder may block (the VFS tree lock, a filesystem module's
@@ -343,5 +353,8 @@ reprogramming them reset the FIFO and dropped input.
 - A unix-socket write landing between a poller's scan and its `WAIT_ANY`
   registration was missed, and the X server stalled; hence registering
   before the sequence check.
+- A `poll` that could not sleep answered no shootdown from its loop: the
+  riscv64 packages boot stood still while four downloads were exec'd
+  (CI #2604); hence the answer on a wait's early return.
 - A 1 kHz tick cost a self-hosted build 10-14% under TCG; hence 100 Hz
   with tickless deadlines.

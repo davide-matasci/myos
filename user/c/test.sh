@@ -286,6 +286,12 @@ t -t exec ctor $SMOKES/ctor_smoke
 # up with different homes (sched_smoke.c; nothing to check with one CPU
 # for user tasks).
 t -t sched sched $SMOKES/sched_smoke
+# A task whose wait cannot begin still answers a TLB shootdown: a process
+# with a thread on another CPU unmaps pages beside a poller that pipe
+# traffic keeps from sleeping, a few times slower than without it and not
+# hundreds (sched_smoke.c shootdown; the riscv64 packages boot stood still
+# on it, CI #2604).
+t -t sched,mm shootdown $SMOKES/sched_smoke shootdown
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).
