@@ -1,6 +1,6 @@
 # The curated os-test list (misc/ci-boot.tests: POSIX core, non-basic,
 # signal handlers, myos chroot/FIFO, the udp suite and the rest of the
-# suite that passes; 1041 prebuilt tests): a thin writable copy of the
+# suite that passes; 1132 prebuilt tests): a thin writable copy of the
 # suite under /tmp/o,
 # `make -j4 report` (the tests run four at a time, one per CPU of the
 # boot's machine: each is a process of its own, run by make from a shell
