@@ -350,14 +350,20 @@ const PROC_SELF: &[u8] = b"/proc/self/";
 /// [`PathError::Unresolved`] when no binding leads there,
 /// [`PathError::TooLong`] when the real path does not fit `out`.
 fn virtual_to_real(virt: &[u8], out: &mut [u8]) -> Result<usize, PathError> {
+    virtual_to_real_in(crate::task::current_ns().as_deref(), virt, out)
+}
+
+/// [`virtual_to_real`] through the namespace `ns`, which the caller took
+/// once for a whole path (`task::current_ns`).
+fn virtual_to_real_in(ns: Option<&crate::task::ns::Namespace>, virt: &[u8], out: &mut [u8]) -> Result<usize, PathError> {
     let virt_s = core::str::from_utf8(virt).map_err(|_| PathError::Unresolved)?;
-    let mapped = crate::task::with_ns(|n| match n {
+    let mapped = match ns {
         None => Some(None),
-        Some(n) => match n.map(virt_s)? {
-            crate::task::ns::Mapped::Real(r) => Some(Some(r)),
-            crate::task::ns::Mapped::Synthetic => Some(Some(alloc::format!("@{virt_s}"))),
-        },
-    })
+        Some(n) => n.map(virt_s).map(|m| match m {
+            crate::task::ns::Mapped::Real(r) => Some(r),
+            crate::task::ns::Mapped::Synthetic => Some(alloc::format!("@{virt_s}")),
+        }),
+    }
     .ok_or(PathError::Unresolved)?;
     let real: &[u8] = match &mapped {
         None => virt,
@@ -379,6 +385,8 @@ const MAX_SYMLINKS: usize = 40;
 /// stays inside a chroot and `..` cannot climb out of it.
 fn follow_symlinks(virt: &mut [u8], mut vn: usize, follow_last: bool) -> Result<usize, PathError> {
     let mut hops = 0;
+    // The namespace once for the whole path, not once per component.
+    let ns = crate::task::current_ns();
     let mut real = vfs::path_buf();
     let mut target = vfs::path_buf();
     let mut next = vfs::path_buf();
@@ -387,7 +395,7 @@ fn follow_symlinks(virt: &mut [u8], mut vn: usize, follow_last: bool) -> Result<
     while start < vn {
         let end = virt[start..vn].iter().position(|&b| b == b'/').map_or(vn, |i| start + i);
         if end < vn || follow_last {
-            let rn = virtual_to_real(&virt[..end], &mut real)?;
+            let rn = virtual_to_real_in(ns.as_deref(), &virt[..end], &mut real)?;
             let real_s = core::str::from_utf8(&real[..rn]).map_err(|_| PathError::Unresolved)?;
             if let Some(tn) = vfs::readlink(real_s, &mut target) {
                 hops += 1;
