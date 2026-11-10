@@ -16,7 +16,6 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
 
 use crate::fs::StatInfo;
 
@@ -192,14 +191,14 @@ fn entry_at_mut<'a>(entries: &'a mut Tree, at: At) -> Option<&'a mut Entry> {
 
 /// The id of the entry at `name`.
 fn file_id(name: &str) -> Option<u64> {
-    let entries = ENTRIES.lock();
+    let entries = ENTRIES.read();
     entry_at(&entries, At::Path(name)).map(|e| e.id)
 }
 
 /// Unlink the file at `name` but keep it, by its id, for whoever holds it.
 fn unlink_keep(name: &str) -> bool {
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let Some(entry) = entry_at(&entries, At::Path(name)) else {
         return false;
     };
@@ -216,7 +215,7 @@ fn unlink_keep(name: &str) -> bool {
 /// (`vfs::anon_file`): its id.
 pub fn create_kept() -> Option<u64> {
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     if entries.len() >= MAX_ENTRIES {
         return None;
     }
@@ -228,21 +227,23 @@ pub fn create_kept() -> Option<u64> {
 
 /// The file `unlink_keep` kept is let go.
 fn forget(id: u64) {
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let kept = alloc::format!("\0{id}");
     if entries.by_path.contains_key(kept.as_str()) {
         entries.remove(&kept);
     }
 }
 
-static ENTRIES: Mutex<Tree> = Mutex::new(Tree::new());
+/// A lock for readers: `stat`, the lookups an `open` makes and a `read`
+/// change nothing, and on several CPUs they waited for each other.
+static ENTRIES: spin::RwLock<Tree> = spin::RwLock::new(Tree::new());
 
 /// How full tmpfs is (`statvfs`): its files' bytes are in the kernel heap,
 /// so the heap is its space, and [`MAX_ENTRIES`] its file nodes.
 pub fn statfs() -> myos_abi::VfsStatFs {
     const BLOCK: u64 = 4096;
     let (size, free) = crate::heap::usage();
-    let used = ENTRIES.lock().len() as u64;
+    let used = ENTRIES.read().len() as u64;
     myos_abi::VfsStatFs {
         bsize: BLOCK,
         blocks: size as u64 / BLOCK,
@@ -326,7 +327,7 @@ pub fn create(name: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     if let Some(entry) = entries.get(name) {
         return matches!(entry.kind, Kind::File(_));
     }
@@ -346,7 +347,7 @@ pub fn truncate(name: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let Some(entry) = entries.get_mut(name) else {
         return false;
     };
@@ -372,7 +373,7 @@ fn set_size_at(at: At, size: usize) -> Result<(), WriteError> {
         return Err(WriteError::TooBig);
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let entry = entry_at_mut(&mut entries, at).ok_or(WriteError::Failed)?;
     let Kind::File(data) = &mut entry.kind else {
         return Err(WriteError::Failed);
@@ -393,7 +394,7 @@ pub fn read(name: &str, pos: usize, out: &mut [u8]) -> usize {
 }
 
 fn read_at(at: At, pos: usize, out: &mut [u8]) -> usize {
-    let entries = ENTRIES.lock();
+    let entries = ENTRIES.read();
     let Some(entry) = entry_at(&entries, at) else {
         return 0;
     };
@@ -415,7 +416,7 @@ pub fn write(name: &str, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
 /// (`EFBIG`, issue #725), `NoSpace` when the heap has no room for them.
 fn write_at(at: At, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let entry = entry_at_mut(&mut entries, at).ok_or(WriteError::Failed)?;
     let Kind::File(data) = &mut entry.kind else {
         return Err(WriteError::Failed);
@@ -446,7 +447,7 @@ pub fn mkfifo(name: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     if entries.get(name).is_some() || !parent_ok(&entries, name) || entries.len() >= MAX_ENTRIES {
         return false;
     }
@@ -463,7 +464,7 @@ pub fn fifo_id(name: &str) -> Option<usize> {
     if !valid_rel_path(name) {
         return None;
     }
-    let entries = ENTRIES.lock();
+    let entries = ENTRIES.read();
     match entries.get(name)?.kind {
         Kind::Fifo(id) => Some(id),
         _ => None,
@@ -475,7 +476,7 @@ pub fn mkdir(name: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     if entries.get(name).is_some() {
         return false;
     }
@@ -495,7 +496,7 @@ pub fn rmdir(name: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let Some(entry) = entries.get(name) else {
         return false;
     };
@@ -515,7 +516,7 @@ pub fn unlink(name: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let Some(entry) = entries.get(name) else {
         return false;
     };
@@ -540,7 +541,7 @@ pub fn rename(old: &str, new: &str) -> bool {
         return true;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     if !rename_locked(&mut entries, old, new) {
         return false;
     }
@@ -603,7 +604,7 @@ pub fn symlink(target: &str, linkpath: &str) -> bool {
         return false;
     }
     let now = now();
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     if entries.get(linkpath).is_some() {
         return false;
     }
@@ -633,7 +634,7 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Option<usize> {
     if !has_symlinks() || !valid_rel_path(path) {
         return None;
     }
-    let entries = ENTRIES.lock();
+    let entries = ENTRIES.read();
     let Kind::Symlink(target) = &entries.get(path)?.kind else {
         return None;
     };
@@ -650,7 +651,7 @@ pub fn listdir_at(rel: &str, buf: &mut [u8]) -> usize {
     } else {
         return 0;
     };
-    let entries = ENTRIES.lock();
+    let entries = ENTRIES.read();
     if !dir.is_empty() && !is_dir_path(&entries, dir) {
         return 0;
     }
@@ -697,7 +698,7 @@ pub fn stat(name: &str) -> Option<StatInfo> {
 }
 
 fn stat_at(at: At) -> Option<StatInfo> {
-    let entries = ENTRIES.lock();
+    let entries = ENTRIES.read();
     let entry = entry_at(&entries, at)?;
     let (mode, size, nlink) = match &entry.kind {
         Kind::Dir => (S_IFDIR | 0o755, 0u64, 2u32),
@@ -732,7 +733,7 @@ pub fn set_times(name: &str, atime: Option<u64>, mtime: Option<u64>) -> bool {
 }
 
 fn set_times_at(at: At, atime: Option<u64>, mtime: Option<u64>) -> bool {
-    let mut entries = ENTRIES.lock();
+    let mut entries = ENTRIES.write();
     let Some(entry) = entry_at_mut(&mut entries, at) else {
         return false;
     };

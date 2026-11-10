@@ -2,7 +2,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 use myos_abi::{ModuleVfsOps, VfsStatFs};
 
@@ -210,13 +209,18 @@ impl Mount {
     }
 }
 
-static MOUNTS: Mutex<Vec<Mount>> = Mutex::new(Vec::new());
+/// The mounts. Read by every path a syscall resolves and every read and
+/// write of an open file, changed by a mount or an unmount: a lock for
+/// readers, so that the CPUs resolving paths do not take turns (as a
+/// `Mutex` it was the most fought-over lock of three processes working on
+/// files, after the heap's).
+static MOUNTS: spin::RwLock<Vec<Mount>> = spin::RwLock::new(Vec::new());
 
 /// Attach an in-kernel backend at `prefix` (empty string = root).
 ///
 /// Source is `none` (no block device). `name` is the fstype (`rootfs`, `tmpfs`, ...).
 pub fn mount(name: &str, prefix: &str, ops: MountOps) {
-    MOUNTS.lock().push(Mount {
+    MOUNTS.write().push(Mount {
         name: String::from(name),
         prefix: String::from(prefix),
         source: String::from("none"),
@@ -251,7 +255,7 @@ fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, uniq
         MODULE_SYMLINKS.store(true, core::sync::atomic::Ordering::Relaxed);
     }
     let source = if source.is_empty() { "none" } else { source };
-    let mut mounts = MOUNTS.lock();
+    let mut mounts = MOUNTS.write();
     if let Some(m) = mounts.iter_mut().find(|m| m.prefix == prefix) {
         m.name = String::from(name);
         m.source = String::from(source);
@@ -278,7 +282,7 @@ fn attach_module(name: &str, prefix: &str, ops: ModuleVfsOps, source: &str, uniq
 /// existing directory that is not a mount point already. The root, `/`, is
 /// one.
 pub fn mount_point_free(prefix: &str) -> bool {
-    if prefix.is_empty() || MOUNTS.lock().iter().any(|m| m.prefix == prefix) {
+    if prefix.is_empty() || MOUNTS.read().iter().any(|m| m.prefix == prefix) {
         return false;
     }
     stat(prefix).is_some_and(|st| st.mode & super::S_IFMT == 0o040000)
@@ -287,14 +291,14 @@ pub fn mount_point_free(prefix: &str) -> bool {
 /// A filesystem is mounted at `path` (a real path, binds resolved).
 pub fn is_mount_point(path: &str) -> bool {
     let path = normalize_path(path);
-    !path.is_empty() && MOUNTS.lock().iter().any(|m| !m.gone() && m.prefix == path)
+    !path.is_empty() && MOUNTS.read().iter().any(|m| !m.gone() && m.prefix == path)
 }
 
 /// A mount point lies at `prefix` or below it: such a directory can be
 /// neither removed nor renamed, its mount would hang from nothing.
 pub fn holds_mount(prefix: &str) -> bool {
     let prefix = normalize_path(prefix);
-    MOUNTS.lock().iter().any(|m| {
+    MOUNTS.read().iter().any(|m| {
         !m.gone()
             && !m.prefix.is_empty()
             && (prefix.is_empty()
@@ -310,13 +314,13 @@ pub fn holds_mount(prefix: &str) -> bool {
 pub fn unmount(prefix: &str) -> bool {
     let prefix = normalize_path(prefix);
     // The page cache's hold on its files would keep it busy.
-    let idx = MOUNTS.lock().iter().position(|m| m.prefix == prefix);
+    let idx = MOUNTS.read().iter().position(|m| m.prefix == prefix);
     if let Some(idx) = idx {
         pagecache::forget_mount(idx);
     }
     reap();
     let ops = {
-        let mut mounts = MOUNTS.lock();
+        let mut mounts = MOUNTS.write();
         let Some(idx) = mounts.iter().position(|m| m.prefix == prefix) else {
             return false;
         };
@@ -333,7 +337,7 @@ pub fn unmount(prefix: &str) -> bool {
         // A bind of the mount point itself (`/mnt` over `/tmp/mnt`, with a disk
         // mounted on `/tmp/mnt`) names the directory, there after the mount.
         let under = |p: &str| p == prefix || p.starts_with(below.as_str());
-        if BINDS.lock().iter().any(|(target, source)| under(target) || source.starts_with(below.as_str())) {
+        if BINDS.read().iter().any(|(target, source)| under(target) || source.starts_with(below.as_str())) {
             return false;
         }
         if node::on_mount(idx) {
@@ -356,9 +360,9 @@ pub fn unmount(prefix: &str) -> bool {
 /// first: no process is left to use them. The prefixes still busy (an fd
 /// the caller holds there) are returned.
 pub fn unmount_all() -> Vec<String> {
-    BINDS.lock().clear();
+    BINDS.write().clear();
     let mut prefixes: Vec<String> = MOUNTS
-        .lock()
+        .read()
         .iter()
         .filter(|m| !m.gone() && matches!(m.backend, MountBackend::Module(_)) && m.source.starts_with("/dev/"))
         .map(|m| m.prefix.clone())
@@ -370,13 +374,13 @@ pub fn unmount_all() -> Vec<String> {
 
 /// A mount has `source` (`/dev/sda/data`) as its block device.
 pub fn source_mounted(source: &str) -> bool {
-    MOUNTS.lock().iter().any(|m| !m.gone() && m.source == source)
+    MOUNTS.read().iter().any(|m| !m.gone() && m.source == source)
 }
 
 /// Open fds on `rel` of the mount at `prefix` (`"dev"`, `"sda"`: the block
 /// device `/dev/sda/data`), counting a fork's and a dup's copies.
 pub fn open_refs(prefix: &str, rel: &str) -> u32 {
-    let Some(mount) = MOUNTS.lock().iter().position(|m| m.prefix == prefix) else {
+    let Some(mount) = MOUNTS.read().iter().position(|m| m.prefix == prefix) else {
         return 0;
     };
     node::opens_at(mount, rel)
@@ -387,7 +391,7 @@ pub fn open_refs(prefix: &str, rel: &str) -> u32 {
 /// Must not be called while `MOUNTS` is already held (procfs `read`/`stat`
 /// re-lock after `backend_read` / `backend_stat` drop it).
 pub fn mounts_text() -> Vec<u8> {
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     let mut out = Vec::new();
     for m in mounts.iter().filter(|m| !m.gone()) {
         let source = if m.source.is_empty() {
@@ -407,7 +411,7 @@ pub fn mounts_text() -> Vec<u8> {
         out.extend_from_slice(b" 0 0\n");
     }
     drop(mounts);
-    for (target, source) in BINDS.lock().iter() {
+    for (target, source) in BINDS.read().iter() {
         out.extend_from_slice(alloc::format!("/{source} /{target} bind rw 0 0\n").as_bytes());
     }
     out
@@ -721,7 +725,7 @@ pub fn close_ref(node: &Vnode) {
         let backend = {
             let _tree = tree_read();
             node::location(node).and_then(|(idx, rel)| {
-                let ops = match MOUNTS.lock().get(idx)?.backend {
+                let ops = match MOUNTS.read().get(idx)?.backend {
                     MountBackend::Module(ops) => ops,
                     MountBackend::Kernel(_) => return None,
                 };
@@ -744,7 +748,7 @@ pub fn close_ref(node: &Vnode) {
 /// The module ops behind `node` and its path there, if a module serves it.
 fn module_location(node: &Vnode) -> Option<(ModuleVfsOps, node::Rel)> {
     let (idx, rel) = node::location(node)?;
-    match MOUNTS.lock().get(idx)?.backend {
+    match MOUNTS.read().get(idx)?.backend {
         MountBackend::Module(ops) => Some((ops, rel)),
         MountBackend::Kernel(_) => None,
     }
@@ -822,7 +826,7 @@ pub fn vnode_path(node: &Vnode) -> String {
     let Some((idx, rel, gone)) = node::name(node) else {
         return String::new();
     };
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     let prefix = mounts.get(idx).map_or("", |m| m.prefix.as_str());
     let mut path = String::from("/");
     path.push_str(prefix);
@@ -842,7 +846,7 @@ pub fn node_path(node: &Vnode) -> Option<String> {
     if gone {
         return None;
     }
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     let prefix = mounts.get(idx)?.prefix.as_str();
     Some(match (prefix.is_empty(), rel.is_empty()) {
         (true, _) => alloc::format!("/{rel}"),
@@ -856,7 +860,7 @@ pub fn node_at(node: &Vnode, path: &str) -> bool {
     let Some((idx, rel)) = node::location(node) else {
         return false;
     };
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     let Some(m) = mounts.get(idx) else {
         return false;
     };
@@ -904,7 +908,7 @@ pub struct DeviceFrame {
 pub fn poll(node: &Vnode) -> Option<(u32, u64)> {
     let _tree = tree_read();
     let (idx, rel) = node::location(node)?;
-    let backend = MOUNTS.lock().get(idx)?.backend;
+    let backend = MOUNTS.read().get(idx)?.backend;
     let rel = rel.as_str();
     match backend {
         MountBackend::Kernel(ops) => (ops.poll?)(rel),
@@ -928,7 +932,7 @@ pub fn pollable(node: &Vnode) -> bool {
         return false;
     };
     // The lock let go before the mount's hook runs.
-    let backend = MOUNTS.lock().get(idx).map(|m| m.backend);
+    let backend = MOUNTS.read().get(idx).map(|m| m.backend);
     match backend {
         Some(MountBackend::Kernel(ops)) => ops.poll.is_some() && ops.write_wakes.is_none_or(|f| f(rel.as_str())),
         Some(MountBackend::Module(ops)) => ops.poll.is_some(),
@@ -1234,12 +1238,12 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     // `self/fd` with the paths of the caller's open files (vnode_path), which
     // take that lock, so a listing that held it spun forever on the second
     // take (`find /proc`, with its directories open, froze the system).
-    let Some((backend, prefix)) = MOUNTS.lock().get(idx).map(|m| (m.backend, m.prefix.clone())) else {
+    let Some((backend, prefix)) = MOUNTS.read().get(idx).map(|m| (m.backend, m.prefix.clone())) else {
         return 0;
     };
     let n = backend_listdir(backend, rel, buf);
     let mut n = without_hidden(buf, n);
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     // Surface mount points that live below the listed directory, so the tree
     // is browsable even though mount prefixes are virtual (issue #79): `/` shows
     // top-level mounts (`bin`, …), `/bin` the port categories, `/dev/console`
@@ -1290,7 +1294,7 @@ pub fn listdir(path: &str, buf: &mut [u8]) -> usize {
     // /bin/custom, its test script in /lib/myos-tests/ports): the target
     // need not exist in the backend, so it shows up only here.
     let dir = normalize_path(path).trim_end_matches('/');
-    for (target, _) in BINDS.lock().iter() {
+    for (target, _) in BINDS.read().iter() {
         let (parent, child) = match target.rsplit_once('/') {
             Some((p, c)) => (p, c),
             None => ("", target.as_str()),
@@ -1356,7 +1360,7 @@ pub fn register_static(mount_name: &str, name: &str, bytes: &'static [u8]) -> bo
 }
 
 fn mount_index(name: &str) -> Option<usize> {
-    MOUNTS.lock().iter().position(|m| m.name == name)
+    MOUNTS.read().iter().position(|m| m.name == name)
 }
 
 /// The mount `path` lives on and the path relative to it (bind mounts
@@ -1367,7 +1371,7 @@ fn resolve_index(path: &str) -> Option<(usize, String)> {
         return None;
     }
     let path = unbind(normalize_path(path))?;
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     let mut best: Option<(usize, usize, &str)> = None;
     for (idx, m) in mounts.iter().enumerate() {
         let prefix = m.prefix.as_str();
@@ -1393,7 +1397,7 @@ fn resolve_index(path: &str) -> Option<(usize, String)> {
 /// Bind mounts as `(target, source)`: the tree at `source` is also seen at
 /// `target` (both absolute paths without the leading `/`). A path is
 /// rewritten before it reaches a mount, so a bind has no backend of its own.
-static BINDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+static BINDS: spin::RwLock<Vec<(String, String)>> = spin::RwLock::new(Vec::new());
 
 /// Binds rewritten while resolving one path (binds of binds).
 const MAX_BIND_HOPS: usize = 8;
@@ -1412,7 +1416,7 @@ pub fn canonical(path: &str) -> Option<String> {
 fn unbind(path: &str) -> Option<String> {
     let mut path = String::from(path);
     for _ in 0..MAX_BIND_HOPS {
-        let binds = BINDS.lock();
+        let binds = BINDS.read();
         let Some((target, source)) = binds
             .iter()
             .filter(|(t, _)| path == *t || (path.starts_with(t.as_str()) && path.as_bytes()[t.len()] == b'/'))
@@ -1434,7 +1438,7 @@ fn unbind(path: &str) -> Option<String> {
 pub fn bound_names(real: &str) -> Vec<String> {
     let real = normalize_path(real);
     BINDS
-        .lock()
+        .read()
         .iter()
         .filter_map(|(target, source)| {
             let rest = if source.is_empty() {
@@ -1461,7 +1465,7 @@ pub fn bind(source: &str, target: &str) -> bool {
     if target.is_empty() || stat(source).is_none() {
         return false;
     }
-    let mut binds = BINDS.lock();
+    let mut binds = BINDS.write();
     binds.retain(|(t, _)| t != target);
     binds.push((String::from(target), String::from(source)));
     true
@@ -1472,7 +1476,7 @@ pub fn bind(source: &str, target: &str) -> bool {
 /// (an open file is its source's).
 pub fn remove_bind(target: &str) -> bool {
     let target = normalize_path(target);
-    let mut binds = BINDS.lock();
+    let mut binds = BINDS.write();
     let before = binds.len();
     binds.retain(|(t, _)| *t != target);
     binds.len() != before
@@ -1482,7 +1486,7 @@ pub fn remove_bind(target: &str) -> bool {
 fn tmpfs_rel(path: &str) -> Option<String> {
     let _tree = tree_read();
     let (idx, rel) = resolve_index(path)?;
-    let mounts = MOUNTS.lock();
+    let mounts = MOUNTS.read();
     (mounts.get(idx)?.name == "tmpfs").then_some(rel)
 }
 
@@ -1501,7 +1505,7 @@ pub fn fifo_id(path: &str) -> Option<usize> {
 
 fn backend_lookup(idx: usize, rel: &str) -> Option<&'static [u8]> {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let m = mounts.get(idx)?;
         m.backend
     };
@@ -1513,7 +1517,7 @@ fn backend_lookup(idx: usize, rel: &str) -> Option<&'static [u8]> {
 
 fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let m = mounts.get(idx)?;
         m.backend
     };
@@ -1528,7 +1532,7 @@ fn backend_stat(idx: usize, rel: &str) -> Option<StatInfo> {
 }
 
 fn backend_of(idx: usize) -> Option<MountBackend> {
-    MOUNTS.lock().get(idx).map(|m| m.backend)
+    MOUNTS.read().get(idx).map(|m| m.backend)
 }
 
 /// The mount takes writes (`rw` in `/proc/mounts`).
@@ -1689,7 +1693,7 @@ fn backend_listdir(backend: MountBackend, rel: &str, buf: &mut [u8]) -> usize {
 
 fn backend_register(idx: usize, name: &str, bytes: &'static [u8]) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1703,7 +1707,7 @@ fn backend_register(idx: usize, name: &str, bytes: &'static [u8]) -> bool {
 
 fn backend_has_write(idx: usize) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1717,7 +1721,7 @@ fn backend_has_write(idx: usize) -> bool {
 
 fn backend_create(idx: usize, rel: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1731,7 +1735,7 @@ fn backend_create(idx: usize, rel: &str) -> bool {
 
 fn backend_truncate(idx: usize, rel: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1745,7 +1749,7 @@ fn backend_truncate(idx: usize, rel: &str) -> bool {
 
 fn backend_set_size(idx: usize, rel: &str, size: usize) -> Result<(), WriteError> {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let m = mounts.get(idx).ok_or(WriteError::Failed)?;
         m.backend
     };
@@ -1760,7 +1764,7 @@ fn backend_set_size(idx: usize, rel: &str, size: usize) -> Result<(), WriteError
 
 fn backend_set_times(idx: usize, rel: &str, atime: SetTime, mtime: SetTime) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1787,7 +1791,7 @@ fn backend_waits(idx: usize, rel: &str) -> bool {
 
 fn backend_read(idx: usize, rel: &str, pos: usize, out: &mut [u8]) -> usize {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return 0;
         };
@@ -1801,7 +1805,7 @@ fn backend_read(idx: usize, rel: &str, pos: usize, out: &mut [u8]) -> usize {
 
 fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let m = mounts.get(idx).ok_or(WriteError::Failed)?;
         m.backend
     };
@@ -1813,7 +1817,7 @@ fn backend_write(idx: usize, rel: &str, pos: usize, buf: &[u8]) -> Result<usize,
 
 fn backend_mkdir(idx: usize, rel: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1827,7 +1831,7 @@ fn backend_mkdir(idx: usize, rel: &str) -> bool {
 
 fn backend_rmdir(idx: usize, rel: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1841,7 +1845,7 @@ fn backend_rmdir(idx: usize, rel: &str) -> bool {
 
 fn backend_unlink(idx: usize, rel: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1855,7 +1859,7 @@ fn backend_unlink(idx: usize, rel: &str) -> bool {
 
 fn backend_rename(idx: usize, old: &str, new: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1869,7 +1873,7 @@ fn backend_rename(idx: usize, old: &str, new: &str) -> bool {
 
 fn backend_symlink(idx: usize, target: &str, linkpath: &str) -> bool {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let Some(m) = mounts.get(idx) else {
             return false;
         };
@@ -1883,7 +1887,7 @@ fn backend_symlink(idx: usize, target: &str, linkpath: &str) -> bool {
 
 fn backend_readlink(idx: usize, rel: &str, buf: &mut [u8]) -> Option<usize> {
     let backend = {
-        let mounts = MOUNTS.lock();
+        let mounts = MOUNTS.read();
         let m = mounts.get(idx)?;
         m.backend
     };
