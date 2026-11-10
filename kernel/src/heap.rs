@@ -261,6 +261,9 @@ impl IrqSafeHeap {
         let mut taken = 0;
         while taken < cpu_class_max(c) / 2 && !classed.free[c].is_null() {
             let more = classed.alloc(Classed::class_layout(c));
+            if more.is_null() {
+                break;
+            }
             unsafe { *(more as *mut *mut u8) = cache.free[c] };
             cache.free[c] = more;
             taken += 1;
@@ -280,6 +283,9 @@ impl IrqSafeHeap {
             let mut given = 0;
             while given < cpu_class_max(c) / 2 {
                 let block = cache.free[c];
+                if block.is_null() {
+                    break;
+                }
                 cache.free[c] = unsafe { *(block as *mut *mut u8) };
                 unsafe { classed.dealloc(block, Classed::class_layout(c)) };
                 given += 1;
