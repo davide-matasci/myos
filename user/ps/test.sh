@@ -4,6 +4,14 @@
 ps_list() {
 	sleep 30 &
 	s=$!
+	# Once the child is sleep: until its exec it is still called sh, and
+	# a ps quick enough listed it so.
+	i=0
+	while [ $i -lt 2000 ]; do
+		read pid name rest < /proc/$s/status
+		[ "$name" = sleep ] && break
+		i=$((i + 1))
+	done
 	ps > /tmp/ps.out
 	ps -e > /tmp/ps-e.out
 	ps -e -L > /tmp/ps-eL.out

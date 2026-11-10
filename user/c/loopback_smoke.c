@@ -558,6 +558,13 @@ static int tcp_signals(void) {
     if (signaller < 0) {
         return fail("signals: signaller");
     }
+    /* Not a byte before the first signal: a fast machine sent the whole
+     * stream before the signaller's first kill arrived (CI's x86 under KVM,
+     * once a local stream ran at memory's speed), and the test, with no
+     * signal to show, failed. */
+    for (int ms = 0; ms < 5000 && caught == 0; ms++) {
+        usleep(1000);
+    }
     for (int w = 0; w < SIGNALS_WRITES; w++) {
         size_t size = w % 2 ? SIGNALS_LARGE : SIGNALS_SMALL;
         for (size_t i = 0; i < size; i++) {
