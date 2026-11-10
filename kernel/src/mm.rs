@@ -150,16 +150,19 @@ pub fn usable_frames() -> u64 {
 
 /// Physical `[start, end)` of the Limine-loaded kernel image.
 fn kernel_phys_range() -> (u64, u64) {
-    unsafe extern "C" {
-        static _end: u8;
-    }
-    let r = limine_boot::EXECUTABLE_ADDRESS
-        .response()
-        .expect("Limine executable address");
-    let end_va = core::ptr::addr_of!(_end) as u64;
-    let start = r.physical_base;
-    let end = (end_va - r.virtual_base + r.physical_base + 0xfff) & !0xfff;
-    (start, end)
+    static RANGE: spin::Once<(u64, u64)> = spin::Once::new();
+    *RANGE.call_once(|| {
+        unsafe extern "C" {
+            static _end: u8;
+        }
+        let r = limine_boot::EXECUTABLE_ADDRESS
+            .response()
+            .expect("Limine executable address");
+        let end_va = core::ptr::addr_of!(_end) as u64;
+        let start = r.physical_base;
+        let end = (end_va - r.virtual_base + r.physical_base + 0xfff) & !0xfff;
+        (start, end)
+    })
 }
 
 /// True if `[phys, phys+PAGE)` overlaps the loaded kernel image.
@@ -262,21 +265,50 @@ fn bump_run(n: usize, need: u64, range: Range) -> Option<u64> {
     None
 }
 
+/// The usable regions of the memory map as `[base, end)`, copied out once.
+/// Every frame taken off the freelist is checked against them, it and the
+/// next one, under [`FRAMES`]: a walk of Limine's whole map each time (a
+/// hundred entries under UEFI, a few of them usable) was most of what the
+/// lock was held for.
+struct Usable {
+    ranges: [(u64, u64); USABLE_MAX],
+    len: usize,
+    /// The map has more usable regions than `ranges` holds: ask the map.
+    partial: bool,
+}
+
+const USABLE_MAX: usize = 64;
+
+static USABLE: spin::Once<Usable> = spin::Once::new();
+
+fn usable() -> &'static Usable {
+    USABLE.call_once(|| {
+        let mut u = Usable { ranges: [(0, 0); USABLE_MAX], len: 0, partial: false };
+        let entries = limine_boot::MEMMAP.response().expect("Limine memmap").entries();
+        for e in entries.iter().filter(|e| e.type_ == memmap::MEMMAP_USABLE) {
+            if u.len == USABLE_MAX {
+                u.partial = true;
+                break;
+            }
+            u.ranges[u.len] = (e.base, e.base.saturating_add(e.length));
+            u.len += 1;
+        }
+        u
+    })
+}
+
 /// True if `phys` lies in a usable memmap region (for freelist validation).
 fn frame_in_usable_memmap(phys: u64) -> bool {
-    let entries = limine_boot::MEMMAP
-        .response()
-        .expect("Limine memmap")
-        .entries();
-    for e in entries {
-        if e.type_ == memmap::MEMMAP_USABLE
-            && phys >= e.base
-            && phys.saturating_add(PAGE) <= e.base.saturating_add(e.length)
-        {
-            return true;
-        }
+    let u = usable();
+    if u.ranges[..u.len].iter().any(|&(base, end)| phys >= base && phys.saturating_add(PAGE) <= end) {
+        return true;
     }
-    false
+    u.partial
+        && limine_boot::MEMMAP.response().expect("Limine memmap").entries().iter().any(|e| {
+            e.type_ == memmap::MEMMAP_USABLE
+                && phys >= e.base
+                && phys.saturating_add(PAGE) <= e.base.saturating_add(e.length)
+        })
 }
 
 /// Freelist-node sanity: page-aligned, usable memmap, not kernel image.
