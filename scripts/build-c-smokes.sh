@@ -8,7 +8,8 @@
 # target/<name>-mlibc-<arch>-unknown-none. The same sources, so a test
 # that passes with both libcs covers the kernel's interface through either.
 # And the C++ runtimes' smoke (user/c-mlibc/cxx_smoke.cpp) over libc++
-# (toolchain/libcxx), which ships no program of its own.
+# (toolchain/libcxx), which ships no program of its own, and the shared
+# objects' (user/c-mlibc/dl_smoke.c: a dynamic program and two objects).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/myos-c-userspace-lib.sh"
@@ -76,6 +77,20 @@ for arch in x86_64 aarch64 riscv64; do
     # shellcheck disable=SC2046
     clang++ $(myos_libcxx_cxxflags "$arch") -O2 -std=c++23 -c "$ROOT/user/c-mlibc/cxx_smoke.cpp" -o "$obj"
     myos_libcxx_link "$arch" "$ROOT/target/cxx-smoke-mlibc-${arch}-unknown-none" "$obj"
+    # The shared objects' smoke (user/c-mlibc/dl_smoke.c): a program
+    # against the shared mlibc, the object it names (found beside it,
+    # $ORIGIN) and the one it loads with dlopen.
+    echo "==> dl-smoke ($triple / mlibc, shared)"
+    for src in dl_lib dl_plugin dl_smoke; do
+      # shellcheck disable=SC2046
+      clang $(myos_mlibc_cflags "$arch") -O2 -c "$ROOT/user/c-mlibc/$src.c" -o "$ROOT/target/dl-${src}-mlibc-${arch}.o"
+    done
+    lib="$ROOT/target/dl-smoke-lib-mlibc-${arch}-unknown-none"
+    myos_mlibc_link_shared "$arch" "$lib" -soname libdlsmoke.so "$ROOT/target/dl-dl_lib-mlibc-${arch}.o"
+    myos_mlibc_link_shared "$arch" "$ROOT/target/dl-smoke-plugin-mlibc-${arch}-unknown-none" \
+      "$ROOT/target/dl-dl_plugin-mlibc-${arch}.o"
+    myos_mlibc_link_dynamic "$arch" "$ROOT/target/dl-smoke-mlibc-${arch}-unknown-none" \
+      "$ROOT/target/dl-dl_smoke-mlibc-${arch}.o" "$lib" -rpath '$ORIGIN'
   fi
 done
 

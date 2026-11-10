@@ -472,6 +472,8 @@ impl AuxV {
 /// envp's. Programs count on it: libuv (Node) takes the bytes from
 /// `argv[0]` to the end of the last argument as room for the process
 /// title, and clears all of them when one is set (npm sets it first).
+/// `execfn`, when not empty, is the program's path, a string after those
+/// that the auxv names as `AT_EXECFN`: a dynamic linker's `$ORIGIN`.
 pub(super) fn build_argv_stack(
     aspace: u64,
     user_base: u64,
@@ -479,7 +481,9 @@ pub(super) fn build_argv_stack(
     args: &[&[u8]],
     env: &[&[u8]],
     aux: &[(usize, usize)],
+    execfn: &[u8],
 ) -> Option<(usize, usize)> {
+    const AT_EXECFN: usize = 31;
     if args.len() > MAX_ARGC || env.len() > MAX_ENVC {
         return None;
     }
@@ -490,7 +494,7 @@ pub(super) fn build_argv_stack(
     let stack_top = (user_base + stack_off + (USER_STACK_PAGES * PAGE) as u64) as usize;
     let stack_bot = (user_base + stack_off) as usize;
     // Leave bytes below stack_top: argv strings must not end at stack_top (unmapped).
-    let mut sp = stack_top.checked_sub(64)?.checked_sub(total)?;
+    let mut sp = stack_top.checked_sub(64)?.checked_sub(total)?.checked_sub(execfn.len() + 1)?;
     if sp < stack_bot {
         return None;
     }
@@ -510,6 +514,8 @@ pub(super) fn build_argv_stack(
     };
     let arg_ptrs = put_strings(args)?;
     let env_ptrs = put_strings(env)?;
+    let execfn_ptr = if execfn.is_empty() { None } else { Some(put_strings(&[execfn])?[0]) };
+    let aux_execfn = execfn_ptr.map(|p| (AT_EXECFN, p));
     // Gap so the argv pointer table cannot overlap the copied strings (x86 std
     // `_start` reads argv[] immediately; a tight layout can alias string bytes).
     sp = sp.checked_sub(16)?;
@@ -517,7 +523,7 @@ pub(super) fn build_argv_stack(
         return None;
     }
     // argc + argv + NULL + envp + NULL + auxv pairs + AT_NULL (type,val).
-    let words = 1 + args.len() + 1 + env.len() + 1 + 2 * aux.len() + 2;
+    let words = 1 + args.len() + 1 + env.len() + 1 + 2 * (aux.len() + aux_execfn.iter().len()) + 2;
     sp = sp.checked_sub(words * core::mem::size_of::<usize>())?;
     // Linux/SysV AMD64: %rsp ≡ 0 (mod 16) at _start. crt0/`call` then yields
     // callee %rsp ≡ 8. fe50282 forced ≡8 with an extra `sp -= 8`, which inverted
@@ -556,7 +562,7 @@ pub(super) fn build_argv_stack(
         return None;
     }
     sp += core::mem::size_of::<usize>();
-    for &(key, val) in aux {
+    for &(key, val) in aux.iter().chain(&aux_execfn) {
         if !write_user_usize(aspace, sp, key) || !write_user_usize(aspace, sp + 8, val) {
             return None;
         }

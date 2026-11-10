@@ -149,7 +149,9 @@ myos_outputs_flavour_filter() {
 }
 
 # Whether FILE is an ELF executable (ET_EXEC, or ET_DYN: myos's programs
-# are static PIEs, and there are no shared objects).
+# are static PIEs) or a shared object, ET_DYN too (mlibc's ld.so and
+# libc.so, docs/mlibc.md "Shared objects"): no port compiles against one,
+# and a program that links one keys on its bytes.
 myos_elf_program() {
   local magic type
   magic="$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
@@ -501,7 +503,8 @@ myos_mlibc_is_current() {
     && [[ "$(cat "$MYOS_MLIBC_VERSION")" == "$(myos_mlibc_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/libc.a" && -f "$MYOS_ROOT/target/mlibc-${arch}/lib/crt0.o" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/libc.a" && -f "$MYOS_ROOT/target/mlibc-${arch}/lib/crt0.o" \
+      && -f "$MYOS_ROOT/target/mlibc-${arch}/shared/ld.so" && -f "$MYOS_ROOT/target/mlibc-${arch}/shared/libc.so" ]] || return 1
   done
   return 0
 }
@@ -698,9 +701,9 @@ myos_c_smokes_mlibc_version_hash() {
       for entry in "${MYOS_C_SMOKES[@]}"; do
         sha256sum "$MYOS_ROOT/${entry#* }"
       done
-      sha256sum "$MYOS_ROOT/user/c-mlibc/cxx_smoke.cpp"
+      sha256sum "$MYOS_ROOT/user/c-mlibc/cxx_smoke.cpp" "$MYOS_ROOT"/user/c-mlibc/dl_*.c
       sha256sum "$MYOS_ROOT/scripts/build-c-smokes.sh"
-      declare -f myos_libcxx_cxxflags myos_libcxx_link myos_mlibc_link
+      declare -f myos_libcxx_cxxflags myos_libcxx_link myos_mlibc_link myos_mlibc_link_dynamic myos_mlibc_link_shared
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -711,7 +714,7 @@ myos_c_smokes_mlibc_is_current() {
     && [[ "$(cat "$MYOS_C_SMOKES_MLIBC_VERSION")" == "$(myos_c_smokes_mlibc_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in cxx-smoke c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
+    for bin in cxx-smoke dl-smoke dl-smoke-lib dl-smoke-plugin c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
       [[ -f "$MYOS_ROOT/target/${bin}-mlibc-${arch}-unknown-none" ]] || return 1
     done
   done
@@ -1210,6 +1213,26 @@ myos_mlibc_link() {
   shift 2
   ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
     "$lib/crt0.o" "$@" -L"$lib" -lc -lbuiltins
+}
+
+# myos_mlibc_link_dynamic ARCH OUT INPUT...: a program of the INPUTs against
+# the shared mlibc (docs/mlibc.md "Shared objects"): the kernel starts it
+# through /lib/ld.so, which loads libc.so and the objects it names. Its
+# symbols are exported, for the objects it loads to call back into.
+myos_mlibc_link_dynamic() {
+  local arch="$1" out="$2" root="$MYOS_ROOT/target/mlibc-$1"
+  shift 2
+  ld.lld -pie --dynamic-linker=/lib/ld.so --export-dynamic --entry=_start -z max-page-size=4096 \
+    --hash-style=gnu -o "$out" "$root/lib/crt0.o" "$@" -L"$root/shared" -lc -L"$root/lib" -lbuiltins
+}
+
+# myos_mlibc_link_shared ARCH OUT INPUT...: a shared object of the INPUTs
+# (compiled -fPIC, as everything is) against the shared mlibc.
+myos_mlibc_link_shared() {
+  local arch="$1" out="$2" root="$MYOS_ROOT/target/mlibc-$1"
+  shift 2
+  ld.lld -shared -z max-page-size=4096 --hash-style=gnu -o "$out" "$@" \
+    -L"$root/shared" -lc -L"$root/lib" -lbuiltins
 }
 
 # myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
