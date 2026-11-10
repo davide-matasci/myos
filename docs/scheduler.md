@@ -207,7 +207,9 @@ online CPUs and waits briefly for their acks.
   began, which its caller may repeat pass after pass with interrupts off
   ("Blocking waits" below).
 - No IPI is sent when no other CPU has the address space loaded
-  (`task::aspace_loaded_elsewhere`).
+  (`task::aspace_loaded_elsewhere`), on x86_64 and riscv64: a CPU keeps
+  no translation of a root it has switched away from. aarch64's
+  `tlbi ...is` reaches every CPU without one.
 - It runs with interrupts off, whatever its caller's. Its lock is a spin
   lock that other CPUs wait on with theirs off. A holder preempted with
   the lock held, as the reclaim of an exiting process could be, never ran
@@ -353,8 +355,10 @@ reprogramming them reset the FIFO and dropped input.
 - A unix-socket write landing between a poller's scan and its `WAIT_ANY`
   registration was missed, and the X server stalled; hence registering
   before the sequence check.
-- A `poll` that could not sleep answered no shootdown from its loop: the
-  riscv64 packages boot stood still while four downloads were exec'd
-  (CI #2604); hence the answer on a wait's early return.
+- A `poll` that could not sleep answered no shootdown from its loop, and
+  riscv64, new to four CPUs, sent one for every map and unmap: the
+  packages boot stood still while four downloads were exec'd (CI #2604);
+  hence the answer on a wait's early return, and riscv64's
+  loaded-elsewhere skip.
 - A 1 kHz tick cost a self-hosted build 10-14% under TCG; hence 100 Hz
   with tickless deadlines.
