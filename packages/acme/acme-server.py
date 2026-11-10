@@ -15,7 +15,8 @@ JWK), validates an http-01 challenge by fetching the token from
 HTTP01HOST (the guest's web server, through QEMU's port forward: the
 identifier's name is not resolved) and checking the key authorization,
 and signs the CSR of a finalized order with a CA made at startup (an EC
-key, a certificate for a day) once its names are the order's. The chain
+key, a certificate for a day, valid from an hour before: the guest's clock
+may be behind the host's) once its names are the order's. The chain
 comes back as application/pem-certificate-chain; the CA certificate is at
 URL/ca.crt for the client's side to verify against. GET URL/stop ends the
 server (exit 0); so does the timeout (exit 1), so a failed guest test
@@ -156,6 +157,9 @@ def verify_jws(jwk, alg, signing_input, signature):
 
 # --- the CA ---------------------------------------------------------------
 
+# How long before now a certificate's validity starts, in seconds.
+BACKDATE = 3600
+
 
 class CA:
     def __init__(self, workdir):
@@ -164,13 +168,47 @@ class CA:
         self.cert = os.path.join(workdir, "ca.crt")
         self.serial = secrets.randbits(63)
         openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", self.key)
-        openssl(
-            "req", "-x509", "-new", "-key", self.key, "-sha256", "-days", "2",
-            "-subj", "/CN=myos acme test CA", "-addext", "basicConstraints=critical,CA:TRUE",
-            "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-out", self.cert,
-        )
+        with tempfile.TemporaryDirectory() as d:
+            csr = os.path.join(d, "ca.csr")
+            ext = os.path.join(d, "ext.cnf")
+            openssl("req", "-new", "-key", self.key, "-sha256", "-subj", "/CN=myos acme test CA", "-out", csr)
+            with open(ext, "w") as f:
+                f.write("basicConstraints=critical,CA:TRUE\n")
+                f.write("keyUsage=critical,keyCertSign,cRLSign\n")
+            pem = self.issue(d, csr, ext, secrets.randbits(63), 2, selfsign=True)
+        with open(self.cert, "wb") as f:
+            f.write(pem)
         with open(self.cert) as f:
             self.cert_pem = f.read()
+
+    def issue(self, d, csr, ext, serial, days, selfsign=False):
+        """The certificate (PEM) for the PEM request at `csr` with the
+        extensions of `ext`, valid from BACKDATE ago for `days` days from
+        now. `openssl ca` rather than `x509 -req`, which dates a certificate
+        from this second: the guest sets its clock from the RTC's whole
+        seconds at boot and may be most of a second behind the host, and a
+        guest quick enough to verify the certificate within that second
+        found it `not yet valid`. CAs backdate for the same reason."""
+        now = time.time()
+        stamp = lambda t: time.strftime("%Y%m%d%H%M%SZ", time.gmtime(t))
+        cnf = os.path.join(d, "ca.cnf")
+        with open(os.path.join(d, "index.txt"), "w"):
+            pass
+        with open(os.path.join(d, "serial"), "w") as f:
+            digits = f"{serial:X}"
+            f.write("0" * (len(digits) % 2) + digits + "\n")
+        with open(cnf, "w") as f:
+            f.write(
+                "[ca]\ndefault_ca=ca_default\n"
+                f"[ca_default]\ndatabase={d}/index.txt\nserial={d}/serial\nnew_certs_dir={d}\n"
+                "default_md=sha256\npolicy=policy_any\nunique_subject=no\ncopy_extensions=none\n"
+                "[policy_any]\ncommonName=optional\n"
+            )
+        signer = ["-selfsign"] if selfsign else ["-cert", self.cert]
+        return openssl(
+            "ca", "-batch", "-notext", "-config", cnf, "-in", csr, "-keyfile", self.key, *signer,
+            "-startdate", stamp(now - BACKDATE), "-enddate", stamp(now + days * 86400), "-extfile", ext,
+        )
 
     def csr_names(self, csr_der):
         """The DNS names a CSR asks for (its subjectAltName and its CN)."""
@@ -204,10 +242,9 @@ class CA:
                 f.write("keyUsage=critical,digitalSignature\n")
                 f.write("extendedKeyUsage=serverAuth\n")
                 f.write("subjectAltName=" + ",".join(f"DNS:{n}" for n in sorted(names)) + "\n")
-            return openssl(
-                "x509", "-req", "-inform", "DER", "-in", csr, "-CA", self.cert, "-CAkey", self.key,
-                "-set_serial", str(self.serial), "-days", "1", "-sha256", "-extfile", ext,
-            ).decode()
+            pem = os.path.join(d, "csr.pem")
+            openssl("req", "-inform", "DER", "-in", csr, "-out", pem)
+            return self.issue(d, pem, ext, self.serial, 1).decode()
 
 
 # --- the ACME state --------------------------------------------------------
