@@ -339,8 +339,8 @@ The x86 boots run under KVM, on the runner's CPU; the aarch64 and riscv64
 ones under TCG, every instruction emulated. That, not the kernel, is most
 of why a riscv64 light boot takes 12 minutes where an x86 one takes 2: with
 both under TCG on one host the same list takes 410 s on riscv64 and 336 s
-on x86. riscv64 also boots with two CPUs where the others have four
-(`docs/scheduler.md`), so what keeps a CPU busy for nothing costs it most.
+on x86. riscv64 booted with two CPUs then, where the others had four
+(`docs/scheduler.md`), so what kept a CPU busy for nothing cost it most.
 
 On aarch64 and riscv64, under TCG, the long groups take two to three
 times what the light boot does (16 minutes against 9 on riscv64). So a

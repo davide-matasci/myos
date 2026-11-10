@@ -100,9 +100,10 @@ as free. The mount table, the bind table and tmpfs's tree are behind
 reader-writer locks: resolving a path, `stat` and `read` on several CPUs
 do not wait for each other, only for a mount, a create or a write.
 
-QEMU runs `-smp 4` on x86_64 and aarch64. riscv64 stays at `-smp 2`,
-because Limine panics with `missing struct riscv_hart for BSP` at 4; the
-packed `boot/virt.dtb` is dumped with `-smp 2` too, so that OpenSBI's
+QEMU runs `-smp 4` on every arch. riscv64 was long kept at `-smp 2` for
+a Limine panic, `missing struct riscv_hart for BSP`, that came from a
+device tree with fewer harts than the machine, not from the count: the
+packed `boot/virt.dtb` is dumped with the boot's own `-smp`, so that OpenSBI's
 BSP, hartid 1, still has a hart node.
 
 The tests carry the tag `sched`: `sched_smoke` (`user/c`), `pthread`,
@@ -266,7 +267,7 @@ lock, a module's `SleepLock`) and every `wake` of a module, which are
 completions (a USB transfer's, a controller's interrupt). A module
 announces what a poller may wait for with `wake_any`. Before, each of
 them also sent every poller round its fds: eight processes writing to
-a USB stick on riscv64's two CPUs took 55 s, most of it netd and the
+a USB stick on riscv64, then booted with two CPUs, took 55 s, most of it netd and the
 sound server looking at nothing, and 5 s after.
 
 Two producers leave out the waiters they cannot concern, because every

@@ -5,8 +5,8 @@
 pub const NAME: &str = "riscv64";
 /// What `input` calls the local keyboard in the boot banner.
 pub const KEYBOARD_NAME: &str = "virtio keyboard";
-/// Whether user tasks may be homed on the BSP: yes, `-smp 2` leaves only
-/// one other hart.
+/// Whether user tasks may be homed on the BSP: yes, a board with two harts
+/// leaves only one other.
 pub const USER_TASKS_ON_BSP: bool = true;
 
 const SIE: u64 = 1 << 1;

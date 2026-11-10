@@ -40,10 +40,13 @@ use std::time::Duration;
 
 const AARCH64_TARGET: &str = "aarch64-unknown-none-softfloat";
 const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
-/// QEMU `-smp` for riscv64 (CI and interactive). Packed `virt.dtb` must use the
-/// same count: a single-hart DTB plus OpenSBI BSP hartid=1 →
-/// `PANIC: riscv: missing struct riscv_hart for BSP`.
-const RISCV_SMP: &str = "2";
+/// QEMU `-smp` for riscv64 (CI and interactive): four, as on x86 and
+/// aarch64. Packed `virt.dtb` must use the same count: a single-hart DTB
+/// plus OpenSBI BSP hartid=1 → `PANIC: riscv: missing struct riscv_hart for
+/// BSP`. That panic was long put down to `-smp 4` and the boots kept at 2;
+/// with the DTB dumped at the same count, Limine boots whichever of the
+/// four harts OpenSBI picks.
+const RISCV_SMP: &str = "4";
 
 /// For the test boots under EDK2 (aarch64, riscv64): no wait at the
 /// firmware's "Press ESCAPE within 5 seconds for boot options", five
@@ -1504,8 +1507,6 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-m")
         .arg(if ci { "4096" } else { "2048" })
         .arg("-smp")
-        // Limine EDK2 path panics with -smp 4: "missing struct riscv_hart for BSP".
-        // Keep 2 + dual-hart DTB + parked APs (OpenSBI may pick hartid=1 as BSP).
         // Do not drop CI to -smp 1 to hide the ripgrep sepc=0 IPF — fix the kernel.
         .arg(RISCV_SMP)
         .arg("-drive")
