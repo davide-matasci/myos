@@ -42,6 +42,14 @@ backtrace. `addr2line -e` on the build's kernel names the functions:
 aarch64 and riscv64 have no such interrupt here, so their report names
 the task alone.
 
+A CPU stuck in a TLB shootdown's wait says what it waits for, on every
+arch (`smp::tlb_waiting`): the shootdowns' lock, or the CPU that has not
+answered and its task, which is the one to look at:
+
+```
+[ WARN ] cpu 3 stuck for 12 s in the kernel: pid 29 get-myos (slot 29), waiting for cpu 0 to answer a shootdown: pid 1 netd (slot 1)
+```
+
 It allocates nothing and waits on no lock, since the stuck CPU may hold
 any: the task is named only when the task table is free, and a line the
 console or its screen is busy for (the console module's non-blocking
