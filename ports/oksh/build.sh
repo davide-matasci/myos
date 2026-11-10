@@ -35,7 +35,6 @@ CPPFLAGS=(
   -D_DEFAULT_SOURCE
   -D_GNU_SOURCE
   -D_BSD_SOURCE
-  -DSMALL
   -DEMACS
   -D_PATH_DEFPATH=\"/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc\"
   -D_PATH_BSHELL=\"/bin/custom/sh\"

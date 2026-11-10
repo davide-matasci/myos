@@ -108,6 +108,13 @@ login domain (`root`: `admin`). login then execs the shell,
 /bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc
 ```
 
+The shell keeps its history in the file `HISTFILE` names when it is set
+(`export HISTFILE=$HOME/.sh_history`, say): each command is appended, and
+the next shell reads them back (`fc -l`, the arrow keys). It is not set by
+default. oksh's `KSH_VERSION` (`SH_VERSION` as `sh`) and `OKSH_VERSION` are
+set. Ctrl-L redraws the line; it does not clear the screen (oksh is built
+without curses).
+
 Programs not in the image (vim, git, `btm` from bottom, ...) are packages:
 `get-myos vim` installs one as an app, `run-myos vim` runs it
 (`docs/packages.md`). `ps` lists the processes (`docs/proc.md`).
