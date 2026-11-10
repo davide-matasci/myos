@@ -168,7 +168,10 @@ cargo run                         # log in, then: /bin/etc/bench
 `scripts/prof.py` says where the time goes: it samples every CPU's program
 counter through the QEMU monitor while a boot runs, and splits the samples
 at each `BENCH` line of the console, so each phase of the benchmark has its
-own profile.
+own profile. `sample LOG OUT TEST` splits at the tests' result lines
+instead: a profile per test of a boot test, which is how a test ten times
+slower on one arch than on the others is looked into (`usb_fs_parallel` on
+riscv64: both CPUs in the pollers' wakes, `docs/scheduler.md`).
 
 ```sh
 cargo run -- test --tags NAME > boot.log 2>&1 &     # a boot that runs bench (below)
