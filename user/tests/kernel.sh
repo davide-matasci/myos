@@ -1346,11 +1346,20 @@ t -t proc,smoke proc_pid proc_pid
 # has waited for one that computed; the CPUs' idle time grows across a sleep.
 proc_cpu_time() {
 	read pid name state ppid pgid sid threads size cpu0 child0 rest < /proc/$$/status
-	i=0
-	while [ $i -lt 2000 ]; do i=$((i + 1)); done
-	sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i + 1)); done'
-	read pid name state ppid pgid sid threads size cpu1 child1 rest < /proc/$$/status
-	echo "cpu $cpu0 -> $cpu1, children $child0 -> $child1"
+	# The times are in ms, and 2000 turns of the loop take less than one
+	# where the guest runs on the host's CPU (CI's x86 boots under KVM,
+	# once a syscall no longer left the guest to learn its CPU): rounds of
+	# them until both times moved, a bounded number.
+	round=0
+	while [ $round -lt 500 ]; do
+		i=0
+		while [ $i -lt 2000 ]; do i=$((i + 1)); done
+		sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i + 1)); done'
+		read pid name state ppid pgid sid threads size cpu1 child1 rest < /proc/$$/status
+		[ "$cpu1" -gt "$cpu0" ] && [ "$child1" -gt "$child0" ] && break
+		round=$((round + 1))
+	done
+	echo "cpu $cpu0 -> $cpu1, children $child0 -> $child1, after $round more rounds"
 	[ "$cpu1" -gt "$cpu0" ] && [ "$child1" -gt "$child0" ] || return 1
 	idle0=0
 	while read c what ms; do [ "$what" = idle ] && idle0=$((idle0 + ms)); done < /proc/cpu
