@@ -175,6 +175,10 @@ struct Task {
     affinity: Option<usize>,
     /// What a `Blocked` task waits for (`sched::WAIT_ANY` = any event).
     wait_key: usize,
+    /// With `wait_key` `WAIT_ANY`: no pipe is among what the task waits
+    /// for, and a pipe's traffic does not wake it
+    /// (`sched::block_until_any`).
+    pipe_blind: bool,
     /// Monotonic-ns deadline of a `Blocked` task, 0 = none.
     wake_at: u64,
     /// The process's `ITIMER_REAL` (in the leader's slot): when its next
@@ -234,6 +238,7 @@ const EMPTY: Task = Task {
     sig_blocked: 0,
     affinity: None,
     wait_key: 0,
+    pipe_blind: false,
     wake_at: 0,
     alarm_at: 0,
     alarm_every: 0,

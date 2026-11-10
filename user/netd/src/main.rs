@@ -695,6 +695,17 @@ fn is_local(nics: &Nics, a: IpAddress) -> bool {
     is_loopback(a) || a.is_unspecified() || nics.has_ip_addr(a)
 }
 
+/// For a TCP socket whose peer is this host ([`is_local`]): both ends are netd's,
+/// on the loopback interface, and an ACK there costs no frame, so it is
+/// not delayed. The loopback MTU is 65535 and a write crosses from netfs
+/// in pieces of [`FILE_IO`] bytes, so no segment is ever a full one: Nagle
+/// held every piece after the first until the ACK of the one before, and
+/// that ACK waited out smoltcp's 10 ms delay each time. A local stream ran
+/// at what fits the send buffer per 10 ms, 1.5 MiB/s.
+fn ack_at_once(s: &mut tcp::Socket) {
+    s.set_ack_delay(None);
+}
+
 /// Where TCP listener conv `c` listens: its port, on the address its
 /// announce named (any when that was unspecified).
 fn listen_endpoint(c: &Conv) -> IpListenEndpoint {
@@ -1235,9 +1246,13 @@ fn handle_ctl(
             let remote = IpEndpoint::new(addr, p);
             // The loopback interface carries a local connection.
             let src = nics.source_for(addr);
-            let cx = if is_local(nics, addr) { Some(lo.context()) } else { nics.context_for(src) };
+            let local_peer = is_local(nics, addr);
+            let cx = if local_peer { Some(lo.context()) } else { nics.context_for(src) };
             if let Some(h) = convs[i].handle {
                 let s = sockets.get_mut::<tcp::Socket>(h);
+                if local_peer {
+                    ack_at_once(s);
+                }
                 // No NIC to leave through: refused at once, like a connect
                 // without a route.
                 let r = match cx {
@@ -1604,13 +1619,19 @@ fn force_free_orphan(
 fn hand_off(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
+    nics: &Nics,
     chan: usize,
     l: usize,
     h: SocketHandle,
 ) -> bool {
     // Peer endpoint captured from the connected socket.
     let (remote, remote_port) = match sockets.get_mut::<tcp::Socket>(h).remote_endpoint() {
-        Some(IpEndpoint { addr, port }) => (addr, port),
+        Some(IpEndpoint { addr, port }) => {
+            if is_local(nics, addr) {
+                ack_at_once(sockets.get_mut::<tcp::Socket>(h));
+            }
+            (addr, port)
+        }
         None => (ANY4, 0),
     };
     if queue_full(convs, l) {
@@ -1712,6 +1733,7 @@ fn waiting(handshakes: &[Handshake], sockets: &SocketSet<'_>, l: usize) -> usize
 fn pump_accepts(
     convs: &mut [Conv; MAX_CONV],
     sockets: &mut SocketSet<'_>,
+    nics: &Nics,
     handshakes: &mut Vec<Handshake>,
     chan: usize,
     now: Instant,
@@ -1766,7 +1788,7 @@ fn pump_accepts(
             continue;
         }
         handshakes.remove(k);
-        if !(done && listening && hand_off(convs, sockets, chan, l, h)) {
+        if !(done && listening && hand_off(convs, sockets, nics, chan, l, h)) {
             drop_handshake(sockets, h);
         }
     }
@@ -1807,7 +1829,7 @@ fn pump_accepts(
         // mute connection parked above had waited for, and the listen
         // smoke's accept got the newer one (CI #2339, riscv64-plic).
         if done && !queue_full(convs, i) && waiting(handshakes, sockets, i) == 0 {
-            if !hand_off(convs, sockets, chan, i, h) {
+            if !hand_off(convs, sockets, nics, chan, i, h) {
                 drop_handshake(sockets, h);
             }
         } else if handshakes.len() < SYN_BACKLOG
@@ -2261,7 +2283,7 @@ fn main() -> ! {
         // already pushed payload+FIN, iface.poll leaves CloseWait with RX data.
         // Orphan reclaim used to run *before* pump_sockets and treat CloseWait
         // as dead → abort discarded the bytes → userspace hangup / "no data".
-        pump_accepts(&mut convs, &mut sockets, &mut handshakes, chan, now);
+        pump_accepts(&mut convs, &mut sockets, &nics, &mut handshakes, chan, now);
         pump_sockets(&mut convs, &mut sockets, chan);
         // Push segments enqueued by pump (pending flush / ACKs) same tick.
         {

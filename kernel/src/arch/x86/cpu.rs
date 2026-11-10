@@ -99,23 +99,55 @@ pub fn hw_cpu_id() -> Option<u64> {
     Some(u64::from(cpuid(1, 0).1 >> 24))
 }
 
+/// How [`cpu_id_reg`] reads `IA32_TSC_AUX`: with `RDMSR` until
+/// [`set_cpu_id_reg`] found a cheaper instruction for it.
+static ID_READ: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(ID_RDMSR);
+const ID_RDMSR: u8 = 0;
+const ID_RDTSCP: u8 = 1;
+const ID_RDPID: u8 = 2;
+
+/// The instruction that reads `IA32_TSC_AUX` cheapest on this CPU: `RDPID`
+/// (CPUID.07H:ECX[22]), else `RDTSCP` (CPUID.80000001H:EDX[27]), else
+/// `RDMSR`.
+fn id_read_method() -> u8 {
+    if cpuid(0, 0).0 >= 7 && cpuid(7, 0).2 & (1 << 22) != 0 {
+        ID_RDPID
+    } else if cpuid(0x8000_0000, 0).0 >= 0x8000_0001 && cpuid(0x8000_0001, 0).3 & (1 << 27) != 0 {
+        ID_RDTSCP
+    } else {
+        ID_RDMSR
+    }
+}
+
 /// The logical CPU index stored in this CPU's id register (`IA32_TSC_AUX`,
 /// written by [`set_cpu_id_reg`]); out of range before that.
+///
+/// Every `current_slot` asks, several times per syscall, so the read is
+/// `RDPID` or `RDTSCP` where the CPU has one: `RDMSR` is tens of times
+/// their cost on hardware, and under KVM it leaves the guest every time
+/// (KVM lets the two instructions through but emulates the MSR read).
 pub fn cpu_id_reg() -> usize {
-    // RDMSR, not RDTSCP: the register is what matters, not the
-    // instruction (the launcher gives QEMU's CPU model the feature,
-    // `X86_CPU`, so that KVM accepts the MSR too).
-    let lo: u32;
+    let id: u64;
     unsafe {
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") 0xC000_0103u32,
-            out("eax") lo,
-            out("edx") _,
-            options(nostack, preserves_flags),
-        );
+        match ID_READ.load(core::sync::atomic::Ordering::Relaxed) {
+            ID_RDPID => core::arch::asm!("rdpid {id}", id = out(reg) id, options(nomem, nostack, preserves_flags)),
+            ID_RDTSCP => core::arch::asm!(
+                "rdtscp",
+                out("eax") _,
+                out("edx") _,
+                out("rcx") id,
+                options(nomem, nostack, preserves_flags),
+            ),
+            _ => core::arch::asm!(
+                "rdmsr",
+                in("ecx") 0xC000_0103u32,
+                out("rax") id,
+                out("edx") _,
+                options(nomem, nostack, preserves_flags),
+            ),
+        }
     }
-    lo as usize
+    id as u32 as usize
 }
 
 pub fn set_cpu_id_reg(logical: usize) {
@@ -128,6 +160,8 @@ pub fn set_cpu_id_reg(logical: usize) {
             options(nostack, preserves_flags),
         );
     }
+    // The same on every CPU of a machine; the BSP stores it first.
+    ID_READ.store(id_read_method(), core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Re-derive the CPU id register if user code could have clobbered it

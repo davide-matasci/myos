@@ -310,7 +310,11 @@ pub fn mode_bits(real: &str, is_dir: bool) -> u32 {
 
 /// [`mode_bits`] with the namespace's rights replaced by `ns`.
 pub fn mode_bits_in(real: &str, is_dir: bool, ns: Rights) -> u32 {
-    let r = rights_in(real, ns);
+    mode_bits_of(rights_in(real, ns), is_dir)
+}
+
+/// The permission bits `stat` shows for rights `r` ([`mode_bits`]).
+pub fn mode_bits_of(r: Rights, is_dir: bool) -> u32 {
     let mut m = 0;
     if r.contains(Rights::READ) {
         m |= 0o400;
@@ -322,6 +326,25 @@ pub fn mode_bits_in(real: &str, is_dir: bool, ns: Rights) -> u32 {
         m |= 0o100;
     }
     m
+}
+
+/// What `stat` shows of the file at `real`, from one look at its label:
+/// the current process's rights on it ([`rights_in`]) and its owner's uid
+/// ([`owner_uid`]). Asked for one by one, the label was worked out three
+/// times per `stat`.
+pub fn stat_in(real: &str, ns: Rights) -> (Rights, u32) {
+    if synthetic(real) {
+        return (Rights::READ, 0);
+    }
+    let Some(p) = policy() else {
+        return (ns, 0);
+    };
+    let label = label_at(&p, real);
+    let rights = match current() {
+        None => ns,
+        Some((p, u, d)) => p.rights(u, d, &label) & ns,
+    };
+    (rights, label.param.and_then(|o| p.user_id(&o)).map_or(0, u32::from))
 }
 
 /// The uid `stat` shows for `real`: its label's owner when that is a user

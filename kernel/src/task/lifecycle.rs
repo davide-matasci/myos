@@ -309,6 +309,7 @@ pub fn fork_current(child_regs: UserRegs) -> Option<usize> {
         // keeps its CPU busy (`sched::pull`).
         affinity: child_aff,
         wait_key: 0,
+        pipe_blind: false,
         wake_at: 0,
         alarm_at: 0,
         alarm_every: 0,
@@ -544,6 +545,7 @@ fn spawn_inner(
         sig_blocked: 0,
         affinity: if aspace != 0 { user_affinity() } else { None },
         wait_key: 0,
+        pipe_blind: false,
         wake_at: 0,
         alarm_at: 0,
         alarm_every: 0,

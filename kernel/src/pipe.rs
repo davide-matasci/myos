@@ -13,9 +13,12 @@ const ANON_PIPES: usize = 64;
 /// `pipe()` for shells and dropbear sessions.
 const MAX_PIPES: usize = ANON_PIPES + 24;
 /// Ring size per pipe. 512 made every `cat | cat` byte stream a 128-byte
-/// syscall ping-pong; 4 KiB (Linux PIPE_BUF) lets a writer hand over a
-/// whole `FILE_IO_TMP` chunk per syscall.
-const PIPE_BUF: usize = 4096;
+/// syscall ping-pong, and 4 KiB still held half of a writer's
+/// `FILE_IO_TMP` chunk: the writer blocked on every chunk and the reader
+/// woke it for each, a task switch and an IPI per 4 KiB (a stream between
+/// two CPUs moved 50 MiB/s under TCG). 64 KiB, Linux's pipe size, lets the
+/// two run side by side (430 MiB/s).
+const PIPE_BUF: usize = 65536;
 
 struct Pipe {
     /// The ring, on the heap while the pipe exists.
@@ -135,8 +138,8 @@ pub fn drop_writer(id: usize) -> bool {
 /// lock is released so the woken side can take it at once.
 fn notify(id: usize) {
     changed(id);
+    // The pollers that may watch a pipe too (`task::wake`).
     crate::task::wake(crate::task::key_pipe(id));
-    crate::task::wake_any();
 }
 
 /// The pipe changed: its count moves, for the `et` members on it.
@@ -282,7 +285,7 @@ pub fn write(id: usize, data: &[u8]) -> usize {
         // `et` member, and its poller may wait for it (Linux wakes a polled
         // pipe's readers on every write too).
         changed(id);
-        crate::task::wake_any();
+        crate::task::wake_any_pipe(id);
     }
     n
 }

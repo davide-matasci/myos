@@ -84,9 +84,17 @@ pub fn try_read_user_u8(aspace: u64, va: usize) -> Option<u8> {
 }
 
 pub(super) fn read_user_bytes(aspace: u64, va: usize, dst: &mut [u8]) -> bool {
-    let out = dst.as_mut_ptr();
-    each_user_page(aspace, va, dst.len(), Access::Read, |p, done, n| unsafe {
-        core::ptr::copy_nonoverlapping(p, out.add(done), n);
+    unsafe { copy_from_user_raw(aspace, va, dst.as_mut_ptr(), dst.len()) }
+}
+
+/// [`copy_from_user`] into memory that need not be initialized: when it
+/// returns true, all `len` bytes at `dst` are written.
+///
+/// # Safety
+/// `dst` must be valid for writes of `len` bytes.
+pub unsafe fn copy_from_user_raw(aspace: u64, va: usize, dst: *mut u8, len: usize) -> bool {
+    each_user_page(aspace, va, len, Access::Read, |p, done, n| unsafe {
+        core::ptr::copy_nonoverlapping(p, dst.add(done), n);
     })
 }
 

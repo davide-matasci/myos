@@ -6,7 +6,9 @@
  * pipe (not before), with only that fd reported among several; POLLHUP when
  * the writer goes, POLLERR when the reader does, POLLNVAL for a closed fd; a
  * nonblocking read saying EAGAIN; a unix socket and a unix listener waking
- * their poller; a caught signal ending the wait with EINTR, even with
+ * their poller, a pipe polled beside a socket waking it too, and a poller
+ * of sockets alone (asleep through pipe traffic) woken by its socket while
+ * a pipe is busy; a caught signal ending the wait with EINTR, even with
  * SA_RESTART (poll is never restarted: dropbear waits in select() for its
  * SIGTERM handler's flag). Prints
  * [ OK ] poll.
@@ -166,6 +168,42 @@ int main(void) {
         return 1;
     }
     waitpid(pid, &status, 0);
+    if (read(sv[0], &c, 1) != 1) {
+        return fail("unix read");
+    }
+    /* A pipe among sockets wakes their poller. */
+    if (pipe(a) < 0) {
+        return fail("pipe");
+    }
+    pid = later(write_byte, a[1]);
+    struct pollfd m[2] = {{a[0], POLLIN, 0}, {sv[0], POLLIN, 0}};
+    if (waits_for(m, 2, POLLIN, "pipe data beside a socket") || m[1].revents != 0) {
+        return fail("pipe data beside a socket");
+    }
+    waitpid(pid, &status, 0);
+    /* A poller of sockets alone, which no pipe's traffic wakes, still
+     * wakes for its socket while another process keeps a pipe busy. */
+    pid_t busy = fork();
+    if (busy == 0) {
+        int f[2];
+        if (pipe(f) < 0) {
+            _exit(1);
+        }
+        for (;;) {
+            (void)write(f[1], "y", 1);
+            (void)read(f[0], &c, 1);
+        }
+    }
+    pid = later(write_byte, sv[1]);
+    if (waits_for(&u, 1, POLLIN, "unix data past a busy pipe")) {
+        kill(busy, SIGKILL);
+        return 1;
+    }
+    kill(busy, SIGKILL);
+    waitpid(busy, &status, 0);
+    waitpid(pid, &status, 0);
+    close(a[0]);
+    close(a[1]);
     close(sv[0]);
     close(sv[1]);
     struct sockaddr_un addr;

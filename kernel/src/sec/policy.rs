@@ -129,27 +129,51 @@ impl Pattern {
         Ok(Pattern(segs))
     }
 
-    /// Match `path` (canonical, absolute); the captured `$name`s.
-    fn matches<'p>(&self, path: &'p str) -> Option<Vec<(&str, &'p str)>> {
-        let comps = path.split('/').filter(|c| !c.is_empty());
-        let mut caps = Vec::new();
-        let mut comps = comps.peekable();
+    /// Match `path` (canonical, absolute): `Some` when it matches, with
+    /// the component `$want` captured when the pattern has that name.
+    /// Nothing is allocated: every path a syscall names is matched against
+    /// every label rule, last first, and a `Vec` of captures per rule made
+    /// `stat` spend half its time here.
+    fn matches<'p>(&self, path: &'p str, want: Option<&str>) -> Option<Option<&'p str>> {
+        let mut at = 0;
+        let mut cap = None;
         for seg in &self.0 {
             match seg {
-                Seg::Rest => return Some(caps),
+                Seg::Rest => return Some(cap),
                 Seg::Star => {
-                    comps.next()?;
+                    next_comp(path, &mut at)?;
                 }
                 Seg::Lit(l) => {
-                    if comps.next()? != l.as_str() {
+                    if next_comp(path, &mut at)? != l.as_str() {
                         return None;
                     }
                 }
-                Seg::Var(v) => caps.push((v.as_str(), comps.next()?)),
+                Seg::Var(v) => {
+                    let c = next_comp(path, &mut at)?;
+                    if cap.is_none() && want == Some(v.as_str()) {
+                        cap = Some(c);
+                    }
+                }
             }
         }
-        if comps.peek().is_some() { None } else { Some(caps) }
+        if next_comp(path, &mut at).is_some() { None } else { Some(cap) }
     }
+}
+
+/// The component of `path` at or after byte `at` (empty ones skipped),
+/// `at` moved past it; `None` at the end.
+fn next_comp<'p>(path: &'p str, at: &mut usize) -> Option<&'p str> {
+    let b = path.as_bytes();
+    let mut i = *at;
+    while i < b.len() && b[i] == b'/' {
+        i += 1;
+    }
+    let start = i;
+    while i < b.len() && b[i] != b'/' {
+        i += 1;
+    }
+    *at = i;
+    (i > start).then(|| &path[start..i])
 }
 
 /// A label rule's parameter: none, a captured `$name`, or a fixed name.
@@ -266,13 +290,17 @@ impl Policy {
     /// matching rule's, else [`UNLABELED`].
     pub fn label_of(&self, path: &str) -> Label {
         for rule in self.labels.iter().rev() {
-            let Some(caps) = rule.pattern.matches(path) else {
+            let want = match &rule.param {
+                LabelParam::Var(v) => Some(v.as_str()),
+                _ => None,
+            };
+            let Some(cap) = rule.pattern.matches(path, want) else {
                 continue;
             };
             let param = match &rule.param {
                 LabelParam::None => None,
                 LabelParam::Lit(l) => Some(l.clone()),
-                LabelParam::Var(v) => caps.iter().find(|(n, _)| n == v).map(|(_, c)| String::from(*c)),
+                LabelParam::Var(_) => cap.map(String::from),
             };
             return Label { kind: rule.kind, param };
         }
@@ -319,7 +347,7 @@ impl Policy {
     /// The domain an exec of `path` moves `user` into, if a rule names one
     /// that the user may enter.
     pub fn exec_domain(&self, user: u16, path: &str) -> Option<u16> {
-        let rule = self.execs.iter().rev().find(|e| e.pattern.matches(path).is_some())?;
+        let rule = self.execs.iter().rev().find(|e| e.pattern.matches(path, None).is_some())?;
         let u = self.users.get(user as usize)?;
         u.domains.contains(&rule.domain).then_some(rule.domain)
     }

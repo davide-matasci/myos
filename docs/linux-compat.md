@@ -513,7 +513,7 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
     is read in whole.
   - A 256 MiB `brk` heap.
   - 256 fds per process, 2048 open file descriptions in the system, 512
-    tasks in total, 64 pipes (and 24 named FIFOs) of 4 KiB each.
+    tasks in total, 64 pipes (and 24 named FIFOs) of 64 KiB each.
   - `/tmp` files of at most 128 MiB each (a write or truncate past that
     is `EFBIG`, as on Linux; issue #725), all in the kernel heap (a
     quarter of the memory, 64 MiB to 1 GiB; the boot's `[ OK ] heap: N

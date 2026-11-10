@@ -191,6 +191,15 @@ window offered to the peer) until netfs's 32 KiB buffer has room. A
 conversation's writers may queue up to 32 KiB in netd; a write with no
 room left is refused, and the library waits for `POLLOUT`.
 
+A connection to this host itself (127.0.0.0/8, ::1, a NIC's own address)
+has both its ends in netd, on the loopback interface, and ACKs at once:
+smoltcp's delayed ACK (10 ms) is off for it (`ack_at_once`). A write
+reaches netd in pieces of 2 KiB and the loopback MTU is 65535, so no
+segment is a full one, and Nagle's algorithm held each piece until the
+ACK of the one before: with that ACK delayed a local stream moved one
+send buffer per 10 ms, 1.5 MiB/s. Connections through a NIC keep the
+delayed ACK, which halves the ACK frames of a download.
+
 The requests to netd (a clone, a `ctl` command, a send, a close) go
 through a ring of 128 in netfs, which netd drains as it reads
 `/dev/netd/data`. A burst of sends on a loaded guest fills it faster than

@@ -914,6 +914,21 @@ pub fn poll(node: &Vnode) -> Option<(u32, u64)> {
     }
 }
 
+/// Whether `node`'s filesystem has a `poll` hook at all: a file of one that
+/// has none (tmpfs, ext2, FAT) is always ready, so nothing waits for what
+/// is written to it. The hook itself is not called.
+pub fn pollable(node: &Vnode) -> bool {
+    let _tree = tree_read();
+    let Some((idx, _)) = node::location(node) else {
+        return false;
+    };
+    match MOUNTS.lock().get(idx).map(|m| m.backend) {
+        Some(MountBackend::Kernel(ops)) => ops.poll.is_some(),
+        Some(MountBackend::Module(ops)) => ops.poll.is_some(),
+        None => false,
+    }
+}
+
 /// Current size of an open vnode (for `O_APPEND`), if known.
 pub fn size_of(node: &Vnode) -> Option<usize> {
     stat_node(node).map(|s| s.size as usize)
