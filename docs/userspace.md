@@ -19,6 +19,20 @@ The numbers only grow. A removed call leaves its number unused. libc wraps
 every call; the list below names the native calls where they differ from
 POSIX.
 
+The kernel's entry trusts no register a program can load. On x86-64 the
+per-CPU state `syscall_entry` needs is behind `IA32_KERNEL_GS_BASE`,
+brought into GS with `swapgs` for the instructions that address it
+(interrupts off) and out again: `%gs` and its base are the program's,
+null selector included, and nothing else in the kernel uses GS (the CPU's
+number comes from `IA32_TSC_AUX`). An address a program chooses that the
+kernel loads in ring 0 (a thread pointer into the FS base, a thread's or
+an image's entry for `iretq`) is loaded as one that faults in the program
+when it is not canonical (`canonical_or_fault`, `arch/x86/user.rs`);
+`SYSCALL`'s flag mask clears TF, DF, NT and IF, and a signal frame's
+rflags keep only the bits a program may set. aarch64 keeps its CPU number
+in `tpidr_el1` and riscv64 reloads `tp` from the kernel stack on every
+trap from U-mode. `fault_smoke` has a program try each on x86-64.
+
 ### Path calls
 
 Every path call (`kernel/src/user/at.rs`) is `*at` style: it names its file

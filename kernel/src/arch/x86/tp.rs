@@ -15,7 +15,11 @@ pub fn read() -> Option<u64> {
     None
 }
 
+/// `v` is the program's choice (`set_tp`, a new thread's, the Linux
+/// layer's `arch_prctl`): one the MSR refuses is loaded as an address that
+/// faults in the program (`canonical_or_fault`), not here.
 pub fn write(v: u64) {
+    let v = super::user::canonical_or_fault(v);
     let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
     if LOADED[cpu].load(Ordering::Relaxed) == v {
         return;

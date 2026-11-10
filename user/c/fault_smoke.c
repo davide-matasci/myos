@@ -23,6 +23,14 @@
  * program does not catch still ends it, but a test cannot fault that way:
  * the host takes the kernel's `user fault` line for a failure.
  *
+ * What x86 loads in ring 0 on a program's word (kernel/src/arch/x86/user.rs,
+ * issue #776) is the program's problem and not the kernel's: a null
+ * selector in %gs, which zeroes the GS base the syscall entry once found
+ * its per-CPU state through, a non-canonical thread pointer (the FS base
+ * MSR refuses it) and a thread started at a non-canonical address (iretq
+ * refuses it). Each child does its worst and then exits with a status of
+ * its own, the last from the SIGSEGV handler its thread faults into.
+ *
  * Prints one `[ OK ] fault` / `[ FAIL ] fault ...` line.
  */
 #define _GNU_SOURCE 1
@@ -256,10 +264,76 @@ static const char *fault_signals(void) {
     return NULL;
 }
 
+#if defined(__x86_64__)
+/* The native calls by number (toolchain/libmyos/myos_syscalls.h): the
+ * children cannot count on libc once their thread pointer is gone. */
+enum { SYS_EXIT = 1, SYS_THREAD_SPAWN = 53, SYS_GETPPID = 60, SYS_SET_TP = 89 };
+#define NON_CANONICAL 0x0000800000001000UL
+
+static long raw_syscall(long nr, long a0) {
+    long ret;
+    __asm__ volatile("syscall" : "=a"(ret) : "a"(nr), "D"(a0) : "rcx", "r11", "memory");
+    return ret;
+}
+
+static void exit_from_handler(int sig) {
+    (void)sig;
+    raw_syscall(SYS_EXIT, 7);
+}
+
+static void hostile_child(int what) {
+    static char stack[16384];
+    unsigned long spawn[4] = {NON_CANONICAL, (unsigned long)(stack + sizeof stack), 0, 0};
+    switch (what) {
+    case 0:
+        __asm__ volatile("xor %%eax, %%eax\n\tmov %%eax, %%gs" ::: "eax");
+        break;
+    case 1:
+        raw_syscall(SYS_SET_TP, (long)NON_CANONICAL);
+        break;
+    default:
+        signal(SIGSEGV, exit_from_handler);
+        raw_syscall(SYS_THREAD_SPAWN, (long)spawn);
+        sleep(5);
+        raw_syscall(SYS_EXIT, 1);
+    }
+    for (int i = 0; i < 100; i++) {
+        raw_syscall(SYS_GETPPID, 0);
+    }
+    raw_syscall(SYS_EXIT, 7);
+}
+
+static const char *ring0_words(void) {
+    static const char *const failed[] = {
+        "a null %gs selector",
+        "a non-canonical thread pointer",
+        "a thread at a non-canonical address",
+    };
+    for (int what = 0; what < 3; what++) {
+        pid_t p = fork();
+        if (p == 0) {
+            hostile_child(what);
+        }
+        int st = 0;
+        if (p < 0 || waitpid(p, &st, 0) != p || !WIFEXITED(st) || WEXITSTATUS(st) != 7) {
+            return failed[what];
+        }
+    }
+    return NULL;
+}
+#else
+static const char *ring0_words(void) {
+    return NULL;
+}
+#endif
+
 int main(void) {
     const char *e = pty_writer();
     if (e == NULL) {
         e = fault_signals();
+    }
+    if (e == NULL) {
+        e = ring0_words();
     }
     if (e != NULL) {
         printf("[ FAIL ] fault: %s (%s)\n", e, strerror(errno));
