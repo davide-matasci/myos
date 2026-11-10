@@ -598,6 +598,15 @@ pub(super) fn own_frame(aspace: u64, va: u64) -> Option<u64> {
 /// the process's own copy, writable (copy-on-write). A shared mapping's
 /// page is the file's: its first store makes it dirty.
 pub fn fault_in(va: usize, access: Access) -> bool {
+    // Nothing above the user window is a program's to page in. Without
+    // this a program's jump or store to a kernel address whose entry the
+    // checks below take for its own (x86 shares the kernel's half of the
+    // tables: a 4 KiB page of the direct map, executable or writable
+    // there) was "resolved" and retried for ever instead of raising
+    // SIGSEGV.
+    if va >= super::USER_WINDOW as usize {
+        return false;
+    }
     let page = va & !(PAGE - 1);
     // A store to a page mapped read-only because a fork shares its frame:
     // the page is copied (or taken) for this process, whatever region it
