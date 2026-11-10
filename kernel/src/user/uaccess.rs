@@ -112,21 +112,5 @@ pub fn buffer_ok(ptr: usize, len: usize) -> bool {
 }
 
 pub(super) fn user_range_ok(ptr: usize, len: usize) -> bool {
-    let (base, image_span, stack_off) = task::current_user_map();
-    let base = base as usize;
-    let end = match ptr.checked_add(len) {
-        Some(e) => e,
-        None => return false,
-    };
-    let in_code = ptr >= base && end <= base + image_span;
-    let stack_base = base + stack_off as usize;
-    let in_stack = ptr >= stack_base && end <= stack_base + USER_STACK_PAGES * PAGE;
-    let heap_base = heap_base_va(base as u64, stack_off) as usize;
-    let brk = task::current_brk() as usize;
-    let in_heap = brk > heap_base && ptr >= heap_base && end <= brk;
-    if in_code || in_stack || in_heap {
-        return true;
-    }
-    // mmap_contains takes TASKS; skip unless ptr is outside code/stack/heap.
-    task::mmap_contains(ptr, len)
+    task::user_range_ok(ptr, len)
 }
