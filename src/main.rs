@@ -45,6 +45,12 @@ const RISCV64_TARGET: &str = "riscv64imac-unknown-none-elf";
 /// `PANIC: riscv: missing struct riscv_hart for BSP`.
 const RISCV_SMP: &str = "2";
 
+/// For the test boots under EDK2 (aarch64, riscv64): no wait at the
+/// firmware's "Press ESCAPE within 5 seconds for boot options", five
+/// seconds of every boot. The firmware takes its wait from QEMU's `-boot
+/// splash-time` (ms); x86's OVMF has none. An interactive boot keeps it.
+const EDK2_NO_PROMPT: [&str; 2] = ["-boot", "menu=on,splash-time=0"];
+
 /// QEMU `virt` machine options for aarch64 (boot and the DTB dump alike).
 /// QEMU `virt` for the aarch64 boots. `gic-version` is `$MYOS_AARCH64_GIC`
 /// (2, the default: the memory-mapped GICv2 CPU interface; 3: redistributors
@@ -1100,6 +1106,9 @@ fn qemu_aarch64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    if ci {
+        cmd.args(EDK2_NO_PROMPT);
+    }
     // The screen in every boot, the headless CI ones too: it is `/dev/fb`
     // (docs/fb.md), which the boot tests draw on.
     cmd.arg("-device").arg("ramfb");
@@ -1527,6 +1536,9 @@ fn qemu_riscv64(image: &Path, ci: bool) -> Command {
         .arg("-nic")
         .arg("none")
         .arg("-no-reboot");
+    if ci {
+        cmd.args(EDK2_NO_PROMPT);
+    }
     // Multi-threaded TCG, as on x86 and aarch64: one host thread per hart.
     // Single-threaded TCG (MYOS_TCG_SINGLE=1, local-ci.sh) runs one hart at a
     // time, so an IPI to a halted hart waits for QEMU's 100 ms round-robin
