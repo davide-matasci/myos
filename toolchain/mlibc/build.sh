@@ -113,14 +113,10 @@ EOC
     >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
   ninja -C "$build/libc" >"$build/ninja.log" 2>&1 || { tail -60 "$build/ninja.log" >&2; exit 1; }
   ninja -C "$build/libc" install >"$build/install.log" 2>&1 || { tail -40 "$build/install.log" >&2; exit 1; }
-  # The shared objects out of lib/, stripped of their debug sections (the
-  # image carries them).
+  # The shared objects out of lib/ (a release build: no debug sections to
+  # strip, and the host's strip knows only the host's arch).
   mkdir -p "$prefix/shared"
-  local so
-  for so in "$prefix"/lib/*.so; do
-    "$STRIP_BIN" --strip-debug "$so"
-    mv "$so" "$prefix/shared/"
-  done
+  mv "$prefix"/lib/*.so "$prefix/shared/"
   echo "mlibc -> $prefix"
 }
 
