@@ -66,8 +66,10 @@ pub(super) struct Process {
     /// exec; a forked child starts without one.
     pub pdeath_sig: u8,
     /// What the process can name (`None`: the whole tree). Inherited on
-    /// fork, kept across exec; `cwd` is a path in it.
-    pub ns: Option<Box<super::ns::Namespace>>,
+    /// fork, kept across exec; `cwd` is a path in it. Never changed in
+    /// place: a syscall works on the one it took a reference to
+    /// (`task::with_ns`), off the task table's lock.
+    pub ns: Option<alloc::sync::Arc<super::ns::Namespace>>,
     /// The user and domain it runs as (`crate::sec`). Inherited on fork;
     /// exec and `setuser` change it.
     pub ctx: crate::sec::Ctx,

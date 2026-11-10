@@ -582,14 +582,23 @@ pub fn set_pdeath_signal(sig: u32) {
     });
 }
 
+/// The current process's namespace (`None`: the whole tree), to work on
+/// without the task table's lock.
+pub fn current_ns() -> Option<alloc::sync::Arc<ns::Namespace>> {
+    with_process_opt(|p| p.and_then(|p| p.ns.clone()))
+}
+
 /// Run `f` on the current process's namespace (`None`: the whole tree).
+/// Not under `TASKS`: mapping a path through it compares and allocates
+/// strings, and with the lock held for that every other CPU's syscalls
+/// waited (a path's every component is mapped).
 pub fn with_ns<R>(f: impl FnOnce(Option<&ns::Namespace>) -> R) -> R {
-    with_process_opt(|p| f(p.and_then(|p| p.ns.as_deref())))
+    f(current_ns().as_deref())
 }
 
 /// Give the current process the namespace `n` (`None`: the whole tree).
 pub fn set_ns(n: Option<ns::Namespace>) {
-    let n = n.map(alloc::boxed::Box::new);
+    let n = n.map(alloc::sync::Arc::new);
     with_process_opt(|p| {
         if let Some(p) = p {
             p.ns = n;
