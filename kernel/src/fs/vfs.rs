@@ -119,6 +119,9 @@ pub struct MountOps {
     /// wait set member is reported against: `docs/events.md`), or `None`
     /// for a file that is always ready.
     pub poll: Option<fn(&str) -> Option<(u32, u64)>>,
+    /// With `poll`: whether a write to the path may be news for a poller
+    /// ([`pollable`]); `None` when every file of the mount may be.
+    pub write_wakes: Option<fn(&str) -> bool>,
     /// Optional: set a path's access and modification times (seconds since
     /// the epoch; `None` keeps one). `None` for a mount that keeps no times.
     pub set_times: Option<fn(&str, Option<u64>, Option<u64>) -> bool>,
@@ -916,14 +919,18 @@ pub fn poll(node: &Vnode) -> Option<(u32, u64)> {
 
 /// Whether `node`'s filesystem has a `poll` hook at all: a file of one that
 /// has none (tmpfs, ext2, FAT) is always ready, so nothing waits for what
-/// is written to it. The hook itself is not called.
+/// is written to it. Nor for what goes to a file its mount says no poller
+/// watches ([`MountOps::write_wakes`]: `/dev/null`). The `poll` hook itself
+/// is not called.
 pub fn pollable(node: &Vnode) -> bool {
     let _tree = tree_read();
-    let Some((idx, _)) = node::location(node) else {
+    let Some((idx, rel)) = node::location(node) else {
         return false;
     };
-    match MOUNTS.lock().get(idx).map(|m| m.backend) {
-        Some(MountBackend::Kernel(ops)) => ops.poll.is_some(),
+    // The lock let go before the mount's hook runs.
+    let backend = MOUNTS.lock().get(idx).map(|m| m.backend);
+    match backend {
+        Some(MountBackend::Kernel(ops)) => ops.poll.is_some() && ops.write_wakes.is_none_or(|f| f(rel.as_str())),
         Some(MountBackend::Module(ops)) => ops.poll.is_some(),
         None => false,
     }

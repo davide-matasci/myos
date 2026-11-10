@@ -559,6 +559,14 @@ pub fn stat(name: &str) -> Option<StatInfo> {
     }
 }
 
+/// Whether a write to `name` may be news for a poller
+/// ([`crate::fs::vfs::pollable`]): not one to the sinks, which nothing
+/// reads back (`cmd > /dev/null` woke every poller in the system per
+/// write).
+pub fn write_wakes(name: &str) -> bool {
+    !matches!(parse(name), Some(Node::Null | Node::Zero | Node::Urandom))
+}
+
 /// `poll` readiness of a device and its change count ([`crate::fs::poll`]):
 /// a module device's `data` asks its module; everything else is always
 /// ready (`None`).
