@@ -189,6 +189,11 @@ fn main() {
         eprintln!("error: `--ci` is gone; run the boot tests with `test` (docs/testing.md)");
         exit(2);
     }
+    if let Err(why) = Selection::check_args(&args) {
+        eprintln!("error: {why}\n");
+        print_usage();
+        exit(2);
+    }
     let test = Selection::parse(&args).map(Mode::Tests);
     let what = args
         .iter()
