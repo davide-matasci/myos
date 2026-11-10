@@ -329,10 +329,16 @@ fn cut_period(cpu: usize, deadline_ns: u64) {
 /// The CPUs whose tick [`timer_idle`] stopped.
 static TICK_STOPPED: [AtomicBool; crate::smp::MAX_CPUS] = [const { AtomicBool::new(false) }; crate::smp::MAX_CPUS];
 
-/// This CPU halts with nothing to run: stop its periodic tick and fire its
-/// timer once, at `wake_ns` (monotonic), but not under 1% of a tick from now
-/// (see [`cut_period`]). The count is clamped to 32 bits: a fast LAPIC wakes
+/// This CPU halts with nothing to run: stop its tick and fire its timer at
+/// `wake_ns` (monotonic), but not under 1% of a tick from now (see
+/// [`cut_period`]). The count is clamped to 32 bits: a fast LAPIC wakes
 /// sooner than asked, never later. Interrupts off.
+///
+/// The timer stays periodic, with the time to `wake_ns` as its period:
+/// whatever ends the halt puts the tick's period back ([`timer_resume`])
+/// long before a second one. One write of the count each way; switching
+/// the timer to one-shot and back was two more per halt, each a trip out
+/// of the guest under KVM without APICv and a slow MMIO access under TCG.
 pub fn timer_idle(wake_ns: u64) {
     if crate::time::clock_hz() == 0 {
         return; // no calibrated count per ns: keep the tick
@@ -344,8 +350,7 @@ pub fn timer_idle(wake_ns: u64) {
         .clamp(per_tick / 100, u128::from(u32::MAX));
     SHORTENED[cpu].store(false, Ordering::Relaxed);
     TICK_STOPPED[cpu].store(true, Ordering::Relaxed);
-    // One-shot (bit 17 clear); writing INIT_COUNT starts it.
-    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR));
+    // Writing INIT_COUNT starts the new period.
     lapic_w(INIT_COUNT, counts as u32);
 }
 
@@ -356,7 +361,6 @@ pub fn timer_resume() {
     if !TICK_STOPPED[cpu].swap(false, Ordering::Relaxed) {
         return;
     }
-    lapic_w(LVT_TIMER, u32::from(TIMER_VECTOR) | (1 << 17));
     lapic_w(INIT_COUNT, timer_init_count());
 }
 
