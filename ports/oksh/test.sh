@@ -136,3 +136,24 @@ sh_inherited_sigs() {
 	return 0
 }
 t -t smoke,signal shell_inherited_sigs sh_inherited_sigs
+# History is kept in $HISTFILE (oksh built without SMALL): an interactive
+# shell appends each command, the next one reads them back (`fc -l`). Not
+# SMALL also sets the version variables (SH_VERSION as sh) scripts test.
+sh_history() {
+	rm -f /tmp/sh-hist
+	echo 'echo first-shell-line' | HISTFILE=/tmp/sh-hist sh -i > /dev/null 2>&1
+	grep -q first-shell-line /tmp/sh-hist || { echo "no history file"; ls -l /tmp/sh-hist; return 1; }
+	out=$(echo 'fc -ln 1' | HISTFILE=/tmp/sh-hist sh -i 2>/dev/null)
+	echo "$out"
+	case $out in
+	*first-shell-line*) ;;
+	*) return 1 ;;
+	esac
+	v=$(sh -c 'echo "$SH_VERSION|$OKSH_VERSION"')
+	echo "$v"
+	case $v in
+	*KSH*'|oksh '*) ;;
+	*) return 1 ;;
+	esac
+}
+t -t smoke shell_history sh_history

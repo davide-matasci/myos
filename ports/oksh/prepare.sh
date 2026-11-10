@@ -38,6 +38,9 @@ patch_copy main
 patch_copy jobs
 patch_copy c_sh
 patch_copy lex
+# Not SMALL (the history file, KSH_VERSION), but no curses: Ctrl-L's
+# terminfo clear needs it (pconfig.h's NO_CURSES).
+patch_copy nocurses
 patch_copy exec
 patch_copy trap
 
