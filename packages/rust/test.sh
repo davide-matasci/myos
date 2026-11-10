@@ -2,8 +2,8 @@
 # toolchain set up in a root on the scratch disk (formatted here unless
 # the ext2 tests left it mounted at /tmp/disk), then cargo builds a myos
 # program there with a build script and a proc macro of its own (the
-# host's: linked by Alpine's lld against the root's musl and dlopened by
-# rustc) and myos runs it natively. The first setup downloads the
+# host's: linked by the toolchain's rust-lld against the root's musl and
+# dlopened by rustc) and myos runs it natively. The first setup downloads the
 # toolchain (some 230 MB) and takes minutes under emulation.
 rust_cargo() {
 	d=/tmp/disk
@@ -26,6 +26,9 @@ rust_build() {
 	# setup's lines go to the console (fd 3): the host ends a boot that is
 	# silent for 600 s.
 	run-myos rust -r $r setup >&3 2>&1 || return 1
+	# Both links are rust-lld's: the root has no lld of Alpine's (nor its
+	# LLVM libraries).
+	[ ! -e $r/usr/bin/ld.lld ] || { echo "Alpine's lld is in the root"; return 1; }
 	p=$r/src/hello
 	mkdir -p $p/src $p/pm/src || return 1
 	printf '[package]\nname = "hello"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\npm = { path = "pm" }\n' > $p/Cargo.toml
