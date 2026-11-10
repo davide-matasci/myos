@@ -141,8 +141,12 @@ struct ForkCalleeSaved {
     r15: u64,
 }
 
-/// Per-CPU syscall state. `IA32_GS_BASE` points at the current CPU's element so
-/// `syscall_entry` can load RSP0 without clobbering SYSCALL's RCX (user RIP).
+/// Per-CPU syscall state. `IA32_KERNEL_GS_BASE` points at the current CPU's
+/// element, and `syscall_entry` brings it into GS with `swapgs` for the few
+/// instructions that address it, so it can load RSP0 without clobbering
+/// SYSCALL's RCX (user RIP). GS is the program's the rest of the time, in
+/// the kernel too (nothing else there uses it): what a program loads into
+/// `%gs` (a null selector zeroes the base) never reaches the kernel's pointer.
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
 struct CpuSyscallState {
@@ -188,8 +192,11 @@ core::arch::global_asm!(
     .global syscall_entry
 syscall_entry:
     cli
-    # GS_BASE -> &CPU_SYSCALL[cpu] (set in load_percpu_gs). Stash the user
-    # rsp there so no user register has to serve as a temporary.
+    # KERNEL_GS_BASE -> &CPU_SYSCALL[cpu] (set in load_percpu_gs): in GS
+    # from this swapgs to the next, interrupts off, and the program's GS
+    # base in its place. Stash the user rsp there so no user register has
+    # to serve as a temporary.
+    swapgs
     mov gs:[56], rsp
     mov rsp, qword ptr gs:[0]
     # Snapshot user callee-saved before any Rust prologue can reuse them.
@@ -217,6 +224,7 @@ syscall_entry:
     push r8
     push rcx          # user rip
     push qword ptr gs:[56] # user rsp (on this kernel stack, survives wait/yield)
+    swapgs
     # 7th argument (and 16-byte alignment for the call): the address of the
     # block just pushed (`push rsp` stores rsp before the decrement), through
     # which the signal code redirects rip/rsp.
@@ -229,8 +237,10 @@ syscall_entry:
     mov rdi, rax      # nr
     call {dispatch}
     # The body may have enabled IRQs (and moved CPUs); keep them off while
-    # gs:[56] carries the user rsp. sysret restores IF from r11.
+    # GS is this CPU's state and gs:[56] carries the user rsp. sysret
+    # restores IF from r11.
     cli
+    swapgs
     add rsp, 8
     pop r10
     mov gs:[56], r10
@@ -250,6 +260,7 @@ syscall_entry:
     cmp r11, [rsp + 16]
     jne 1f
     mov rsp, gs:[56]
+    swapgs
     sysretq
 1:
     # rsp is at the rax word (rax holds the result): rcx and r11 aside in
@@ -271,6 +282,7 @@ syscall_entry:
     sub rsp, 8
     mov rcx, gs:[64]
     mov r11, gs:[72]
+    swapgs
     iretq
     "#,
     dispatch = sym crate::user::syscall_dispatch,
@@ -388,8 +400,6 @@ fn wrmsr(msr: u32, val: u64) {
 /// interrupt from user mode on this CPU.
 pub fn set_kernel_stack_top(top: usize) {
     let cpu = crate::smp::cpu_id().min(MAX_CPUS - 1);
-    // Keep GS_BASE coherent with cpu_id() before publishing rsp0.
-    load_percpu_gs(cpu);
     unsafe {
         core::ptr::addr_of_mut!(CPU_SYSCALL[cpu].kernel_rsp0).write(top);
     }
@@ -405,20 +415,38 @@ pub fn signal_arch_word() -> u64 {
     (super::gdt::user_cs() | 3) as u64
 }
 
-/// Point GS at this CPU's syscall state (x86). Called from BSP/AP interrupt init.
+/// Point `IA32_KERNEL_GS_BASE` at this CPU's syscall state, where
+/// `syscall_entry`'s `swapgs` finds it, and give user mode a zero GS base.
+/// Called once per CPU, from the BSP's and the APs' interrupt init: every
+/// `swapgs` there is paired with interrupts off, and user mode can change
+/// neither register's kernel half (no FSGSBASE, and a selector load only
+/// reaches `IA32_GS_BASE`).
 pub fn load_percpu_gs(cpu: usize) {
     const IA32_GS_BASE: u32 = 0xC000_0101;
+    const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
     let cpu = cpu.min(MAX_CPUS - 1);
     let ptr = unsafe { core::ptr::addr_of!(CPU_SYSCALL[cpu]) as u64 };
-    unsafe {
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") IA32_GS_BASE,
-            in("eax") ptr as u32,
-            in("edx") (ptr >> 32) as u32,
-            options(nostack, preserves_flags),
-        );
+    for (msr, value) in [(IA32_KERNEL_GS_BASE, ptr), (IA32_GS_BASE, 0)] {
+        unsafe {
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") msr,
+                in("eax") value as u32,
+                in("edx") (value >> 32) as u32,
+                options(nostack, preserves_flags),
+            );
+        }
     }
+}
+
+/// `v` as the CPU takes it in ring 0, for an address a program chose that
+/// the kernel loads there: `iretq` to a non-canonical rip, and `wrmsr` of a
+/// non-canonical FS base, raise #GP in the kernel instead of in the program.
+/// Such an address becomes the first of the kernel's half, which a program
+/// faults on as well (SIGSEGV), but in ring 3.
+pub fn canonical_or_fault(v: u64) -> u64 {
+    const FAULTS: u64 = 0xffff_8000_0000_0000;
+    if ((v << 16) as i64 >> 16) as u64 == v { v } else { FAULTS }
 }
 
 /// First entry to user mode (the aspace is already loaded). x86 passes
@@ -445,7 +473,8 @@ fn enter_x86(user_rip: usize, user_rsp: usize) -> ! {
     // address (HHDM) in a GPR across iretq. Userspace then faulted on that
     // pointer (UEFI boot-mini `cat | cat`: cr2=0xffff8000… code=0x5). Same
     // discipline as enter_regs_x86 / enter_riscv64.
-    let resume = [user_rip as u64, cs, rflags, user_rsp as u64, ss];
+    // The rip is the image's entry point: whatever its ELF header says.
+    let resume = [canonical_or_fault(user_rip as u64), cs, rflags, user_rsp as u64, ss];
     let mut slot = core::mem::MaybeUninit::<[u64; 5]>::uninit();
     const CR0_TS: u64 = 1 << 3;
     unsafe {
@@ -566,7 +595,8 @@ fn enter_regs_x86(regs: UserRegs) -> ! {
         r14: regs.r14,
         r15: regs.r15,
         args: regs.args,
-        rip: regs.rip as u64,
+        // A new thread's entry is its creator's word.
+        rip: canonical_or_fault(regs.rip as u64),
         cs,
         rflags,
         rsp: regs.rsp as u64,
