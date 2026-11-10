@@ -120,9 +120,10 @@ arch (the name in capitals, `-` as `_`). Its script builds the arches
 the variable lists (all by default) and writes a stamp per arch. The
 registry caches each arch apart; `ci-registry.sh pull <name>` pulls the
 three. A port that depends on it (`surf`) and that the registry lacks
-while it lacks it too waits for those jobs in a second stage
-(`ports-after` in `ci-ports.yml`, its list from `ci-ports-plan.sh`),
-instead of building it in its own job.
+while it lacks it too waits for those jobs in the plan's second stage
+(`ports-after` in `ci-ports.yml`, "Cache keys" below), instead of
+building it in its own job; so its arches are always in the first stage,
+their key known or not.
 
 ## Cache keys
 
@@ -238,16 +239,32 @@ skips it; once the dependency is built or pulled the key is defined again.
 The CI plan (`scripts/ci-ports-plan.sh`, `ci-registry.sh plan`) walks the
 ports in build order: a hit's annotation serves the hashes of the ports
 after it; a port whose dependency the registry lacks has no defined key
-and is scheduled, and its job, after pulling or building the dependency,
-asks the registry again: with the dependency's outputs unchanged it is a
-hit, and the job ends with a pull. A port job (`scripts/ci-build-port.sh`)
+yet. So the plan has two stages. The first (the `plan` job) starts a job
+for each port the registry lacks under a key it can compute, the changed
+port itself. Once those have pushed, the second (`replan`,
+`ci-ports-plan.sh after`) asks again with their annotations in hand: a
+port over a changed one whose outputs came out the same is a hit and gets
+no job at all, and the ones still lacking get theirs (`ports-after`). A
+change to a port many others build against, its outputs unchanged, is
+then one job, not one per dependent each rebuilding it. The arches of a
+port built an arch at a time are in the first stage whatever their key
+(above), and a port of the second stage over another of that stage
+builds it in its own job, as any job does for a dependency the registry
+lacks, then asks the registry again for its own port: with the
+dependency's outputs unchanged it is a hit, and the job ends with a
+pull. A port job (`scripts/ci-build-port.sh`)
 pulls or builds every port its port builds against, transitively, in
 build order (`scripts/ports.sh --deps`), each before the next is keyed on
 it, and a dependency it built that another job pushed first is replaced
 here by that job's artifact: a build is not always the same bytes twice
 (libxcb's generated code, for one), the jobs run in parallel, and what
 every job keys on must be the registry's outputs, else the same sources
-get a key per job and nothing finds anything. The build job's pulls
+get a key per job and nothing finds anything. The push
+(`ci-registry.sh push`) asks for the tag before the pack and again
+before the upload, and reads the tag's record back after it: a registry
+has no "put if absent", and when the record is another build's, that
+push landed last, and the job is told the port was `already present`.
+The build job's pulls
 (`scripts/ci-build-pull-and-kernels.sh`) run once every port job is done,
 in parallel, each port's hash finding its dependencies' records through
 the registry when their pulls have not landed yet. tcc installs `libtcc1.a` into newlib's

@@ -26,8 +26,10 @@ fi
 for dep in $DEPS; do
   ./scripts/ci-registry.sh pull "$dep" || true
   if ! ./scripts/ci-registry.sh current "$dep"; then
-    # Built here too (every port needing it does the same on a miss; the
-    # registry keeps the first push), so the matrix has no second stage.
+    # Built here too (every port needing it does the same on a miss, and
+    # the registry keeps one push): a port of the plan's second stage over
+    # another of that stage, an arch of a port built an arch at a time
+    # over a port of the first (ci-ports-plan.sh).
     echo "==> dependency $dep not in the registry; building it"
     "./$(./scripts/ports.sh --script "$dep")"
     # Pushed; or another job pushed it first, and that build replaces this

@@ -16,7 +16,7 @@
 #   ./scripts/ci-registry.sh push PORT
 #   ./scripts/ci-registry.sh current PORT   exit 0 when PORT's outputs are current
 #   ./scripts/ci-registry.sh exists PORT    exit 0 when the registry has PORT at its hash
-#   ./scripts/ci-registry.sh plan PORT...   the ports the registry lacks, in order (the CI plan)
+#   ./scripts/ci-registry.sh plan PORT...   the ports the registry lacks, in order, each with `missing` or `undefined` (the CI plan)
 #   ./scripts/ci-registry.sh outputs PORT   PORT's output hash (recorded from its files when current)
 # PORT is a port with a descriptor and a build script (`scripts/ports.sh
 # --list`: its stamp and PORT_OUTPUTS are cached, keyed by its
@@ -483,7 +483,7 @@ cmd_pull() {
 
 cmd_push() {
   local port="$1"
-  local hash ref tmp list status outputs annotate=()
+  local hash ref tmp list status outputs="" theirs annotate=()
   if ! can_push; then
     echo "registry skip push (disabled)"
     return 0
@@ -530,6 +530,14 @@ cmd_push() {
   # zstd on every core: the kernels package (the disk images) is large;
   # the images are sparse (their partitions mostly unwritten), kept so.
   tar -C "$ROOT" --sparse -I 'zstd -T0' -cf "$tmp/${port}.tar.zst" -T "$list"
+  # The jobs that found the same dependency missing build it in parallel,
+  # and the pack takes long enough (a minute for a large port) for every
+  # one of them to have seen the tag empty above: ask again.
+  if oras manifest fetch "$ref" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    echo "registry skip push ${port}: already present ${hash} (pushed meanwhile)"
+    return 0
+  fi
   # oras push rejects absolute file paths; push from $tmp with a relative name.
   set +e
   (
@@ -552,18 +560,33 @@ cmd_push() {
   try_public_package "$port"
   clear_force_replace "$port"
   rm -rf "$tmp"
+  # A registry has no "put if absent": a push between the check and ours
+  # was overwritten, and one after ours overwrote it. The tag's record now
+  # says whose build stays; when it is not this one, the caller is told the
+  # port was already there and takes that build before keying anything on
+  # its own (ci-build-port.sh). What is left of the race is the time
+  # between two requests, not the pack's.
+  if [[ -n "${outputs:-}" ]]; then
+    if theirs="$(oras manifest fetch "$ref" 2>/dev/null | annotation_outputs)" && [[ "$theirs" != "$outputs" ]]; then
+      cache_outputs "$port" "$hash" "$theirs"
+      echo "registry skip push ${port}: already present ${hash} (another build's outputs replaced this push)"
+      return 0
+    fi
+  fi
   echo "registry push ${port} ${hash}"
 }
 
 # The CI plan: of the pieces of the PORTs given, in build order, the ones
 # the registry lacks at their input hash (manifests only, no download), one
-# port per line. A hit's output hash goes to target/.myos-dep-hash/, where
-# the hashes of the ports after it find it; a port whose dependency the
-# registry lacks has no defined hash and counts as lacking (its job pulls
-# or builds the dependency, then asks again: it may be a hit by then, its
-# dependency's outputs unchanged).
+# `<port> <state>` per line. A hit's output hash goes to
+# target/.myos-dep-hash/, where the hashes of the ports after it find it.
+# The state is `missing` for a port with a key the registry has nothing
+# under, and `undefined` for one whose dependency the registry lacks: it has
+# no key until that dependency is pushed, and may be a hit then, the
+# dependency's outputs unchanged (the plan's second stage asks again,
+# scripts/ci-ports-plan.sh).
 cmd_plan() {
-  local port piece hash ref json outputs misses=""
+  local port piece hash ref json outputs misses="" undefined=" "
   ensure_oras >&2
   if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
     oras_login >&2 || true
@@ -573,6 +596,7 @@ cmd_plan() {
       if ! hash="$(port_hash "$piece")"; then
         echo "registry lacks ${piece}: its key is undefined (a dependency's outputs are not in the registry)" >&2
         misses="$misses $port"
+        undefined="$undefined$port "
         continue
       fi
       ref="$(registry_ref "$piece" "$hash")"
@@ -587,7 +611,13 @@ cmd_plan() {
       fi
     done
   done
-  printf '%s\n' $misses | awk 'NF && !seen[$0]++'
+  for port in $(printf '%s\n' $misses | awk 'NF && !seen[$0]++'); do
+    if [[ "$undefined" == *" $port "* ]]; then
+      echo "$port undefined"
+    else
+      echo "$port missing"
+    fi
+  done
 }
 
 # PORT's output hash per piece (`<piece> <hash>`): recorded from its files
