@@ -26,7 +26,7 @@ of what get-myos would unpack):
 `posix-parse` helpers). Curated boot CI set: `misc/ci-nonbasic-100.tests`
 (~100 paths, suite-prefixed) plus `misc/ci-expansion.tests` (155 paths:
 POSIX core + non-basic + the myos suite) and `misc/ci-expansion-2.tests`
-(503 paths: the rest of the suite that passes) and `misc/ci-udp.tests` (the
+(593 paths: the rest of the suite that passes) and `misc/ci-udp.tests` (the
 udp suite's 207). Wired the same way as basic: thin
 `ci-smoke-copy.sh` staging + host prebuild + `make … TESTLIST=… report`.
 
@@ -52,14 +52,18 @@ re-use across sessions, `mknod(S_IFIFO)` / `mkfifoat`).
 ## `ci-expansion-2.tests` (the rest that passes)
 
 Every runtime test outside the other lists was host-built for all three
-arches and booted in batches; the list keeps the 503 that build and pass on
+arches and booted in batches; the list keeps the 593 that build and pass on
 bios, aarch64 and riscv64: most of `basic/` (wchar, wctype, pthread, stdlib,
-stdio, unistd, time, fenv, complex, ndbm, pwd/grp, locale, sys_mman,
-sys_shm, termios, syslog, ...), the `paths` FHS checks (a missing directory
-is one of their expected outcomes), the `process/fork-setpgid-*undo*` tests
-and a few `stdio` printf cases. Of the 1352 candidates, 632 build against
-newlib + libgloss on all three arches today; what fails or does not build is
-below.
+stdio, unistd, time, math, fenv, complex, ndbm, pwd/grp, locale, sys_mman,
+sys_shm, sys_socket, net_if, termios, syslog, ...), the `paths` FHS checks
+(a missing directory is one of their expected outcomes), the
+`process/fork-setpgid-*undo*` tests and a few `stdio` printf cases. Of the
+1497 runtime tests of `basic`, `limits`, `io`, `malloc`, `paths`,
+`process`, `signal` and `stdio`, 1118 build against newlib + libgloss on
+all three arches; what fails or does not build is below. The last 90 (60 of
+them in `basic/math`) came with riscv64's userspace going hard-float (rv64gc,
+lp64d: issue #626), which gave newlib's riscv `<fenv.h>` its exception
+flags.
 
 ## `ci-udp.tests` (the udp suite)
 
@@ -98,7 +102,10 @@ until they pass honestly (no xfails):
   the conversions print literally
 - `process/zombie-setpgid-move` (hang)
 - `basic/complex/*` (25) — results differ from the expected ones in the
-  last bits; `basic/unistd` (16), `basic/sys_socket` (13), `basic/stdlib`
+  last bits; `basic/math` (57) — newlib's libm: results off in the last
+  bit (`asinh`, `hypot`, `lgamma`, `fma`, ...), and errors POSIX reports
+  otherwise (no `EDOM` for `cos(inf)`, `fmod(inf, y)` or `ilogb(nan)`,
+  `ERANGE` for `cosh(inf)` and `j0(inf)`, `FE_INVALID` for `acosh(nan)`); `basic/unistd` (16), `basic/sys_socket` (13), `basic/stdlib`
   (5) and a few more in `stdio`, `sys_stat`, `wchar`, `netdb`, `time`,
   `sys_wait`, `sys_times`, `sys_select`, `sys_shm`, `pthread`, `locale` —
   missing or partial libc/kernel support
@@ -106,9 +113,11 @@ until they pass honestly (no xfails):
   (`PAGESIZE`, `HOST_NAME_MAX`, `PTHREAD_*`, `SEM_*`, `AIO_*`, `NL_*`, ...)
 - `process/waitpid-pgid-empty-on-setpgid*`, `stdio/printf-Lf-width-precision-pos-args`
 - Not buildable against newlib/libgloss on every arch yet (not in any
-  list; 720 of the 1352 candidates; 825 build for x86_64, 750 for aarch64,
-  632 for riscv64, counted while riscv64 was soft-float, issue #626): most
-  of `basic/math` (174), `basic/threads`, `spawn`,
+  list; 379 of the 1497 runtime tests: 1193 build for x86_64, 1118 for
+  aarch64 and riscv64 alike since riscv64's userspace is hard-float): the
+  long double functions of `basic/math` (57) and `basic/complex` (32), which
+  newlib's libm has for x86_64 alone (aarch64 and riscv64's long double is
+  128-bit), `basic/pthread` (37), `basic/threads`, `spawn`,
   `semaphore`, `mqueue`, `aio`, `sched`, `libintl`, `utmpx`, `dlfcn`,
   `iconv`, `wordexp`, the pty API
   (`posix_openpt`/`grantpt`/`unlockpt`), `ppoll`, `timer_*`,

@@ -23,6 +23,7 @@ TESTS += basic/dirent/fdopendir
 TESTS += basic/fcntl/fcntl
 
 # basic: fenv
+TESTS += basic/fenv/feclearexcept
 TESTS += basic/fenv/fegetenv
 TESTS += basic/fenv/fegetexceptflag
 TESTS += basic/fenv/fegetround
@@ -33,6 +34,9 @@ TESTS += basic/fenv/fesetexceptflag
 TESTS += basic/fenv/fesetround
 TESTS += basic/fenv/fetestexcept
 TESTS += basic/fenv/feupdateenv
+
+# basic: fnmatch
+TESTS += basic/fnmatch/fnmatch
 
 # basic: grp
 TESTS += basic/grp/endgrent
@@ -53,9 +57,69 @@ TESTS += basic/locale/newlocale
 TESTS += basic/locale/setlocale
 
 # basic: math
+TESTS += basic/math/acos
+TESTS += basic/math/acosf
+TESTS += basic/math/asin
+TESTS += basic/math/asinf
+TESTS += basic/math/asinhf
+TESTS += basic/math/atan
+TESTS += basic/math/atan2
+TESTS += basic/math/atanf
+TESTS += basic/math/atanhf
+TESTS += basic/math/cbrt
+TESTS += basic/math/ceil
+TESTS += basic/math/ceilf
+TESTS += basic/math/copysign
+TESTS += basic/math/copysignf
+TESTS += basic/math/erf
+TESTS += basic/math/erfc
+TESTS += basic/math/erfcf
+TESTS += basic/math/erff
+TESTS += basic/math/exp
+TESTS += basic/math/exp2
+TESTS += basic/math/exp2f
+TESTS += basic/math/expf
+TESTS += basic/math/expm1
+TESTS += basic/math/expm1f
+TESTS += basic/math/fabs
+TESTS += basic/math/fabsf
+TESTS += basic/math/fdim
+TESTS += basic/math/fdimf
+TESTS += basic/math/floor
+TESTS += basic/math/floorf
+TESTS += basic/math/fmax
+TESTS += basic/math/fmaxf
+TESTS += basic/math/fmin
+TESTS += basic/math/fminf
+TESTS += basic/math/frexp
+TESTS += basic/math/frexpf
+TESTS += basic/math/hypotf
+TESTS += basic/math/ldexp
+TESTS += basic/math/ldexpf
+TESTS += basic/math/log1p
+TESTS += basic/math/modf
+TESTS += basic/math/modff
 TESTS += basic/math/nan
 TESTS += basic/math/nanf
 TESTS += basic/math/nanl
+TESTS += basic/math/nearbyint
+TESTS += basic/math/nearbyintf
+TESTS += basic/math/nextafter
+TESTS += basic/math/nextafterf
+TESTS += basic/math/rint
+TESTS += basic/math/rintf
+TESTS += basic/math/round
+TESTS += basic/math/roundf
+TESTS += basic/math/scalbln
+TESTS += basic/math/scalblnf
+TESTS += basic/math/scalbn
+TESTS += basic/math/scalbnf
+TESTS += basic/math/sinh
+TESTS += basic/math/sinhf
+TESTS += basic/math/tanh
+TESTS += basic/math/tanhf
+TESTS += basic/math/trunc
+TESTS += basic/math/truncf
 
 # basic: ndbm
 TESTS += basic/ndbm/dbm_clearerr
@@ -68,9 +132,16 @@ TESTS += basic/ndbm/dbm_nextkey
 TESTS += basic/ndbm/dbm_open
 TESTS += basic/ndbm/dbm_store
 
+# basic: net_if
+TESTS += basic/net_if/if_freenameindex
+TESTS += basic/net_if/if_indextoname
+TESTS += basic/net_if/if_nameindex
+TESTS += basic/net_if/if_nametoindex
+
 # basic: netdb
 TESTS += basic/netdb/freeaddrinfo
 TESTS += basic/netdb/gai_strerror
+TESTS += basic/netdb/getaddrinfo
 TESTS += basic/netdb/getnameinfo
 
 # basic: netinet_in
@@ -93,15 +164,18 @@ TESTS += basic/pthread/pthread_barrierattr_init
 TESTS += basic/pthread/pthread_cancel
 TESTS += basic/pthread/pthread_cleanup_pop
 TESTS += basic/pthread/pthread_cleanup_push
+TESTS += basic/pthread/pthread_cond_broadcast
 TESTS += basic/pthread/pthread_cond_clockwait
 TESTS += basic/pthread/pthread_cond_destroy
 TESTS += basic/pthread/pthread_cond_init
 TESTS += basic/pthread/pthread_cond_signal
 TESTS += basic/pthread/pthread_cond_timedwait
+TESTS += basic/pthread/pthread_cond_wait
 TESTS += basic/pthread/pthread_condattr_destroy
 TESTS += basic/pthread/pthread_condattr_getclock
 TESTS += basic/pthread/pthread_condattr_init
 TESTS += basic/pthread/pthread_condattr_setclock
+TESTS += basic/pthread/pthread_create
 TESTS += basic/pthread/pthread_detach
 TESTS += basic/pthread/pthread_equal
 TESTS += basic/pthread/pthread_exit
@@ -148,6 +222,9 @@ TESTS += basic/pwd/getpwent
 TESTS += basic/pwd/getpwnam
 TESTS += basic/pwd/getpwnam_r
 TESTS += basic/pwd/getpwuid_r
+
+# basic: sched
+TESTS += basic/sched/sched_yield
 
 # basic: stdio
 TESTS += basic/stdio/asprintf
@@ -268,12 +345,30 @@ TESTS += basic/sys_shm/shmdt
 TESTS += basic/sys_shm/shmget
 
 # basic: sys_socket
+TESTS += basic/sys_socket/bind
+TESTS += basic/sys_socket/connect
+TESTS += basic/sys_socket/getpeername
+TESTS += basic/sys_socket/getsockname
+TESTS += basic/sys_socket/getsockopt
+TESTS += basic/sys_socket/listen
+TESTS += basic/sys_socket/recv
+TESTS += basic/sys_socket/recvfrom
+TESTS += basic/sys_socket/recvmsg
+TESTS += basic/sys_socket/send
+TESTS += basic/sys_socket/sendmsg
+TESTS += basic/sys_socket/sendto
+TESTS += basic/sys_socket/setsockopt
+TESTS += basic/sys_socket/shutdown
 TESTS += basic/sys_socket/socket
 TESTS += basic/sys_socket/socketpair
 
 # basic: sys_stat
 TESTS += basic/sys_stat/futimens
 TESTS += basic/sys_stat/utimensat
+
+# basic: sys_statvfs
+TESTS += basic/sys_statvfs/fstatvfs
+TESTS += basic/sys_statvfs/statvfs
 
 # basic: sys_time
 TESTS += basic/sys_time/utimes
@@ -299,6 +394,7 @@ TESTS += basic/termios/cfsetospeed
 
 # basic: time
 TESTS += basic/time/asctime
+TESTS += basic/time/clock_getres
 TESTS += basic/time/clock_gettime
 TESTS += basic/time/clock_settime
 TESTS += basic/time/ctime
@@ -316,6 +412,7 @@ TESTS += basic/unistd/dup3
 TESTS += basic/unistd/fchown
 TESTS += basic/unistd/ftruncate
 TESTS += basic/unistd/getegid
+TESTS += basic/unistd/getentropy
 TESTS += basic/unistd/geteuid
 TESTS += basic/unistd/getgid
 TESTS += basic/unistd/gethostname
@@ -323,6 +420,7 @@ TESTS += basic/unistd/getlogin
 TESTS += basic/unistd/getlogin_r
 TESTS += basic/unistd/getopt
 TESTS += basic/unistd/getppid
+TESTS += basic/unistd/lockf
 TESTS += basic/unistd/pwrite
 TESTS += basic/unistd/setegid
 TESTS += basic/unistd/seteuid
