@@ -620,6 +620,9 @@ extern "C" fn trampoline() -> ! {
 /// thread: close its fds, report its exit to the parent, free its address
 /// space, then leave the CPU for good.
 pub fn die() -> ! {
+    // Who its parent's SIGCHLD and its children's `pdeath_sig` come from:
+    // it, while it is still a process to ask.
+    let from = crate::signal::sender();
     irq_off();
     let mut chld_parent = usize::MAX;
     // Closed outside TASKS below: dropping pipe/pty ends wakes their peers
@@ -649,7 +652,7 @@ pub fn die() -> ! {
                     0
                 };
                 if sig != 0 {
-                    pdeath_kicks |= super::signals::signal_send_held(&mut tasks, j, u32::from(sig));
+                    pdeath_kicks |= super::signals::signal_send_held(&mut tasks, j, u32::from(sig), from);
                 }
             }
         }
@@ -708,7 +711,7 @@ pub fn die() -> ! {
     // SIGCHLD's default action is ignore, so a parent without a handler is
     // unaffected.
     if chld_parent != usize::MAX {
-        crate::signal::raise_sigchld(chld_parent);
+        crate::signal::raise_sigchld(chld_parent, from);
         // The parent may be blocked in `wait`; pollers may watch for exits.
         wake(key_child(chld_parent));
         wake_any();

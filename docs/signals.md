@@ -71,6 +71,14 @@ The trampoline saves every register, calls `handler(sig, &siginfo, NULL)`
 and returns through `SYS_SIGRETURN`, so the interrupted code sees its
 syscall return normally.
 
+A signal sent says who sent it: `si_pid` and `si_uid` are the sending
+process and its user (the process itself for `raise`; for `SIGCHLD`, the
+child whose exit raised it; for `SIGPIPE`, the writer), and 0 for one the
+kernel sends on its own (`SIGALRM`, a POSIX timer's, the console's `^C`).
+The kernel keeps each pending signal's first sender: one sent again while
+pending is dropped, as on Linux. Signal fds and the Linux layer report the
+same (`docs/events.md`, `docs/linux-compat.md`).
+
 ## Faults
 
 A synchronous fault in user mode raises its signal at once, from the

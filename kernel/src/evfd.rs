@@ -823,8 +823,9 @@ pub fn sig_poll(id: usize) -> (bool, u64) {
 }
 
 /// Take the lowest pending signal of fd `id`'s mask from the current task
-/// (it is not delivered); `None` when there is none.
-pub fn sig_take(id: usize) -> Option<u32> {
+/// (it is not delivered), with its sender (`pid | uid << 32`, 0: the
+/// kernel); `None` when there is none.
+pub fn sig_take(id: usize) -> Option<(u32, u64)> {
     let s = SIGS.get(id)?;
     crate::task::signal_take_from(crate::task::current_id(), s.mask.load(Ordering::SeqCst))
 }

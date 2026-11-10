@@ -245,7 +245,8 @@ state, and the handler returns through `rt_sigreturn`. musl passes
 `SA_RESTORER` on x86_64 and aarch64; riscv64 has none (Linux uses its
 vDSO), so the module maps a one-page trampoline. A fault's signal carries
 `si_code`, `si_addr` and the fault address, and `rt_sigreturn` resumes the
-faulting instruction. On x86_64 the callee-saved registers read 0 in
+faulting instruction; a signal sent carries its sender's `si_pid` (and
+`si_uid` 0, as every uid of the layer). On x86_64 the callee-saved registers read 0 in
 `uc_mcontext` and are not restored from it.
 
 ### vDSO
@@ -460,7 +461,7 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct
-  signalfd_siginfo`, with only `ssi_signo` set). `EPOLLET` reports a
+  signalfd_siginfo`, with `ssi_signo` and the sender's `ssi_pid` set). `EPOLLET` reports a
   readiness once until the object changes. `EPOLLPRI`, `EPOLLRDHUP`,
   `EPOLLEXCLUSIVE` and `epoll_pwait`'s mask are ignored.
 - **Sockets.** IPv4 and IPv6 TCP and UDP, and `AF_UNIX` streams.

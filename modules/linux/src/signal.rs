@@ -178,6 +178,8 @@ pub struct Frame {
     /// A fault's `si_code` and `si_addr` (0, 0: a signal sent).
     pub code: u32,
     pub addr: usize,
+    /// A signal sent: its sender's pid (`si_pid`; 0: the kernel).
+    pub pid: u32,
     /// Where the frame goes below: the interrupted stack pointer, or the top
     /// of the alternate stack for an `SA_ONSTACK` handler.
     pub sp: usize,
@@ -189,13 +191,18 @@ pub struct Frame {
     pub arch: u64,
 }
 
-/// `siginfo_t` for a signal sent with `kill` (`code` 0, `SI_USER`) or a
-/// fault's (its `si_code`, and `si_addr` at offset 16).
-pub fn siginfo(sig: usize, code: u32, addr: usize) -> [u8; 128] {
+/// `siginfo_t` for a signal sent with `kill` (`code` 0, `SI_USER`; its
+/// sender's `si_pid` at offset 16, `si_uid` 0 as every uid of the layer) or
+/// a fault's (its `si_code`, and `si_addr` at offset 16).
+pub fn siginfo(sig: usize, code: u32, addr: usize, pid: u32) -> [u8; 128] {
     let mut b = [0u8; 128];
     b[..4].copy_from_slice(&(sig as i32).to_le_bytes());
     b[8..12].copy_from_slice(&code.to_le_bytes());
-    b[16..24].copy_from_slice(&(addr as u64).to_le_bytes());
+    if code == 0 {
+        b[16..20].copy_from_slice(&pid.to_le_bytes());
+    } else {
+        b[16..24].copy_from_slice(&(addr as u64).to_le_bytes());
+    }
     b
 }
 
@@ -221,6 +228,7 @@ pub fn deliver(regs: &mut SyscallRegs, d: &myos_abi::SignalDelivery) -> Option<u
         ret: d.ret,
         code: d.code,
         addr: d.addr,
+        pid: d.pid,
         arch: d.arch,
     };
     arch::deliver(regs, &f)
@@ -391,10 +399,10 @@ pub fn rt_sigtimedwait(set: usize, info: usize, timeout: usize) -> R {
         None
     };
     loop {
-        if let Some(n) = task::signal_take_from(id, want) {
+        if let Some((n, pid)) = task::signal_take_from(id, want) {
             let sig = sig_to_linux(n);
             if info != 0 {
-                put(info, &siginfo(sig, 0, 0))?;
+                put(info, &siginfo(sig, 0, 0, pid))?;
             }
             return Ok(sig);
         }

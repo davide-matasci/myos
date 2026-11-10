@@ -17,7 +17,9 @@
  * that is still too large to be reloaded in place leaves the new program
  * an empty heap (the old image's pages past the new span are gone). A
  * write to a pipe whose reader closed ends the writer with SIGPIPE at
- * the default action, and is EPIPE to one that ignores or catches it.
+ * the default action, and is EPIPE to one that ignores or catches it. A
+ * caught signal's siginfo_t names its sender (si_pid, si_uid): the process
+ * itself, a child that sent it, the child whose exit raised SIGCHLD.
  * Prints [ OK ] child.
  */
 #include <errno.h>
@@ -416,6 +418,69 @@ static int sigpipe(void) {
     return 0;
 }
 
+static volatile sig_atomic_t from_pid, from_uid;
+
+static void on_info(int sig, siginfo_t *si, void *uc) {
+    (void)sig;
+    (void)uc;
+    from_pid = si->si_pid;
+    from_uid = si->si_uid;
+}
+
+static int catch_info(int sig) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_info;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    return sigaction(sig, &sa, NULL);
+}
+
+/* The sender in a caught signal's siginfo_t: this process for its own
+ * kill (and its uid), the child for one the child sends, and for the
+ * SIGCHLD of the child's exit. */
+static int sender(void) {
+    pid_t me = getpid();
+    pid_t pid;
+    int status;
+    if (catch_info(SIGUSR1) != 0 || catch_info(SIGCHLD) != 0) {
+        return fail("sender: sigaction");
+    }
+    from_pid = -1;
+    kill(me, SIGUSR1);
+    if (from_pid != me || from_uid != (int)getuid()) {
+        printf("[ FAIL ] child sender: own kill from pid %d uid %d, not %d %d\n", (int)from_pid, (int)from_uid,
+               (int)me, (int)getuid());
+        return 1;
+    }
+    from_pid = -1;
+    pid = fork();
+    if (pid == 0) {
+        kill(me, SIGUSR1);
+        for (;;) {
+            sleep(1); /* until the parent's SIGTERM */
+        }
+    }
+    for (int i = 0; i < 300 && from_pid == -1; i++) {
+        usleep(10 * 1000);
+    }
+    if (from_pid != pid) {
+        printf("[ FAIL ] child sender: the child's kill from pid %d, not %d\n", (int)from_pid, (int)pid);
+        return 1;
+    }
+    from_pid = -1;
+    kill(pid, SIGTERM);
+    while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {
+    }
+    if (from_pid != pid) {
+        printf("[ FAIL ] child sender: SIGCHLD from pid %d, not %d\n", (int)from_pid, (int)pid);
+        return 1;
+    }
+    signal(SIGUSR1, SIG_DFL);
+    signal(SIGCHLD, SIG_DFL);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -467,6 +532,9 @@ int main(void) {
         return 1;
     }
     if (sigpipe() != 0) {
+        return 1;
+    }
+    if (sender() != 0) {
         return 1;
     }
 

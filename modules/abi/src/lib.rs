@@ -131,7 +131,9 @@ pub use sleep_lock::{SleepGuard, SleepLock};
 /// ([`PTIMER_FULL`], the caller's `EAGAIN`).
 /// 73: [`KernelApi::wake`] wakes the tasks blocked on its key alone, no
 /// longer the `poll` sleepers with them ([`KernelApi::wake_any`] does).
-pub const ABI_VERSION: u32 = 73;
+/// 74: a signal's sender: [`SignalDelivery::pid`] and `uid`, and
+/// [`KernelApi::signal_take`]'s `from`.
+pub const ABI_VERSION: u32 = 74;
 
 /// [`ModuleVfsOps::mmap`]: map the page uncached, as device registers
 /// (x86 PCD|PWT, aarch64 Device-nGnRE; riscv64 takes it from the
@@ -684,6 +686,10 @@ pub struct SignalDelivery {
     /// Its `si_addr`: the faulting address or instruction; 0 for a signal
     /// sent.
     pub addr: usize,
+    /// A signal sent: its sender's pid and uid (`si_pid`, `si_uid`), 0 for
+    /// the kernel's own; 0 for a fault.
+    pub pid: u32,
+    pub uid: u32,
     pub handler: usize,
     pub tramp: usize,
     pub restore_mask: u32,
@@ -1001,8 +1007,9 @@ pub struct KernelApi {
     pub signal_blocked: unsafe extern "C" fn(id: usize) -> u32,
     pub signal_set_blocked: unsafe extern "C" fn(id: usize, mask: u32),
     pub signal_pending: unsafe extern "C" fn(id: usize) -> u32,
-    /// Take one pending signal of `set` (native numbering), or negative.
-    pub signal_take: unsafe extern "C" fn(id: usize, set: u32) -> i32,
+    /// Take one pending signal of `set` (native numbering), or negative;
+    /// its sender (`pid | uid << 32`, 0: the kernel) to `from`.
+    pub signal_take: unsafe extern "C" fn(id: usize, set: u32, from: *mut u64) -> i32,
     /// kill(2) with a native signal number (`pid` <= 0 as POSIX). 0 ok.
     pub signal_kill: unsafe extern "C" fn(pid: isize, sig: u32) -> i32,
     pub signal_sigsuspend: unsafe extern "C" fn(mask: u32) -> usize,
@@ -1819,8 +1826,12 @@ impl KernelApi {
         unsafe { (self.signal_pending)(id) }
     }
 
-    pub fn signal_take(&self, id: usize, set: u32) -> i32 {
-        unsafe { (self.signal_take)(id, set) }
+    /// Take one pending signal of `set`: it and its sender (`pid | uid <<
+    /// 32`), or `None`.
+    pub fn signal_take(&self, id: usize, set: u32) -> Option<(u32, u64)> {
+        let mut from = 0;
+        let sig = unsafe { (self.signal_take)(id, set, &mut from) };
+        (sig >= 0).then_some((sig as u32, from))
     }
 
     pub fn itimer_swap(&self, new: Option<(u64, u64)>) -> (u64, u64) {

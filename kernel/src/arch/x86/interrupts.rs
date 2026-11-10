@@ -779,7 +779,7 @@ extern "C" fn x86_user_trap(vector: u64, code: u64, block: *mut u64) {
         return;
     }
     let (rip, rsp) = (regs.pc() as u64, regs.sp() as u64);
-    let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize });
+    let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize, from: 0 });
     match vector {
         14 => {
             let cr2 = read_cr2();

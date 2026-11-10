@@ -1308,6 +1308,9 @@ fn signalfd_read(fd: usize, buf: usize, len: usize) -> R {
         let signo = u32::from_le_bytes(record[..4].try_into().unwrap());
         let mut info = [0u8; SIGINFO_SIZE];
         info[..4].copy_from_slice(&(super::abi::sig_to_linux(signo) as u32).to_le_bytes());
+        // The sender's pid (`ssi_pid`); `ssi_uid` stays 0, as every uid of
+        // the layer.
+        info[12..16].copy_from_slice(&record[8..12]);
         put(buf + i * SIGINFO_SIZE, &info)?;
     }
     Ok(got * SIGINFO_SIZE)

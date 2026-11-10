@@ -1095,18 +1095,19 @@ pub fn fd_read(fd: usize, buf: usize, len: usize, at: Option<usize>) -> usize {
             }
             FdEntry::Sig(id) => {
                 // The pending signals of the mask, taken, as 16-byte
-                // records `{signo, code, pid, uid}` (the last three 0: the
-                // kernel keeps no sender), as many as fit; a shorter buffer
-                // is an error.
+                // records `{signo, code, pid, uid}` (`code` 0; `pid` and
+                // `uid` the sender's, 0 for the kernel), as many as fit; a
+                // shorter buffer is an error.
                 if len < 16 {
                     return usize::MAX;
                 }
                 let seq = wait_seq();
                 let mut bytes = Vec::new();
                 while bytes.len() + 16 <= len.min(FILE_READ_TMP) {
-                    let Some(sig) = crate::evfd::sig_take(id) else { break };
+                    let Some((sig, from)) = crate::evfd::sig_take(id) else { break };
                     bytes.extend_from_slice(&sig.to_le_bytes());
-                    bytes.extend_from_slice(&[0u8; 12]);
+                    bytes.extend_from_slice(&0u32.to_le_bytes());
+                    bytes.extend_from_slice(&from.to_le_bytes());
                 }
                 if bytes.is_empty() {
                     // A signal that acts (one outside the mask, or an

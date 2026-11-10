@@ -45,6 +45,13 @@ static SIG_TABLES: Mutex<[SigTable; MAX_TASKS]> = Mutex::new([EMPTY_TABLE; MAX_T
 /// syscall exit path turns it into `EINTR` or a restart.
 static INTERRUPTED: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX_TASKS];
 
+/// Who sent each pending signal of each thread (`pid | uid << 32`, 0: the
+/// kernel), for the handler's `siginfo_t` (`si_pid`, `si_uid`) and the
+/// signal fd's record. A signal sent again while pending keeps its first
+/// sender, as the second is dropped. Kept apart from [`Task`] like the
+/// handler tables; written and read under `TASKS`.
+static SIG_FROM: [[AtomicU64; 32]; MAX_TASKS] = [const { [const { AtomicU64::new(0) }; 32] }; MAX_TASKS];
+
 /// Mask in force before `sigsuspend` swapped in its own (`u64::MAX` = none):
 /// the handler that ends the suspension restores this one, not the
 /// temporary mask.
@@ -66,9 +73,11 @@ pub enum Disposition {
 pub enum SigNext {
     None,
     Terminate(u32),
-    /// Run `act` for `sig`; `old_blocked` is restored by `sigreturn`.
+    /// Run `act` for `sig`, sent by `from` (`pid | uid << 32`, 0: the
+    /// kernel); `old_blocked` is restored by `sigreturn`.
     Deliver {
         sig: u32,
+        from: u64,
         act: SigAction,
         tramp: usize,
         old_blocked: u32,
@@ -118,29 +127,36 @@ fn deliverable(t: &Task) -> u32 {
 /// Post `sig` to `id`. A signal whose disposition is to ignore it is dropped
 /// at once unless it is blocked: the disposition may change before it is
 /// unblocked, so a blocked signal always stays pending (Linux semantics).
-/// No-op for a slot that is not a live user task.
+/// No-op for a slot that is not a live user task. The sender is the
+/// current process ([`signal::sender`]).
 pub fn signal_send(id: usize, sig: u32) {
+    signal_send_from(id, sig, signal::sender());
+}
+
+/// [`signal_send`] with the sender `from` (`pid | uid << 32`, 0: the
+/// kernel) given.
+pub fn signal_send_from(id: usize, sig: u32, from: u64) {
     if id >= MAX_TASKS || sig == 0 || sig > 31 {
         return;
     }
-    let kicks = with_sig(|tasks, tabs| send_locked(tasks, tabs, id, sig));
+    let kicks = with_sig(|tasks, tabs| send_locked(tasks, tabs, id, sig, from));
     kick_cpus_mask(kicks);
 }
 
-/// `sig` to `id` for a caller that holds `TASKS` with interrupts off and
-/// may wait for the handler tables (the order `with_sig` takes them in):
-/// the CPUs to kick once `TASKS` is dropped.
-pub(super) fn signal_send_held(tasks: &mut TaskTable, id: usize, sig: u32) -> u64 {
+/// `sig` from `from` to `id` for a caller that holds `TASKS` with
+/// interrupts off and may wait for the handler tables (the order
+/// `with_sig` takes them in): the CPUs to kick once `TASKS` is dropped.
+pub(super) fn signal_send_held(tasks: &mut TaskTable, id: usize, sig: u32, from: u64) -> u64 {
     let mut tabs = SIG_TABLES.lock();
-    send_locked(tasks, &mut tabs, id, sig)
+    send_locked(tasks, &mut tabs, id, sig, from)
 }
 
-/// `sig` to `id` for a caller that holds `TASKS` (the timer interrupt's
-/// `SIGALRM`): `None` when the handler tables are busy, to retry later;
-/// otherwise the CPUs to kick.
+/// `sig` to `id` from the kernel, for a caller that holds `TASKS` (the
+/// timer interrupt's `SIGALRM`): `None` when the handler tables are busy,
+/// to retry later; otherwise the CPUs to kick.
 pub(super) fn signal_send_locked(tasks: &mut TaskTable, id: usize, sig: u32) -> Option<u64> {
     let mut tabs = SIG_TABLES.try_lock()?;
-    Some(send_locked(tasks, &mut tabs, id, sig))
+    Some(send_locked(tasks, &mut tabs, id, sig, 0))
 }
 
 /// Whether `t` is a user task a signal can still reach.
@@ -148,7 +164,7 @@ pub(super) fn signal_live(t: &Task) -> bool {
     t.user_rip != 0 && matches!(t.state, State::Ready | State::Running | State::Blocked)
 }
 
-fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usize, sig: u32) -> u64 {
+fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usize, sig: u32, from: u64) -> u64 {
     let bit = 1u32 << sig;
     let t = &tasks[id];
     if !signal_live(t) {
@@ -157,6 +173,9 @@ fn send_locked(tasks: &mut TaskTable, tabs: &mut [SigTable; MAX_TASKS], id: usiz
     let blocked = t.sig_blocked & bit != 0 && bit & UNBLOCKABLE == 0;
     if !blocked && matches!(disposition(tasks, tabs, id, sig), Disposition::Ignore) {
         return 0;
+    }
+    if tasks[id].sig_pending & bit == 0 {
+        SIG_FROM[id][sig as usize].store(from, Ordering::Relaxed);
     }
     tasks[id].sig_pending |= bit;
     tasks[id].sig_changes += 1;
@@ -226,6 +245,7 @@ pub fn signal_next(id: usize) -> SigNext {
                     let (tramp, old_blocked) = catch(tasks, tabs, id, sig, &act);
                     return SigNext::Deliver {
                         sig,
+                        from: SIG_FROM[id][sig as usize].load(Ordering::Relaxed),
                         act,
                         tramp,
                         old_blocked,
@@ -384,8 +404,9 @@ pub fn signal_changes(id: usize) -> u64 {
     with_sig(|tasks, _| tasks[id].sig_changes)
 }
 
-/// Consume the lowest pending signal of `id` that is in `set` (`sigwait`).
-pub fn signal_take_from(id: usize, set: u32) -> Option<u32> {
+/// Consume the lowest pending signal of `id` that is in `set` (`sigwait`):
+/// the signal and its sender (`pid | uid << 32`, 0: the kernel).
+pub fn signal_take_from(id: usize, set: u32) -> Option<(u32, u64)> {
     if id >= MAX_TASKS {
         return None;
     }
@@ -397,7 +418,7 @@ pub fn signal_take_from(id: usize, set: u32) -> Option<u32> {
         let sig = hit.trailing_zeros();
         tasks[id].sig_pending &= !(1 << sig);
         tasks[id].sig_changes += 1;
-        Some(sig)
+        Some((sig, SIG_FROM[id][sig as usize].load(Ordering::Relaxed)))
     })
 }
 

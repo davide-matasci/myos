@@ -1,8 +1,8 @@
 // Signals: mlibc's struct sigaction and sigset_t (1024 bits) to the
 // kernel's records and 32-bit masks (libmyos/sigtramp.c), and the handler
 // dispatch the trampoline calls with the kernel's frame: the siginfo it
-// holds (newlib's layout: int si_signo; int si_code; union sigval) to
-// mlibc's siginfo_t.
+// holds (newlib's layout: int si_signo; int si_code; union sigval; void
+// *si_addr; then the sender, pid | uid << 32) to mlibc's siginfo_t.
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -40,9 +40,16 @@ extern "C" void __myos_sigdispatch(unsigned long *frame) {
 	info.si_code = (int)(frame[FRAME_SIGINFO] >> 32);
 	info.si_value.sival_ptr = (void *)frame[FRAME_SIGINFO + 1];
 	info.si_addr = (void *)frame[FRAME_SIGINFO + 2];
-	// The kernel keeps no sender. SIGCANCEL has one sender on myos, mlibc's
-	// pthread_cancel in this process (Tgkill), and its handler takes the
-	// signal only from there: what Linux's tgkill would say.
+	// A signal sent says who sent it (0 for a fault or the kernel's own),
+	// in the union si_addr shares, as on Linux.
+	unsigned long from = frame[FRAME_SIGINFO + 3];
+	if (from != 0) {
+		info.si_pid = (pid_t)(from & 0xffffffff);
+		info.si_uid = (uid_t)(from >> 32);
+	}
+	// SIGCANCEL has one sender on myos, mlibc's pthread_cancel in this
+	// process (Tgkill), and its handler takes the signal only from there:
+	// what Linux's tgkill would say.
 	if (info.si_signo == SIGCANCEL) {
 		info.si_code = SI_TKILL;
 		info.si_pid = getpid();
