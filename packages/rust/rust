@@ -8,7 +8,7 @@
 #     rust [-r ROOT] COMMAND [ARG...] COMMAND (cargo, rustc, ...) in ROOT
 #
 # ROOT is /data/rust unless -r or RUST_ROOT names another directory; it
-# takes about 1.2 GiB. A COMMAND runs from a directory inside ROOT (the
+# takes about 1 GiB. A COMMAND runs from a directory inside ROOT (the
 # Linux program sees only the root): cargo builds for the myos target by
 # default, into target/@TARGET@/.
 #
@@ -56,13 +56,12 @@ if [ "$1" != setup ]; then
 fi
 
 # 1. The root: busybox (the shell and the tools below), libgcc and
-# libatomic (rustc's libgcc_s, and riscv64's libatomic), lld (the linker:
-# the toolchain's rust-lld is not position-independent, which the Linux
-# layer once required; it would do now, issue #602), curl and xz for the
-# download, unpacked natively (-n: no apk under emulation, nor its
-# scripts: busybox's links are made here).
+# libatomic (the libgcc_s of rustc and rust-lld, and riscv64's libatomic),
+# curl and xz for the download, unpacked natively (-n: no apk under
+# emulation, nor its scripts: busybox's links are made here). The linker
+# is the toolchain's own rust-lld (step 4).
 mkdir -p "$R" || exit 1
-get-alpine -n -r "$R" busybox libgcc libatomic lld curl xz || exit 1
+get-alpine -n -r "$R" busybox libgcc libatomic curl xz || exit 1
 if [ ! -e "$R/usr/bin/env" ]; then
 	linux --root "$R" /bin/busybox --install -s || exit 1
 fi
@@ -102,15 +101,16 @@ rm -rf "$L/$TARGET"
 mkdir -p "$L/$TARGET/lib" || exit 1
 cp /lib/rust/$TARGET/lib/*.rlib "$L/$TARGET/lib/" && cp /lib/rust/$TARGET.json "$L/" || exit 1
 
-# 4. The host's linker: Alpine's lld, through a wrapper named ld.lld (which
-# rustc takes for lld, linking the crt objects of the host's std with it).
-# The host's programs, build scripts and proc macros, link dynamically
-# against the root's musl and libgcc_s (aarch64's musl target has no static
-# PIE; a static non-PIE one would run now, issue #602), so
-# the wrapper names the loader and searches those two libraries alone
-# (Alpine's /usr/lib holds its libc.a too, whose debug sections lld cannot
-# read).
-printf '#!/bin/sh\nexec /usr/bin/ld.lld -L/usr/local/libexec/myos --dynamic-linker /lib/%s "$@"\n' "$LDSO" > "$X/ld.lld" || exit 1
+# 4. The linker of both, the toolchain's rust-lld (a non-PIE program, which
+# the Linux layer loads at its link address). The myos target names it
+# itself. The host's goes through a wrapper named ld.lld (which rustc takes
+# for lld, linking the crt objects of the host's std with it). The host's
+# programs link dynamically against the root's musl and libgcc_s: a proc
+# macro is a shared object rustc loads, and a build script gains nothing
+# from being static. So the wrapper names the loader and searches those
+# two libraries alone (Alpine's /usr/lib holds its libc.a too, whose debug
+# sections lld cannot read).
+printf '#!/bin/sh\nexec /usr/local/lib/rustlib/%s/bin/rust-lld -flavor gnu -L/usr/local/libexec/myos --dynamic-linker /lib/%s "$@"\n' "$HOST" "$LDSO" > "$X/ld.lld" || exit 1
 chmod 755 "$X/ld.lld"
 rm -f "$X/libc.so" "$X/libgcc_s.so"
 ln -s /lib/$LDSO "$X/libc.so" && ln -s /usr/lib/libgcc_s.so.1 "$X/libgcc_s.so" || exit 1
@@ -133,7 +133,6 @@ target-applies-to-host = true
 target = "/usr/local/lib/rustlib/$TARGET.json"
 
 [target.$TARGET]
-linker = "/usr/bin/ld.lld"
 rustflags = ["-Zunstable-options", "-Cpanic=abort"]
 
 [host]
