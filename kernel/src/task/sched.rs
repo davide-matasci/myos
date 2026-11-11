@@ -679,8 +679,9 @@ fn block_on(key: usize, seq: u64, deadline: u64, pipe_blind: bool) {
             }
         }
         tasks[me].key_woken = false;
+        let running = tasks[me].state == State::Running;
         let early = WAIT_SEQ.load(Ordering::SeqCst) != seq
-            || tasks[me].state != State::Running
+            || !running
             || (deadline != 0 && crate::time::monotonic_ns() >= deadline);
         if early {
             if key == WAIT_ANY {
@@ -707,13 +708,25 @@ fn block_on(key: usize, seq: u64, deadline: u64, pipe_blind: bool) {
             // the waiter that would have ended the loop queued behind the
             // shooter: with netd in such a `poll` every shootdown of an
             // exec cost its second, and the riscv64 packages boot stood
-            // still for 39 s (CI #2604). The loop itself, interrupts off
-            // for as long as it lasts, is issue #788.
+            // still for 39 s (CI #2604).
             let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
             if queued_for(cpu) {
                 pick_and_switch();
             } else {
                 crate::smp::tlb_service();
+            }
+            // And the interrupts get in, as they do where a wait that began
+            // halts: for as long as the caller comes back here its CPU took
+            // no tick otherwise, so nothing preempted the loop, its time
+            // went uncharged and the stuck-CPU watch saw a CPU that had
+            // stopped scheduling; and no device interrupt, all of which are
+            // CPU 0's (issue #788: netd on riscv64's CPU 0, up to its
+            // poll's timeout). A tick taken here preempts the caller like
+            // any running task: what a wait that began allows, one that did
+            // not allows too. Not a task on its way out, which nothing
+            // would resume.
+            if running {
+                crate::arch::irq_window();
             }
             irq_restore(flags);
             return;
