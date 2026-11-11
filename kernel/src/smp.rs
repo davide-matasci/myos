@@ -188,6 +188,35 @@ pub fn tlb_take_stale(cpu: usize) -> bool {
     TLB_STALE[cpu.min(MAX_CPUS - 1)].swap(false, Ordering::SeqCst)
 }
 
+/// Per CPU: the shootdown wait it is in, for the stuck-CPU report
+/// ([`tlb_waiting`]): 0 none, [`TLB_WAIT_LOCK`] the shootdowns' lock, else
+/// the epoch whose answers it waits for.
+static TLB_WAIT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+const TLB_WAIT_LOCK: u64 = u64::MAX;
+
+/// What a CPU in a shootdown waits for.
+pub enum TlbWait {
+    /// The shootdowns' lock: another CPU's shootdown is under way.
+    Lock,
+    /// This CPU's answer.
+    Answer(usize),
+}
+
+/// What `cpu` waits for, if it is in a shootdown: a CPU reported stuck
+/// there (`task::lockup_check`) waits for another, and that one is where
+/// to look. A stall in the riscv64 packages boot was reported as a CPU
+/// stuck in `get-myos`, which was waiting for netd's CPU (CI #2604).
+/// Atomics only: for the timer interrupt.
+pub fn tlb_waiting(cpu: usize) -> Option<TlbWait> {
+    match TLB_WAIT.get(cpu)?.load(Ordering::SeqCst) {
+        0 => None,
+        TLB_WAIT_LOCK => Some(TlbWait::Lock),
+        epoch => (0..MAX_CPUS)
+            .find(|&i| i != cpu && ONLINE[i].load(Ordering::SeqCst) && TLB_SEEN[i].load(Ordering::SeqCst) < epoch)
+            .map(TlbWait::Answer),
+    }
+}
+
 /// Invalidate this CPU's user TLB and ask every other online CPU to do the
 /// same. An idle CPU is not asked: it runs no user code, so its stale
 /// translations do no harm until it resumes a task, and it flushes them
@@ -220,6 +249,8 @@ fn shootdown() {
     // Serialize shootdowns. Spin on the lock instead of dropping the flush:
     // reclaim must not free frames while a peer may still cache translations.
     // Bounded lock wait — then proceed under the epoch barrier anyway.
+    let me = cpu_id().min(MAX_CPUS - 1);
+    TLB_WAIT[me].store(TLB_WAIT_LOCK, Ordering::SeqCst);
     let mut lock_spins = 0u32;
     let _guard = loop {
         if let Some(g) = TLB_LOCK.try_lock() {
@@ -234,11 +265,11 @@ fn shootdown() {
         core::hint::spin_loop();
     };
     let epoch = TLB_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+    TLB_WAIT[me].store(epoch, Ordering::SeqCst);
     tlb_service();
     // The idle CPUs: flagged, and their acks given on their behalf. One
     // that stops being idle in between sees the flag (the flag is set
     // before its idleness is read again, and it says so before it looks).
-    let me = cpu_id();
     let mut awake = false;
     for i in 0..MAX_CPUS {
         if i == me || !ONLINE[i].load(Ordering::SeqCst) {
@@ -253,17 +284,17 @@ fn shootdown() {
         }
         awake = true;
     }
-    if !awake {
-        return;
+    if awake {
+        crate::irqchip::root().send_ipi(Target::Others, Ipi::Tlb);
+        let mut spins = 0u32;
+        while !tlb_all_seen(epoch) && spins < 2_000_000 {
+            // Soft-ACK path for peers stuck briefly cli in schedule/wait.
+            tlb_service();
+            core::hint::spin_loop();
+            spins += 1;
+        }
     }
-    crate::irqchip::root().send_ipi(Target::Others, Ipi::Tlb);
-    let mut spins = 0u32;
-    while !tlb_all_seen(epoch) && spins < 2_000_000 {
-        // Soft-ACK path for peers stuck briefly cli in schedule/wait.
-        tlb_service();
-        core::hint::spin_loop();
-        spins += 1;
-    }
+    TLB_WAIT[me].store(0, Ordering::SeqCst);
 }
 
 /// Wake one halted CPU (reschedule IPI) so it notices a newly-ready task.

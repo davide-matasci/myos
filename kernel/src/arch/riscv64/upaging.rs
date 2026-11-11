@@ -328,7 +328,17 @@ pub fn flush_user_tlb() {
     unsafe {
         core::arch::asm!("sfence.vma zero, zero", options(nostack));
     }
-    crate::smp::tlb_shootdown();
+    // The other harts only when one has this address space loaded (a
+    // thread of the process runs there), as x86_64: a hart keeps no
+    // translation of a root it has switched away from (`switch_aspace`
+    // flushes; there are no ASIDs). A shootdown for every flush, the one
+    // after each map among them (`flush_user_tlb_added`), interrupted
+    // every running hart and waited for each of them, for every map and
+    // unmap of every process: with four harts an exec's waits added up to
+    // seconds when one was slow to answer (CI #2604).
+    if crate::task::aspace_loaded_elsewhere(crate::task::current_aspace()) {
+        crate::smp::tlb_shootdown();
+    }
 }
 
 /// Allocate Sv39 mid/leaf tables as needed so user maps can spill past one

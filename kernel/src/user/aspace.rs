@@ -186,7 +186,8 @@ pub(super) fn flush_user_tlb() {
 /// A whole-TLB flush costs QEMU every translation it cached and the page
 /// walks to get them back, and an allocator gives memory back a few pages
 /// at a time (`madvise`, `munmap`): most of a build's flushes. riscv64
-/// keeps the whole flush (its `flush_user_tlb` reaches every hart).
+/// keeps the whole flush (its `flush_user_tlb`, on this hart and on those
+/// that have the address space loaded).
 pub(super) fn flush_user_pages(va: usize, pages: usize) {
     const FEW: usize = 32;
     if pages > FEW || cfg!(target_arch = "riscv64") {

@@ -7,11 +7,33 @@
  * the cpu field). Needs two CPUs that run user tasks: all of them on
  * riscv64, every one but the first elsewhere; with fewer it only prints
  * that. Prints [ OK ] sched.
+ *
+ * `sched_smoke shootdown`: a task whose wait cannot begin still answers a
+ * TLB shootdown (docs/scheduler.md "TLB shootdown"). A child polls six
+ * wait sets of a hundred idle event counters each, forever, while a thread
+ * of this process keeps a pipe busy. Every pipe operation counts as a
+ * wake and a look at 600 counters takes longer than the next one is in
+ * coming, so the child's wait returns before it began, pass after pass,
+ * in the kernel with interrupts off: it takes no IPI (issue #788).
+ * Meanwhile this process maps, touches and unmaps a page in a loop: with
+ * its thread on another CPU each unmap is a shootdown (riscv64, x86_64;
+ * aarch64's `tlbi` broadcasts), which waits for every running CPU, the
+ * child's among them. Answered from the child's loop, an unmap takes one
+ * pass of it longer than without the child; unanswered, each waited out
+ * the shootdown's spin cap, a thousand times an unmap's time and more.
+ * With netd as the poller (a second per shootdown, its poll's timeout)
+ * the riscv64 packages boot stood still for 39 s (CI #2604). Prints
+ * [ OK ] shootdown.
  */
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -82,7 +104,140 @@ static int user_cpus(void) {
     return on_bsp ? count : count - 1;
 }
 
-int main(void) {
+/* The poller's wait sets and the event counters in each (600 looks a
+ * pass: most of a millisecond under emulation, where the thread's pipe is
+ * written or read fifty times in that; counters, as the system has 64
+ * pipes), how long the unmaps are counted without the poller and beside
+ * it, and how much slower they may be beside it: a few times where each
+ * is answered within a pass, hundreds of times and more where each waits
+ * for the spin cap. */
+#define SHOOT_SETS 6
+#define SHOOT_EVENTS 100
+#define SHOOT_ALONE_MS 500
+#define SHOOT_MS 2000
+#define SHOOT_SLOWER 50
+
+static volatile int traffic_stop;
+
+/* Pipe traffic until told to stop: a byte in, a byte out. */
+static void *traffic(void *arg) {
+    int *p = arg;
+    char c = 0;
+    while (!traffic_stop) {
+        if (write(p[1], &c, 1) != 1 || read(p[0], &c, 1) != 1) {
+            break;
+        }
+    }
+    return NULL;
+}
+
+/* Map, touch and unmap a page for `ms`: how often, or -1. */
+static long unmaps(long ms) {
+    long cycles = 0, end = now_ms() + ms;
+    while (now_ms() < end) {
+        char *m = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) {
+            return -1;
+        }
+        m[0] = 1;
+        if (munmap(m, 4096) != 0) {
+            return -1;
+        }
+        cycles++;
+    }
+    return cycles;
+}
+
+static int shootdown(void) {
+    static int p[2];
+    int ready[2], go[2];
+    char c = 0;
+    if (pipe(p) != 0 || pipe(ready) != 0 || pipe(go) != 0) {
+        return fail("shootdown: pipe");
+    }
+    /* The poller first, before this process has a thread: its sets take a
+     * while (an open and a write a member); it says when they are there
+     * and polls when told. */
+    pid_t poller = fork();
+    if (poller < 0) {
+        return fail("shootdown: fork");
+    }
+    if (poller == 0) {
+        static struct pollfd fds[SHOOT_SETS];
+        static int events[SHOOT_EVENTS];
+        for (int i = 0; i < SHOOT_EVENTS; i++) {
+            events[i] = eventfd(0, 0);
+            if (events[i] < 0) {
+                _exit(2);
+            }
+        }
+        for (int s = 0; s < SHOOT_SETS; s++) {
+            int ep = epoll_create1(0);
+            if (ep < 0) {
+                _exit(4);
+            }
+            for (int i = 0; i < SHOOT_EVENTS; i++) {
+                struct epoll_event ev = {.events = EPOLLIN};
+                if (epoll_ctl(ep, EPOLL_CTL_ADD, events[i], &ev) != 0) {
+                    _exit(5);
+                }
+            }
+            fds[s].fd = ep;
+            fds[s].events = POLLIN;
+        }
+        if (write(ready[1], &c, 1) != 1 || read(go[0], &c, 1) != 1) {
+            _exit(6);
+        }
+        poll(fds, SHOOT_SETS, -1);
+        _exit(3);
+    }
+    close(ready[1]);
+    close(go[0]);
+    if (read(ready[0], &c, 1) != 1) {
+        waitpid(poller, NULL, 0);
+        return fail("shootdown: the poller's wait sets");
+    }
+    pthread_t t;
+    if (pthread_create(&t, NULL, traffic, p) != 0) {
+        kill(poller, SIGKILL);
+        waitpid(poller, NULL, 0);
+        return fail("shootdown: pthread_create");
+    }
+    /* The thread gets a CPU of its own; then the unmaps without the
+     * poller, the poller into its poll, and the unmaps beside it. */
+    struct timespec settle = {0, 200 * 1000 * 1000};
+    nanosleep(&settle, NULL);
+    long alone = unmaps(SHOOT_ALONE_MS);
+    long beside = -1;
+    if (write(go[1], &c, 1) == 1) {
+        nanosleep(&settle, NULL);
+        beside = unmaps(SHOOT_MS);
+    }
+    traffic_stop = 1;
+    pthread_join(t, NULL);
+    int status = 0;
+    kill(poller, SIGKILL);
+    waitpid(poller, &status, 0);
+    if (!WIFSIGNALED(status)) {
+        printf("the poller left by itself (status %#x)\n", status);
+        return fail("shootdown: the poller did not stay in its poll");
+    }
+    if (alone <= 0 || beside < 0) {
+        return fail("shootdown: mmap, munmap");
+    }
+    printf("%ld map/unmap cycles in %d ms, %ld in %d ms beside a poller that cannot sleep\n", alone, SHOOT_ALONE_MS,
+           beside, SHOOT_MS);
+    if (beside * SHOOT_ALONE_MS * SHOOT_SLOWER < alone * SHOOT_MS) {
+        return fail("shootdown: the unmaps waited for the poller's CPU");
+    }
+    printf("[ OK ] shootdown\n");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "shootdown") == 0) {
+        return shootdown();
+    }
     int cpus = user_cpus();
     if (cpus < 2) {
         printf("[ OK ] sched (%d CPU for user tasks: nothing to balance)\n", cpus);

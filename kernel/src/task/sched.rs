@@ -697,9 +697,23 @@ fn block_on(key: usize, seq: u64, deadline: u64, pipe_blind: bool) {
             // own wake here, looks again, and never sleeps: interrupts are
             // masked in a syscall, so no tick preempts it, and the waiter
             // it woke never ran (the one CPU of a machine was dead).
+            //
+            // And the shootdowns get their answer here, as a pick gives it:
+            // the caller may come back at once, pass after pass, with
+            // interrupts off (the `poll` above when the lock's waiter is
+            // queued on another CPU, or one whose look at its fds outlasts
+            // the system's wakes), and takes no IPI. A shootdown then
+            // waited for this CPU until its spin cap or the poll's timeout,
+            // the waiter that would have ended the loop queued behind the
+            // shooter: with netd in such a `poll` every shootdown of an
+            // exec cost its second, and the riscv64 packages boot stood
+            // still for 39 s (CI #2604). The loop itself, interrupts off
+            // for as long as it lasts, is issue #788.
             let cpu = crate::smp::cpu_id().min(crate::smp::MAX_CPUS - 1);
             if queued_for(cpu) {
                 pick_and_switch();
+            } else {
+                crate::smp::tlb_service();
             }
             irq_restore(flags);
             return;

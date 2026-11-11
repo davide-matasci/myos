@@ -64,6 +64,7 @@ t -t mm,mlibc,fault mlibc_fault $MLIBC/fault_smoke
 t -t mm,sched,mlibc,jit mlibc_jit $MLIBC/jit_smoke
 t -t exec,mlibc,ctor mlibc_ctor $MLIBC/ctor_smoke
 t -t sched,mlibc mlibc_sched $MLIBC/sched_smoke
+t -t sched,mm,mlibc,shootdown mlibc_shootdown $MLIBC/sched_smoke shootdown
 t -t console,mlibc,kbd mlibc_kbd mlibc_run kbd_events
 t -t console,usb,mouse,mlibc mlibc_mouse mlibc_run mouse_events
 t -t console,mouse,mlibc,ps2_mouse mlibc_ps2_mouse mlibc_run ps2_mouse_events
