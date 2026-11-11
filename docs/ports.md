@@ -12,7 +12,7 @@ between the image and the packages, or change how one is built.
 | Directory | Role |
 |-----------|------|
 | `ports/<name>/` | in every image (initramfs) |
-| `user/<name>/`, `user/c/`, `user/std/` | the native userspace, in the image |
+| `user/<name>/`, `user/c/`, `user/std/`, `user/std-mlibc/` | the native userspace, in the image (`user/std-mlibc`: its test's program) |
 | `toolchain/newlib/`, `toolchain/std/`, `toolchain/mlibc/`, `toolchain/libcxx/` | the toolchains (`docs/mlibc.md`); nothing of them is in the image |
 | `packages/<name>/` | built and cached by CI, installed on a running system with `get-myos` (`docs/packages.md`) |
 

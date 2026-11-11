@@ -165,6 +165,52 @@ Programs not in the image (vim, git, `btm` from bottom, ...) are packages:
 - Their tests are the `/bin/std/*` programs (`fs`, `thread`, `alloc`) and
   `user/heap`, in the tests module (`docs/testing.md`).
 
+### `std` on mlibc
+
+The sysroot holds `std` twice per arch: for `<arch>-unknown-myos`, the
+target of every Rust port, which uses no C library at all, and for
+`<arch>-unknown-myos-mlibc` (`target_env = "mlibc"`), for a program with
+C or C++ in it. There the runtime's core is the C library's
+(`toolchain/std/sys/myos/libc.rs`):
+
+| | `<arch>-unknown-myos` | `<arch>-unknown-myos-mlibc` |
+|---|---|---|
+| start | std's own `_start` | mlibc's startup (`__mlibc_entry`), then `main`; its value is the exit status |
+| heap | dlmalloc on `mmap` | `malloc` |
+| threads | `thread_spawn`, std's stacks | `pthread_create` |
+| thread-locals | a table at the thread pointer | `pthread_key_create` keys |
+| exit | the syscall | `exit` (the `atexit` functions, C's streams flushed) |
+
+So the program has one heap (Rust frees what C allocated and the other
+way round), the thread pointer is the libc's on every thread (C's `errno`
+and `__thread` variables work on a `std::thread`), and a thread C starts
+with `pthread_create` may run Rust, its `thread_local!` values destroyed
+when it ends. Files, processes, time and the locks stay on the kernel's
+calls in both: they keep no state the libc would have to share.
+
+A program for it is built with the same sysroot, its link given mlibc's
+directory (the target's spec adds `-lc -lbuiltins`):
+
+```sh
+RUSTFLAGS="-L native=$PWD/target/mlibc-x86_64/lib" \
+  cargo build --release --target targets/x86_64-unknown-myos-mlibc.json   # as user/std-mlibc/build.sh
+```
+
+Limits, the other flavour's and its own:
+
+- `panic` aborts; there is no unwinding yet.
+- The programs are static: no `dylib` or `proc-macro` crate type, and a
+  Rust program cannot `dlopen` yet (issue #658 has the C side).
+- `std::env` sees no variables and cannot set any, and the arguments are
+  at most 16 of 127 bytes, as on the other flavour.
+- A `#![no_main]` program must define `main` as C does
+  (`extern "C" fn main(argc, argv) -> c_int`): the libc calls it.
+
+Its test is `/bin/std/mlibc/mix` (`user/std-mlibc`, the `std_mlibc`
+test): Rust and C sharing the heap, C's per-thread state on Rust's
+threads, Rust on a thread C made, the arguments, `main`'s value and
+`atexit`.
+
 ## C userspace (newlib and libgloss)
 
 C programs link against newlib with myos's libgloss

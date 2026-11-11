@@ -721,6 +721,32 @@ myos_c_smokes_mlibc_is_current() {
   return 0
 }
 
+# The std-on-mlibc demo (user/std-mlibc): the sysroot, mlibc and its
+# sources.
+MYOS_STD_MLIBC_VERSION="$MYOS_ROOT/target/.myos-std-mlibc-version"
+myos_std_mlibc_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash sysroot
+      myos_dep_hash mlibc
+      find "$MYOS_ROOT/user/std-mlibc" \( -name target -o -name Cargo.lock \) -prune -o -type f -print0 \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+myos_std_mlibc_is_current() {
+  local arch
+  [[ -f "$MYOS_STD_MLIBC_VERSION" ]] \
+    && [[ "$(cat "$MYOS_STD_MLIBC_VERSION")" == "$(myos_std_mlibc_version_hash)" ]] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [[ -f "$MYOS_ROOT/target/std-mlibc-mix-${arch}-unknown-myos-mlibc" ]] || return 1
+  done
+}
+
 myos_sbase_version_hash() {
   local h
   h="$(
