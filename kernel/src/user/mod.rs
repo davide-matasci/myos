@@ -108,7 +108,7 @@ pub fn spawn_init() {
     };
     let base = image_base(elf).expect("init ELF");
     let (aspace, entry, span, off) = load_user_elf(elf, base, true).expect("init ELF");
-    let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[]).expect("init stack");
+    let (rsp, argv) = build_argv_stack(aspace, base, off, &[], &[], &[], &[]).expect("init stack");
     task::spawn_user(aspace, entry, rsp, base, span, off, 0, argv);
     USERS_ALIVE.fetch_add(1, Ordering::SeqCst);
     DID_SPAWN.store(true, Ordering::SeqCst);

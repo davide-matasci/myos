@@ -1190,9 +1190,10 @@ fn exec_path_depth(
     if mapped.as_ref().is_some_and(|m| !m.fits(base)) {
         return None;
     }
-    // A foreign-personality image that is dynamically linked also needs its
-    // interpreter (the dynamic linker). Read it before the current image is
-    // replaced, so a missing one fails the exec cleanly.
+    // A dynamically linked image also needs its interpreter (the dynamic
+    // linker: mlibc's `/lib/ld.so` for a native program, musl's for a
+    // Linux one). Read it before the current image is replaced, so a
+    // missing one fails the exec cleanly.
     let interp = match mapped {
         Some(_) => None,
         None => match exec_interp(bytes) {
@@ -1332,7 +1333,7 @@ fn exec_path_depth(
         ),
     };
     let Some((rsp, argv)) =
-        build_argv_stack(aspace, base, off, arg_refs, env_refs, aux.entries())
+        build_argv_stack(aspace, base, off, arg_refs, env_refs, aux.entries(), virt.as_bytes())
     else {
         return None;
     };
@@ -2389,8 +2390,8 @@ fn sys_umount(ptr: usize, len: usize) -> usize {
 /// of reading it whole: a dynamically linked Linux program, or a native
 /// one too large to read whole (over [`EXEC_FILE_MAX`] or
 /// [`MAX_ELF_PAGES`]: GTK's, statically linked). Only its headers are read,
-/// and a Linux program's interpreter (the dynamic linker, loaded as the
-/// image); a native program's image is an empty one, and the kernel
+/// and a dynamic program's interpreter (the dynamic linker, loaded as the
+/// image); a static native program's image is an empty one, and the kernel
 /// relocates the program in place, as it relocates a native image it reads
 /// (the pages it writes are the process's own copies). Its segments are
 /// paged in on first touch, so its size is bounded only by the mmap window
@@ -2399,7 +2400,7 @@ struct MappedProgram {
     node: fs::Vnode,
     /// The start of the file: the ELF and program headers.
     head: Vec<u8>,
-    /// A Linux program's dynamic linker; `None` for a native program.
+    /// A dynamic program's dynamic linker; `None` for a static one.
     interp: Option<alloc::borrow::Cow<'static, [u8]>>,
     /// A non-PIE (`ET_EXEC`) Linux program: mapped at its link addresses,
     /// below the image (the dynamic linker, at `DEFAULT_USER_BASE`), not at
@@ -2449,10 +2450,11 @@ fn mapped_program(path: &str) -> Option<MappedProgram> {
         return None;
     }
     elf::image_span(&head).ok()?;
-    if !linux {
-        return elf::interp_range(&head).is_none().then_some(MappedProgram { node, head, interp: None, fixed });
-    }
-    let (off, len) = elf::interp_range(&head)?;
+    // A static native program: the kernel relocates it. A dynamic one
+    // (native or Linux) is its dynamic linker's.
+    let Some((off, len)) = elf::interp_range(&head) else {
+        return (!linux).then_some(MappedProgram { node, head, interp: None, fixed });
+    };
     let mut name = alloc::vec![0u8; len.min(MAX_PATH)];
     if fs::read(&node, off, &mut name) != name.len() {
         return None;
@@ -2683,15 +2685,13 @@ fn exec_auxv(elf_bytes: &[u8], base: u64, entry: usize, interp_base: Option<usiz
     aux
 }
 
-/// For a foreign-personality exec of a dynamically linked program: the bytes
-/// of its interpreter (`PT_INTERP`, e.g. `/lib/ld-musl-x86_64.so.1`), which
-/// `sys_exec` maps next to it and starts instead. `Ok(None)` for a static
-/// image or a native exec; `Err` if the interpreter cannot be read.
+/// For an exec of a dynamically linked program: the bytes of its
+/// interpreter (`PT_INTERP`: `/lib/ld.so`, mlibc's, for a native program,
+/// `/lib/ld-musl-x86_64.so.1` for a Linux one), which `sys_exec` maps next
+/// to it and starts instead. `Ok(None)` for a static image; `Err` if the
+/// interpreter cannot be read.
 fn exec_interp(elf_bytes: &[u8]) -> Result<Option<alloc::borrow::Cow<'static, [u8]>>, ()> {
     use alloc::borrow::Cow;
-    if !crate::personality::pending() {
-        return Ok(None);
-    }
     let Some(path) = elf::interp_path(elf_bytes) else {
         return Ok(None);
     };

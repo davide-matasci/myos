@@ -22,6 +22,11 @@ mlibc_run() {
 }
 t -t smoke,mlibc,hello mlibc_hello $MLIBC/hello
 t -t mlibc,cxx,libcxx cxx $MLIBC/cxx_smoke
+# Shared objects (dl_smoke.c): the kernel starts a dynamic program through
+# /lib/ld.so, which loads libc.so and the object the program names beside
+# it; the program loads another with dlopen, whose calls, data and
+# thread-local variable work, and unloads it.
+t -t mlibc,dl,exec dl $MLIBC/dl_smoke $MLIBC/dl_plugin.so
 t -t tty,mlibc,pty mlibc_pty $MLIBC/pty_smoke 2
 t -t tty,mlibc,ptys mlibc_ptys $MLIBC/pty_smoke 4
 t -t tty,mlibc,pty_flood mlibc_pty_flood $MLIBC/pty_smoke 5
@@ -59,6 +64,7 @@ t -t mm,mlibc,fault mlibc_fault $MLIBC/fault_smoke
 t -t mm,sched,mlibc,jit mlibc_jit $MLIBC/jit_smoke
 t -t exec,mlibc,ctor mlibc_ctor $MLIBC/ctor_smoke
 t -t sched,mlibc mlibc_sched $MLIBC/sched_smoke
+t -t sched,mm,mlibc,shootdown mlibc_shootdown $MLIBC/sched_smoke shootdown
 t -t console,mlibc,kbd mlibc_kbd mlibc_run kbd_events
 t -t console,usb,mouse,mlibc mlibc_mouse mlibc_run mouse_events
 t -t console,mouse,mlibc,ps2_mouse mlibc_ps2_mouse mlibc_run ps2_mouse_events

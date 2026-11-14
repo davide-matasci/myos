@@ -354,7 +354,7 @@ pub fn flush_user_tlb() {
     // IPI barrier after every map/unmap (~ELF load, brk, munmap, exit
     // reclaim) roughly doubled MYOS_CI_MINI under -smp 4 TCG and pushed GH
     // runners past the 600s wall — do not paper that with a longer QEMU
-    // timeout. aarch64's `tlbi ...is` broadcasts; riscv shoots down.
+    // timeout. aarch64's `tlbi ...is` broadcasts; riscv64 has this rule too.
     if crate::task::aspace_loaded_elsewhere(crate::task::current_aspace()) {
         crate::smp::tlb_shootdown();
     }

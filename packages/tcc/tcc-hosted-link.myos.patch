@@ -11,3 +11,16 @@
  #ifdef TCC_LIBGCC
          if (!s1->static_link) {
              if (TCC_LIBGCC[0] == '/')
+@@ -3031,7 +3035,11 @@
+ 	resolve_common_syms(s1);
+ 
+         if (!s1->static_link) {
+-            if (file_type & TCC_OUTPUT_EXE) {
++            /* myos: no PT_INTERP. The program is a static PIE the kernel
++               relocates itself; a program that names an interpreter is
++               started through it (mlibc's /lib/ld.so), and newlib has
++               none. */
++            if (0 && (file_type & TCC_OUTPUT_EXE)) {
+                 /* add interpreter section only if executable */
+                 interp = new_section(s1, ".interp", SHT_PROGBITS, SHF_ALLOC);
+                 interp->sh_addralign = 1;

@@ -43,7 +43,7 @@ CRT_FILES=(
   extenddftf2.c extendsftf2.c trunctfdf2.c trunctfsf2.c
   fixtfdi.c fixtfsi.c fixunstfdi.c fixunstfsi.c
   floatditf.c floatsitf.c floatunditf.c floatunsitf.c
-  muldc3.c mulsc3.c multc3.c
+  muldc3.c mulsc3.c mulxc3.c multc3.c
   udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
   fixdfti.c fixsfti.c fixunsdfti.c fixunssfti.c floattidf.c floattisf.c floatuntidf.c floatuntisf.c
   clzti2.c

@@ -42,6 +42,14 @@ backtrace. `addr2line -e` on the build's kernel names the functions:
 aarch64 and riscv64 have no such interrupt here, so their report names
 the task alone.
 
+A CPU stuck in a TLB shootdown's wait says what it waits for, on every
+arch (`smp::tlb_waiting`): the shootdowns' lock, or the CPU that has not
+answered and its task, which is the one to look at:
+
+```
+[ WARN ] cpu 3 stuck for 12 s in the kernel: pid 29 get-myos (slot 29), waiting for cpu 0 to answer a shootdown: pid 1 netd (slot 1)
+```
+
 It allocates nothing and waits on no lock, since the stuck CPU may hold
 any: the task is named only when the task table is free, and a line the
 console or its screen is busy for (the console module's non-blocking
@@ -203,9 +211,13 @@ online CPUs and waits briefly for their acks.
 - An idle CPU runs no user code, so it is not interrupted: it is flagged
   (`TLB_STALE`) and flushes when it next resumes a task.
 - A CPU waiting with IRQs off still serves a shootdown: `schedule` calls
-  `tlb_service`.
+  `tlb_service`, and so does a blocking wait that returns before it
+  began, which its caller may repeat pass after pass with interrupts off
+  ("Blocking waits" below).
 - No IPI is sent when no other CPU has the address space loaded
-  (`task::aspace_loaded_elsewhere`).
+  (`task::aspace_loaded_elsewhere`), on x86_64 and riscv64: a CPU keeps
+  no translation of a root it has switched away from. aarch64's
+  `tlbi ...is` reaches every CPU without one.
 - It runs with interrupts off, whatever its caller's. Its lock is a spin
   lock that other CPUs wait on with theirs off. A holder preempted with
   the lock held, as the reclaim of an exiting process could be, never ran
@@ -238,7 +250,15 @@ loop {
   wakes a waiter of its own on every pass (a `poll` whose scan takes and
   lets go of a module's `SleepLock`, as sndd's does) would otherwise see
   its own wake, look again and never sleep, and with interrupts masked in
-  its syscall nothing would preempt it for the waiter.
+  its syscall nothing would preempt it for the waiter. With the waiter
+  queued on another CPU the caller loops until that CPU runs it, and
+  answers the TLB shootdowns from the loop (`smp::tlb_service`): the
+  other CPU, in a shootdown of its own with the waiter queued behind it,
+  waited for this one's answer otherwise, and neither moved until the
+  `poll` timed out. netd's does after a second; on riscv64 every
+  shootdown of an exec cost that second, and the packages boot stood
+  still for 39 s (CI #2604; `shootdown` is the test). The loop itself
+  keeps its CPU's interrupts off for as long as it lasts (issue #788).
 - Spurious wakes are fine: every caller re-checks its condition.
   `wait_addr` builds on this (`docs/threads.md`, "Waiting on an address").
 - A lock whose holder may block (the VFS tree lock, a filesystem module's
@@ -343,5 +363,10 @@ reprogramming them reset the FIFO and dropped input.
 - A unix-socket write landing between a poller's scan and its `WAIT_ANY`
   registration was missed, and the X server stalled; hence registering
   before the sequence check.
+- A `poll` that could not sleep answered no shootdown from its loop, and
+  riscv64, new to four CPUs, sent one for every map and unmap: the
+  packages boot stood still while four downloads were exec'd (CI #2604);
+  hence the answer on a wait's early return, and riscv64's
+  loaded-elsewhere skip.
 - A 1 kHz tick cost a self-hosted build 10-14% under TCG; hence 100 Hz
   with tickless deadlines.

@@ -209,8 +209,9 @@ module needs is plain `KernelApi` services (`modules/abi/src/lib.rs`).
 
 ### Dynamic linking
 
-For a Linux exec of a program with a `PT_INTERP` (musl's
-`/lib/ld-musl-<arch>.so.1`, which is `libc.so` itself), the kernel reads
+For an exec of a program with a `PT_INTERP` (a Linux program's is musl's
+`/lib/ld-musl-<arch>.so.1`, which is `libc.so` itself; a native one's is
+mlibc's `/lib/ld.so`, `docs/mlibc.md` "Shared objects"), the kernel reads
 the interpreter first, so a missing one fails the exec cleanly. It maps
 the program and the interpreter without relocating them, and starts the
 interpreter with `AT_BASE` set (`exec_interp` in

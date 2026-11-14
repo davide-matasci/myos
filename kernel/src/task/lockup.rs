@@ -13,7 +13,15 @@
 //! [ WARN ] cpu 3 stuck for 10 s in the kernel: pid 41 wifi (slot 43)
 //! ```
 //!
-//! and how long the stall lasted if the CPU comes back. Where the arch
+//! and how long the stall lasted if the CPU comes back. A CPU stuck in a
+//! TLB shootdown's wait says what it waits for (`smp::tlb_waiting`): the
+//! CPU that has not answered, and its task, are where to look:
+//!
+//! ```text
+//! [ WARN ] cpu 3 stuck for 12 s in the kernel: pid 29 get-myos (slot 29), waiting for cpu 0 to answer a shootdown: pid 1 netd (slot 1)
+//! ```
+//!
+//! Where the arch
 //! can interrupt a CPU whose interrupts are off (x86's NMI,
 //! `arch::sample_cpu`), a line before it says where the CPU is: the
 //! address it was at and, in the kernel, the code addresses on its stack
@@ -184,6 +192,7 @@ pub fn lockup_check(now: u64) {
         let mut line = Line::new();
         let _ = write!(line, "cpu {cpu} stuck for {} s in the kernel: ", stuck / 1_000_000_000);
         describe(&mut line, CURRENT[cpu].load(Ordering::Relaxed));
+        waiting(&mut line, cpu);
         if crate::console::status_warn_now(line.as_str()) {
             REPORTED[cpu].store(true, Ordering::Relaxed);
         }
@@ -225,6 +234,7 @@ pub fn bsp_check(now: u64) {
     let mut line = Line::new();
     let _ = write!(line, "cpu 0 stuck for {} s, no ticks: ", stuck / 1_000_000_000);
     describe(&mut line, CURRENT[0].load(Ordering::Relaxed));
+    waiting(&mut line, 0);
     crate::console::status_force(line.as_str());
     BSP_REPORTED.store(true, Ordering::Relaxed);
     BSP_REPORTING.store(false, Ordering::SeqCst);
@@ -245,6 +255,23 @@ fn describe(line: &mut Line, slot: usize) {
     let n = t.name.iter().position(|&b| b == 0).unwrap_or(t.name.len());
     let name = core::str::from_utf8(&t.name[..n]).unwrap_or("?");
     let _ = write!(line, "pid {} {} (slot {slot})", t.tgid, name);
+}
+
+/// What `cpu` waits for when it is stuck in a TLB shootdown
+/// (`smp::tlb_waiting`): the shootdowns' lock, or a CPU that has not
+/// answered, with its task. That CPU is the one to look at: it runs with
+/// its interrupts off and passes no point that answers.
+fn waiting(line: &mut Line, cpu: usize) {
+    match crate::smp::tlb_waiting(cpu) {
+        Some(crate::smp::TlbWait::Lock) => {
+            let _ = line.write_str(", waiting for the shootdown lock");
+        }
+        Some(crate::smp::TlbWait::Answer(c)) => {
+            let _ = write!(line, ", waiting for cpu {c} to answer a shootdown: ");
+            describe(line, CURRENT[c].load(Ordering::Relaxed));
+        }
+        None => {}
+    }
 }
 
 /// A report line on the stack: the heap's lock may be the stuck CPU's.
