@@ -223,10 +223,10 @@ driver library and its plugins.
   before its `lib/`), the dynamic linker
   (`-C link-arg=--dynamic-linker=/lib/ld.so`) and where the objects are
   at run time (`-C link-arg=-rpath=$ORIGIN`).
-- The program's entry is mlibc's `crt0.o`, linked into the program itself
-  (its build script: `cargo:rustc-link-arg-bins`): std's own `_start` is
-  in the shared object then, where no program can start. It is weak, so
-  that `crt0.o`'s stands, and reaches `main` through the GOT.
+- The program's entry is mlibc's `crt0.o`, an argument of the program's
+  link alone (`cargo rustc -- -C link-arg=.../crt0.o`): std's own
+  `_start` is in the shared object then, where no program can start. It
+  is weak, so that `crt0.o`'s stands, and reaches `main` through the GOT.
 - A loaded object's functions are found with the libc's `dlopen` and
   `dlsym` (std has no API for it), declared `extern "C-unwind"` when a
   panic may leave them.
