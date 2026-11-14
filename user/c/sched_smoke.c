@@ -14,7 +14,7 @@
  * of this process keeps a pipe busy. Every pipe operation counts as a
  * wake and a look at 600 counters takes longer than the next one is in
  * coming, so the child's wait returns before it began, pass after pass,
- * in the kernel with interrupts off: it takes no IPI (issue #788).
+ * in the kernel, in one syscall.
  * Meanwhile this process maps, touches and unmaps a page in a loop: with
  * its thread on another CPU each unmap is a shootdown (riscv64, x86_64;
  * aarch64's `tlbi` broadcasts), which waits for every running CPU, the
@@ -24,6 +24,18 @@
  * With netd as the poller (a second per shootdown, its poll's timeout)
  * the riscv64 packages boot stood still for 39 s (CI #2604). Prints
  * [ OK ] shootdown.
+ *
+ * `sched_smoke spin`: such a poller's CPU keeps its tick (issue #788). The
+ * same child, the same thread; this process reads the child's CPU time
+ * two hundred times, 10 ms apart. A running task's time is charged at
+ * each tick of its CPU, so it lags by a tick at most (docs/proc.md): the
+ * child's moves from one reading to the next. Looping with interrupts
+ * off, its CPU took no tick, and its time stood still until something
+ * else passed through that CPU's scheduler, half a second at a time; so
+ * did whatever else waits for a tick there: the preemption of the loop,
+ * the stuck-CPU watch (a poller ten seconds in that loop was a stuck
+ * CPU), and on riscv64, where CPU 0 runs user tasks, every device's
+ * interrupt. Prints [ OK ] spin.
  */
 #include <poll.h>
 #include <pthread.h>
@@ -148,19 +160,20 @@ static long unmaps(long ms) {
     return cycles;
 }
 
-static int shootdown(void) {
-    static int p[2];
-    int ready[2], go[2];
+/* A poller that cannot sleep while `traffic` runs: a child that polls
+ * SHOOT_SETS wait sets of SHOOT_EVENTS idle event counters each, forever,
+ * once a byte is written to `*go`. Forked before this process has a
+ * thread, and back once its sets are there: they take a while (an open
+ * and a write a member). Its pid, or -1. */
+static pid_t poller_start(int *go) {
+    int ready[2], start[2];
     char c = 0;
-    if (pipe(p) != 0 || pipe(ready) != 0 || pipe(go) != 0) {
-        return fail("shootdown: pipe");
+    if (pipe(ready) != 0 || pipe(start) != 0) {
+        return -1;
     }
-    /* The poller first, before this process has a thread: its sets take a
-     * while (an open and a write a member); it says when they are there
-     * and polls when told. */
     pid_t poller = fork();
     if (poller < 0) {
-        return fail("shootdown: fork");
+        return -1;
     }
     if (poller == 0) {
         static struct pollfd fds[SHOOT_SETS];
@@ -185,22 +198,49 @@ static int shootdown(void) {
             fds[s].fd = ep;
             fds[s].events = POLLIN;
         }
-        if (write(ready[1], &c, 1) != 1 || read(go[0], &c, 1) != 1) {
+        if (write(ready[1], &c, 1) != 1 || read(start[0], &c, 1) != 1) {
             _exit(6);
         }
         poll(fds, SHOOT_SETS, -1);
         _exit(3);
     }
     close(ready[1]);
-    close(go[0]);
+    close(start[0]);
     if (read(ready[0], &c, 1) != 1) {
         waitpid(poller, NULL, 0);
+        return -1;
+    }
+    close(ready[0]);
+    *go = start[1];
+    return poller;
+}
+
+/* End the poller: 0 if it was still in its poll. */
+static int poller_stop(pid_t poller) {
+    int status = 0;
+    kill(poller, SIGKILL);
+    waitpid(poller, &status, 0);
+    if (!WIFSIGNALED(status)) {
+        printf("the poller left by itself (status %#x)\n", status);
+        return -1;
+    }
+    return 0;
+}
+
+static int shootdown(void) {
+    static int p[2];
+    int go;
+    char c = 0;
+    if (pipe(p) != 0) {
+        return fail("shootdown: pipe");
+    }
+    pid_t poller = poller_start(&go);
+    if (poller < 0) {
         return fail("shootdown: the poller's wait sets");
     }
     pthread_t t;
     if (pthread_create(&t, NULL, traffic, p) != 0) {
-        kill(poller, SIGKILL);
-        waitpid(poller, NULL, 0);
+        poller_stop(poller);
         return fail("shootdown: pthread_create");
     }
     /* The thread gets a CPU of its own; then the unmaps without the
@@ -209,17 +249,13 @@ static int shootdown(void) {
     nanosleep(&settle, NULL);
     long alone = unmaps(SHOOT_ALONE_MS);
     long beside = -1;
-    if (write(go[1], &c, 1) == 1) {
+    if (write(go, &c, 1) == 1) {
         nanosleep(&settle, NULL);
         beside = unmaps(SHOOT_MS);
     }
     traffic_stop = 1;
     pthread_join(t, NULL);
-    int status = 0;
-    kill(poller, SIGKILL);
-    waitpid(poller, &status, 0);
-    if (!WIFSIGNALED(status)) {
-        printf("the poller left by itself (status %#x)\n", status);
+    if (poller_stop(poller) != 0) {
         return fail("shootdown: the poller did not stay in its poll");
     }
     if (alone <= 0 || beside < 0) {
@@ -234,9 +270,77 @@ static int shootdown(void) {
     return 0;
 }
 
+/* How often the poller's CPU time is read, how far apart (a tick), and in
+ * how many of the readings it must have moved: nearly all of them where
+ * its CPU ticks (193 to 200 under emulation; a host that stops the CPU's
+ * thread for a while costs some), one in ten where it does not (10 to
+ * 24). */
+#define SPIN_READS 200
+#define SPIN_APART_MS 10
+#define SPIN_MIN 100
+
+static int spin(void) {
+    static int p[2];
+    int go;
+    char c = 0;
+    if (pipe(p) != 0) {
+        return fail("spin: pipe");
+    }
+    pid_t poller = poller_start(&go);
+    if (poller < 0) {
+        return fail("spin: the poller's wait sets");
+    }
+    pthread_t t;
+    if (pthread_create(&t, NULL, traffic, p) != 0) {
+        poller_stop(poller);
+        return fail("spin: pthread_create");
+    }
+    /* This thread stays on its CPU from here on, busy between the
+     * readings: asleep, it woke on the CPU it had last, the poller's as
+     * likely as not, and each wake was a pass through that CPU's scheduler
+     * (a task queued for the poller's CPU is run from its loop). */
+    int moved = 0, cpu, bad = write(go, &c, 1) != 1;
+    long before = 0, now = 0, first = 0, flat = 0, longest = 0, since = 0;
+    busy(200);
+    bad = bad || status(poller, poller, &cpu, &before) < 0;
+    first = before;
+    since = now_ms();
+    for (int i = 0; !bad && i < SPIN_READS; i++) {
+        busy(SPIN_APART_MS);
+        bad = status(poller, poller, &cpu, &now) < 0;
+        if (now > before) {
+            moved++;
+            since = now_ms();
+        }
+        flat = now_ms() - since;
+        if (flat > longest) {
+            longest = flat;
+        }
+        before = now;
+    }
+    traffic_stop = 1;
+    pthread_join(t, NULL);
+    if (poller_stop(poller) != 0) {
+        return fail("spin: the poller did not stay in its poll");
+    }
+    if (bad) {
+        return fail("spin: the poller's status");
+    }
+    printf("the poller's CPU time moved in %d of %d readings %d ms apart (%ld ms in all), stood still for %ld ms at most\n",
+           moved, SPIN_READS, SPIN_APART_MS, now - first, longest);
+    if (moved < SPIN_MIN) {
+        return fail("spin: the poller's CPU took no tick");
+    }
+    printf("[ OK ] spin\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "shootdown") == 0) {
         return shootdown();
+    }
+    if (argc > 1 && strcmp(argv[1], "spin") == 0) {
+        return spin();
     }
     int cpus = user_cpus();
     if (cpus < 2) {

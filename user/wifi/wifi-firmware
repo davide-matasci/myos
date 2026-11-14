@@ -9,13 +9,17 @@
 #
 # The directory is $MYOS_FIRMWARE, else /data/firmware when the boot disk's
 # data partition is mounted at /data (it survives a reboot), else
-# /tmp/firmware. $WIFI_FIRMWARE_MIRROR replaces the download's base URL; a
-# directory there is a copy of linux-firmware's tree (a USB stick for a
-# machine with no other network), copied from instead.
+# /tmp/firmware. A file comes from git.kernel.org, else from GitLab, where
+# linux-firmware is developed (the same tree: a fetch in CI failed on
+# kernel.org's timeouts alone); its SHA-256 is checked either way.
+# $WIFI_FIRMWARE_MIRROR replaces both with its base URL; a directory there
+# is a copy of linux-firmware's tree (a USB stick for a machine with no
+# other network), copied from instead.
 
 # linux-firmware's main branch on 2026-10-17.
 COMMIT=a2dcb924f0897368b0b4f305cbf9808cdda90ce0
-MIRROR=${WIFI_FIRMWARE_MIRROR:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain}
+KERNEL_ORG=https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain
+GITLAB=https://gitlab.com/kernel-firmware/linux-firmware/-/raw
 
 # NAME PATH SHA-256, one file per line (iwx::chip, mtw::chip and
 # bwfm::chip name them): the AX201's, the AX200's, the MT7601U's, the
@@ -48,6 +52,27 @@ dir() {
 	fi
 }
 
+# linux-firmware's file $1 into $2: from the mirror when one is given,
+# else from kernel.org or GitLab. Each download is tried again (one failed
+# on a passing lookup, a dropped connection, a 5xx: CI #2388 lost the
+# whole fetch to one lookup), and a server that does not answer is given
+# up on after 20 s instead of the system's 75.
+get() {
+	m=$WIFI_FIRMWARE_MIRROR out=$2
+	if [ -d "$m" ]; then
+		cp "$m/$1" "$out"
+		return
+	elif [ -n "$m" ]; then
+		set -- "$m/$1?id=$COMMIT"
+	else
+		set -- "$KERNEL_ORG/$1?id=$COMMIT" "$GITLAB/$COMMIT/$1"
+	fi
+	for url do
+		curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 20 -o "$out" "$url" && return 0
+	done
+	return 1
+}
+
 # Whether $1 has SHA-256 $2.
 good() {
 	[ -f "$1" ] && [ "$(sha256sum < "$1" | cut -d' ' -f1)" = "$2" ]
@@ -63,19 +88,8 @@ fetch() {
 			continue
 		fi
 		rm -f "$d/.$name.new"
-		# Twelve downloads in a row: one failed on a passing lookup, a
-		# dropped connection, a 5xx is tried again before the fetch is
-		# given up (CI #2388 lost the whole fetch to one lookup).
-		# A connection gets 10 s over the host's addresses: one of them
-		# not answering cost each file the 20 s the stack waits for a
-		# SYN before the next was tried (PR #792's riscv64-plic boot).
-		if [ -d "$MIRROR" ]; then
-			cp "$MIRROR/$path" "$d/.$name.new"
-		else
-			curl -fsSL --connect-timeout 10 --retry 3 --retry-delay 1 --retry-all-errors \
-				-o "$d/.$name.new" "$MIRROR/$path?id=$COMMIT"
-		fi || {
-			echo "wifi-firmware: could not get $path from $MIRROR" >&2
+		get "$path" "$d/.$name.new" || {
+			echo "wifi-firmware: could not get $path" >&2
 			rm -f "$d/.$name.new"
 			exit 1
 		}

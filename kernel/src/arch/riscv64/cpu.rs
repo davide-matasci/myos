@@ -46,6 +46,16 @@ pub fn irq_on() {
     }
 }
 
+/// Let the pending interrupts in, from a context that has them off, and
+/// mask them again: one that is pending is taken as soon as `SIE` is set.
+pub fn irq_window() {
+    irq_on();
+    unsafe {
+        core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+    }
+    irq_off();
+}
+
 /// Wait for an interrupt without changing the interrupt mask.
 pub fn hlt() {
     unsafe {

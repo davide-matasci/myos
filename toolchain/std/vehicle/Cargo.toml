@@ -1,0 +1,11 @@
+# What `cargo -Z build-std` is run on to prebuild std for the mlibc targets
+# (toolchain/std/lib.sh, myos_cargo_build_std): a library, so that nothing
+# is linked. A program for those targets links the C library, which the
+# sysroot is built before and without.
+[package]
+name = "myos-sysroot-vehicle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]

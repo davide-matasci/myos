@@ -139,7 +139,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }',
-                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        #[cfg_attr(target_env = "mlibc", path = "myos_mlibc.rs")]\n        mod myos;\n        use myos as imp;\n    }',
             ),
         ],
     ),
@@ -202,7 +202,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }',
-                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::{Thread, available_parallelism, current_os_id, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::set_name;\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        #[cfg_attr(target_env = "mlibc", path = "myos_mlibc.rs")]\n        mod myos;\n        pub use myos::{Thread, available_parallelism, current_os_id, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::set_name;\n    }',
             ),
         ],
     ),
@@ -300,15 +300,17 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         "std/src/sys/thread_local/mod.rs",
         [
             # `std` runs the destructors itself (`sys/thread/myos.rs`), as on
-            # Hermit and Xous.
+            # Hermit and Xous. Not on the mlibc flavour, whose threads are
+            # the C library's: its keys' destructors do (the default guard).
             (
                 '        any(\n            target_os = "hermit",\n            target_os = "xous",\n        ) => {',
-                '        any(\n            target_os = "hermit",\n            target_os = "myos",\n            target_os = "xous",\n        ) => {',
+                '        any(\n            target_os = "hermit",\n            all(target_os = "myos", not(target_env = "mlibc")),\n            target_os = "xous",\n        ) => {',
             ),
-            # Keys in a table at the thread pointer (`sys/thread_local/key/myos.rs`).
+            # Keys in a table at the thread pointer (`sys/thread_local/key/myos.rs`),
+            # or the C library's on the mlibc flavour (`myos_mlibc.rs`).
             (
                 '        target_os = "xous" => {\n            mod racy;',
-                '        target_os = "myos" => {\n            mod racy;\n            mod myos;\n            pub(super) use racy::LazyKey;\n            pub(super) use myos::{Key, get, set};\n            pub(crate) use myos::{Table, init_main, init_table, run_dtors};\n            use myos::{create, destroy};\n        }\n        target_os = "xous" => {\n            mod racy;',
+                '        target_os = "myos" => {\n            mod racy;\n            #[cfg_attr(target_env = "mlibc", path = "myos_mlibc.rs")]\n            mod myos;\n            pub(super) use racy::LazyKey;\n            pub(super) use myos::{Key, get, set};\n            #[cfg(not(target_env = "mlibc"))]\n            pub(crate) use myos::{Table, init_main, init_table, run_dtors};\n            use myos::{create, destroy};\n        }\n        target_os = "xous" => {\n            mod racy;',
             ),
         ],
     ),
@@ -570,6 +572,7 @@ def main() -> None:
         (repo / "toolchain/std/pal/myos", patch_root / "std/src/sys/pal/myos"),
         (repo / "toolchain/std/sys/myos", patch_root / "std/src/sys/myos"),
         (repo / "toolchain/std/sys/myos/alloc.rs", patch_root / "std/src/sys/alloc/myos.rs"),
+        (repo / "toolchain/std/sys/myos/alloc_mlibc.rs", patch_root / "std/src/sys/alloc/myos_mlibc.rs"),
         (repo / "toolchain/std/sys/myos/fd.rs", patch_root / "std/src/sys/fd/myos.rs"),
         (repo / "toolchain/std/sys/myos/stdio.rs", patch_root / "std/src/sys/stdio/myos.rs"),
         (repo / "toolchain/std/sys/args/myos.rs", patch_root / "std/src/sys/args/myos.rs"),
@@ -580,7 +583,9 @@ def main() -> None:
         (repo / "toolchain/std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "toolchain/std/sys/time/myos.rs", patch_root / "std/src/sys/time/myos.rs"),
         (repo / "toolchain/std/sys/thread/myos.rs", patch_root / "std/src/sys/thread/myos.rs"),
+        (repo / "toolchain/std/sys/thread/myos_mlibc.rs", patch_root / "std/src/sys/thread/myos_mlibc.rs"),
         (repo / "toolchain/std/sys/thread_local/key/myos.rs", patch_root / "std/src/sys/thread_local/key/myos.rs"),
+        (repo / "toolchain/std/sys/thread_local/key/myos_mlibc.rs", patch_root / "std/src/sys/thread_local/key/myos_mlibc.rs"),
         (repo / "toolchain/std/sys/io/error/myos.rs", patch_root / "std/src/sys/io/error/myos.rs"),
         (repo / "toolchain/std/os/myos", patch_root / "std/src/os/myos"),
     ]
