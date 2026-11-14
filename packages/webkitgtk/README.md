@@ -45,17 +45,21 @@ Linux-shaped. What myos lacks is taken away:
   Linux headers mlibc lacks (`prctl`, `sysinfo`, `mincore`,
   `malloc_trim`, `fallocate`, `sys/syscall.h`, the ARM64 JIT's
   `asm/hwcap.h`: no optional instructions), their calls failing or
-  answering from `sysconf`; no memory pressure monitor (myos's
-  `/proc/meminfo` is not Linux's, issue #653); the allocator is mlibc's malloc (`USE_SYSTEM_MALLOC`):
+  answering from `sysconf`; the memory pressure monitor asks `sysconf`
+  for the machine's memory and what is available of it (the patch:
+  myos's `/proc/meminfo` is not Linux's, and there are no zones or
+  cgroups); the allocator is mlibc's malloc (`USE_SYSTEM_MALLOC`):
   WebKit's own (bmalloc, libpas) are made of Linux system calls;
 - on riscv64, JavaScriptCore's C interpreter (CLoop): no JIT and no
   WebAssembly, which WebKit 2.54 does not build there (the in-place
   WebAssembly interpreter has no RISC-V code), and a JIT would need every
   hart's instruction cache flushed (issue #652);
-- no machine context: a signal handler is given no ucontext (issue
-  #651), so a suspended thread's stack pointer is approximated,
-  WebAssembly's memory is bounds-checked instead of caught faulting, and
-  there is no sampling profiler;
+- WebAssembly's memory is bounds-checked instead of caught faulting
+  (the patch turns `useWasmFaultSignalHandler` off: fast memory reserves
+  gigabytes of address space a memory, which has not been tried on
+  myos). The rest of the machine context is upstream's: a signal
+  handler's `ucontext_t` (`docs/signals.md`) gives a suspended thread's
+  registers to the collector and to the sampling profiler;
 - no translations (GLib has none), and none of the media stack
   (GStreamer), WebGL, the GPU process, the sandbox, WebDriver, spell
   checking, speech, gamepads, introspection, the optional image and font

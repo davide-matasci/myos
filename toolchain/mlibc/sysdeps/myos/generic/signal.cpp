@@ -1,8 +1,10 @@
 // Signals: mlibc's struct sigaction and sigset_t (1024 bits) to the
 // kernel's records and 32-bit masks (libmyos/sigtramp.c), and the handler
 // dispatch the trampoline calls with the kernel's frame: the siginfo it
-// holds (newlib's layout: int si_signo; int si_code; union sigval) to
-// mlibc's siginfo_t.
+// holds (newlib's layout: int si_signo; int si_code; union sigval; void
+// *si_addr; then the sender, pid | uid << 32) to mlibc's siginfo_t, and the
+// interrupted context as its ucontext_t (the registers are libmyos's to
+// lay out, uc_sigmask this file's).
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -18,6 +20,7 @@ namespace {
 
 constexpr int FRAME_SIGNO = 1;
 constexpr int FRAME_HANDLER = 2;
+constexpr int FRAME_MASK = 3;
 constexpr int FRAME_SIGINFO = 10;
 
 // mlibc keeps signal `sig` at bit sig - 1 of its sigset_t; the kernel (and
@@ -40,17 +43,31 @@ extern "C" void __myos_sigdispatch(unsigned long *frame) {
 	info.si_code = (int)(frame[FRAME_SIGINFO] >> 32);
 	info.si_value.sival_ptr = (void *)frame[FRAME_SIGINFO + 1];
 	info.si_addr = (void *)frame[FRAME_SIGINFO + 2];
-	// The kernel keeps no sender. SIGCANCEL has one sender on myos, mlibc's
-	// pthread_cancel in this process (Tgkill), and its handler takes the
-	// signal only from there: what Linux's tgkill would say.
+	// A signal sent says who sent it (0 for a fault or the kernel's own),
+	// in the union si_addr shares, as on Linux.
+	unsigned long from = frame[FRAME_SIGINFO + 3];
+	if (from != 0) {
+		info.si_pid = (pid_t)(from & 0xffffffff);
+		info.si_uid = (uid_t)(from >> 32);
+	}
+	// SIGCANCEL has one sender on myos, mlibc's pthread_cancel in this
+	// process (Tgkill), and its handler takes the signal only from there:
+	// what Linux's tgkill would say.
 	if (info.si_signo == SIGCANCEL) {
 		info.si_code = SI_TKILL;
 		info.si_pid = getpid();
 	}
 	__myos_sig_count++;
+	// The interrupted context, and the mask its return restores: what the
+	// handler leaves in them is what resumes (docs/signals.md).
+	ucontext_t uc;
+	__myos_sigcontext_get(frame, &uc);
+	set_mask(&uc.uc_sigmask, (unsigned int)frame[FRAME_MASK]);
 	// A plain sa_handler takes one argument; passing three is harmless.
 	auto handler = (void (*)(int, siginfo_t *, void *))(uintptr_t)frame[FRAME_HANDLER];
-	handler((int)frame[FRAME_SIGNO], &info, nullptr);
+	handler((int)frame[FRAME_SIGNO], &info, &uc);
+	frame[FRAME_MASK] = mask_of(&uc.uc_sigmask);
+	__myos_sigcontext_put(frame, &uc);
 }
 
 namespace mlibc {

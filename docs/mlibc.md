@@ -120,8 +120,17 @@ headers. What myos answers of it (`getrandom`, `getifaddrs`, `mount`,
   `errno` values and `struct stat` layouts are each libc's own.
 - `times` and `setpriority` are `ENOSYS`, as with libgloss: the kernel
   does not split a task's user and kernel time (issue #291) and has no
-  priorities. `getrlimit` reads `/proc/self/limits`; `setrlimit` is
-  `ENOSYS`.
+  priorities. The scheduler calls (`sched_setscheduler`,
+  `pthread_setschedparam` and their `get` halves) know one policy,
+  `SCHED_OTHER` at priority 0, and refuse another with `EINVAL`.
+  `getresuid` and `getresgid` answer what `getuid` and `getgid` do.
+- `getrlimit` reads `/proc/self/limits`; `setrlimit` takes a limit at or
+  under the hard one, which changes nothing (no limit is enforced below
+  its row), and refuses a higher one with `EPERM`.
+- `sysconf(_SC_PHYS_PAGES)` and `_SC_AVPHYS_PAGES` are the kernel's
+  `MemTotalKiB` and `MemAvailableKiB` (`/proc/meminfo`, `docs/proc.md`),
+  in both libcs: a program asks the libc for the machine's memory, not a
+  file in Linux's format.
 - `sigtimedwait` with a timeout is `ENOSYS`: the kernel has no timed wait.
 - mlibc's resolver reads `/etc/hosts`, then asks the nameserver of
   `/etc/resolv.conf`, or without that file the first `dns=` of `/net/ndb`

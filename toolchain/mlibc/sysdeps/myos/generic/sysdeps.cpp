@@ -12,6 +12,7 @@
 #include <net/if.h>
 #include <poll.h>
 #include <pty.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -577,6 +578,20 @@ int Sysdeps<GetRlimit>::operator()(int resource, struct rlimit *limit) {
 	return 0;
 }
 
+// A limit is what the kernel says it is: one at or under the hard limit
+// is taken (and changes nothing: no limit is enforced lower than its
+// row), one above it refused, as for a process without the privilege.
+int Sysdeps<SetRlimit>::operator()(int resource, const struct rlimit *limit) {
+	uint64_t cur, max;
+	if (__myos_rlimit(resource, &cur, &max) < 0)
+		return errno;
+	if (limit->rlim_cur > limit->rlim_max)
+		return EINVAL;
+	if (max != UINT64_MAX && (limit->rlim_max == RLIM_INFINITY || limit->rlim_max > max))
+		return EPERM;
+	return 0;
+}
+
 // The main thread's stack (pthread_attr_get_np asks for no other: a thread
 // mlibc started knows its own), from /proc/self/stack.
 int Sysdeps<GetCurrentStackInfo>::operator()(void **stack_base, size_t *stack_size) {
@@ -664,6 +679,18 @@ gid_t Sysdeps<GetGid>::operator()() {
 	return 0;
 }
 
+// The real, effective and saved ids are one (no set-id programs): what
+// getuid and getgid say.
+int Sysdeps<GetResuid>::operator()(uid_t *ruid, uid_t *euid, uid_t *suid) {
+	*ruid = *euid = *suid = __myos_getuid();
+	return 0;
+}
+
+int Sysdeps<GetResgid>::operator()(gid_t *rgid, gid_t *egid, gid_t *sgid) {
+	*rgid = *egid = *sgid = 0;
+	return 0;
+}
+
 gid_t Sysdeps<GetEgid>::operator()() {
 	return 0;
 }
@@ -706,6 +733,57 @@ int Sysdeps<SetPriority>::operator()(int, id_t, int) {
 	return ENOSYS;
 }
 
+// One scheduling policy, the kernel's own (docs/scheduler.md): SCHED_OTHER
+// at priority 0, which is all a process or a thread may ask for (libgloss
+// answers the same). WebKit sets it on every thread it starts.
+namespace {
+
+int only_policy(int policy, const struct sched_param *param) {
+	if (policy != SCHED_OTHER || (param != nullptr && param->sched_priority != 0))
+		return EINVAL;
+	return 0;
+}
+
+} // namespace
+
+int Sysdeps<GetScheduler>::operator()(pid_t, int *policy) {
+	*policy = SCHED_OTHER;
+	return 0;
+}
+
+int Sysdeps<SetScheduler>::operator()(pid_t, int policy, const struct sched_param *param) {
+	return only_policy(policy, param);
+}
+
+int Sysdeps<GetParam>::operator()(pid_t, struct sched_param *param) {
+	param->sched_priority = 0;
+	return 0;
+}
+
+int Sysdeps<SetParam>::operator()(pid_t, const struct sched_param *param) {
+	return only_policy(SCHED_OTHER, param);
+}
+
+int Sysdeps<GetSchedparam>::operator()(void *, int *policy, struct sched_param *param) {
+	*policy = SCHED_OTHER;
+	param->sched_priority = 0;
+	return 0;
+}
+
+int Sysdeps<SetSchedparam>::operator()(void *, int policy, const struct sched_param *param) {
+	return only_policy(policy, param);
+}
+
+int Sysdeps<GetMinPriority>::operator()(int policy, int *out) {
+	*out = 0;
+	return policy == SCHED_OTHER ? 0 : EINVAL;
+}
+
+int Sysdeps<GetMaxPriority>::operator()(int policy, int *out) {
+	*out = 0;
+	return policy == SCHED_OTHER ? 0 : EINVAL;
+}
+
 int Sysdeps<Sysconf>::operator()(int num, long *ret) {
 	switch (num) {
 	case _SC_OPEN_MAX:
@@ -724,6 +802,18 @@ int Sysdeps<Sysconf>::operator()(int num, long *ret) {
 	case _SC_CLK_TCK:
 		*ret = 100;
 		return 0;
+	// The machine's memory and what of it is available, in pages, from
+	// the kernel's /proc/meminfo (mlibc's own answer is 1024 pages and a
+	// red line: WebKit sizes its caches and watches memory pressure by
+	// these).
+	case _SC_PHYS_PAGES:
+	case _SC_AVPHYS_PAGES: {
+		uint64_t total, free, available;
+		if (__myos_meminfo(&total, &free, &available) < 0)
+			return errno;
+		*ret = (long)((num == _SC_PHYS_PAGES ? total : available) / 4);
+		return 0;
+	}
 	default:
 		return EINVAL;
 	}

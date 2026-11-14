@@ -113,6 +113,7 @@ int __myos_gethostname(char *name, size_t len);
 int __myos_sethostname(const char *name, size_t len);
 int __myos_uname(struct utsname *buf);
 int __myos_rlimit(int resource, uint64_t *cur, uint64_t *max);
+int __myos_meminfo(uint64_t *total, uint64_t *free, uint64_t *available);
 int __myos_main_stack(void **lo, size_t *size);
 int __myos_setitimer(int which, const struct itimerval *value, struct itimerval *old);
 int __myos_getitimer(int which, struct itimerval *value);

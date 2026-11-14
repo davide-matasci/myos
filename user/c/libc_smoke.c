@@ -445,6 +445,7 @@ static int check_auxv(void) {
 #ifdef __MLIBC_POSIX_OPTION
 #include <pthread.h>
 #include <pthread_np.h>
+#include <sched.h>
 #include <sys/resource.h>
 
 /* The limits and the main thread's stack, from /proc/self/limits and
@@ -477,11 +478,68 @@ static int check_limits(void) {
     }
     return 0;
 }
+
+/* What mlibc had no answer for and WebKit asks on every thread (issue
+ * #654): the one scheduling policy there is (SCHED_OTHER at priority 0;
+ * another is refused), the ids of getresuid and getresgid, and setrlimit
+ * taking a limit at or under the hard one and refusing a higher one. */
+static int check_sysdeps(void) {
+    struct sched_param prio = {.sched_priority = 0}, got = {.sched_priority = 7};
+    int policy = -1;
+    if (sched_getscheduler(0) != SCHED_OTHER || sched_setscheduler(0, SCHED_OTHER, &prio) != 0
+        || sched_getparam(0, &got) != 0 || got.sched_priority != 0 || sched_setparam(0, &prio) != 0
+        || sched_get_priority_min(SCHED_OTHER) != 0 || sched_get_priority_max(SCHED_OTHER) != 0) {
+        return fail("the scheduler calls with SCHED_OTHER");
+    }
+    if (pthread_setschedparam(pthread_self(), SCHED_OTHER, &prio) != 0
+        || pthread_getschedparam(pthread_self(), &policy, &got) != 0 || policy != SCHED_OTHER) {
+        return fail("pthread_setschedparam, pthread_getschedparam");
+    }
+    errno = 0;
+    if (sched_setscheduler(0, SCHED_FIFO, &prio) != -1 || errno != EINVAL
+        || pthread_setschedparam(pthread_self(), SCHED_RR, &prio) != EINVAL) {
+        return fail("a policy other than SCHED_OTHER is not refused with EINVAL");
+    }
+    uid_t r = 99, e = 99, s = 99;
+    gid_t rg = 99, eg = 99, sg = 99;
+    if (getresuid(&r, &e, &s) != 0 || r != getuid() || e != geteuid() || s != getuid()
+        || getresgid(&rg, &eg, &sg) != 0 || rg != getgid() || eg != getegid() || sg != getgid()) {
+        return fail("getresuid, getresgid");
+    }
+    struct rlimit files, more;
+    if (getrlimit(RLIMIT_NOFILE, &files) != 0 || setrlimit(RLIMIT_NOFILE, &files) != 0) {
+        return fail("setrlimit of the limit there is");
+    }
+    more = files;
+    more.rlim_cur = more.rlim_max = files.rlim_max + 1;
+    errno = 0;
+    if (setrlimit(RLIMIT_NOFILE, &more) != -1 || errno != EPERM) {
+        return fail("setrlimit above the hard limit is not EPERM");
+    }
+    return 0;
+}
 #else
 static int check_limits(void) {
     return 0;
 }
+
+static int check_sysdeps(void) {
+    return 0;
+}
 #endif
+
+/* sysconf's page counts, from the kernel's /proc/meminfo (issue #653: a
+ * program asks the libc, not a file in Linux's format): the machine has
+ * more than the 4 MiB mlibc's fallback said, and no more available than
+ * it has. */
+static int check_memory(void) {
+    long total = sysconf(_SC_PHYS_PAGES), available = sysconf(_SC_AVPHYS_PAGES);
+    if (total <= 16384 || available <= 0 || available > total) {
+        printf("[ FAIL ] libc sysconf: %ld pages, %ld available\n", total, available);
+        return 1;
+    }
+    return 0;
+}
 
 /* 64 MiB, more than the 16 MiB brk heap there used to be: written whole,
  * read back, freed. */
@@ -507,7 +565,7 @@ static int check_big_malloc(void) {
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
         || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()
-        || check_auxv() || check_limits() || check_big_malloc()) {
+        || check_auxv() || check_limits() || check_sysdeps() || check_memory() || check_big_malloc()) {
         return 1;
     }
     printf("[ OK ] libc\n");

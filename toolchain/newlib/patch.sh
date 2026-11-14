@@ -305,6 +305,16 @@ struct sigaction
 #define TRAP_TRACE  2    /* Process trace trap */' 1
     echo "patched sys/signal.h: si_addr + the fault si_codes"
   fi
+  # Who sent a signal (kernel/src/signal.rs: the frame's fourth siginfo
+  # word): its process and user, 0 for the kernel's own.
+  if ! grep -q 'signal-myos-sender' "$f"; then
+    patch_edit "$f" \
+'  void         *si_addr;    /* signal-myos-fault: the faulting address */' \
+'  void         *si_addr;    /* signal-myos-fault: the faulting address */
+  pid_t         si_pid;     /* signal-myos-sender: the sending process */
+  uid_t         si_uid;     /* Its user */' 1
+    echo "patched sys/signal.h: si_pid + si_uid"
+  fi
 }
 
 patch_search_h() {

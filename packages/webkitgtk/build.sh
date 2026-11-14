@@ -242,11 +242,12 @@ EOF
   # and the JIT's code would need every hart's instruction cache flushed,
   # where myos's __clear_cache flushes the caller's (issue #652). WTF turns WebAssembly
   # on for RISC-V whatever CMake says but with the patch.
-  # Nowhere the sampling profiler: it reads a signal handler's ucontext,
-  # which myos does not give (the patch: no HAVE_MACHINE_CONTEXT; issue #651).
-  local jsc=(-DENABLE_SAMPLING_PROFILER=OFF)
-  [[ "$arch" != riscv64 ]] || jsc+=(-DENABLE_C_LOOP=ON -DENABLE_JIT=OFF -DENABLE_FTL_JIT=OFF
-    -DENABLE_DFG_JIT=OFF -DENABLE_WEBASSEMBLY=OFF)
+  # The sampling profiler (it reads a stopped thread's registers from a
+  # signal handler's ucontext, docs/signals.md) is the JIT builds': CLoop
+  # has none.
+  local jsc=()
+  [[ "$arch" != riscv64 ]] || jsc+=(-DENABLE_SAMPLING_PROFILER=OFF -DENABLE_C_LOOP=ON -DENABLE_JIT=OFF
+    -DENABLE_FTL_JIT=OFF -DENABLE_DFG_JIT=OFF -DENABLE_WEBASSEMBLY=OFF)
   PKG_CONFIG_LIBDIR="$pc:$build/pc:$build/x11-pc" cmake -G Ninja -S "$T/webkitgtk-src" -B "$cmake" \
     -DCMAKE_TOOLCHAIN_FILE="$build/toolchain.cmake" -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_INSTALL_PREFIX="$out" \

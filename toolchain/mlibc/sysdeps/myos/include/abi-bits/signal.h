@@ -503,9 +503,11 @@ union __riscv_fp_state {
 
 typedef unsigned long __riscv_mc_gp_state[NGREG];
 
+/* myos: glibc's and musl's member names (upstream has gregs and fpregs),
+ * which programs written for Linux use (WebKit's MachineContext.h). */
 typedef struct sigcontext {
-	__riscv_mc_gp_state gregs;
-	union __riscv_fp_state fpregs;
+	__riscv_mc_gp_state __gregs;
+	union __riscv_fp_state __fpregs;
 } mcontext_t;
 
 typedef struct __ucontext {

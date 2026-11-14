@@ -171,6 +171,9 @@ nginx_default() {
 		}
 	done
 	nginx_stop /lib/nginx/nginx.conf || ok=1
+	# The master logs who sent its SIGQUIT (`nginx -s quit`): siginfo_t's
+	# si_pid (issue #451).
+	grep -q "signal 3 (SIGQUIT) received from [1-9]" /tmp/nginx/error.log || { echo "no sender in the SIGQUIT line"; ok=1; }
 	# Started again on the same port: every connection is the new server's
 	# (netd used to keep a closed listener's socket, which took its share of
 	# the port's connections and answered nothing).

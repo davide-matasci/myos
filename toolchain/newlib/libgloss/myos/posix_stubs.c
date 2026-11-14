@@ -20,6 +20,9 @@
 
 #include "myos_syscalls.h"
 
+/* libmyos (proc.c): /proc/meminfo's three sizes, in KiB. */
+int __myos_meminfo(uint64_t *total, uint64_t *free, uint64_t *available);
+
 static int myos_nosys(void) {
     errno = ENOSYS;
     return -1;
@@ -165,8 +168,19 @@ long sysconf(int name) {
         return 1024;
     }
 #endif
+#if defined(_SC_PHYS_PAGES) && defined(_SC_AVPHYS_PAGES)
+    /* The machine's memory and what of it is available, in pages
+     * (/proc/meminfo, libmyos). */
+    if (name == _SC_PHYS_PAGES || name == _SC_AVPHYS_PAGES) {
+        uint64_t total, free, available;
+        if (__myos_meminfo(&total, &free, &available) < 0) {
+            return -1;
+        }
+        return (long)((name == _SC_PHYS_PAGES ? total : available) / 4);
+    }
+#endif
     /* Common numeric values if headers did not expose _SC_PAGESIZE. */
-    if (name == 8 || name == 11 || name == 30 || name == 39) {
+    if (name == 8 || name == 30 || name == 39) {
         return 4096;
     }
     /* newlib: _SC_GETGR_R_SIZE_MAX=50, _SC_GETPW_R_SIZE_MAX=51 */

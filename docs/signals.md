@@ -67,9 +67,30 @@ the signal acts at that syscall's exit.
 For a caught signal the kernel writes a frame with the interrupted state
 and a `siginfo_t` below the user stack pointer, and resumes user mode at
 the trampoline the libc registered with `sigaction` (`__myos_sigtramp`).
-The trampoline saves every register, calls `handler(sig, &siginfo, NULL)`
+The trampoline saves every register, calls `handler(sig, &siginfo, &uc)`
 and returns through `SYS_SIGRETURN`, so the interrupted code sees its
 syscall return normally.
+
+`uc` is the interrupted context as the libc's `ucontext_t`
+(`<ucontext.h>`; the layouts and register names are the ones Linux
+programs use, in both libcs): the integer registers with the pc and the
+stack pointer, the FP/SIMD registers, and `uc_sigmask`, the mask the
+return restores. The libc makes it from the frame and the registers the
+trampoline saved, and writes it back when the handler returns
+(`toolchain/libmyos/sigtramp.c`): a handler that changes the pc resumes
+there, and one that changes a register or `uc_sigmask` changes what the
+interrupted code gets. A garbage collector reads a stopped thread's
+registers and stack pointer from it, and a JIT moves a faulting thread to
+its recovery code. `uc_stack` says there is no alternate stack, `uc_link`
+is `NULL`; `getcontext`, `setcontext` and `makecontext` are not provided.
+
+A signal sent says who sent it: `si_pid` and `si_uid` are the sending
+process and its user (the process itself for `raise`; for `SIGCHLD`, the
+child whose exit raised it; for `SIGPIPE`, the writer), and 0 for one the
+kernel sends on its own (`SIGALRM`, a POSIX timer's, the console's `^C`).
+The kernel keeps each pending signal's first sender: one sent again while
+pending is dropped, as on Linux. Signal fds and the Linux layer report the
+same (`docs/events.md`, `docs/linux-compat.md`).
 
 ## Faults
 

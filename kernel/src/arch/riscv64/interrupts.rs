@@ -377,7 +377,7 @@ fn from_user(frame: *const u64) -> bool {
 /// A U-mode fault's signal `sig` (`code`, `addr`: its siginfo) to the
 /// program's handler, from the trap frame: false when it does not catch it.
 fn raise(frame: *mut u64, sig: u32, code: u32, addr: u64) -> bool {
-    let info = crate::signal::Info { sig, code, addr: addr as usize };
+    let info = crate::signal::Info { sig, code, addr: addr as usize, from: 0 };
     crate::signal::on_fault(&mut crate::user::SyscallRegs::from_ptr(frame), info)
 }
 
