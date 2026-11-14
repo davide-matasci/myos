@@ -164,15 +164,35 @@ wifi_firmware_check() {
 t -t wifi wifi_firmware_check wifi_firmware_check
 
 # wifi-firmware fetch: the pinned firmware of each radio from
-# linux-firmware, its SHA-256 checked; a second fetch keeps them.
+# linux-firmware, its SHA-256 checked; a second fetch keeps them. Then
+# once more with kernel.org down (a curl in its place that fails every
+# kernel.org URL and serves GitLab's from the files just fetched): every
+# file arrives, and kernel.org is asked for the first alone.
 wifi_firmware_fetch() {
 	fw=/tmp/fw-fetch
-	rm -rf $fw
+	rm -rf $fw $fw.2 $fw.bin
 	MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware fetch > $fw.out 2>&1 &&
 		[ "$(cat $fw.out)" = "$(printf 'fetched %s\n' $WIFI_FIRMWARE)" ] &&
 		[ "$(MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware fetch)" = "$(printf 'have %s\n' $WIFI_FIRMWARE)" ] &&
 		[ "$(MYOS_FIRMWARE=$fw /bin/custom/wifi-firmware list)" = "$(printf '%s ok\n' $WIFI_FIRMWARE)" ] ||
 		{ cat $fw.out; return 1; }
-	rm -rf $fw
+	mkdir -p $fw.bin
+	cat > $fw.bin/curl <<-EOF
+	#!/bin/sh
+	# curl ... -o OUT URL
+	for a; do url=\$a; done
+	while [ "\$1" != -o ]; do shift; done
+	case \$url in
+	*kernel.org*) echo "\$url" >> $fw.asked; exit 28 ;;
+	*) cp "$fw/\${url##*/}" "\$2" ;;
+	esac
+	EOF
+	chmod +x $fw.bin/curl
+	rm -f $fw.asked
+	PATH=$fw.bin:$PATH MYOS_FIRMWARE=$fw.2 /bin/custom/wifi-firmware fetch > $fw.out 2>&1 &&
+		[ "$(cat $fw.out)" = "$(printf 'fetched %s\n' $WIFI_FIRMWARE)" ] &&
+		[ "$(wc -l < $fw.asked)" -eq 1 ] ||
+		{ cat $fw.out $fw.asked; return 1; }
+	rm -rf $fw $fw.2 $fw.bin $fw.asked
 }
 t -t wifi,net wifi_firmware_fetch wifi_firmware_fetch
