@@ -1,0 +1,10 @@
+[package]
+name = "std-mlibc-rt"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "rt"
+crate-type = ["dylib"]

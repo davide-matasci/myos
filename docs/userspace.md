@@ -205,10 +205,41 @@ RUSTFLAGS="-L native=$PWD/target/mlibc-x86_64/lib -L native=$PWD/target/libcxx-x
   cargo build --release --target targets/x86_64-unknown-myos-mlibc.json   # as user/std-mlibc/build.sh
 ```
 
+#### Rust shared objects
+
+The flavour's programs are static by default, and it also builds Rust
+`dylib`s (`dynamic-linking` in the target's spec), over mlibc's shared
+objects (`docs/mlibc.md` "Shared objects"): a program may hold its std in
+a shared object and load others at run time, as a compiler does with its
+driver library and its plugins.
+
+- cargo builds std as rlibs only, so there is no `libstd.so` in the
+  sysroot. A `dylib` crate built with `-C prefer-dynamic` links std's
+  rlibs into itself and is the program's one std: every other `dylib` and
+  the program depend on it (`DT_NEEDED`) and take their std from it. Two
+  objects that each linked std in would be two runtimes, and a panic
+  could not cross from one to the other.
+- The link is given `libc.so` instead of `libc.a` (mlibc's `shared/`
+  before its `lib/`), the dynamic linker
+  (`-C link-arg=--dynamic-linker=/lib/ld.so`) and where the objects are
+  at run time (`-C link-arg=-rpath=$ORIGIN`).
+- The program's entry is mlibc's `crt0.o`, an argument of the program's
+  link alone (`cargo rustc -- -C link-arg=.../crt0.o`): std's own
+  `_start` is in the shared object then, where no program can start. It
+  is weak, so that `crt0.o`'s stands, and reaches `main` through the GOT.
+- A loaded object's functions are found with the libc's `dlopen` and
+  `dlsym` (std has no API for it), declared `extern "C-unwind"` when a
+  panic may leave them.
+
+`user/std-mlibc/dylib` is the pattern and the test (`std_dylib`):
+`librt.so` holds std, `libplugin.so` is loaded with `dlopen`, and the
+program uses and drops a boxed trait object the plugin made, catches a
+panic thrown in it, and runs its code on several threads.
+
 Limits, the other flavour's and its own:
 
-- The programs are static: no `dylib` or `proc-macro` crate type, and a
-  Rust program cannot `dlopen` yet (issue #658 has the C side).
+- No `proc-macro` crates for the target (they are built for the machine
+  the compiler runs on), and no `libstd.so`: see above.
 - `std::env` sees no variables and cannot set any, and the arguments are
   at most 16 of 127 bytes, as on the other flavour.
 - A `#![no_main]` program must define `main` as C does
@@ -217,8 +248,9 @@ Limits, the other flavour's and its own:
 Its tests are `/bin/std/mlibc/mix` (`user/std-mlibc`, the `std_mlibc`
 test): Rust and C sharing the heap, C's per-thread state on Rust's
 threads, Rust on a thread C made, the arguments, `main`'s value and
-`atexit`; and `/bin/std/mlibc/unwind` (`std_unwind`): panics caught with
-their payloads, drops in order, a poisoned lock, panicking threads.
+`atexit`; `/bin/std/mlibc/unwind` (`std_unwind`): panics caught with
+their payloads, drops in order, a poisoned lock, panicking threads; and
+`/bin/std/mlibc/dylib` (`std_dylib`, above).
 
 ## C userspace (newlib and libgloss)
 

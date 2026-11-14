@@ -8,7 +8,7 @@
   "linker-flavor": "gnu-lld",
   "llvm-abiname": "lp64d",
   "llvm-target": "riscv64-unknown-none-elf",
-  "max-atomic-width": 128,
+  "max-atomic-width": 64,
   "metadata": {
     "description": "myos userspace on mlibc (patched std, riscv64)",
     "host_tools": false,
@@ -21,7 +21,6 @@
   "position-independent-executables": true,
   "pre-link-args": {
     "gnu": [
-      "-pie",
       "-z",
       "max-page-size=4096",
       "--eh-frame-hdr"
@@ -39,5 +38,7 @@
       "-lc",
       "-lbuiltins"
     ]
-  }
+  },
+  "dynamic-linking": true,
+  "has-rpath": true
 }

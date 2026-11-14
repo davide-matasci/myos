@@ -1,0 +1,13 @@
+[package]
+name = "std-mlibc-dylib"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "std-mlibc-dylib"
+path = "src/main.rs"
+
+[dependencies]
+std-mlibc-rt = { path = "../rt" }
