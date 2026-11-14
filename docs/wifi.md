@@ -114,8 +114,10 @@ The firmware directory is the first of `$MYOS_FIRMWARE`, `/data/firmware`
 reboot) and `/tmp/firmware`. The daemon reads only `/data/firmware`, else
 `/tmp/firmware`.
 
-A first fetch needs a network. `$WIFI_FIRMWARE_MIRROR` replaces the base
-URL; when it names a directory holding a copy of linux-firmware's tree (a
+A first fetch needs a network. Each file comes from git.kernel.org, or
+from GitLab's copy of linux-firmware when kernel.org does not answer; its
+SHA-256 is checked either way. `$WIFI_FIRMWARE_MIRROR` replaces both with
+its base URL; when it names a directory holding a copy of linux-firmware's tree (a
 USB stick), `wifi-firmware` copies from it. The tests are
 `wifi_firmware_check` and `wifi_firmware_fetch` (tag `net`).
 
