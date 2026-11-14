@@ -257,8 +257,14 @@ loop {
   waited for this one's answer otherwise, and neither moved until the
   `poll` timed out. netd's does after a second; on riscv64 every
   shootdown of an exec cost that second, and the packages boot stood
-  still for 39 s (CI #2604; `shootdown` is the test). The loop itself
-  keeps its CPU's interrupts off for as long as it lasts (issue #788).
+  still for 39 s (CI #2604; `shootdown` is the test). The early return
+  also lets the interrupts in for a moment, as a wait that began does
+  while it halts: a caller that kept coming back to it (that `poll`, or
+  one whose look at its fds outlasts the system's wakes) had its CPU's
+  interrupts off for as long as it did, so the CPU took no tick, nothing
+  preempted the loop or charged its time, the stuck-CPU watch saw a CPU
+  that had stopped scheduling, and on CPU 0 no device's interrupt
+  arrived (issue #788; `poll_spin` is the test).
 - Spurious wakes are fine: every caller re-checks its condition.
   `wait_addr` builds on this (`docs/threads.md`, "Waiting on an address").
 - A lock whose holder may block (the VFS tree lock, a filesystem module's

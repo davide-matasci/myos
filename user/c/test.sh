@@ -292,6 +292,10 @@ t -t sched sched $SMOKES/sched_smoke
 # hundreds (sched_smoke.c shootdown; the riscv64 packages boot stood still
 # on it, CI #2604).
 t -t sched,mm shootdown $SMOKES/sched_smoke shootdown
+# And that poller's CPU keeps its tick: its CPU time, charged tick by
+# tick, moves from one reading to the next while it loops (sched_smoke.c
+# spin, issue #788: the loop ran with interrupts off).
+t -t sched poll_spin $SMOKES/sched_smoke spin
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).

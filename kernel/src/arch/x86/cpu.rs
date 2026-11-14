@@ -40,6 +40,17 @@ pub fn irq_on() {
     }
 }
 
+/// Let the pending interrupts in, from a context that has them off, and
+/// mask them again. `sti` takes effect after the instruction that follows
+/// it, so one stands between it and `cli`: a `nop`, not a `pause`, after
+/// which QEMU's emulation leaves the shadow in place and `cli` closes a
+/// window that never opened.
+pub fn irq_window() {
+    unsafe {
+        core::arch::asm!("sti", "nop", "cli", options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// Halt until the next interrupt without changing the interrupt mask.
 pub fn hlt() {
     unsafe {
