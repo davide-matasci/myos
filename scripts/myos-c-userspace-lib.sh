@@ -730,6 +730,7 @@ myos_std_mlibc_version_hash() {
     {
       myos_dep_hash sysroot
       myos_dep_hash mlibc
+      myos_dep_hash libcxx
       find "$MYOS_ROOT/user/std-mlibc" \( -name target -o -name Cargo.lock \) -prune -o -type f -print0 \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags
@@ -743,7 +744,8 @@ myos_std_mlibc_is_current() {
     && [[ "$(cat "$MYOS_STD_MLIBC_VERSION")" == "$(myos_std_mlibc_version_hash)" ]] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/std-mlibc-mix-${arch}-unknown-myos-mlibc" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/std-mlibc-mix-${arch}-unknown-myos-mlibc" \
+      && -f "$MYOS_ROOT/target/std-mlibc-unwind-${arch}-unknown-myos-mlibc" ]] || return 1
   done
 }
 

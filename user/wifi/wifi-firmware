@@ -57,20 +57,37 @@ dir() {
 # on a passing lookup, a dropped connection, a 5xx: CI #2388 lost the
 # whole fetch to one lookup), and a server that does not answer is given
 # up on after 20 s instead of the system's 75.
+#
+# The source that served the last file is asked first for the next: with
+# kernel.org not answering at all (CI #2630: no reply to a SYN for the
+# whole boot), every one of the twelve files waited four connection
+# timeouts there, 84 s, before GitLab served it in under one, and the
+# fetch outlasted the boot test's budget. One file pays for finding out.
+SOURCES="kernel gitlab"
 get() {
 	m=$WIFI_FIRMWARE_MIRROR out=$2
 	if [ -d "$m" ]; then
 		cp "$m/$1" "$out"
 		return
 	elif [ -n "$m" ]; then
-		set -- "$m/$1?id=$COMMIT"
-	else
-		set -- "$KERNEL_ORG/$1?id=$COMMIT" "$GITLAB/$COMMIT/$1"
+		download "$m/$1?id=$COMMIT" "$out"
+		return
 	fi
-	for url do
-		curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 20 -o "$out" "$url" && return 0
+	for s in $SOURCES; do
+		case $s in
+		kernel) url="$KERNEL_ORG/$1?id=$COMMIT" ;;
+		*) url="$GITLAB/$COMMIT/$1" ;;
+		esac
+		if download "$url" "$out"; then
+			[ "$s" = "${SOURCES%% *}" ] || SOURCES="$s ${SOURCES%% *}"
+			return 0
+		fi
 	done
 	return 1
+}
+
+download() {
+	curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 20 -o "$2" "$1"
 }
 
 # Whether $1 has SHA-256 $2.
