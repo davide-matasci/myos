@@ -109,6 +109,12 @@ kernel_inputs_hash() {
         # Do not hash Cargo.lock: **/Cargo.lock is gitignored and appears after
         # the first cargo build, which made pull-tag ≠ post-build stamp.
         sha256sum build.rs Cargo.toml 2>/dev/null || true
+        # The checked-in files the ports ship as they are (`file:` entries,
+        # packed from the checkout into the images and the tests module):
+        # hash_tree takes sources by extension and misses a script without
+        # one, so a change to user/wifi/wifi-firmware alone found the old
+        # bundle current and its x86 boots ran the old script (PR #792).
+        ./scripts/ports.sh --source-files all | xargs -r sha256sum
         # The port descriptors: which ports are in the image and what they ship.
         sha256sum scripts/ports.sh
         for f in ports/*/port.env user/*/port.env toolchain/*/port.env packages/*/port.env; do

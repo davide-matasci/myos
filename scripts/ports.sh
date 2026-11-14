@@ -10,6 +10,7 @@
 #   scripts/ports.sh --outputs NAME               cached outputs (target/...)
 #   scripts/ports.sh --image-files NAME [ARCH]    files the image (or the package) needs (target/...)
 #   scripts/ports.sh --all-files [image|all]      the same for every port of the role
+#   scripts/ports.sh --source-files [image|all]   the checked-in files the ports ship (`file:` entries), repo-relative
 #   scripts/ports.sh --kernel-files               the files of the ports kernel/build.rs builds
 #   scripts/ports.sh --all-outputs [image|all]    the outputs of every port of the role
 #   scripts/ports.sh --stamps                     version stamps of the image ports
@@ -324,6 +325,18 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       # what a boot job packs its initramfs and its packages from.
       for n in $(myos_port_names "${2:-image}"); do
         myos_port_image_files "$n"
+      done | sort -u
+      ;;
+    --source-files)
+      # The checked-in files the ports ship as they are (`file:` in
+      # PORT_FILES and PORT_TEST_FILES: a script, a configuration file):
+      # packed from the checkout, so no stamp or output covers them.
+      for n in $(myos_port_names "${2:-image}"); do
+        myos_port_load "$n"
+        for spec in $PORT_FILES $PORT_TEST_FILES; do
+          IFS=: read -r kind a _ <<<"$spec"
+          [[ "$kind" != file ]] || echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$a"
+        done
       done | sort -u
       ;;
     --kernel-files)
