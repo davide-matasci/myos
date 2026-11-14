@@ -1366,6 +1366,38 @@ static void check_exec_threads(char *self) {
           "execve from another thread of a process with threads: EAGAIN (runs on Linux)");
 }
 
+static volatile sig_atomic_t info_pid = -1, info_uid = -1;
+
+static void on_info(int sig, siginfo_t *si, void *uc) {
+    (void)sig;
+    (void)uc;
+    info_pid = si->si_pid;
+    info_uid = si->si_uid;
+}
+
+/* A signal sent says who sent it: si_pid and si_uid in the handler's
+ * siginfo_t, and in sigtimedwait's. */
+static void check_sender(void) {
+    struct sigaction sa;
+    sigset_t set;
+    siginfo_t si;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_info;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    check(sigaction(SIGUSR2, &sa, NULL) == 0 && kill(getpid(), SIGUSR2) == 0 && info_pid == getpid() &&
+              info_uid == (int)getuid(),
+          "SA_SIGINFO: si_pid and si_uid of the sender");
+    signal(SIGUSR2, SIG_DFL);
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    memset(&si, 0, sizeof si);
+    check(sigprocmask(SIG_BLOCK, &set, NULL) == 0 && kill(getpid(), SIGUSR2) == 0 && sigwaitinfo(&set, &si) == SIGUSR2 &&
+              si.si_pid == getpid(),
+          "sigwaitinfo: si_pid of the sender");
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+}
+
 static void check_signalfd(void) {
     struct signalfd_siginfo si;
     sigset_t set;
@@ -1382,6 +1414,7 @@ static void check_signalfd(void) {
     check(kill(getpid(), SIGUSR1) == 0 && poll(&p, 1, 1000) == 1 && (p.revents & POLLIN) &&
               read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR1 && poll(&p, 1, 0) == 0,
           "signalfd: a pending signal is read, not delivered");
+    check(si.ssi_pid == (uint32_t)getpid(), "signalfd: ssi_pid is the sender");
     fcntl(fd, F_SETFL, 0);
     pid_t pid = fork();
     if (pid == 0) {
@@ -1392,6 +1425,7 @@ static void check_signalfd(void) {
     check(read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR1 &&
               waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
           "signalfd: a child's kill ends a blocked read");
+    check(si.ssi_pid == (uint32_t)pid, "signalfd: ssi_pid is the child that sent it");
     sigaddset(&set, SIGUSR2);
     check(sigprocmask(SIG_BLOCK, &set, NULL) == 0 && signalfd(fd, &set, 0) == fd && kill(getpid(), SIGUSR2) == 0 &&
               read(fd, &si, sizeof si) == (ssize_t)sizeof si && si.ssi_signo == SIGUSR2,
@@ -1878,6 +1912,7 @@ static void check_toolchain_calls(char *self) {
     check_evfd();
     check_epoll();
     check_signalfd();
+    check_sender();
     check_argv_layout(self);
     check_sigaction_all(self);
     check_sigaltstack();
@@ -2724,6 +2759,33 @@ int main(int argc, char **argv) {
         check(sysinfo(&si) == 0 && si.totalram > 0 && si.mem_unit > 0, "sysinfo: total memory");
         check(sysconf(_SC_PHYS_PAGES) > 0, "sysconf: physical pages");
         check(sysconf(_SC_NPROCESSORS_ONLN) >= 1, "sysconf: online CPUs");
+        /* /proc/meminfo in Linux's form (the layer's view of the kernel's
+         * file, issue #653): "MemTotal:  N kB" is sysinfo's total, no
+         * more is available than there is, and there is no swap. */
+        {
+            char text[2048] = { 0 };
+            unsigned long total = 0, avail = 0, swap = 1;
+            FILE *f = fopen("/proc/meminfo", "r");
+            size_t got = f != NULL ? fread(text, 1, sizeof text - 1, f) : 0;
+            if (f != NULL)
+                fclose(f);
+            /* strtoul, not sscanf: musl's scanf brings in long double
+             * arithmetic the static link has no builtins for. */
+            const char *t = strstr(text, "MemTotal:"), *a = strstr(text, "\nMemAvailable:");
+            const char *s = strstr(text, "\nSwapTotal:");
+            char *end = NULL;
+            int ok = got > 0 && t == text && a != NULL && s != NULL;
+            if (ok) {
+                total = strtoul(t + strlen("MemTotal:"), &end, 10);
+                ok = strncmp(end, " kB\n", 4) == 0;
+                avail = strtoul(a + strlen("\nMemAvailable:"), NULL, 10);
+                swap = strtoul(s + strlen("\nSwapTotal:"), NULL, 10);
+            }
+            check(ok && total == si.totalram * si.mem_unit / 1024 && avail > 0 && avail <= total && swap == 0,
+                  "/proc/meminfo: Linux's lines, sysinfo's total");
+            if (!ok)
+                out(text);
+        }
         struct utsname un;
         check(uname(&un) == 0 && un.nodename[0] != 0, "uname: a host name");
         out(failures ? "LINUX-SYSINFO FAIL\n" : "LINUX-SYSINFO OK\n");

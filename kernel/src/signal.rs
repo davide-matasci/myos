@@ -151,20 +151,21 @@ pub fn on_user_interrupt(regs: &mut SyscallRegs) {
         SigNext::Terminate(sig) => terminate(sig),
         SigNext::Deliver {
             sig,
+            from,
             act,
             tramp,
             old_blocked,
         } => {
-            let info = Info { sig, code: 0, addr: 0 };
+            let info = Info { sig, code: 0, addr: 0, from };
             let ret = deliver(regs, info, &act, tramp, old_blocked, regs.pc(), regs.ret());
             regs.set_ret(ret);
         }
     }
 }
 
-/// `SIGCHLD` to `parent` (a child exited).
-pub fn raise_sigchld(parent: usize) {
-    task::signal_send(parent, SIGCHLD);
+/// `SIGCHLD` to `parent` from `from`, the child that exited.
+pub fn raise_sigchld(parent: usize, from: u64) {
+    task::signal_send_from(parent, SIGCHLD, from);
 }
 
 /// True if the current task has a pending signal that would terminate it or
@@ -307,7 +308,8 @@ const F_SP: usize = 5;
 const F_RET: usize = 6;
 const F_NR_REG: usize = 7;
 /// `siginfo_t` (newlib: `int si_signo; int si_code; union sigval si_value;
-/// void *si_addr`), passed as the handler's second argument; words 10..13.
+/// void *si_addr; pid_t si_pid; uid_t si_uid`), passed as the handler's
+/// second argument; words 10..13.
 const F_SIGINFO: usize = 10;
 /// The registers the return path takes from the block that the trampoline
 /// cannot put back ([`SyscallRegs::kept`]); words 16..19.
@@ -319,13 +321,29 @@ const RED_ZONE: usize = 128;
 /// newlib `si_code` for a signal sent by `kill`/`raise`.
 const SI_USER: u64 = 1;
 
-/// Why a handler runs: a signal sent (`code` 0) or a fault's (`code` and
-/// the address `addr`, see [`code`]).
+/// Why a handler runs: a signal sent (`code` 0) by `from` (`pid | uid <<
+/// 32`, 0: the kernel), or a fault's (`code` and the address `addr`, see
+/// [`code`]).
 #[derive(Clone, Copy)]
 pub struct Info {
     pub sig: u32,
     pub code: u32,
     pub addr: usize,
+    pub from: u64,
+}
+
+/// Who a signal sent from here comes from: the current process, its pid
+/// and uid as `pid | uid << 32`; 0 from the kernel's own threads (an
+/// interrupt's, the console's `^C`).
+pub fn sender() -> u64 {
+    if task::current_user_pc_sp().is_none() {
+        return 0;
+    }
+    let uid = match crate::sec::current_uid() {
+        u32::MAX => 0,
+        uid => uid,
+    };
+    task::current_pid() as u64 | u64::from(uid) << 32
 }
 
 /// Act on the current task's pending signals as its syscall `nr` (first
@@ -356,6 +374,7 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
         SigNext::Terminate(sig) => terminate(sig),
         SigNext::Deliver {
             sig,
+            from,
             act,
             tramp,
             old_blocked,
@@ -369,7 +388,7 @@ pub fn on_syscall_exit(regs: &mut SyscallRegs, nr: usize, a0: usize, ret: usize)
             };
             // After sigsuspend, the handler returns to the caller's mask.
             let restore_mask = suspend_mask.unwrap_or(old_blocked);
-            let info = Info { sig, code: 0, addr: 0 };
+            let info = Info { sig, code: 0, addr: 0, from };
             deliver(regs, info, &act, tramp, restore_mask, pc, ret)
         }
     }
@@ -423,6 +442,7 @@ fn deliver(regs: &mut SyscallRegs, info: Info, act: &task::SigAction, tramp: usi
     let code = if info.code == 0 { SI_USER } else { info.code as u64 };
     frame[F_SIGINFO] = info.sig as u64 | (code << 32);
     frame[F_SIGINFO + 2] = info.addr as u64;
+    frame[F_SIGINFO + 3] = info.from;
     for (i, w) in regs.kept().into_iter().enumerate() {
         frame[F_KEPT + i] = w;
     }
@@ -525,7 +545,7 @@ pub fn sigwait(set: u32) -> usize {
     let id = task::current_id();
     loop {
         let seq = task::wait_seq();
-        if let Some(sig) = task::signal_take_from(id, set) {
+        if let Some((sig, _)) = task::signal_take_from(id, set) {
             return sig as usize;
         }
         if task::signal_wakeable(id) {

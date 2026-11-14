@@ -423,7 +423,7 @@ pub fn deliver(regs: &mut SyscallRegs, f: &Frame) -> Option<usize> {
     put_u64(&mut uc, UC_SIGMASK, f.mask);
 
     sys::put(fp_va, &fx.0).ok()?;
-    sys::put(info_va, &siginfo(f.sig, f.code, f.addr)).ok()?;
+    sys::put(info_va, &siginfo(f.sig, f.code, f.addr, f.pid)).ok()?;
     sys::put(uc_va, &uc).ok()?;
     sys::put(frame_va, &(f.restorer as u64).to_le_bytes()).ok()?;
 

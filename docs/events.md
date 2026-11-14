@@ -138,8 +138,8 @@ during a scan is never missed.
 A signal fd is a mask (`ctl`: `mask N,N,...` or `mask none`). A read
 takes the lowest pending signals of the mask from the *reading* process
 instead of delivering them, one 16-byte record `{u32 signo, u32 code, i32
-pid, u32 uid}` each. `code`, `pid` and `uid` are 0: the kernel keeps no
-sender.
+pid, u32 uid}` each: `code` 0, and the sender's pid and uid
+(`docs/signals.md`; 0 for a signal the kernel sends on its own).
 
 - With nothing pending a read waits, and ends with `EINTR` when a signal
   that acts comes first, like `sigwait`.

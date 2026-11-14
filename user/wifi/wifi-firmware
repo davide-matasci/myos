@@ -52,25 +52,52 @@ dir() {
 	fi
 }
 
+# The servers to ask, in order: one that gave no file goes last (demote).
+SOURCES="kernel.org gitlab"
+
+# Source $1's URL of linux-firmware's file $2.
+url() {
+	case $1 in
+	kernel.org) echo "$KERNEL_ORG/$2?id=$COMMIT" ;;
+	gitlab) echo "$GITLAB/$COMMIT/$2" ;;
+	*) echo "$WIFI_FIRMWARE_MIRROR/$2?id=$COMMIT" ;;
+	esac
+}
+
 # linux-firmware's file $1 into $2: from the mirror when one is given,
-# else from kernel.org or GitLab. Each download is tried again (one failed
-# on a passing lookup, a dropped connection, a 5xx: CI #2388 lost the
-# whole fetch to one lookup), and a server that does not answer is given
-# up on after 20 s instead of the system's 75.
+# else from kernel.org or GitLab. A download that fails (a passing lookup,
+# a dropped connection, a 5xx: CI #2388 lost the whole fetch to one
+# lookup) is tried again up to three times, each round asking every
+# server once, and a server that does not answer is given up on after
+# 10 s. It then goes last for the files that follow: with kernel.org
+# down, the twelve files each waited its four tries out before GitLab was
+# asked, 80 s a file (PR #792's boots).
 get() {
-	m=$WIFI_FIRMWARE_MIRROR out=$2
-	if [ -d "$m" ]; then
-		cp "$m/$1" "$out"
+	if [ -d "$WIFI_FIRMWARE_MIRROR" ]; then
+		cp "$WIFI_FIRMWARE_MIRROR/$1" "$2"
 		return
-	elif [ -n "$m" ]; then
-		set -- "$m/$1?id=$COMMIT"
-	else
-		set -- "$KERNEL_ORG/$1?id=$COMMIT" "$GITLAB/$COMMIT/$1"
 	fi
-	for url do
-		curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors --connect-timeout 20 -o "$out" "$url" && return 0
+	[ -z "$WIFI_FIRMWARE_MIRROR" ] || SOURCES=mirror
+	for round in 1 2 3 4; do
+		for from in $SOURCES; do
+			why=$(curl -fsSL --connect-timeout 10 -o "$2" "$(url "$from" "$1")" 2>&1) && return 0
+			demote "$from"
+		done
+		sleep 1
 	done
+	# What curl said of the last try: a server passed over on the way to
+	# one that answered says nothing.
+	echo "$why" >&2
 	return 1
+}
+
+# Move source $1 to the end of $SOURCES.
+demote() {
+	rest=
+	for other in $SOURCES; do
+		[ "$other" = "$1" ] || rest="$rest $other"
+	done
+	SOURCES="$rest $1"
 }
 
 # Whether $1 has SHA-256 $2.

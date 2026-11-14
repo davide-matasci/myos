@@ -4,7 +4,8 @@
  * sigtramp.c: the trampoline, the 32-bit masks, struct myos_ksigaction).
  * newlib's sigset_t is one unsigned long, and its siginfo_t is what the
  * kernel writes into the frame (int si_signo; int si_code; union sigval
- * si_value; void *si_addr).
+ * si_value; void *si_addr). A handler's third argument is the interrupted
+ * context (sys/ucontext.h).
  */
 
 #include <errno.h>
@@ -12,20 +13,29 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <ucontext.h>
 
 #include "myos_syscalls.h"
 
 #define MYOS_SIGFRAME_SIGNO 1
 #define MYOS_SIGFRAME_HANDLER 2
+#define MYOS_SIGFRAME_MASK 3
 #define MYOS_SIGFRAME_SIGINFO 10
 
 void __myos_sigdispatch(unsigned long *frame) {
     void (*handler)(int, siginfo_t *, void *) =
         (void (*)(int, siginfo_t *, void *))(uintptr_t)frame[MYOS_SIGFRAME_HANDLER];
+    ucontext_t uc;
     __myos_sig_count++;
+    /* The interrupted context, and the mask its return restores: what the
+     * handler leaves in them is what resumes (docs/signals.md). */
+    __myos_sigcontext_get(frame, &uc);
+    uc.uc_sigmask = (sigset_t)frame[MYOS_SIGFRAME_MASK];
     /* A plain sa_handler takes one argument; passing three is harmless. */
     handler((int)frame[MYOS_SIGFRAME_SIGNO],
-            (siginfo_t *)&frame[MYOS_SIGFRAME_SIGINFO], NULL);
+            (siginfo_t *)&frame[MYOS_SIGFRAME_SIGINFO], &uc);
+    frame[MYOS_SIGFRAME_MASK] = (unsigned long)(unsigned int)uc.uc_sigmask;
+    __myos_sigcontext_put(frame, &uc);
 }
 
 int sigaction(int sig, const struct sigaction *restrict act,

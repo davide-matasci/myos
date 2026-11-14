@@ -1,12 +1,13 @@
 --- a/Source/JavaScriptCore/runtime/Options.cpp
 +++ b/Source/JavaScriptCore/runtime/Options.cpp
-@@ -1039,6 +1039,11 @@
+@@ -1039,6 +1039,12 @@
      if (!Options::useMachForExceptions() || Options::useJITCage())
          Options::allowNonSPTagging() = true;
  
-+#if !HAVE(MACHINE_CONTEXT)
-+    // No registers from a signal handler (myos): WebAssembly's memory is
-+    // bounds-checked, not caught faulting.
++#if defined(WEBKIT_MYOS)
++    // myos: WebAssembly's memory is bounds-checked, not caught faulting
++    // (fast memory reserves gigabytes of address space a memory, which
++    // has not been tried there).
 +    Options::useWasmFaultSignalHandler() = false;
 +#endif
      if (!Options::useWasmFaultSignalHandler())
@@ -25,36 +26,6 @@
      return static_cast<uint32_t>(syscall(__NR_gettid));
  #elif OS(DARWIN)
      // Ideally we would like to use pthread_threadid_np. But this is 64bit, while required one is 32bit.
---- a/Source/JavaScriptCore/wasm/WasmFaultSignalHandler.cpp
-+++ b/Source/JavaScriptCore/wasm/WasmFaultSignalHandler.cpp
-@@ -60,6 +60,7 @@
- }
- }
- 
-+#if HAVE(MACHINE_CONTEXT)
- static SignalAction trapHandler(Signal signal, SigInfo& sigInfo, PlatformRegisters& context)
- {
-     RELEASE_ASSERT(signal == Signal::AccessFault);
-@@ -129,6 +130,7 @@
-     }
-     return SignalAction::NotHandled;
- }
-+#endif
- 
- void activateSignalingMemory()
- {
-@@ -157,9 +159,11 @@
- #if CPU(ARM64E) && HAVE(HARDENED_MACH_EXCEPTIONS)
-         presignedTrampoline = g_wtfConfig.signalHandlers.presignReturnPCForHandler(LLInt::getCodePtr<NoPtrTag>(wasm_throw_from_fault_handler_trampoline_reg_instance));
- #endif
-+#if HAVE(MACHINE_CONTEXT)
-         addSignalHandler(Signal::AccessFault, [] (Signal signal, SigInfo& sigInfo, PlatformRegisters& ucontext) {
-             return trapHandler(signal, sigInfo, ucontext);
-         });
-+#endif
-     });
- }
- 
 --- a/Source/PlatformGTK.cmake
 +++ b/Source/PlatformGTK.cmake
 @@ -1,6 +1,9 @@
@@ -101,19 +72,6 @@
  #undef ENABLE_WEBASSEMBLY_OMGJIT
  #define ENABLE_WEBASSEMBLY_OMGJIT 0
  #undef ENABLE_WEBASSEMBLY_BBQJIT
---- a/Source/WTF/wtf/PlatformHave.h
-+++ b/Source/WTF/wtf/PlatformHave.h
-@@ -237,7 +237,9 @@
- #define HAVE_MACH_MEMORY_ENTRY 1
- #endif
- 
--#if OS(DARWIN) || OS(FUCHSIA) || ((OS(FREEBSD) || OS(HAIKU) || OS(NETBSD) || OS(OPENBSD) || OS(LINUX) || OS(HURD) || OS(QNX)) && (CPU(X86_64) || CPU(ARM) || CPU(ARM64) || CPU(RISCV64)))
-+/* myos: a signal handler is given no ucontext, so no registers from it
-+   (a suspended thread's stack pointer is approximated instead). */
-+#if (OS(DARWIN) || OS(FUCHSIA) || ((OS(FREEBSD) || OS(HAIKU) || OS(NETBSD) || OS(OPENBSD) || OS(LINUX) || OS(HURD) || OS(QNX)) && (CPU(X86_64) || CPU(ARM) || CPU(ARM64) || CPU(RISCV64)))) && !defined(WEBKIT_MYOS)
- #define HAVE_MACHINE_CONTEXT 1
- #endif
- 
 --- a/Source/WTF/wtf/StackBounds.cpp
 +++ b/Source/WTF/wtf/StackBounds.cpp
 @@ -146,7 +146,11 @@
@@ -295,24 +253,42 @@
      if (initializeGLDisplayX11())
 --- a/Source/WebKit/UIProcess/linux/MemoryPressureMonitor.cpp
 +++ b/Source/WebKit/UIProcess/linux/MemoryPressureMonitor.cpp
-@@ -392,12 +392,17 @@
- 
- bool MemoryPressureMonitor::disabled()
- {
+@@ -31,6 +31,9 @@
+ #include "WebProcessPool.h"
+ #include <mutex>
+ #include <stdio.h>
 +#if defined(WEBKIT_MYOS)
-+    // myos's /proc/meminfo is not Linux's.
-+    return true;
-+#else
-     static std::once_flag flag;
-     std::call_once(flag, []() {
-         auto envvar = getenv("WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR");
-         s_disabled = envvar && !strcmp(envvar, "1");
-     });
-     return s_disabled;
++#include <unistd.h>
 +#endif
- }
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+@@ -358,6 +361,17 @@
+         while (true) {
+             sleep(pollInterval);
  
- void CGroupMemoryController::setMemoryControllerPath(CString memoryControllerPath)
++#if defined(WEBKIT_MYOS)
++            // myos: the libc says how much memory the machine has and how
++            // much of it is available (sysconf, from the kernel's counters);
++            // /proc/meminfo is not in Linux's format, and there are no
++            // zones or cgroups.
++            long totalPages = sysconf(_SC_PHYS_PAGES);
++            long availablePages = sysconf(_SC_AVPHYS_PAGES);
++            int usedPercentage = -1;
++            if (totalPages > 0 && availablePages >= 0 && availablePages <= totalPages)
++                usedPercentage = static_cast<int>((totalPages - availablePages) * 100 / totalPages);
++#else
+             // Cannot operate without this one, retry opening on the next iteration after sleeping.
+             if (!tryOpeningForUnbufferedReading(memInfoFile, s_procMeminfo))
+                 continue;
+@@ -369,6 +383,7 @@
+             CString cgroupMemoryControllerPath = getCgroupControllerPath(cgroupControllerFile.get(), "memory");
+             memoryController.setMemoryControllerPath(cgroupMemoryControllerPath);
+             int usedPercentage = systemMemoryUsedAsPercentage(memInfoFile.get(), zoneInfoFile.get(), &memoryController);
++#endif
+             if (usedPercentage == -1) {
+                 WTFLogAlways("Failed to get the memory usage");
+                 pollInterval = s_maxPollingInterval;
 --- a/Source/WebKit/WebProcess/InjectedBundle/glib/InjectedBundleGlib.cpp
 +++ b/Source/WebKit/WebProcess/InjectedBundle/glib/InjectedBundleGlib.cpp
 @@ -32,10 +32,19 @@

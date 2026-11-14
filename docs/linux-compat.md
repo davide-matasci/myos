@@ -246,7 +246,8 @@ state, and the handler returns through `rt_sigreturn`. musl passes
 `SA_RESTORER` on x86_64 and aarch64; riscv64 has none (Linux uses its
 vDSO), so the module maps a one-page trampoline. A fault's signal carries
 `si_code`, `si_addr` and the fault address, and `rt_sigreturn` resumes the
-faulting instruction. On x86_64 the callee-saved registers read 0 in
+faulting instruction; a signal sent carries its sender's `si_pid` (and
+`si_uid` 0, as every uid of the layer). On x86_64 the callee-saved registers read 0 in
 `uc_mcontext` and are not restored from it.
 
 ### vDSO
@@ -458,10 +459,17 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   took for a heap budget of 0 bytes and collected on every allocation.
   That is where Claude Code's minutes of key lag went (`linux --root
   /data/alpine claude`).
+- **`/proc/meminfo`** opened by a Linux program is Linux's file
+  (`MemTotal:  N kB`, `MemFree`, `MemAvailable`, `Buffers` for the block
+  cache, `Cached` for the page cache, no swap), made by the layer from
+  the kernel's counters at the open. The kernel's own file keeps its
+  names (`MemTotalKiB: N`, `docs/proc.md`): the format is Linux's, so the
+  layer speaks it, like Linux's errnos and signal numbers. `free`, `top`
+  and the runtimes that size themselves by it read it there.
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct
-  signalfd_siginfo`, with only `ssi_signo` set). `EPOLLET` reports a
+  signalfd_siginfo`, with `ssi_signo` and the sender's `ssi_pid` set). `EPOLLET` reports a
   readiness once until the object changes. `EPOLLPRI`, `EPOLLRDHUP`,
   `EPOLLEXCLUSIVE` and `epoll_pwait`'s mask are ignored.
 - **Sockets.** IPv4 and IPv6 TCP and UDP, and `AF_UNIX` streams.
