@@ -532,6 +532,32 @@ int __myos_rlimit(int resource, uint64_t *cur, uint64_t *max) {
     return 0;
 }
 
+/* The machine's memory in KiB, from /proc/meminfo (docs/proc.md): all of
+ * it, the part nothing holds, and that with what the caches give back.
+ * -1 (ENOSYS) when the file is not there or lacks a line. This is what
+ * sysconf's page counts are answered from: programs ask the libc, not a
+ * file in another system's format. */
+int __myos_meminfo(uint64_t *total, uint64_t *free, uint64_t *available) {
+    static const char *const names[3] = {"\nMemTotalKiB:", "\nMemFreeKiB:", "\nMemAvailableKiB:"};
+    uint64_t *out[3] = {total, free, available};
+    char buf[4096];
+    /* A newline first: every name is then found at a line's start. */
+    buf[0] = '\n';
+    if (myos_read_small("/proc/meminfo", buf + 1, sizeof buf - 1) < 0) {
+        errno = ENOSYS;
+        return -1;
+    }
+    for (int i = 0; i < 3; i++) {
+        const char *s = strstr(buf, names[i]);
+        if (s == NULL) {
+            errno = ENOSYS;
+            return -1;
+        }
+        *out[i] = strtoull(s + strlen(names[i]), NULL, 10);
+    }
+    return 0;
+}
+
 /* The main thread's stack, from /proc/self/stack ("lo-end" in hex): its
  * lowest address and its size. */
 int __myos_main_stack(void **lo, size_t *size) {

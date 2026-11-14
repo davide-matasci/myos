@@ -166,6 +166,11 @@ CPU has run something else), the caches' sizes (`BlockCacheKiB`,
 `HeapFreeKiB`: tmpfs, the modules and the kernel's own structures live
 there; `statvfs` of `/tmp` reads the same numbers).
 
+The names are myos's own, not Linux's (`MemTotal:  N kB`). A native
+program asks its libc (`sysconf(_SC_PHYS_PAGES)`, `_SC_AVPHYS_PAGES`:
+`docs/mlibc.md`); a Linux program gets Linux's file from the Linux layer
+(`docs/linux-compat.md`).
+
 ## Reading it from a tool
 
 Each file is made under one scheduler lock, so a line is consistent in
