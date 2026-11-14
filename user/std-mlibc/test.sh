@@ -9,3 +9,7 @@ std_mlibc() {
 	[ $rc = 42 ] && [ "$out" = "[ OK ] std mlibc" ]
 }
 t -t mlibc,std,sched std_mlibc std_mlibc
+# Unwinding (unwind/main.rs): panics caught with their payloads, the
+# frames' values dropped on the way, a lock poisoned, a panicking thread
+# ending alone.
+t -t mlibc,std,libcxx,unwind std_unwind /bin/std/mlibc/unwind

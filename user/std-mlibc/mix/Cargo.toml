@@ -10,9 +10,3 @@ license = "MIT OR Apache-2.0"
 [[bin]]
 name = "std-mlibc-mix"
 path = "main.rs"
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"

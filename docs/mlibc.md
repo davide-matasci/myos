@@ -182,8 +182,7 @@ libc changes (`docs/ports.md` "Cache keys"). tcc's sysroot is newlib's.
   newlib has no dynamic linker.
 - The Rust ports use no C library. A Rust program with C in it is built
   for the mlibc flavour of the target, `<arch>-unknown-myos-mlibc`
-  (`docs/userspace.md` "`std` on mlibc"): static, and without unwinding
-  so far.
+  (`docs/userspace.md` "`std` on mlibc"): static so far.
 - A fork while another thread holds one of mlibc's own locks (the
   allocator's, stdio's) hangs the child in its first `malloc` or
   `fprintf`, because mlibc's fork takes none of them (issue #544).
