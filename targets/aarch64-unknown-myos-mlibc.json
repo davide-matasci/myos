@@ -15,7 +15,7 @@
     "tier": 3
   },
   "os": "myos",
-  "panic-strategy": "abort",
+  "panic-strategy": "unwind",
   "plt-by-default": false,
   "position-independent-executables": true,
   "pre-link-args": {
@@ -34,6 +34,7 @@
   "env": "mlibc",
   "late-link-args": {
     "gnu": [
+      "-lunwind",
       "-lc",
       "-lbuiltins"
     ]

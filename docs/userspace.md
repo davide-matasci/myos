@@ -180,6 +180,7 @@ C or C++ in it. There the runtime's core is the C library's
 | threads | `thread_spawn`, std's stacks | `pthread_create` |
 | thread-locals | a table at the thread pointer | `pthread_key_create` keys |
 | exit | the syscall | `exit` (the `atexit` functions, C's streams flushed) |
+| panic | aborts | unwinds, through LLVM's libunwind (`toolchain/libcxx`) |
 
 So the program has one heap (Rust frees what C allocated and the other
 way round), the thread pointer is the libc's on every thread (C's `errno`
@@ -188,17 +189,24 @@ with `pthread_create` may run Rust, its `thread_local!` values destroyed
 when it ends. Files, processes, time and the locks stay on the kernel's
 calls in both: they keep no state the libc would have to share.
 
+A panic there unwinds the stack: `catch_unwind` stops it, the values of
+the frames it leaves are dropped, a thread that panics ends alone and
+`join` gives its payload. The panic runtime is the unix targets' (the gcc
+personality over `_Unwind_*`), found through the program's
+`PT_GNU_EH_FRAME`. Only the unwinding runtime is in the sysroot for this
+flavour: a profile with `panic = "abort"` does not build.
+
 A program for it is built with the same sysroot, its link given mlibc's
-directory (the target's spec adds `-lc -lbuiltins`):
+directory and libunwind's (the target's spec adds `-lunwind -lc
+-lbuiltins`):
 
 ```sh
-RUSTFLAGS="-L native=$PWD/target/mlibc-x86_64/lib" \
+RUSTFLAGS="-L native=$PWD/target/mlibc-x86_64/lib -L native=$PWD/target/libcxx-x86_64/lib" \
   cargo build --release --target targets/x86_64-unknown-myos-mlibc.json   # as user/std-mlibc/build.sh
 ```
 
 Limits, the other flavour's and its own:
 
-- `panic` aborts; there is no unwinding yet.
 - The programs are static: no `dylib` or `proc-macro` crate type, and a
   Rust program cannot `dlopen` yet (issue #658 has the C side).
 - `std::env` sees no variables and cannot set any, and the arguments are
@@ -206,10 +214,11 @@ Limits, the other flavour's and its own:
 - A `#![no_main]` program must define `main` as C does
   (`extern "C" fn main(argc, argv) -> c_int`): the libc calls it.
 
-Its test is `/bin/std/mlibc/mix` (`user/std-mlibc`, the `std_mlibc`
+Its tests are `/bin/std/mlibc/mix` (`user/std-mlibc`, the `std_mlibc`
 test): Rust and C sharing the heap, C's per-thread state on Rust's
 threads, Rust on a thread C made, the arguments, `main`'s value and
-`atexit`.
+`atexit`; and `/bin/std/mlibc/unwind` (`std_unwind`): panics caught with
+their payloads, drops in order, a poisoned lock, panicking threads.
 
 ## C userspace (newlib and libgloss)
 

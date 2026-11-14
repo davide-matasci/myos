@@ -134,9 +134,18 @@ myos_cargo_build_std() {
   myos_export_toolchain_env
   # Only this build's rlibs in deps: they are what gets installed.
   rm -rf "$target_dir/${triple}"
+  # The mlibc targets unwind (LLVM's libunwind, toolchain/libcxx): the
+  # unwinding panic runtime, and not the aborting one, which cargo builds
+  # with the target's strategy and rustc then refuses ("does not have
+  # the panic strategy `abort`").
+  local crates=std,panic_abort features=compiler-builtins-mem
+  if [[ "$triple" == *-mlibc ]]; then
+    crates=std,panic_unwind
+    features=compiler-builtins-mem,panic-unwind
+  fi
   cargo "+$MYOS_NIGHTLY" build \
-    -Z build-std=std,panic_abort \
-    -Z build-std-features=compiler-builtins-mem \
+    -Z build-std="$crates" \
+    -Z build-std-features="$features" \
     -Z unstable-options \
     -Z json-target-spec \
     --target "$target_json" \

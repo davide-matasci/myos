@@ -12,6 +12,37 @@ NOT_TRUSTY_OR_MYOS = '#[cfg(not(target_os = "trusty"))]'
 NOT_TRUSTY_OR_MYOS_NEW = '#[cfg(not(any(target_os = "trusty", target_os = "myos")))]'
 
 REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
+    # Unwinding on the mlibc flavour (`target_env = "mlibc"`): LLVM's
+    # libunwind (toolchain/libcxx) under the `unwind` crate, the gcc-style
+    # panic runtime and personality, as the unix targets have them. The
+    # other flavour has no unwinder and aborts.
+    (
+        "unwind/src/lib.rs",
+        [
+            (
+                '        target_os = "xous",\n    ) => {\n        mod libunwind;',
+                '        target_os = "xous",\n        all(target_os = "myos", target_env = "mlibc"),\n    ) => {\n        mod libunwind;',
+            ),
+        ],
+    ),
+    (
+        "panic_unwind/src/lib.rs",
+        [
+            (
+                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_family = "unix", not(any(target_os = "espidf", target_os = "nuttx"))),',
+                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_os = "myos", target_env = "mlibc"),\n        all(target_family = "unix", not(any(target_os = "espidf", target_os = "nuttx"))),',
+            ),
+        ],
+    ),
+    (
+        "std/src/sys/personality/mod.rs",
+        [
+            (
+                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_family = "unix", not(target_os = "espidf"), not(target_os = "l4re"), not(target_os = "nuttx")),',
+                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_os = "myos", target_env = "mlibc"),\n        all(target_family = "unix", not(target_os = "espidf"), not(target_os = "l4re"), not(target_os = "nuttx")),',
+            ),
+        ],
+    ),
     (
         "std/src/sys/time/mod.rs",
         [

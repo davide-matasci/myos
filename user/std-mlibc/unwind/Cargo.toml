@@ -1,0 +1,12 @@
+[package]
+name = "std-mlibc-unwind"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[[bin]]
+name = "std-mlibc-unwind"
+path = "main.rs"
