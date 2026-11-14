@@ -40,5 +40,23 @@ for arch in x86_64 aarch64 riscv64; do
   RUSTFLAGS="$libs" \
     myos_cargo_build_app "$triple" release "$unwind_dir" "$HERE/unwind/Cargo.toml" std-mlibc-unwind
   cp "$unwind_dir/${triple}/release/std-mlibc-unwind" "$ROOT/target/std-mlibc-unwind-${triple}"
+  # Rust shared objects (dylib/: librt.so, which holds std, libplugin.so
+  # and the program over both): the same sysroot, its rlibs linked into
+  # librt.so; libc.so in place of libc.a (mlibc's shared/ before its
+  # lib/), the dynamic linker named, the objects found beside the
+  # program, and mlibc's crt0.o as the program's entry (host/build.rs).
+  echo "==> std-mlibc-dylib ($triple)"
+  dylib_dir="$ROOT/target/std-mlibc-dylib-build-${triple}"
+  myos_export_toolchain_env
+  myos_cargo_target_dir "$triple" "$dylib_dir"
+  MYOS_CRT0="$ROOT/target/mlibc-${arch}/lib/crt0.o" \
+  RUSTFLAGS="-C prefer-dynamic -L native=$ROOT/target/mlibc-${arch}/shared $libs -C link-arg=--dynamic-linker=/lib/ld.so -C link-arg=-rpath=\$ORIGIN" \
+    cargo "+$MYOS_NIGHTLY" build --release -Z unstable-options -Z json-target-spec \
+      --target "$ROOT/targets/${triple}.json" --target-dir "$dylib_dir" \
+      --manifest-path "$HERE/dylib/Cargo.toml"
+  out="$dylib_dir/${triple}/release"
+  cp "$out/std-mlibc-dylib" "$ROOT/target/std-mlibc-dylib-${triple}"
+  cp "$out/librt.so" "$ROOT/target/std-mlibc-dylib-rt-${triple}"
+  cp "$out/libplugin.so" "$ROOT/target/std-mlibc-dylib-plugin-${triple}"
 done
 myos_std_mlibc_version_hash >"$MYOS_STD_MLIBC_VERSION"

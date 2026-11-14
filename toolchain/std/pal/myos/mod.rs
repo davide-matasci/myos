@@ -67,15 +67,19 @@ pub unsafe extern "C" fn _start(argc: isize, argv: *const *const u8) -> ! {
 // does. The entry hands the C library's startup `main` (what `rustc` emits
 // for the program: it runs the runtime's `lang_start`, and so `init`
 // above, with the arguments) and the entry stack, as mlibc's own crt0
-// does; what `main` returns goes through the libc's `exit`.
+// does; what `main` returns goes through the libc's `exit`. `main` is
+// taken from the GOT: this code is also in a shared object that holds
+// std (a `dylib`), where nothing calls it and `main` is another object's.
+// Weak: a program whose std is in such an object has no entry of its own
+// and links mlibc's crt0.o, the same code, which then stands.
 #[cfg(not(test))]
 #[cfg(all(target_env = "mlibc", target_arch = "x86_64"))]
 core::arch::global_asm!(
     ".text",
-    ".globl _start",
+    ".weak _start",
     ".type _start, @function",
     "_start:",
-    "lea rdi, [rip + main]",
+    "mov rdi, qword ptr [rip + main@GOTPCREL]",
     "mov rsi, rsp",
     "call {entry}",
     "ud2",
@@ -86,11 +90,11 @@ core::arch::global_asm!(
 #[cfg(all(target_env = "mlibc", target_arch = "aarch64"))]
 core::arch::global_asm!(
     ".text",
-    ".globl _start",
+    ".weak _start",
     ".type _start, %function",
     "_start:",
-    "adrp x0, main",
-    "add x0, x0, :lo12:main",
+    "adrp x0, :got:main",
+    "ldr x0, [x0, :got_lo12:main]",
     "mov x1, sp",
     "bl {entry}",
     "brk #0",
@@ -101,14 +105,15 @@ core::arch::global_asm!(
 #[cfg(all(target_env = "mlibc", target_arch = "riscv64"))]
 core::arch::global_asm!(
     ".text",
-    ".globl _start",
+    ".weak _start",
     ".type _start, @function",
     "_start:",
     ".option push",
     ".option norelax",
-    "lla gp, __global_pointer$",
+    // From the GOT, as main: a shared object cannot name it PC-relative.
+    "la gp, __global_pointer$",
     ".option pop",
-    "lla a0, main",
+    "la a0, main",
     "mv a1, sp",
     "call {entry}",
     "unimp",

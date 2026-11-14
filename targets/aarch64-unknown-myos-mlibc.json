@@ -20,7 +20,6 @@
   "position-independent-executables": true,
   "pre-link-args": {
     "gnu": [
-      "-pie",
       "-z",
       "max-page-size=4096",
       "--eh-frame-hdr"
@@ -38,5 +37,7 @@
       "-lc",
       "-lbuiltins"
     ]
-  }
+  },
+  "dynamic-linking": true,
+  "has-rpath": true
 }

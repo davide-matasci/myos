@@ -745,7 +745,10 @@ myos_std_mlibc_is_current() {
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [[ -f "$MYOS_ROOT/target/std-mlibc-mix-${arch}-unknown-myos-mlibc" \
-      && -f "$MYOS_ROOT/target/std-mlibc-unwind-${arch}-unknown-myos-mlibc" ]] || return 1
+      && -f "$MYOS_ROOT/target/std-mlibc-unwind-${arch}-unknown-myos-mlibc" \
+      && -f "$MYOS_ROOT/target/std-mlibc-dylib-${arch}-unknown-myos-mlibc" \
+      && -f "$MYOS_ROOT/target/std-mlibc-dylib-rt-${arch}-unknown-myos-mlibc" \
+      && -f "$MYOS_ROOT/target/std-mlibc-dylib-plugin-${arch}-unknown-myos-mlibc" ]] || return 1
   done
 }
 

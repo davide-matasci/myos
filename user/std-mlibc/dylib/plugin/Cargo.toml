@@ -1,0 +1,13 @@
+[package]
+name = "std-mlibc-plugin"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "plugin"
+crate-type = ["dylib"]
+
+[dependencies]
+std-mlibc-rt = { path = "../rt" }

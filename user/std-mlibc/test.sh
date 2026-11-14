@@ -13,3 +13,7 @@ t -t mlibc,std,sched std_mlibc std_mlibc
 # frames' values dropped on the way, a lock poisoned, a panicking thread
 # ending alone.
 t -t mlibc,std,libcxx,unwind std_unwind /bin/std/mlibc/unwind
+# Rust shared objects (dylib/): a program over a Rust dylib that holds
+# std loads another with dlopen; one std and heap between them, the
+# plugin's panic caught in the program, its thread-locals per thread.
+t -t mlibc,std,libcxx,unwind,dl std_dylib /bin/std/mlibc/dylib /bin/std/mlibc/libplugin.so
