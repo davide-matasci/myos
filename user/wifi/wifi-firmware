@@ -66,10 +66,13 @@ fetch() {
 		# Twelve downloads in a row: one failed on a passing lookup, a
 		# dropped connection, a 5xx is tried again before the fetch is
 		# given up (CI #2388 lost the whole fetch to one lookup).
+		# A connection gets 10 s over the host's addresses: one of them
+		# not answering cost each file the 20 s the stack waits for a
+		# SYN before the next was tried (PR #792's riscv64-plic boot).
 		if [ -d "$MIRROR" ]; then
 			cp "$MIRROR/$path" "$d/.$name.new"
 		else
-			curl -fsSL --retry 3 --retry-delay 1 --retry-all-errors \
+			curl -fsSL --connect-timeout 10 --retry 3 --retry-delay 1 --retry-all-errors \
 				-o "$d/.$name.new" "$MIRROR/$path?id=$COMMIT"
 		fi || {
 			echo "wifi-firmware: could not get $path from $MIRROR" >&2
