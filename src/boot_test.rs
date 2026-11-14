@@ -73,6 +73,31 @@ impl Selection {
         found.then_some(sel)
     }
 
+    /// Why the launcher's arguments are refused, if they are: a word it
+    /// does not know (`--only` booted every test, issue #732), an option
+    /// without its value, or a test option without a test command.
+    pub fn check_args(args: &[String]) -> Result<(), String> {
+        const WORDS: &[&str] =
+            &["bios", "uefi", "aarch64", "riscv64", "iso", "packages", "rpi4", "rpi3", "test", "test-mini", "test-full"];
+        let test = args.iter().any(|a| a.starts_with("test"));
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                a if WORDS.contains(&a) => {}
+                "--tags" | "--skip" | "--budget" => {
+                    if it.next().is_none_or(|v| v.starts_with("--")) {
+                        return Err(format!("{arg} takes a value"));
+                    }
+                    if !test {
+                        return Err(format!("{arg} is an option of test"));
+                    }
+                }
+                _ => return Err(format!("unknown argument `{arg}`")),
+            }
+        }
+        Ok(())
+    }
+
     fn skips(&self, tag: &str) -> bool {
         self.skip.iter().any(|t| t == tag)
     }
@@ -887,6 +912,19 @@ mod tests {
         assert_eq!(Mode::Tests(sel).args(), " --tags smoke,netfs --skip heavy");
         assert_eq!(Mode::Reboot { app: true }.args(), " reboot");
         assert_eq!(Mode::Reboot { app: false }.args(), " reboot --skip app_kept");
+    }
+
+    #[test]
+    fn unknown_args_refused() {
+        let check = |s: &str| Selection::check_args(&s.split(' ').filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>());
+        assert!(check("").is_ok());
+        assert!(check("riscv64 test --tags git_clone_ssh --skip heavy --budget 30").is_ok());
+        assert!(check("uefi test-mini").is_ok() && check("packages").is_ok());
+        assert_eq!(check("riscv64 test --only git_clone_ssh"), Err("unknown argument `--only`".into()));
+        assert_eq!(check("riscv test"), Err("unknown argument `riscv`".into()));
+        assert_eq!(check("uefi test --tags"), Err("--tags takes a value".into()));
+        assert_eq!(check("test --skip --tags x"), Err("--skip takes a value".into()));
+        assert_eq!(check("uefi --tags smoke"), Err("--tags is an option of test".into()));
     }
 
     #[test]
