@@ -392,9 +392,10 @@ pub mod task {
     pub fn signal_pending(id: usize) -> u32 {
         api().signal_pending(id)
     }
-    pub fn signal_take_from(id: usize, set: u32) -> Option<u32> {
-        let s = api().signal_take(id, set);
-        (s >= 0).then_some(s as u32)
+    /// A pending signal of `set`, taken, and its sender's pid (0: the
+    /// kernel).
+    pub fn signal_take_from(id: usize, set: u32) -> Option<(u32, u32)> {
+        api().signal_take(id, set).map(|(sig, from)| (sig, from as u32))
     }
 
     pub mod fpu {

@@ -276,6 +276,11 @@ int __myos_sigsuspend_k(unsigned int mask);
 int __myos_sigwait_k(unsigned int set);
 /* The handlers run so far (the trampoline's dispatch counts them). */
 extern volatile unsigned long __myos_sig_count;
+/* The interrupted context of the signal frame `frame` as the libc's
+ * ucontext_t `uc` (its uc_sigmask aside, the dispatch's to convert), and
+ * back once the handler returned (sigtramp.c). */
+void __myos_sigcontext_get(unsigned long *frame, void *uc);
+void __myos_sigcontext_put(unsigned long *frame, const void *uc);
 
 /* Userspace BSD sockets (socket.c); weak stubs in fdio.c. */
 void myos_socket_on_close(int fd);

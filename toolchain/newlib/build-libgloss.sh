@@ -256,5 +256,8 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/netdb.h" "$inc/netdb.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/ifaddrs.h" "$inc/ifaddrs.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/mntent.h" "$inc/mntent.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/poll.h" "$inc/poll.h"
+# A signal handler's ucontext_t (docs/signals.md), which newlib has none of.
+cp "$ROOT/toolchain/newlib/libgloss/myos/ucontext.h" "$inc/ucontext.h"
+cp "$ROOT/toolchain/newlib/libgloss/myos/sys/ucontext.h" "$inc/sys/ucontext.h"
 cp "$ROOT/toolchain/newlib/libgloss/myos/pty.h" "$inc/pty.h"
 echo "libgloss-myos -> $libdir/libgloss.a"

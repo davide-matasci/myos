@@ -1426,8 +1426,16 @@ unsafe extern "C" fn api_signal_pending(id: usize) -> u32 {
     crate::task::signal_pending(id)
 }
 
-unsafe extern "C" fn api_signal_take(id: usize, set: u32) -> i32 {
-    crate::task::signal_take_from(id, set).map_or(-1, |s| s as i32)
+unsafe extern "C" fn api_signal_take(id: usize, set: u32, from: *mut u64) -> i32 {
+    match crate::task::signal_take_from(id, set) {
+        Some((sig, sender)) => {
+            if !from.is_null() {
+                unsafe { *from = sender };
+            }
+            sig as i32
+        }
+        None => -1,
+    }
 }
 
 unsafe extern "C" fn api_itimer_swap(set: i32, value: u64, interval: u64, left: *mut u64, every: *mut u64) {

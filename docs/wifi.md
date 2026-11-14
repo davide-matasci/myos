@@ -115,7 +115,8 @@ reboot) and `/tmp/firmware`. The daemon reads only `/data/firmware`, else
 `/tmp/firmware`.
 
 A first fetch needs a network. Each file comes from git.kernel.org, or
-from GitLab's copy of linux-firmware when kernel.org does not answer; its
+from GitLab's copy of linux-firmware when kernel.org does not answer (a
+server that gave no file is asked last for the files that follow); its
 SHA-256 is checked either way. `$WIFI_FIRMWARE_MIRROR` replaces both with
 its base URL; when it names a directory holding a copy of linux-firmware's tree (a
 USB stick), `wifi-firmware` copies from it. The tests are

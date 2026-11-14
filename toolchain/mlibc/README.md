@@ -7,7 +7,10 @@
 the kernel. On a bump of `MLIBC_TAG`, diff them against the new upstream
 files and carry the upstream changes over:
 
-- `signal.h`: upstream's `abis/linux/signal.h` with the kernel's numbers
+- `signal.h`: riscv64's `mcontext_t` members are `__gregs` and `__fpregs`,
+  glibc's and musl's names (upstream: `gregs`, `fpregs`), which programs
+  written for Linux use. Otherwise
+  upstream's `abis/linux/signal.h` with the kernel's numbers
   (newlib's BSD layout, `kernel/src/signal.rs`: `SIGURG 16`, `SIGSTOP 17`,
   `SIGTSTP 18`, `SIGCONT 19`, `SIGCHLD 20`, `SIGIO 23`, `SIGLOST 29`,
   `SIGUSR1 30`, `SIGUSR2 31`, `SIGEMT 7`, `SIGBUS 10`, `SIGSYS 12`), the

@@ -588,7 +588,7 @@ extern "C" fn aarch64_lower_sync(frame: *mut u64) {
     // `[ FAIL ] exception`.
     use crate::signal::{code::*, *};
     let mut regs = crate::user::SyscallRegs::from_ptr(frame);
-    let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize });
+    let mut raise = |sig, code, addr: u64| on_fault(&mut regs, Info { sig, code, addr: addr as usize, from: 0 });
     if ec == 0x20 || ec == 0x24 {
         // A translation fault (status 0b0001xx) on an mmap page not touched
         // yet: page it in and retry the instruction. A permission fault

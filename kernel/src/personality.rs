@@ -147,6 +147,8 @@ pub fn deliver(
         flags: act.flags,
         code: info.code,
         addr: info.addr,
+        pid: info.from as u32,
+        uid: (info.from >> 32) as u32,
         handler: act.handler,
         tramp,
         restore_mask,
