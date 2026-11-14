@@ -321,6 +321,9 @@ pub fn openat(dirfd: usize, path: usize, flags: usize) -> R {
         files::set_cloexec(new, flags & O_CLOEXEC != 0);
         return Ok(new);
     }
+    if p == "/proc/meminfo" && flags & (O_ACCMODE | O_CREAT) == 0 {
+        return meminfo_open(flags & O_CLOEXEC != 0);
+    }
     if flags & O_NOFOLLOW != 0
         && fs::stat(&real_path_nofollow(&p)?).is_some_and(|s| s.mode & fs::S_IFMT == 0o120000)
     {
@@ -2035,18 +2038,87 @@ fn xattr_none(op: Xattr) -> R {
     }
 }
 
+/// The kernel's `/proc/meminfo` (`docs/proc.md`): its lines' values by
+/// name (`MemTotalKiB:`), 0 for a line it lacks.
+struct Meminfo {
+    text: [u8; 2048],
+    len: usize,
+}
+
+impl Meminfo {
+    fn read() -> Self {
+        let mut text = [0u8; 2048];
+        let len = fs::read(&kernel_file("/proc/meminfo"), 0, &mut text).unwrap_or(0);
+        Meminfo { text, len }
+    }
+
+    fn get(&self, key: &str) -> u64 {
+        core::str::from_utf8(&self.text[..self.len])
+            .ok()
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix(key)?.trim().parse::<u64>().ok()))
+            .unwrap_or(0)
+    }
+}
+
+/// A Linux program's `/proc/meminfo`: Linux's lines (`MemTotal:  N kB`),
+/// made from the kernel's counters when the file is opened. The kernel's
+/// own file keeps its names (`MemTotalKiB: N`): the format is Linux's,
+/// so the layer speaks it, as it does Linux's errnos and signal numbers
+/// (`free`, `top`, glibc's and musl's `sysconf`, Node, the JVM and
+/// Chromium parse these lines). The block cache is `Buffers`, the page
+/// cache `Cached`; there is no swap. The fd is a file of `/dev/shm` made
+/// and unlinked at once, as a memfd's.
+fn meminfo_open(cloexec: bool) -> R {
+    const O_RDWR: usize = 2;
+    const O_CREAT: usize = 0o100;
+    const O_EXCL: usize = 0o200;
+    static SEQ: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    let m = Meminfo::read();
+    let mut text = String::new();
+    for (name, kib) in [
+        ("MemTotal:", m.get("MemTotalKiB:")),
+        ("MemFree:", m.get("MemFreeKiB:")),
+        ("MemAvailable:", m.get("MemAvailableKiB:")),
+        ("Buffers:", m.get("BlockCacheKiB:")),
+        ("Cached:", m.get("PageCacheKiB:")),
+        ("SwapCached:", 0),
+        ("SwapTotal:", 0),
+        ("SwapFree:", 0),
+        ("Shmem:", 0),
+        ("SReclaimable:", 0),
+    ] {
+        text.push_str(&alloc::format!("{name:<16}{kib:>8} kB\n"));
+    }
+    for _ in 0..100 {
+        let seq = SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let path = alloc::format!("/dev/shm/.meminfo.{}.{seq}", task::current_pid());
+        let fd = match native(user::open_path(&path, O_RDWR | O_CREAT | O_EXCL), ENOENT) {
+            Ok(fd) => fd,
+            Err(e) if e == EEXIST => continue,
+            Err(e) => return Err(e),
+        };
+        let real = real_path_nofollow(&path);
+        let written = real.as_ref().is_ok_and(|r| fs::write(r, 0, text.as_bytes()).is_some());
+        if let Ok(real) = real {
+            fs::unlink(&real);
+        }
+        if !written {
+            close(fd)?;
+            return Err(EIO);
+        }
+        files::set(fd, String::from("/proc/meminfo"), false);
+        files::set_cloexec(fd, cloexec);
+        return Ok(fd);
+    }
+    Err(EEXIST)
+}
+
 /// `sysinfo`: the uptime and the memory, from the kernel's `/proc/meminfo`
 /// (free RAM counts the caches it gives back, as `MemAvailable` does);
 /// no swap, load average or process count. Firefox sizes its caches by `totalram`.
 pub fn sysinfo(info: usize) -> R {
-    let mut text = [0u8; 2048];
-    let n = fs::read(&kernel_file("/proc/meminfo"), 0, &mut text).unwrap_or(0);
-    let kib = |key: &str| {
-        core::str::from_utf8(&text[..n])
-            .ok()
-            .and_then(|t| t.lines().find_map(|l| l.strip_prefix(key)?.trim().parse::<u64>().ok()))
-            .unwrap_or(0)
-    };
+    let m = Meminfo::read();
+    let kib = |key: &str| m.get(key);
     // struct sysinfo of a 64-bit Linux: 112 bytes, mem_unit at 104.
     let mut b = [0u8; 112];
     b[0..8].copy_from_slice(&(crate::k::time::monotonic_ns() / 1_000_000_000).to_le_bytes());

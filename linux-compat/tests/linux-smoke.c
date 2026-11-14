@@ -2759,6 +2759,33 @@ int main(int argc, char **argv) {
         check(sysinfo(&si) == 0 && si.totalram > 0 && si.mem_unit > 0, "sysinfo: total memory");
         check(sysconf(_SC_PHYS_PAGES) > 0, "sysconf: physical pages");
         check(sysconf(_SC_NPROCESSORS_ONLN) >= 1, "sysconf: online CPUs");
+        /* /proc/meminfo in Linux's form (the layer's view of the kernel's
+         * file, issue #653): "MemTotal:  N kB" is sysinfo's total, no
+         * more is available than there is, and there is no swap. */
+        {
+            char text[2048] = { 0 };
+            unsigned long total = 0, avail = 0, swap = 1;
+            FILE *f = fopen("/proc/meminfo", "r");
+            size_t got = f != NULL ? fread(text, 1, sizeof text - 1, f) : 0;
+            if (f != NULL)
+                fclose(f);
+            /* strtoul, not sscanf: musl's scanf brings in long double
+             * arithmetic the static link has no builtins for. */
+            const char *t = strstr(text, "MemTotal:"), *a = strstr(text, "\nMemAvailable:");
+            const char *s = strstr(text, "\nSwapTotal:");
+            char *end = NULL;
+            int ok = got > 0 && t == text && a != NULL && s != NULL;
+            if (ok) {
+                total = strtoul(t + strlen("MemTotal:"), &end, 10);
+                ok = strncmp(end, " kB\n", 4) == 0;
+                avail = strtoul(a + strlen("\nMemAvailable:"), NULL, 10);
+                swap = strtoul(s + strlen("\nSwapTotal:"), NULL, 10);
+            }
+            check(ok && total == si.totalram * si.mem_unit / 1024 && avail > 0 && avail <= total && swap == 0,
+                  "/proc/meminfo: Linux's lines, sysinfo's total");
+            if (!ok)
+                out(text);
+        }
         struct utsname un;
         check(uname(&un) == 0 && un.nodename[0] != 0, "uname: a host name");
         out(failures ? "LINUX-SYSINFO FAIL\n" : "LINUX-SYSINFO OK\n");

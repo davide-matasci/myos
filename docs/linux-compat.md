@@ -459,6 +459,13 @@ forms of the legacy calls. Anything not handled returns `ENOSYS`, and
   took for a heap budget of 0 bytes and collected on every allocation.
   That is where Claude Code's minutes of key lag went (`linux --root
   /data/alpine claude`).
+- **`/proc/meminfo`** opened by a Linux program is Linux's file
+  (`MemTotal:  N kB`, `MemFree`, `MemAvailable`, `Buffers` for the block
+  cache, `Cached` for the page cache, no swap), made by the layer from
+  the kernel's counters at the open. The kernel's own file keeps its
+  names (`MemTotalKiB: N`, `docs/proc.md`): the format is Linux's, so the
+  layer speaks it, like Linux's errnos and signal numbers. `free`, `top`
+  and the runtimes that size themselves by it read it there.
 - **Event fds** are the kernel's objects (`docs/events.md`): an eventfd
   is `/dev/event/N`, a timerfd `/dev/timer/N`, an epoll fd `/dev/wait/N`,
   a signalfd `/dev/sig/N` (the layer turns its records into `struct
