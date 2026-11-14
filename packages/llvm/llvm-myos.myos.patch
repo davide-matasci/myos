@@ -1,0 +1,475 @@
+diff --git a/clang/lib/Basic/Targets.cpp b/clang/lib/Basic/Targets.cpp
+index 29133f9ee..7ebf7e7e7 100644
+--- a/clang/lib/Basic/Targets.cpp
++++ b/clang/lib/Basic/Targets.cpp
+@@ -148,6 +148,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+     case llvm::Triple::Fuchsia:
+       return std::make_unique<FuchsiaTargetInfo<AArch64leTargetInfo>>(Triple,
+                                                                       Opts);
++    case llvm::Triple::MyOS:
++      return std::make_unique<MyOSTargetInfo<AArch64leTargetInfo>>(Triple, Opts);
+     case llvm::Triple::Haiku:
+       return std::make_unique<HaikuTargetInfo<AArch64leTargetInfo>>(Triple,
+                                                                     Opts);
+@@ -451,6 +453,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+     case llvm::Triple::Fuchsia:
+       return std::make_unique<FuchsiaTargetInfo<RISCV64TargetInfo>>(Triple,
+                                                                     Opts);
++    case llvm::Triple::MyOS:
++      return std::make_unique<MyOSTargetInfo<RISCV64TargetInfo>>(Triple, Opts);
+     case llvm::Triple::Haiku:
+       return std::make_unique<HaikuTargetInfo<RISCV64TargetInfo>>(Triple,
+                                                                   Opts);
+@@ -636,6 +640,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+         return std::make_unique<MicrosoftX86_64TargetInfo>(Triple, Opts);
+       }
+     }
++    case llvm::Triple::MyOS:
++      return std::make_unique<MyOSTargetInfo<X86_64TargetInfo>>(Triple, Opts);
+     case llvm::Triple::Haiku:
+       return std::make_unique<HaikuTargetInfo<X86_64TargetInfo>>(Triple, Opts);
+     case llvm::Triple::NaCl:
+diff --git a/clang/lib/Basic/Targets/OSTargets.h b/clang/lib/Basic/Targets/OSTargets.h
+index 357c19650..9755167cb 100644
+--- a/clang/lib/Basic/Targets/OSTargets.h
++++ b/clang/lib/Basic/Targets/OSTargets.h
+@@ -287,6 +287,28 @@ public:
+   }
+ };
+ 
++// myos target: the arch's generic ELF target (what `<arch>-unknown-none`
++// is, so that objects of either triple link together), with the system's
++// own macro. No `unix` macros: mlibc, libc++ and the ports are built
++// without them (libc++'s <locale> would look for catopen under __unix__).
++// _GNU_SOURCE in C++, as on Linux: libc++'s headers call the *_l locale
++// functions mlibc declares under it.
++template <typename Target>
++class LLVM_LIBRARY_VISIBILITY MyOSTargetInfo : public OSTargetInfo<Target> {
++protected:
++  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
++                    MacroBuilder &Builder) const override {
++    Builder.defineMacro("__myos__");
++    if (Opts.POSIXThreads)
++      Builder.defineMacro("_REENTRANT");
++    if (Opts.CPlusPlus)
++      Builder.defineMacro("_GNU_SOURCE");
++  }
++
++public:
++  using OSTargetInfo<Target>::OSTargetInfo;
++};
++
+ // Hurd target
+ template <typename Target>
+ class LLVM_LIBRARY_VISIBILITY HurdTargetInfo : public OSTargetInfo<Target> {
+diff --git a/clang/lib/Driver/CMakeLists.txt b/clang/lib/Driver/CMakeLists.txt
+index 32a4378ab..d17c5102e 100644
+--- a/clang/lib/Driver/CMakeLists.txt
++++ b/clang/lib/Driver/CMakeLists.txt
+@@ -58,6 +58,7 @@ add_clang_library(clangDriver
+   ToolChains/Fuchsia.cpp
+   ToolChains/Gnu.cpp
+   ToolChains/Haiku.cpp
++  ToolChains/MyOS.cpp
+   ToolChains/HIPUtility.cpp
+   ToolChains/HIPAMD.cpp
+   ToolChains/HIPSPV.cpp
+diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
+index f9dc8ab24..441ecc528 100644
+--- a/clang/lib/Driver/Driver.cpp
++++ b/clang/lib/Driver/Driver.cpp
+@@ -26,6 +26,7 @@
+ #include "ToolChains/HIPSPV.h"
+ #include "ToolChains/HLSL.h"
+ #include "ToolChains/Haiku.h"
++#include "ToolChains/MyOS.h"
+ #include "ToolChains/Hexagon.h"
+ #include "ToolChains/Hurd.h"
+ #include "ToolChains/Lanai.h"
+@@ -6356,6 +6357,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
+     case llvm::Triple::Haiku:
+       TC = std::make_unique<toolchains::Haiku>(*this, Target, Args);
+       break;
++    case llvm::Triple::MyOS:
++      TC = std::make_unique<toolchains::MyOS>(*this, Target, Args);
++      break;
+     case llvm::Triple::Darwin:
+     case llvm::Triple::MacOSX:
+     case llvm::Triple::IOS:
+diff --git a/clang/lib/Driver/ToolChains/Arch/RISCV.cpp b/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
+index 149a31f58..64394c474 100644
+--- a/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
++++ b/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
+@@ -159,8 +159,10 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
+   if (Args.hasArg(options::OPT_ffixed_x31))
+     Features.push_back("+reserve-x31");
+ 
+-  // -mrelax is default, unless -mno-relax is specified.
+-  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, true)) {
++  // -mrelax is default, unless -mno-relax is specified. Not on myos: its
++  // programs do not set gp up, and mlibc and its ports are built without.
++  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax,
++                   !Triple.isOSMyOS())) {
+     Features.push_back("+relax");
+     // -gsplit-dwarf -mrelax requires DW_AT_high_pc/DW_AT_ranges/... indexing
+     // into .debug_addr, which is currently not implemented.
+diff --git a/clang/lib/Driver/ToolChains/MyOS.cpp b/clang/lib/Driver/ToolChains/MyOS.cpp
+new file mode 100644
+index 000000000..4594b1289
+--- /dev/null
++++ b/clang/lib/Driver/ToolChains/MyOS.cpp
+@@ -0,0 +1,160 @@
++//===--- MyOS.cpp - myos ToolChain Implementations --------------*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "MyOS.h"
++#include "CommonArgs.h"
++#include "clang/Driver/Compilation.h"
++#include "clang/Driver/Options.h"
++#include "llvm/Support/Path.h"
++#include "llvm/Support/VirtualFileSystem.h"
++
++using namespace clang::driver;
++using namespace clang::driver::tools;
++using namespace clang::driver::toolchains;
++using namespace clang;
++using namespace llvm::opt;
++
++void myos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
++                                const InputInfo &Output,
++                                const InputInfoList &Inputs,
++                                const ArgList &Args,
++                                const char *LinkingOutput) const {
++  const auto &ToolChain = static_cast<const MyOS &>(getToolChain());
++  const Driver &D = ToolChain.getDriver();
++  const bool Shared = Args.hasArg(options::OPT_shared);
++  const bool Relocatable = Args.hasArg(options::OPT_r);
++  ArgStringList CmdArgs;
++
++  // What says nothing to this link: a program is a static PIE whatever
++  // -static, -pie or -rdynamic ask, and the threads are the libc's.
++  Args.ClaimAllArgs(options::OPT_g_Group);
++  Args.ClaimAllArgs(options::OPT_emit_llvm);
++  Args.ClaimAllArgs(options::OPT_w);
++  Args.ClaimAllArgs(options::OPT_pie);
++  Args.ClaimAllArgs(options::OPT_static);
++  Args.ClaimAllArgs(options::OPT_static_pie);
++  Args.ClaimAllArgs(options::OPT_rdynamic);
++  Args.claimAllArgs(options::OPT_pthread, options::OPT_pthreads);
++
++  if (Relocatable) {
++    CmdArgs.push_back("-r");
++  } else if (Shared) {
++    CmdArgs.push_back("-shared");
++    CmdArgs.push_back("--hash-style=gnu");
++  } else {
++    // The kernel loads the program itself and relocates nothing: the
++    // program's crt0 does (mlibc's), and starts at _start.
++    CmdArgs.push_back("-pie");
++    CmdArgs.push_back("--no-dynamic-linker");
++    CmdArgs.push_back("--entry=_start");
++  }
++  CmdArgs.push_back("-z");
++  CmdArgs.push_back("max-page-size=4096");
++  // The index of .eh_frame (PT_GNU_EH_FRAME): where libunwind finds a
++  // throw's frames, through dl_iterate_phdr.
++  CmdArgs.push_back("--eh-frame-hdr");
++
++  assert((Output.isFilename() || Output.isNothing()) && "Invalid output.");
++  if (Output.isFilename()) {
++    CmdArgs.push_back("-o");
++    CmdArgs.push_back(Output.getFilename());
++  }
++
++  if (!Shared && !Relocatable &&
++      !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles))
++    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crt0.o")));
++
++  Args.addAllArgs(CmdArgs, {options::OPT_L, options::OPT_T_Group,
++                            options::OPT_s, options::OPT_t});
++  if (Shared) {
++    // The system's libc.so before the development tree's libc.a.
++    CmdArgs.push_back(Args.MakeArgString("-L" + D.SysRoot + "/lib"));
++  }
++  ToolChain.AddFilePathLibArgs(Args, CmdArgs);
++
++  if (D.isUsingLTO()) {
++    assert(!Inputs.empty() && "Must have at least one input.");
++    auto Input = llvm::find_if(
++        Inputs, [](const InputInfo &II) -> bool { return II.isFilename(); });
++    if (Input == Inputs.end())
++      Input = Inputs.begin();
++    addLTOOptions(ToolChain, Args, CmdArgs, Output, *Input,
++                  D.getLTOMode() == LTOK_Thin);
++  }
++
++  addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
++  AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
++
++  if (!Relocatable &&
++      !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
++    if (D.CCCIsCXX() && ToolChain.ShouldLinkCXXStdlib(Args)) {
++      // libc++ (libc++abi is in it) and the unwinder name each other.
++      CmdArgs.push_back("--start-group");
++      ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
++      CmdArgs.push_back("-lunwind");
++      CmdArgs.push_back("--end-group");
++    }
++    Args.ClaimAllArgs(options::OPT_stdlib_EQ);
++    // The libc, then the compiler's builtins, which it calls too.
++    CmdArgs.push_back("-lc");
++    CmdArgs.push_back("-lbuiltins");
++  }
++
++  const char *Exec = Args.MakeArgString(ToolChain.GetLinkerPath());
++  C.addCommand(std::make_unique<Command>(JA, *this,
++                                         ResponseFileSupport::AtFileCurCP(),
++                                         Exec, CmdArgs, Inputs, Output));
++}
++
++MyOS::MyOS(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
++    : Generic_ELF(D, Triple, Args) {
++  getFilePaths().clear();
++  getFilePaths().push_back(getDevelopmentDir() + "/lib");
++}
++
++std::string MyOS::getDevelopmentDir() const {
++  return getDriver().SysRoot + "/lib/mlibc";
++}
++
++void MyOS::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
++                                     ArgStringList &CC1Args) const {
++  if (DriverArgs.hasArg(options::OPT_nostdinc))
++    return;
++
++  // mlibc's headers before the compiler's, as its ports are built.
++  if (!DriverArgs.hasArg(options::OPT_nostdlibinc))
++    addSystemInclude(DriverArgs, CC1Args, getDevelopmentDir() + "/include");
++
++  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
++    SmallString<128> Dir(getDriver().ResourceDir);
++    llvm::sys::path::append(Dir, "include");
++    addSystemInclude(DriverArgs, CC1Args, Dir.str());
++  }
++}
++
++void MyOS::addLibCxxIncludePaths(const ArgList &DriverArgs,
++                                 ArgStringList &CC1Args) const {
++  addSystemInclude(DriverArgs, CC1Args,
++                   getDevelopmentDir() + "/include/c++/v1");
++}
++
++void MyOS::addClangTargetOptions(const ArgList &DriverArgs,
++                                 ArgStringList &CC1Args,
++                                 Action::OffloadKind) const {
++  // mlibc's stdc-predef.h first, as glibc's is on Linux
++  // (__STDC_ISO_10646__: wchar_t holds Unicode).
++  if (DriverArgs.hasArg(options::OPT_nostdinc, options::OPT_nostdlibinc))
++    return;
++  std::string Predef = getDevelopmentDir() + "/include/stdc-predef.h";
++  if (getVFS().exists(Predef)) {
++    CC1Args.push_back("-include");
++    CC1Args.push_back(DriverArgs.MakeArgString(Predef));
++  }
++}
++
++Tool *MyOS::buildLinker() const { return new tools::myos::Linker(*this); }
+diff --git a/clang/lib/Driver/ToolChains/MyOS.h b/clang/lib/Driver/ToolChains/MyOS.h
+new file mode 100644
+index 000000000..9e9a49ecb
+--- /dev/null
++++ b/clang/lib/Driver/ToolChains/MyOS.h
+@@ -0,0 +1,89 @@
++//===--- MyOS.h - myos ToolChain Implementations ----------------*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_MYOS_H
++#define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_MYOS_H
++
++#include "Gnu.h"
++#include "clang/Driver/Driver.h"
++#include "clang/Driver/ToolChain.h"
++
++namespace clang {
++namespace driver {
++namespace tools {
++
++/// The link of a myos program or shared object, with ld.lld.
++namespace myos {
++class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
++public:
++  Linker(const ToolChain &TC) : Tool("myos::Linker", "linker", TC) {}
++
++  bool hasIntegratedCPP() const override { return false; }
++  bool isLinkJob() const override { return true; }
++
++  void ConstructJob(Compilation &C, const JobAction &JA,
++                    const InputInfo &Output, const InputInfoList &Inputs,
++                    const llvm::opt::ArgList &TCArgs,
++                    const char *LinkingOutput) const override;
++};
++} // end namespace myos
++} // end namespace tools
++
++namespace toolchains {
++
++/// myos userspace against mlibc and LLVM's C++ runtimes. The development
++/// files are one tree, <sysroot>/lib/mlibc: include/ (mlibc's headers,
++/// libc++'s in include/c++/v1) and lib/ (crt0.o, libc.a, the compiler
++/// builtins as libbuiltins.a, libc++.a with libc++abi in it, libunwind.a).
++/// A program is a static PIE unless -shared asks for a shared object,
++/// which is linked against the system's libc.so in <sysroot>/lib.
++class LLVM_LIBRARY_VISIBILITY MyOS : public Generic_ELF {
++public:
++  MyOS(const Driver &D, const llvm::Triple &Triple,
++       const llvm::opt::ArgList &Args);
++
++  bool HasNativeLLVMSupport() const override { return true; }
++  bool IsMathErrnoDefault() const override { return true; }
++  bool isPICDefault() const override { return true; }
++  bool isPIEDefault(const llvm::opt::ArgList &Args) const override {
++    return true;
++  }
++  bool isPICDefaultForced() const override { return false; }
++
++  RuntimeLibType GetDefaultRuntimeLibType() const override {
++    return ToolChain::RLT_CompilerRT;
++  }
++  UnwindLibType GetDefaultUnwindLibType() const override {
++    return ToolChain::UNW_CompilerRT;
++  }
++  CXXStdlibType GetDefaultCXXStdlibType() const override {
++    return ToolChain::CST_Libcxx;
++  }
++  const char *getDefaultLinker() const override { return "ld.lld"; }
++
++  void
++  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
++                            llvm::opt::ArgStringList &CC1Args) const override;
++  void addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
++                             llvm::opt::ArgStringList &CC1Args) const override;
++  void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
++                             llvm::opt::ArgStringList &CC1Args,
++                             Action::OffloadKind DeviceOffloadKind) const override;
++
++  /// <sysroot>/lib/mlibc.
++  std::string getDevelopmentDir() const;
++
++protected:
++  Tool *buildLinker() const override;
++};
++
++} // end namespace toolchains
++} // end namespace driver
++} // end namespace clang
++
++#endif // LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_MYOS_H
+diff --git a/clang/tools/driver/driver.cpp b/clang/tools/driver/driver.cpp
+index 83b5bbb71..b4c7f74ad 100644
+--- a/clang/tools/driver/driver.cpp
++++ b/clang/tools/driver/driver.cpp
+@@ -342,7 +342,12 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
+   // PrependArg which should be clang-*. Checking just CanonicalPrefixes is
+   // safe even in the normal case because PrependArg will be null so
+   // setPrependArg will be a no-op.
+-  if (ToolContext.NeedsPrependArg || CanonicalPrefixes)
++  // myos: Path is the name clang was run under (getMainExecutable), one
++  // the multicall program takes for clang by itself: nothing to prepend
++  // unless it was run as `llvm clang`.
++  if (ToolContext.NeedsPrependArg ||
++      (CanonicalPrefixes && llvm::sys::path::filename(Path) !=
++                                llvm::sys::path::filename(ToolContext.Path)))
+     TheDriver.setPrependArg(ToolContext.PrependArg);
+ 
+   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
+diff --git a/llvm/include/llvm/TargetParser/Triple.h b/llvm/include/llvm/TargetParser/Triple.h
+index d2126a03d..cc4b5352c 100644
+--- a/llvm/include/llvm/TargetParser/Triple.h
++++ b/llvm/include/llvm/TargetParser/Triple.h
+@@ -239,7 +239,8 @@ public:
+     LiteOS,
+     Serenity,
+     Vulkan, // Vulkan SPIR-V
+-    LastOSType = Vulkan
++    MyOS,   // myos: its userspace on mlibc
++    LastOSType = MyOS
+   };
+   enum EnvironmentType {
+     UnknownEnvironment,
+@@ -804,6 +805,9 @@ public:
+ 
+   bool isOSLiteOS() const { return getOS() == Triple::LiteOS; }
+ 
++  /// Tests whether the OS is myos.
++  bool isOSMyOS() const { return getOS() == Triple::MyOS; }
++
+   /// Tests whether the target is DXIL.
+   bool isDXIL() const {
+     return getArch() == Triple::dxil;
+diff --git a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
+index cf05db546..71b0273e7 100644
+--- a/llvm/lib/Support/Unix/Path.inc
++++ b/llvm/lib/Support/Unix/Path.inc
+@@ -129,7 +129,8 @@ const file_t kInvalidFile = -1;
+ #if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) ||      \
+     defined(__FreeBSD_kernel__) || defined(__linux__) || defined(__CYGWIN__) || \
+     defined(__DragonFly__) || defined(_AIX) || defined(__GNU__) ||              \
+-    (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__))
++    (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__)) ||           \
++    defined(__myos__)
+ static int test_dir(char ret[PATH_MAX], const char *dir, const char *bin) {
+   struct stat sb;
+   char fullpath[PATH_MAX];
+@@ -283,7 +284,10 @@ std::string getMainExecutable(const char *argv0, void *MainAddr) {
+   // Fall back to the classical detection.
+   if (getprogpath(exe_path, argv0))
+     return exe_path;
+-#elif defined(__OpenBSD__) || defined(__HAIKU__)
++// myos: the name the program was run under. /proc/self/exe names the
++// file, and the tools of the multicall program are links to one file: an
++// app's view may give the file under any of their names.
++#elif defined(__OpenBSD__) || defined(__HAIKU__) || defined(__myos__)
+   char exe_path[PATH_MAX];
+   // argv[0] only
+   if (getprogpath(exe_path, argv0) != NULL)
+@@ -555,6 +559,10 @@ static bool is_local_impl(struct STATVFS &Vfs) {
+   // The file system can have an arbitrary structure on z/OS; must go with the
+   // conservative answer.
+   return false;
++#elif defined(__myos__)
++  // myos: every file system is the machine's own (there is no network one,
++  // and statvfs has no flags that would tell).
++  return true;
+ #else
+   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
+ #endif
+diff --git a/llvm/lib/TargetParser/Triple.cpp b/llvm/lib/TargetParser/Triple.cpp
+index 21d6c74b5..339f51f77 100644
+--- a/llvm/lib/TargetParser/Triple.cpp
++++ b/llvm/lib/TargetParser/Triple.cpp
+@@ -300,6 +300,7 @@ StringRef Triple::getOSTypeName(OSType Kind) {
+   case ZOS: return "zos";
+   case ShaderModel: return "shadermodel";
+   case LiteOS: return "liteos";
++  case MyOS: return "myos";
+   case XROS: return "xros";
+   case Vulkan: return "vulkan";
+   }
+@@ -685,6 +686,7 @@ static Triple::OSType parseOS(StringRef OSName) {
+     .StartsWith("emscripten", Triple::Emscripten)
+     .StartsWith("shadermodel", Triple::ShaderModel)
+     .StartsWith("liteos", Triple::LiteOS)
++    .StartsWith("myos", Triple::MyOS)
+     .StartsWith("serenity", Triple::Serenity)
+     .StartsWith("vulkan", Triple::Vulkan)
+     .Default(Triple::UnknownOS);
