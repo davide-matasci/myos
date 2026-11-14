@@ -71,6 +71,13 @@ net,pkg,heavy,install,alpine-disk` and `test`.
   lists the key ranges). So a hung test shows what waits on what before
   the host gives up. It was added after CI #2295's lynx test stalled with
   every CPU idle and the console showed nothing more.
+- The runner checks its own shell before and after each test: that a
+  function still gets `"$@"` as separate words. A test that leaves the
+  shell otherwise fails by name, with what `"$@"` became and the bytes of
+  `IFS`, and `IFS` is set again so that the tests after it are tested.
+  CI #2639 and #2641 had forty tests fail with
+  `/bin/etc/pty_smokeu2: not found` (the words joined by a `u`) from some
+  point on, on x86, and nothing said where it began.
 
 ## Writing a test
 

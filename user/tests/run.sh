@@ -148,6 +148,30 @@ selected() {
 	return 1
 }
 
+# shell_intact WHEN: the runner's own shell still passes "$@" on as words.
+# CI #2639 and #2641 (x86): from some test on, every test given a command
+# with arguments failed with `/bin/etc/pty_smokeu2: not found`: the words
+# of "$@" joined by a `u`, which is the shell's first IFS character gone
+# wrong while IFS itself still split words. Forty tests failed for one
+# fault and none said where it began. The check runs before and after
+# each test; a shell found broken says so once, with what IFS holds, and
+# IFS is set again (which puts that character back), so that the tests
+# that follow are tested.
+shell_words() { [ $# -eq 2 ]; }
+shell_pass() { shell_words "$@"; }
+shell_join() { echo "\"\$@\" of a b: $# word(s), the first: $1"; }
+shell_show() { shell_join "$@"; }
+shell_intact() {
+	shell_pass a b && return 0
+	echo "the runner's shell no longer passes \"\$@\" on as words ($1)"
+	shell_show a b
+	echo "IFS: $(printf %s "$IFS" | od -t x1 | head -n 2 | tr '\n' ' ')"
+	IFS=' 	
+'
+	shell_pass a b || echo "and setting IFS again did not mend it"
+	return 1
+}
+
 # t [-t TAGS] NAME COMMAND...: run one test, if the selection takes it.
 # FILE_TAGS are the tags of the file being sourced (its port's name, `pkg`
 # for a package's), on every test of it. In the first pass over the files
@@ -172,12 +196,18 @@ t() {
 	total=$((total + 1))
 	# The test runs in this shell (a function sets what later ones read):
 	# the runner's own variables are named so that none clobbers them.
+	t_pre=0
+	shell_intact "found so before $t_name" > $OUT/$t_name.pre || t_pre=1
 	hung_watch_start $t_name
 	t_hung=$!
 	capture $OUT/$t_name.out "$@"
 	t_rc=$?
 	hung_watch_done $t_name
 	wait $t_hung 2> /dev/null
+	[ $t_pre -eq 0 ] || cat $OUT/$t_name.pre >> $OUT/$t_name.out
+	if ! shell_intact "after $t_name" >> $OUT/$t_name.out || [ $t_pre -ne 0 ]; then
+		[ $t_rc -ne 0 ] || t_rc=1
+	fi
 	if [ $t_rc -eq 0 ]; then
 		passed=$((passed + 1))
 		echo "TEST $t_name PASS"
