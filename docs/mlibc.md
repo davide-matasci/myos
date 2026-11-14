@@ -131,6 +131,9 @@ headers. What myos answers of it (`getrandom`, `getifaddrs`, `mount`,
   `MemTotalKiB` and `MemAvailableKiB` (`/proc/meminfo`, `docs/proc.md`),
   in both libcs: a program asks the libc for the machine's memory, not a
   file in Linux's format.
+- `sysconf(_SC_NPROCESSORS_ONLN)` and `_SC_NPROCESSORS_CONF` are the
+  kernel's `processor_count` (`/proc/cpuinfo`): what a linker or a build
+  tool sizes its thread pool with.
 - `sigtimedwait` with a timeout is `ENOSYS`: the kernel has no timed wait.
 - mlibc's resolver reads `/etc/hosts`, then asks the nameserver of
   `/etc/resolv.conf`, or without that file the first `dns=` of `/net/ndb`

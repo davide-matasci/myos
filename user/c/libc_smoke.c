@@ -516,6 +516,18 @@ static int check_sysdeps(void) {
     if (setrlimit(RLIMIT_NOFILE, &more) != -1 || errno != EPERM) {
         return fail("setrlimit above the hard limit is not EPERM");
     }
+    /* The CPUs, the kernel's count (/proc/cpuinfo's first line): what a
+     * linker or a build tool sizes its thread pool by. */
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN), counted = 0;
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (f == NULL || fscanf(f, "processor_count: %ld", &counted) != 1) {
+        return fail("no processor_count in /proc/cpuinfo");
+    }
+    fclose(f);
+    if (cpus < 1 || cpus != counted || sysconf(_SC_NPROCESSORS_CONF) != cpus) {
+        printf("[ FAIL ] libc sysconf: %ld CPUs online, /proc/cpuinfo has %ld\n", cpus, counted);
+        return 1;
+    }
     return 0;
 }
 #else
