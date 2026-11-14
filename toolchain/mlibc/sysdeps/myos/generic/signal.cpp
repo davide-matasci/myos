@@ -2,7 +2,9 @@
 // kernel's records and 32-bit masks (libmyos/sigtramp.c), and the handler
 // dispatch the trampoline calls with the kernel's frame: the siginfo it
 // holds (newlib's layout: int si_signo; int si_code; union sigval; void
-// *si_addr; then the sender, pid | uid << 32) to mlibc's siginfo_t.
+// *si_addr; then the sender, pid | uid << 32) to mlibc's siginfo_t, and the
+// interrupted context as its ucontext_t (the registers are libmyos's to
+// lay out, uc_sigmask this file's).
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -18,6 +20,7 @@ namespace {
 
 constexpr int FRAME_SIGNO = 1;
 constexpr int FRAME_HANDLER = 2;
+constexpr int FRAME_MASK = 3;
 constexpr int FRAME_SIGINFO = 10;
 
 // mlibc keeps signal `sig` at bit sig - 1 of its sigset_t; the kernel (and
@@ -55,9 +58,16 @@ extern "C" void __myos_sigdispatch(unsigned long *frame) {
 		info.si_pid = getpid();
 	}
 	__myos_sig_count++;
+	// The interrupted context, and the mask its return restores: what the
+	// handler leaves in them is what resumes (docs/signals.md).
+	ucontext_t uc;
+	__myos_sigcontext_get(frame, &uc);
+	set_mask(&uc.uc_sigmask, (unsigned int)frame[FRAME_MASK]);
 	// A plain sa_handler takes one argument; passing three is harmless.
 	auto handler = (void (*)(int, siginfo_t *, void *))(uintptr_t)frame[FRAME_HANDLER];
-	handler((int)frame[FRAME_SIGNO], &info, nullptr);
+	handler((int)frame[FRAME_SIGNO], &info, &uc);
+	frame[FRAME_MASK] = mask_of(&uc.uc_sigmask);
+	__myos_sigcontext_put(frame, &uc);
 }
 
 namespace mlibc {

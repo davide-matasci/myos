@@ -18,10 +18,13 @@
  * an empty heap (the old image's pages past the new span are gone). A
  * write to a pipe whose reader closed ends the writer with SIGPIPE at
  * the default action, and is EPIPE to one that ignores or catches it. A
+ * handler's third argument is the interrupted context (ucontext_t): its
+ * pc and sp, a uc_sigmask it may change, a pc it may point elsewhere. A
  * caught signal's siginfo_t names its sender (si_pid, si_uid): the process
  * itself, a child that sent it, the child whose exit raised SIGCHLD.
  * Prints [ OK ] child.
  */
+#define _GNU_SOURCE /* mlibc: the mcontext_t register names (REG_RIP, gregs) */
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -31,6 +34,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 static int fail(const char *what) {
@@ -481,6 +485,115 @@ static int sender(void) {
     return 0;
 }
 
+/* The interrupted pc and sp of a handler's ucontext_t. */
+#if defined(__x86_64__)
+#define UC_PC(uc) ((uc)->uc_mcontext.gregs[REG_RIP])
+#define UC_SP(uc) ((uc)->uc_mcontext.gregs[REG_RSP])
+#elif defined(__aarch64__)
+#define UC_PC(uc) ((uc)->uc_mcontext.pc)
+#define UC_SP(uc) ((uc)->uc_mcontext.sp)
+#else
+#define UC_PC(uc) ((uc)->uc_mcontext.__gregs[REG_PC])
+#define UC_SP(uc) ((uc)->uc_mcontext.__gregs[REG_SP])
+#endif
+
+static volatile uintptr_t ctx_pc, ctx_sp;
+static volatile sig_atomic_t ctx_calls, ctx_landed;
+static int ctx_pipe[2];
+
+/* SIGUSR1: what the context says was interrupted; SIGUSR2 comes back
+ * blocked from it. */
+static void on_context(int sig, siginfo_t *si, void *arg) {
+    ucontext_t *uc = arg;
+    (void)sig;
+    (void)si;
+    ctx_calls++;
+    if (uc != NULL) {
+        ctx_pc = (uintptr_t)UC_PC(uc);
+        ctx_sp = (uintptr_t)UC_SP(uc);
+        sigaddset(&uc->uc_sigmask, SIGUSR2);
+    }
+}
+
+/* Where on_fault sends the faulting thread: it never returns there. */
+static void landed(void) {
+    ctx_landed = 1;
+    /* The parent reads the byte: this child got here, by the pc alone. */
+    write(ctx_pipe[1], "L", 1);
+    _exit(9);
+}
+
+static void on_fault(int sig, siginfo_t *si, void *arg) {
+    ucontext_t *uc = arg;
+    (void)sig;
+    (void)si;
+    if (uc == NULL) {
+        _exit(3);
+    }
+    UC_PC(uc) = (uintptr_t)landed;
+#if defined(__x86_64__)
+    /* As after a call: the ABI's alignment at a function's entry. */
+    UC_SP(uc) = (UC_SP(uc) & ~(uintptr_t)15) - 8;
+#endif
+}
+
+/* A handler's third argument is the interrupted context: its sp is on
+ * this thread's stack and its pc in this program's text; a signal added
+ * to its uc_sigmask is blocked once the handler returned; and a fault's
+ * handler that points its pc at another function resumes there (a forked
+ * child, which says so through a pipe and exits). */
+static int context(void) {
+    struct sigaction sa;
+    sigset_t now;
+    char here, byte = 0;
+    int status;
+    pid_t pid;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_context;
+    sa.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGUSR1, &sa, NULL) != 0 || raise(SIGUSR1) != 0 || ctx_calls != 1) {
+        return fail("context: the handler did not run");
+    }
+    if (ctx_pc == 0 || ctx_sp == 0) {
+        return fail("context: no ucontext, or an empty one");
+    }
+    uintptr_t at = (uintptr_t)&here;
+    if (ctx_sp > at + 65536 || at > ctx_sp + 65536) {
+        printf("[ FAIL ] child context: sp %#lx is not near this frame (%#lx)\n", (unsigned long)ctx_sp,
+               (unsigned long)at);
+        return 1;
+    }
+    if (sigprocmask(SIG_BLOCK, NULL, &now) != 0 || !sigismember(&now, SIGUSR2) || sigismember(&now, SIGUSR1)) {
+        return fail("context: uc_sigmask's SIGUSR2 is not blocked after the handler");
+    }
+    sigemptyset(&now);
+    sigaddset(&now, SIGUSR2);
+    sigprocmask(SIG_UNBLOCK, &now, NULL);
+    signal(SIGUSR1, SIG_DFL);
+
+    if (pipe(ctx_pipe) != 0) {
+        return fail("context: pipe");
+    }
+    pid = fork();
+    if (pid == 0) {
+        sa.sa_sigaction = on_fault;
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGBUS, &sa, NULL);
+        *(volatile int *)(uintptr_t)8 = 1;
+        _exit(4); /* resumed after the store: the pc was not taken */
+    }
+    close(ctx_pipe[1]);
+    if (pid < 0 || waitpid(pid, &status, 0) != pid) {
+        return fail("context: fork");
+    }
+    if (read(ctx_pipe[0], &byte, 1) != 1 || byte != 'L' || !WIFEXITED(status) || WEXITSTATUS(status) != 9) {
+        printf("[ FAIL ] child context: a handler's pc was not resumed at (status %#x)\n", status);
+        return 1;
+    }
+    close(ctx_pipe[0]);
+    return 0;
+}
+
 int main(void) {
     struct sigaction old;
     int status;
@@ -532,6 +645,9 @@ int main(void) {
         return 1;
     }
     if (sigpipe() != 0) {
+        return 1;
+    }
+    if (context() != 0) {
         return 1;
     }
     if (sender() != 0) {

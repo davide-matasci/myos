@@ -23,12 +23,23 @@
  * Frame words: [0] magic, [1] signo, [2] handler, [3] saved mask, [4] pc,
  * [5] sp, [6] result, [7] number register, [10..13] siginfo_t, [16..19]
  * the kernel's.
+ *
+ * The handler's third argument is the interrupted context as the libc's
+ * ucontext_t: __myos_sigcontext_get makes it from the frame and the
+ * trampoline's save area just below it, __myos_sigcontext_put writes it
+ * back once the handler returned, so what the handler changed (the pc, to
+ * resume elsewhere; a register) is what the interrupted code gets. The
+ * dispatch calls both around the handler and converts uc_sigmask, whose
+ * type is the libc's.
  */
 
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#include <signal.h>
+#include <ucontext.h>
 
 #include "myos_syscalls.h"
 
@@ -292,6 +303,137 @@ __asm__(
     ".popsection\n");
 #else
 #error unsupported arch
+#endif
+
+/* The frame's words a context is made of (kernel/src/signal.rs). */
+enum { FRAME_PC = 4, FRAME_SP = 5, FRAME_RET = 6, FRAME_NR = 7, FRAME_KEPT = 16 };
+
+#if defined(__x86_64__)
+/* The save area's words, in the trampoline's order; rax is the frame's
+ * result, and rflags, rcx and r11 the kernel's kept words (the return to
+ * the trampoline overwrote the registers themselves). */
+enum { SAVE_BYTES = 640, SAVE_FP = 128 };
+static const unsigned char save_greg[] = {
+    [1] = REG_RBX, [3] = REG_RDX, [4] = REG_RSI, [5] = REG_RDI, [6] = REG_RBP,
+    [7] = REG_R8, [8] = REG_R9, [9] = REG_R10, [11] = REG_R12, [12] = REG_R13,
+    [13] = REG_R14, [14] = REG_R15,
+};
+
+void __myos_sigcontext_get(unsigned long *frame, void *ctx) {
+    ucontext_t *uc = ctx;
+    unsigned long *save = (unsigned long *)((char *)frame - SAVE_BYTES);
+    memset(uc, 0, sizeof *uc);
+    uc->uc_stack.ss_flags = SS_DISABLE;
+    for (unsigned i = 1; i < sizeof save_greg; i++) {
+        if (save_greg[i] != 0 || i == 7) {
+            uc->uc_mcontext.gregs[save_greg[i]] = save[i];
+        }
+    }
+    uc->uc_mcontext.gregs[REG_RAX] = frame[FRAME_RET];
+    uc->uc_mcontext.gregs[REG_RIP] = frame[FRAME_PC];
+    uc->uc_mcontext.gregs[REG_RSP] = frame[FRAME_SP];
+    uc->uc_mcontext.gregs[REG_EFL] = frame[FRAME_KEPT];
+    uc->uc_mcontext.gregs[REG_RCX] = frame[FRAME_KEPT + 1];
+    uc->uc_mcontext.gregs[REG_R11] = frame[FRAME_KEPT + 2];
+    /* The FXSAVE image itself: the handler's changes need no copy. */
+    uc->uc_mcontext.fpregs = (struct _fpstate *)((char *)save + SAVE_FP);
+}
+
+void __myos_sigcontext_put(unsigned long *frame, const void *ctx) {
+    const ucontext_t *uc = ctx;
+    unsigned long *save = (unsigned long *)((char *)frame - SAVE_BYTES);
+    for (unsigned i = 1; i < sizeof save_greg; i++) {
+        if (save_greg[i] != 0 || i == 7) {
+            save[i] = uc->uc_mcontext.gregs[save_greg[i]];
+        }
+    }
+    frame[FRAME_RET] = uc->uc_mcontext.gregs[REG_RAX];
+    frame[FRAME_PC] = uc->uc_mcontext.gregs[REG_RIP];
+    frame[FRAME_SP] = uc->uc_mcontext.gregs[REG_RSP];
+    frame[FRAME_KEPT] = uc->uc_mcontext.gregs[REG_EFL];
+    frame[FRAME_KEPT + 1] = uc->uc_mcontext.gregs[REG_RCX];
+    frame[FRAME_KEPT + 2] = uc->uc_mcontext.gregs[REG_R11];
+    if (uc->uc_mcontext.fpregs != NULL && (char *)uc->uc_mcontext.fpregs != (char *)save + SAVE_FP) {
+        memcpy((char *)save + SAVE_FP, uc->uc_mcontext.fpregs, 512);
+    }
+}
+#elif defined(__aarch64__)
+/* Save area: x0..x30 at their number, NZCV at word 31, q0..q31 from byte
+ * 256, FPCR and FPSR at 768. x0 is the frame's result, x8 its number
+ * register. */
+enum { SAVE_BYTES = 784, SAVE_NZCV = 31, SAVE_FP = 256, SAVE_FPCR = 768 };
+
+void __myos_sigcontext_get(unsigned long *frame, void *ctx) {
+    ucontext_t *uc = ctx;
+    unsigned long *save = (unsigned long *)((char *)frame - SAVE_BYTES);
+    struct fpsimd_context *fp = (struct fpsimd_context *)uc->uc_mcontext.__reserved;
+    /* Not the 4 KiB of __reserved: the FP/SIMD record and the end mark. */
+    memset(uc, 0, offsetof(ucontext_t, uc_mcontext.__reserved) + sizeof *fp + sizeof fp->head);
+    uc->uc_stack.ss_flags = SS_DISABLE;
+    memcpy(uc->uc_mcontext.regs, save, 31 * sizeof(unsigned long));
+    uc->uc_mcontext.regs[0] = frame[FRAME_RET];
+    uc->uc_mcontext.regs[8] = frame[FRAME_NR];
+    uc->uc_mcontext.sp = frame[FRAME_SP];
+    uc->uc_mcontext.pc = frame[FRAME_PC];
+    uc->uc_mcontext.pstate = save[SAVE_NZCV];
+    fp->head.magic = FPSIMD_MAGIC;
+    fp->head.size = sizeof *fp;
+    fp->fpcr = (uint32_t)save[SAVE_FPCR / 8];
+    fp->fpsr = (uint32_t)save[SAVE_FPCR / 8 + 1];
+    memcpy(fp->vregs, (char *)save + SAVE_FP, sizeof fp->vregs);
+}
+
+void __myos_sigcontext_put(unsigned long *frame, const void *ctx) {
+    const ucontext_t *uc = ctx;
+    unsigned long *save = (unsigned long *)((char *)frame - SAVE_BYTES);
+    const struct fpsimd_context *fp = (const struct fpsimd_context *)uc->uc_mcontext.__reserved;
+    memcpy(save, uc->uc_mcontext.regs, 31 * sizeof(unsigned long));
+    frame[FRAME_RET] = uc->uc_mcontext.regs[0];
+    frame[FRAME_NR] = uc->uc_mcontext.regs[8];
+    frame[FRAME_SP] = uc->uc_mcontext.sp;
+    frame[FRAME_PC] = uc->uc_mcontext.pc;
+    save[SAVE_NZCV] = uc->uc_mcontext.pstate & 0xf0000000ul;
+    if (fp->head.magic == FPSIMD_MAGIC) {
+        save[SAVE_FPCR / 8] = fp->fpcr;
+        save[SAVE_FPCR / 8 + 1] = fp->fpsr;
+        memcpy((char *)save + SAVE_FP, fp->vregs, sizeof fp->vregs);
+    }
+}
+#else
+/* Save area: x1 and x3..x31 at their number, then f0..f31 and fcsr on a
+ * hard-float build. a0 (x10) is the frame's result, a7 (x17) its number
+ * register; __gregs[0] is the pc. */
+enum { SAVE_BYTES = MYOS_RV_SAVE, SAVE_FP = 256 };
+
+void __myos_sigcontext_get(unsigned long *frame, void *ctx) {
+    ucontext_t *uc = ctx;
+    unsigned long *save = (unsigned long *)((char *)frame - SAVE_BYTES);
+    memset(uc, 0, sizeof *uc);
+    uc->uc_stack.ss_flags = SS_DISABLE;
+    memcpy(uc->uc_mcontext.__gregs, save, 32 * sizeof(unsigned long));
+    uc->uc_mcontext.__gregs[0] = frame[FRAME_PC];
+    uc->uc_mcontext.__gregs[2] = frame[FRAME_SP];
+    uc->uc_mcontext.__gregs[10] = frame[FRAME_RET];
+    uc->uc_mcontext.__gregs[17] = frame[FRAME_NR];
+#if MYOS_RV_SAVE > 256
+    memcpy(uc->uc_mcontext.__fpregs.d.f, (char *)save + SAVE_FP, 32 * 8);
+    uc->uc_mcontext.__fpregs.d.fcsr = (uint32_t)save[SAVE_FP / 8 + 32];
+#endif
+}
+
+void __myos_sigcontext_put(unsigned long *frame, const void *ctx) {
+    const ucontext_t *uc = ctx;
+    unsigned long *save = (unsigned long *)((char *)frame - SAVE_BYTES);
+    memcpy(save + 1, uc->uc_mcontext.__gregs + 1, 31 * sizeof(unsigned long));
+    frame[FRAME_PC] = uc->uc_mcontext.__gregs[0];
+    frame[FRAME_SP] = uc->uc_mcontext.__gregs[2];
+    frame[FRAME_RET] = uc->uc_mcontext.__gregs[10];
+    frame[FRAME_NR] = uc->uc_mcontext.__gregs[17];
+#if MYOS_RV_SAVE > 256
+    memcpy((char *)save + SAVE_FP, uc->uc_mcontext.__fpregs.d.f, 32 * 8);
+    save[SAVE_FP / 8 + 32] = uc->uc_mcontext.__fpregs.d.fcsr;
+#endif
+}
 #endif
 
 /* SYS_SIGACTION on the kernel's records: 0, or -1 with errno (EINVAL:
