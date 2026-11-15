@@ -9,40 +9,21 @@ from pathlib import Path
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("target/rust-std-patch/library")
 
 NOT_TRUSTY_OR_MYOS = '#[cfg(not(target_os = "trusty"))]'
-NOT_TRUSTY_OR_MYOS_NEW = '#[cfg(not(any(target_os = "trusty", target_os = "myos")))]'
+NOT_TRUSTY_OR_MYOS_NEW = '#[cfg(not(any(target_os = "trusty", all(target_os = "myos", not(target_env = "mlibc")))))]'
+
+# The wiring below is the native flavour's (`<arch>-unknown-myos`, std on
+# the kernel's calls). The mlibc flavour is a unix target, std's own unix
+# code over the C library (patches/std-unix.patch): every `target_os =
+# "myos"` written here leaves it out.
+MYOS = 'target_os = "myos"'
+NATIVE = 'all(target_os = "myos", not(target_env = "mlibc"))'
+
+
+def native(text: str) -> str:
+    return text.replace(MYOS, NATIVE)
+
 
 REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
-    # Unwinding on the mlibc flavour (`target_env = "mlibc"`): LLVM's
-    # libunwind (toolchain/libcxx) under the `unwind` crate, the gcc-style
-    # panic runtime and personality, as the unix targets have them. The
-    # other flavour has no unwinder and aborts.
-    (
-        "unwind/src/lib.rs",
-        [
-            (
-                '        target_os = "xous",\n    ) => {\n        mod libunwind;',
-                '        target_os = "xous",\n        all(target_os = "myos", target_env = "mlibc"),\n    ) => {\n        mod libunwind;',
-            ),
-        ],
-    ),
-    (
-        "panic_unwind/src/lib.rs",
-        [
-            (
-                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_family = "unix", not(any(target_os = "espidf", target_os = "nuttx"))),',
-                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_os = "myos", target_env = "mlibc"),\n        all(target_family = "unix", not(any(target_os = "espidf", target_os = "nuttx"))),',
-            ),
-        ],
-    ),
-    (
-        "std/src/sys/personality/mod.rs",
-        [
-            (
-                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_family = "unix", not(target_os = "espidf"), not(target_os = "l4re"), not(target_os = "nuttx")),',
-                '        target_os = "psp",\n        target_os = "xous",\n        target_os = "solid_asp3",\n        all(target_os = "myos", target_env = "mlibc"),\n        all(target_family = "unix", not(target_os = "espidf"), not(target_os = "l4re"), not(target_os = "nuttx")),',
-            ),
-        ],
-    ),
     (
         "std/src/sys/time/mod.rs",
         [
@@ -57,7 +38,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 "#![feature(staged_api)]",
-                "#![feature(staged_api)]\n#![feature(myos_ext)]",
+                "#![feature(staged_api)]\n#![cfg_attr(target_os = \"myos\", feature(myos_ext))]",
             ),
         ],
     ),
@@ -170,7 +151,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }',
-                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        #[cfg_attr(target_env = "mlibc", path = "myos_mlibc.rs")]\n        mod myos;\n        use myos as imp;\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        use hermit as imp;\n    }\n    target_os = "myos" => {\n        mod myos;\n        use myos as imp;\n    }',
             ),
         ],
     ),
@@ -233,7 +214,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }',
-                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        #[cfg_attr(target_env = "mlibc", path = "myos_mlibc.rs")]\n        mod myos;\n        pub use myos::{Thread, available_parallelism, current_os_id, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::set_name;\n    }',
+                '    target_os = "hermit" => {\n        mod hermit;\n        pub use hermit::{Thread, available_parallelism, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::{current_os_id, set_name};\n    }\n    target_os = "myos" => {\n        mod myos;\n        pub use myos::{Thread, available_parallelism, current_os_id, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n        #[expect(dead_code)]\n        mod unsupported;\n        pub use unsupported::set_name;\n    }',
             ),
         ],
     ),
@@ -331,17 +312,15 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         "std/src/sys/thread_local/mod.rs",
         [
             # `std` runs the destructors itself (`sys/thread/myos.rs`), as on
-            # Hermit and Xous. Not on the mlibc flavour, whose threads are
-            # the C library's: its keys' destructors do (the default guard).
+            # Hermit and Xous.
             (
                 '        any(\n            target_os = "hermit",\n            target_os = "xous",\n        ) => {',
-                '        any(\n            target_os = "hermit",\n            all(target_os = "myos", not(target_env = "mlibc")),\n            target_os = "xous",\n        ) => {',
+                '        any(\n            target_os = "hermit",\n            target_os = "myos",\n            target_os = "xous",\n        ) => {',
             ),
-            # Keys in a table at the thread pointer (`sys/thread_local/key/myos.rs`),
-            # or the C library's on the mlibc flavour (`myos_mlibc.rs`).
+            # Keys in a table at the thread pointer (`sys/thread_local/key/myos.rs`).
             (
                 '        target_os = "xous" => {\n            mod racy;',
-                '        target_os = "myos" => {\n            mod racy;\n            #[cfg_attr(target_env = "mlibc", path = "myos_mlibc.rs")]\n            mod myos;\n            pub(super) use racy::LazyKey;\n            pub(super) use myos::{Key, get, set};\n            #[cfg(not(target_env = "mlibc"))]\n            pub(crate) use myos::{Table, init_main, init_table, run_dtors};\n            use myos::{create, destroy};\n        }\n        target_os = "xous" => {\n            mod racy;',
+                '        target_os = "myos" => {\n            mod racy;\n            mod myos;\n            pub(super) use racy::LazyKey;\n            pub(super) use myos::{Key, get, set};\n            pub(crate) use myos::{Table, init_main, init_table, run_dtors};\n            use myos::{create, destroy};\n        }\n        target_os = "xous" => {\n            mod racy;',
             ),
         ],
     ),
@@ -350,7 +329,7 @@ REPLACEMENTS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             (
                 "#[cfg(not(test))]\npub fn _print(args: fmt::Arguments<'_>) {\n    print_to(args, stdout, \"stdout\");\n}",
-                "#[cfg(not(test))]\n#[cfg(target_os = \"myos\")]\npub fn _print(args: fmt::Arguments<'_>) {\n    crate::sys::stdio::print_args(args);\n}\n\n#[cfg(not(test))]\n#[cfg(not(target_os = \"myos\"))]\npub fn _print(args: fmt::Arguments<'_>) {\n    print_to(args, stdout, \"stdout\");\n}",
+                "#[cfg(not(test))]\n#[cfg(target_os = \"myos\")]\npub fn _print(args: fmt::Arguments<'_>) {\n    crate::sys::stdio::print_args(args);\n}\n\n#[unstable(\n    feature = \"print_internals\",\n    reason = \"implementation detail which may disappear or be replaced at any time\",\n    issue = \"none\"\n)]\n#[doc(hidden)]\n#[cfg(not(test))]\n#[cfg(not(target_os = \"myos\"))]\npub fn _print(args: fmt::Arguments<'_>) {\n    print_to(args, stdout, \"stdout\");\n}",
             ),
         ],
     ),
@@ -547,8 +526,62 @@ impl IntoRawFd for crate::fs::File {{
     }}
 }}
 '''
-    path.write_text(text + impls)
+    path.write_text(text + native(impls))
     print(f"added myos File/Stdio fd impls in {path}")
+
+
+LIBC = "libc-0.2.189"
+
+
+def apply_patch(tree: Path, patch: Path) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["patch", "-p1", "-s", "--no-backup-if-mismatch", "-F0", "-i", str(patch)],
+        cwd=tree,
+        check=True,
+    )
+    print(f"applied {patch.name}")
+
+
+def apply_unix_flavour(repo: Path, patch_root: Path) -> None:
+    """The mlibc flavour: a unix target (std-unix.patch) over the libc
+    crate with myos in it (libc-myos.patch, on the copy the workspace
+    vendors, which the workspace is then pointed at)."""
+    import json
+    import shutil
+
+    patches = repo / "toolchain/std/patches"
+    apply_patch(patch_root, patches / "std-unix.patch")
+    libc = patch_root / "vendor" / LIBC
+    if not libc.is_dir():
+        raise SystemExit(f"the std workspace does not vendor {LIBC}: rebase libc-myos.patch")
+    apply_patch(libc, patches / "libc-myos.patch")
+    # cargo checks a vendored crate's files against this list.
+    checksum = libc / ".cargo-checksum.json"
+    sums = json.loads(checksum.read_text())
+    sums["files"] = {}
+    checksum.write_text(json.dumps(sums))
+    # A path dependency has no source or checksum in the lock file.
+    apply_replacements(
+        patch_root / "Cargo.lock",
+        [
+            (
+                'name = "libc"\nversion = "0.2.189"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"\n',
+                'name = "libc"\nversion = "0.2.189"\n',
+            )
+        ],
+    )
+    overlays = [
+        (repo / "toolchain/std/os/myos_mlibc", patch_root / "std/src/os/myos_mlibc"),
+        (repo / "toolchain/std/pal/unix/myos.rs", patch_root / "std/src/sys/pal/unix/myos.rs"),
+    ]
+    for src, dst in overlays:
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        print(f"installed {dst.relative_to(patch_root)}")
 
 
 def apply_replacements(path: Path, pairs: list[tuple[str, str]]) -> None:
@@ -557,7 +590,7 @@ def apply_replacements(path: Path, pairs: list[tuple[str, str]]) -> None:
     for old, new in pairs:
         if old not in text:
             raise SystemExit(f"missing expected snippet in {path}:\n---\n{old}\n---")
-        text = text.replace(old, new, 1)
+        text = text.replace(old, native(new), 1)
     if text != original:
         path.write_text(text)
         print(f"patched {path}")
@@ -603,7 +636,6 @@ def main() -> None:
         (repo / "toolchain/std/pal/myos", patch_root / "std/src/sys/pal/myos"),
         (repo / "toolchain/std/sys/myos", patch_root / "std/src/sys/myos"),
         (repo / "toolchain/std/sys/myos/alloc.rs", patch_root / "std/src/sys/alloc/myos.rs"),
-        (repo / "toolchain/std/sys/myos/alloc_mlibc.rs", patch_root / "std/src/sys/alloc/myos_mlibc.rs"),
         (repo / "toolchain/std/sys/myos/fd.rs", patch_root / "std/src/sys/fd/myos.rs"),
         (repo / "toolchain/std/sys/myos/stdio.rs", patch_root / "std/src/sys/stdio/myos.rs"),
         (repo / "toolchain/std/sys/args/myos.rs", patch_root / "std/src/sys/args/myos.rs"),
@@ -614,9 +646,7 @@ def main() -> None:
         (repo / "toolchain/std/sys/process/myos.rs", patch_root / "std/src/sys/process/myos.rs"),
         (repo / "toolchain/std/sys/time/myos.rs", patch_root / "std/src/sys/time/myos.rs"),
         (repo / "toolchain/std/sys/thread/myos.rs", patch_root / "std/src/sys/thread/myos.rs"),
-        (repo / "toolchain/std/sys/thread/myos_mlibc.rs", patch_root / "std/src/sys/thread/myos_mlibc.rs"),
         (repo / "toolchain/std/sys/thread_local/key/myos.rs", patch_root / "std/src/sys/thread_local/key/myos.rs"),
-        (repo / "toolchain/std/sys/thread_local/key/myos_mlibc.rs", patch_root / "std/src/sys/thread_local/key/myos_mlibc.rs"),
         (repo / "toolchain/std/sys/io/error/myos.rs", patch_root / "std/src/sys/io/error/myos.rs"),
         (repo / "toolchain/std/os/myos", patch_root / "std/src/os/myos"),
     ]
@@ -631,6 +661,8 @@ def main() -> None:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
         print(f"installed {dst.relative_to(patch_root)}")
+
+    apply_unix_flavour(repo, patch_root)
 
     print(f"\nPatched tree ready at {patch_root}")
 

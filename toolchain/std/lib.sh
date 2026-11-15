@@ -44,7 +44,7 @@ myos_sysroot_version_hash() {
       cd "$MYOS_ROOT"
       {
         echo "toolchain=$MYOS_NIGHTLY"
-        sha256sum "toolchain/std/patches/wire-myos.py"
+        sha256sum toolchain/std/patches/wire-myos.py toolchain/std/patches/*.patch
         # Sources only; prune any nested cargo target/ dirs if present.
         # Nor the Cargo.lock cargo writes beside the vehicle's manifest
         # when std is built: the hash must be the same before and after.

@@ -13,6 +13,9 @@ Target toolchain: `nightly-2026-07-26` (see root `rust-toolchain.toml`).
 | `sys/myos/` | `alloc` (brk), `fd`, `stdio`, shared `abi` |
 | `os/myos/` | `OsStrExt` and fd re-exports |
 | `patches/wire-myos.py` | Copies `rust-src` and inserts `target_os = "myos"` wiring |
+| `patches/std-unix.patch`, `patches/libc-myos.patch` | The mlibc flavour (`<arch>-unknown-myos-mlibc`), a unix target: `std`'s unix code and the `libc` crate with myos in them (`docs/userspace.md` "`std` on mlibc") |
+| `pal/unix/myos.rs`, `os/myos_mlibc/` | That flavour's entry and its `std::os::myos` |
+| `../abi-check.sh` | Compare the `libc` crate's myos module with mlibc's headers |
 | `../prepare.sh` | Patched library tree → `target/myos-sysroot` |
 | `../build-sysroot.sh` | Precompile `std` for both triples into the sysroot |
 | `../../user/std/build.sh` | Build smoke ELFs using the prebuilt sysroot |

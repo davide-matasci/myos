@@ -167,27 +167,35 @@ Programs not in the image (vim, git, `btm` from bottom, ...) are packages:
 
 ### `std` on mlibc
 
-The sysroot holds `std` twice per arch: for `<arch>-unknown-myos`, the
-target of every Rust port, which uses no C library at all, and for
-`<arch>-unknown-myos-mlibc` (`target_env = "mlibc"`), for a program with
-C or C++ in it. There the runtime's core is the C library's
-(`toolchain/std/sys/myos/libc.rs`):
+The sysroot holds `std` twice per arch, two different ports:
+
+- `<arch>-unknown-myos`, the target of the Rust ports of the image, is
+  the port above: `std` on the kernel's calls, with no C library at all.
+- `<arch>-unknown-myos-mlibc` (`target_env = "mlibc"`) is a **unix
+  target** (`target_family = "unix"`): `std`'s own unix code, the one
+  Linux and the BSDs run, over mlibc through the `libc` crate. It is the
+  flavour for a program with C or C++ in it, and for one that needs what
+  a unix `std` has: a compiler, a build tool.
 
 | | `<arch>-unknown-myos` | `<arch>-unknown-myos-mlibc` |
 |---|---|---|
 | start | std's own `_start` | mlibc's startup (`__mlibc_entry`), then `main`; its value is the exit status |
 | heap | dlmalloc on `mmap` | `malloc` |
-| threads | `thread_spawn`, std's stacks | `pthread_create` |
-| thread-locals | a table at the thread pointer | `pthread_key_create` keys |
-| exit | the syscall | `exit` (the `atexit` functions, C's streams flushed) |
+| threads | `thread_spawn`, std's stacks | `pthread_create`, named |
+| thread-locals | a table at the thread pointer | `pthread` keys |
+| environment | none | the C library's (`environ`, `setenv`) |
+| arguments | at most 16 of 127 bytes | any |
+| processes | `spawn` | `fork` and `exec`: pipes, a directory, an environment, `kill`, the signal a child ended by |
+| files | the kernel's calls | the C library's; `std::os::unix::fs` (modes, inodes, `symlink`, positional reads, locks) |
+| network | none | `std::net` (TCP, UDP, name lookup) and unix sockets |
 | panic | aborts | unwinds, through LLVM's libunwind (`toolchain/libcxx`) |
+| `cfg(unix)`, `std::os::unix` | no | yes |
 
-So the program has one heap (Rust frees what C allocated and the other
-way round), the thread pointer is the libc's on every thread (C's `errno`
-and `__thread` variables work on a `std::thread`), and a thread C starts
-with `pthread_create` may run Rust, its `thread_local!` values destroyed
-when it ends. Files, processes, time and the locks stay on the kernel's
-calls in both: they keep no state the libc would have to share.
+So a program of the mlibc flavour has one heap with its C code (Rust
+frees what C allocated and the other way round), the thread pointer is
+the libc's on every thread (C's `errno` and `__thread` variables work on
+a `std::thread`), and a thread C starts with `pthread_create` may run
+Rust.
 
 A panic there unwinds the stack: `catch_unwind` stops it, the values of
 the frames it leaves are dropped, a thread that panics ends alone and
@@ -195,6 +203,35 @@ the frames it leaves are dropped, a thread that panics ends alone and
 personality over `_Unwind_*`), found through the program's
 `PT_GNU_EH_FRAME`. Only the unwinding runtime is in the sysroot for this
 flavour: a profile with `panic = "abort"` does not build.
+
+How it is made (`toolchain/std/patches/`, applied by `wire-myos.py` to
+the library tree of the pinned nightly):
+
+- `std-unix.patch` adds `target_os = "myos"` to `std`'s unix code where
+  it lists systems (which calls exist, which constants), as a port of
+  `std` to a new unix does. `wire-myos.py`'s own wiring, the other
+  flavour's, leaves the mlibc targets out.
+- `libc-myos.patch` adds myos to the `libc` crate (`std` calls the C
+  library through it): the types, structs, constants and functions of
+  mlibc on myos, a `linux_like` system (mlibc's ABI headers are Linux's)
+  with myos's own signal numbers, `sa_flags` and a few layouts. It is
+  applied to the copy `std`'s workspace vendors, which the workspace is
+  then pointed at.
+- Both are adapted from Managarm's port, another system on mlibc
+  (`THIRD_PARTY_NOTICES.md`).
+- The numbers in the crate are written by hand, and a wrong one is a
+  wrong signal or field at run time. `toolchain/std/abi-check.sh`
+  compares them all with mlibc's headers on the three arches (about 1300
+  constants, sizes and field offsets each): run it after a change to the
+  patch, to the ABI headers (`toolchain/mlibc/sysdeps/myos/include/abi-bits`)
+  or a bump of mlibc or the nightly.
+- The program's entry is a weak `_start` in `std`
+  (`toolchain/std/pal/unix/myos.rs`), mlibc's crt0 in three instructions:
+  a program needs no startup object in its link.
+
+What the system does not have shows as on any unix without it: a hard
+link is refused (`EPERM`, `docs/fs.md`; cargo and the like copy), a
+mode is taken and not kept (`docs/security.md`), a path is UTF-8.
 
 A program for it is built with the same sysroot, its link given mlibc's
 directory and libunwind's (the target's spec adds `-lunwind -lc
@@ -204,6 +241,10 @@ directory and libunwind's (the target's spec adds `-lunwind -lc
 RUSTFLAGS="-L native=$PWD/target/mlibc-x86_64/lib -L native=$PWD/target/libcxx-x86_64/lib" \
   cargo build --release --target targets/x86_64-unknown-myos-mlibc.json   # as user/std-mlibc/build.sh
 ```
+
+A crate that names the `libc` crate itself gets crates.io's, which does
+not know myos: it needs the patched one (`[patch.crates-io]`, with
+`toolchain/std/patches/libc-myos.patch` applied to 0.2.189).
 
 #### Rust shared objects
 
@@ -236,12 +277,10 @@ driver library and its plugins.
 program uses and drops a boxed trait object the plugin made, catches a
 panic thrown in it, and runs its code on several threads.
 
-Limits, the other flavour's and its own:
+Limits:
 
 - No `proc-macro` crates for the target (they are built for the machine
   the compiler runs on), and no `libstd.so`: see above.
-- `std::env` sees no variables and cannot set any, and the arguments are
-  at most 16 of 127 bytes, as on the other flavour.
 - A `#![no_main]` program must define `main` as C does
   (`extern "C" fn main(argc, argv) -> c_int`): the libc calls it.
 
@@ -249,8 +288,11 @@ Its tests are `/bin/std/mlibc/mix` (`user/std-mlibc`, the `std_mlibc`
 test): Rust and C sharing the heap, C's per-thread state on Rust's
 threads, Rust on a thread C made, the arguments, `main`'s value and
 `atexit`; `/bin/std/mlibc/unwind` (`std_unwind`): panics caught with
-their payloads, drops in order, a poisoned lock, panicking threads; and
-`/bin/std/mlibc/dylib` (`std_dylib`, above).
+their payloads, drops in order, a poisoned lock, panicking threads;
+`/bin/std/mlibc/unix` (`std_unix`): the environment, 40 arguments with
+one of 3000 bytes, children with pipes, a status and a signal, files
+with their links and locks, TCP, UDP and unix sockets over the loopback,
+time and named threads; and `/bin/std/mlibc/dylib` (`std_dylib`, above).
 
 ## C userspace (newlib and libgloss)
 

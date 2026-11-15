@@ -2,9 +2,10 @@
 # Build the std-on-mlibc demos (the `<arch>-unknown-myos-mlibc` targets).
 # user/std-mlibc/mix, Rust and C in one program: its C half with clang
 # against mlibc, the program with cargo against the prebuilt std of that
-# flavour. user/std-mlibc/unwind: panics that unwind. Both linked with
-# mlibc's libc.a and LLVM's libunwind (toolchain/libcxx):
-# target/std-mlibc-{mix,unwind}-<triple>.
+# flavour. user/std-mlibc/unwind: panics that unwind. user/std-mlibc/unix:
+# what std's unix code asks of the C library and the kernel. All linked
+# with mlibc's libc.a and LLVM's libunwind (toolchain/libcxx):
+# target/std-mlibc-{mix,unwind,unix}-<triple>.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -40,6 +41,11 @@ for arch in x86_64 aarch64 riscv64; do
   RUSTFLAGS="$libs" \
     myos_cargo_build_app "$triple" release "$unwind_dir" "$HERE/unwind/Cargo.toml" std-mlibc-unwind
   cp "$unwind_dir/${triple}/release/std-mlibc-unwind" "$ROOT/target/std-mlibc-unwind-${triple}"
+  echo "==> std-mlibc-unix ($triple)"
+  unix_dir="$ROOT/target/std-mlibc-unix-build-${triple}"
+  RUSTFLAGS="$libs" \
+    myos_cargo_build_app "$triple" release "$unix_dir" "$HERE/unix/Cargo.toml" std-mlibc-unix
+  cp "$unix_dir/${triple}/release/std-mlibc-unix" "$ROOT/target/std-mlibc-unix-${triple}"
   # Rust shared objects (dylib/: librt.so, which holds std, libplugin.so
   # and the program over both): the same sysroot, its rlibs linked into
   # librt.so; libc.so in place of libc.a (mlibc's shared/ before its
