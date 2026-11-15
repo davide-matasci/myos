@@ -78,7 +78,12 @@ net,pkg,heavy,install,alpine-disk` and `test`.
   `IFS`, and `IFS` is set again so that the tests after it are tested.
   CI #2639 and #2641 had forty tests fail with
   `/bin/etc/pty_smokeu2: not found` (the words joined by a `u`) from some
-  point on, on x86, and nothing said where it began.
+  point on, on x86, and nothing said where it began. CI #2649 then found
+  the shell so before its first test, so the check also runs at the
+  runner's start and after its first pass over the tests' files, where no
+  test runs (a `SHELL:` line on the console, and the first test fails
+  for it): a shell that starts broken, one the pass breaks and one a test
+  breaks are different bugs (issue #795).
 
 ## Writing a test
 
