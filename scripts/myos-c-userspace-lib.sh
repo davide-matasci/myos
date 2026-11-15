@@ -2124,6 +2124,39 @@ myos_webkitgtk_is_current() {
   done
 }
 
+# LLVM's compiler on myos (packages/llvm), against mlibc and libc++: its
+# patches and scripts, the LLVM pin (toolchain/libcxx's: one version in
+# the tree), and the whole of mlibc and libc++, which the program links
+# and whose development files the package ships; the cross compilers its
+# build writes.
+myos_llvm_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      sha256sum "$MYOS_ROOT/toolchain/libcxx/versions.env"
+      find "$(myos_port_dir llvm)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+# Built an arch at a time (PORT_ARCH_JOBS): a stamp per arch, for the
+# arches MYOS_LLVM_ARCHES lists (all by default).
+myos_llvm_is_current() {
+  local arch h stamp
+  h="$(myos_llvm_version_hash)"
+  for arch in ${MYOS_LLVM_ARCHES:-x86_64 aarch64 riscv64}; do
+    stamp="$MYOS_ROOT/target/.myos-llvm-${arch}-version"
+    [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/llvm-${arch}/bin/llvm" ]] || return 1
+  done
+}
+
 # WebKitGTK's program (packages/webkitgtk-smoke), against mlibc: its
 # sources, and the whole of what it links: mlibc and libc++, the WebKit
 # archive (keyed on everything under it) and what WebKit leaves to its

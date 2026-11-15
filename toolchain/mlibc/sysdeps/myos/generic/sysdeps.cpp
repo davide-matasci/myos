@@ -814,6 +814,27 @@ int Sysdeps<Sysconf>::operator()(int num, long *ret) {
 		*ret = (long)((num == _SC_PHYS_PAGES ? total : available) / 4);
 		return 0;
 	}
+	// The CPUs the kernel runs on, the first line of /proc/cpuinfo
+	// (`processor_count: N`, docs/proc.md); they are all online. mlibc's
+	// own answer is 1 and a red line on stderr each time: a linker or a
+	// build tool asks to size its thread pool (lld, at every link).
+	case _SC_NPROCESSORS_CONF:
+	case _SC_NPROCESSORS_ONLN: {
+		static const char key[] = "processor_count: ";
+		char buf[64];
+		long n = 0;
+		int fd = __myos_open("/proc/cpuinfo", O_RDONLY | O_CLOEXEC);
+		if (fd >= 0) {
+			ssize_t got = __myos_read(fd, buf, sizeof buf - 1);
+			__myos_close(fd);
+			if (got > (ssize_t)(sizeof key - 1) && memcmp(buf, key, sizeof key - 1) == 0) {
+				buf[got] = 0;
+				n = strtol(buf + sizeof key - 1, nullptr, 10);
+			}
+		}
+		*ret = n > 0 ? n : 1;
+		return 0;
+	}
 	default:
 		return EINVAL;
 	}

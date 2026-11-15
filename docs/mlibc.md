@@ -131,6 +131,9 @@ headers. What myos answers of it (`getrandom`, `getifaddrs`, `mount`,
   `MemTotalKiB` and `MemAvailableKiB` (`/proc/meminfo`, `docs/proc.md`),
   in both libcs: a program asks the libc for the machine's memory, not a
   file in Linux's format.
+- `sysconf(_SC_NPROCESSORS_ONLN)` and `_SC_NPROCESSORS_CONF` are the
+  kernel's `processor_count` (`/proc/cpuinfo`): what a linker or a build
+  tool sizes its thread pool with.
 - `sigtimedwait` with a timeout is `ENOSYS`: the kernel has no timed wait.
 - mlibc's resolver reads `/etc/hosts`, then asks the nameserver of
   `/etc/resolv.conf`, or without that file the first `dns=` of `/net/ndb`
@@ -172,6 +175,54 @@ Linux. The smoke (`user/c-mlibc/cxx_smoke.cpp`, the `cxx` test, one of
 the mlibc smokes: libc++ is a library port and ships no program,
 `docs/ports.md` "Cache keys") covers the runtime's main features.
 
+## The compiler on myos
+
+`packages/llvm` is LLVM's compiler built for myos, against mlibc and
+libc++: clang, lld and the binutils (`llvm-ar`, `-ranlib`, `-nm`,
+`-objcopy`, `-strip`, `-readelf`, `-objdump`, `-size`) as one static
+program, LLVM's multicall driver, which is the tool it is run as. It is at
+the LLVM release of `toolchain/libcxx` and has the X86, AArch64 and RISC-V
+backends, so the compiler on one machine builds for the three.
+
+```sh
+get-myos llvm
+run-myos llvm -O2 -o hello hello.c            # clang; the link is lld's
+run-myos llvm:clang++ -std=c++20 -o prog prog.cc
+run-myos llvm --target=riscv64-unknown-myos -c x.c
+run-myos llvm:llvm-readelf -h x.o
+```
+
+The app holds what a program is built against: clang's own headers
+(`/lib/clang/19`) and the development tree of the target, `/lib/mlibc`:
+`include/` (mlibc's headers, libc++'s in `c++/v1`) and `lib/` (`crt0.o`,
+`libc.a` and its companions, the compiler builtins as `libbuiltins.a`,
+`libc++.a` with libc++abi in it, `libunwind.a`), the host arch's.
+
+clang knows myos by `llvm-myos.myos.patch`:
+
+- **The triple** `<arch>-unknown-myos`, the default. Its target is the
+  arch's generic ELF one, what `<arch>-unknown-none` is for the cross
+  builds (`myos_mlibc_cflags`), so objects of either link together; it
+  defines `__myos__` (and `_GNU_SOURCE` in C++, as `myos_libcxx_cxxflags`
+  does), and no `unix` macro, as nothing on mlibc is built with one.
+  RISC-V is rv64gc with the lp64d ABI and no linker relaxation.
+- **The driver's toolchain**: position-independent code; mlibc's headers
+  before the compiler's and `stdc-predef.h` first; libc++, compiler-rt's
+  builtins and libunwind; and the link of `myos_libcxx_link`: a static
+  PIE (`-pie --no-dynamic-linker --entry=_start`, `crt0.o`, `-lc
+  -lbuiltins`, `--eh-frame-hdr`). `-shared` makes a shared object against
+  the system's `libc.so` ("Shared objects"). `--sysroot=DIR` looks in
+  `DIR/lib/mlibc`.
+- **The program's own path** is the name it was run under (`argv[0]`),
+  not `/proc/self/exe`: the tools are links to one file, and an app's
+  view may name that file by any of them (issue #796).
+
+There is no alternate signal stack on myos (`sigaltstack`), so LLVM is
+built without its use of one: a stack overflow in the compiler is a plain
+fault. The build (`packages/llvm/build.sh`) is CMake's cross build with
+the build machine's clang, an arch at a time in CI (`PORT_ARCH_JOBS`,
+`docs/ports.md`).
+
 ## Ports on mlibc
 
 Most ports are newlib's. On mlibc are the smokes, python
@@ -183,7 +234,8 @@ libcs (`target/<name>-mlibc-<arch>`). The libraries are library ports,
 keyed on what they compile against; their programs (`gio` and the
 smokes) are packages of their own, `glib-tools`, `image-libs-smoke`,
 `cairo-pango-smoke`, `gtk3-smoke` and `libsoup-smoke`, relinked when the
-libc changes (`docs/ports.md` "Cache keys"). tcc's sysroot is newlib's.
+libc changes (`docs/ports.md` "Cache keys"). tcc's sysroot is newlib's. The
+compiler (`packages/llvm`, above) is a program on mlibc too.
 
 ## Limits
 
