@@ -290,12 +290,15 @@ echo "tests: tags=${TAGS:--} skip=${SKIP:--}"
 # selected `pkg` tests use: those their tags name (a package's tests carry
 # its name; a test of the kernel or of another port names what it runs,
 # alpine_jq get-alpine, get_myos_list st). A `pkg` test that names none
-# uses the mirror itself (get-myos's into roots of their own). In the order
+# uses the mirror itself (get-myos's into roots of their own), and so does
+# a `disk` one: its package is too large for /tmp/apps (a tmpfs file is at
+# most 128 MiB) and the test installs it on the scratch disk. In the order
 # of NAMES; what they need get-myos installs with them.
 wanted_packages() {
 	w_want=
 	while read -r w_name w_tags; do
 		has "$w_tags" pkg || continue
+		has "$w_tags" disk && continue
 		for p in $1; do
 			has "$w_tags" "$p" && w_want="$w_want,$p"
 		done

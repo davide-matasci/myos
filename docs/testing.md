@@ -41,6 +41,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `pkg` | need the packages of this build, installed as apps or from the mirror itself. Every package's own test has `pkg` and its package's name |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs, the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares: rustc, Python (with GNU coreutils, bash and diffutils), an X client (`linux-compat/alpine-disks.sh`, built once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
+| `disk` | install their package themselves, on the scratch disk: one too large for `/tmp/apps`, where a file is at most 128 MiB (rustc). The runner's `packages` test leaves it out |
 | `install` | change the boot disk: `get-myos --upgrade` and `--install` on the scratch disk (`docs/install.md`) |
 | `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `timers`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
