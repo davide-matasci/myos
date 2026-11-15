@@ -296,6 +296,10 @@ t -t sched,mm shootdown $SMOKES/sched_smoke shootdown
 # tick, moves from one reading to the next while it loops (sched_smoke.c
 # spin, issue #788: the loop ran with interrupts off).
 t -t sched poll_spin $SMOKES/sched_smoke spin
+# A process's memory is its own: forked children and kernel copy-outs
+# store at one address in eight processes at once, and the watchers' copy
+# never changes (sched_smoke.c aspace).
+t -t sched,mm aspace $SMOKES/sched_smoke aspace
 # /dev/console/kbd: held by one program at a time; the host types Shift+A
 # through the QEMU monitor (host.sh sendkey) once the smoke holds the file,
 # and the smoke checks the four press and release events (kbd_smoke.c).
