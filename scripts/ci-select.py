@@ -104,14 +104,19 @@ RPI3_ARGS = (
 # apk installs) build on each other; `rust` sets up the Rust toolchain in
 # the guest and builds with it (the rust package's test: a download and
 # minutes of rustc under emulation, too long for the pkg boot, which would
-# install every package first); `pkg` is the packages' install from
+# install every package first); `rustc` is the compiler that runs on
+# myos (the rustc package's tests, which install it on the scratch disk
+# themselves: too large for the pkg boot's /tmp/apps); `pkg` is the packages' install from
 # the mirror (the runner's `packages` test, six minutes on riscv64), the
 # packages' and get-myos's tests on it and the `install` tests of the
 # boot disk, which build on the install too. A test tagged with two
 # groups' tags is the first group's; what is tagged none of them is the
 # light boot's (a `heavy` test there, the heavy smoke, stays with the
 # rest).
-HEAVY_GROUPS = {"ostest": ("ostest",), "alpine": ("alpine",), "rust": ("rust",), "pkg": ("pkg", "install")}
+HEAVY_GROUPS = {
+    "ostest": ("ostest",), "alpine": ("alpine",), "rust": ("rust",), "rustc": ("rustc",),
+    "pkg": ("pkg", "install"),
+}
 # The budget of a boot in minutes, by what it runs; riscv64 (the slowest
 # under TCG) gets half as much again. A budget is a guard against a hang,
 # not a target, and a slow runner takes up to twice a good one's time:
@@ -119,7 +124,7 @@ HEAVY_GROUPS = {"ostest": ("ostest",), "alpine": ("alpine",), "rust": ("rust",),
 # pkg boots (every package's install first, python's library among them)
 # 8 on a good runner and 14 on a slow one; on riscv64 the light boot takes
 # 6, the os-test and pkg boots 11 and 12.
-BUDGETS = {"light": 15, "smoke": 8, "ostest": 20, "alpine": 15, "rust": 30, "pkg": 20}
+BUDGETS = {"light": 15, "smoke": 8, "ostest": 20, "alpine": 15, "rust": 30, "rustc": 20, "pkg": 20}
 
 
 def group_of(tags):

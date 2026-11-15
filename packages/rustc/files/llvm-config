@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""llvm-config for the LLVM libraries built for myos, run on the build
+machine: rustc's build asks it which libraries a set of components is and
+how to compile against them. LLVM's own llvm-config of a cross build is a
+myos program; this answers from the tables that one is compiled from
+(share/llvm-config/*.inc, copied from the build by packages/rustc/build.sh,
+with LLVM's version beside them)."""
+import os
+import re
+import sys
+
+PREFIX = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(PREFIX, "share", "llvm-config")
+deps_text = open(os.path.join(DATA, "LibraryDependencies.inc")).read()
+vars_text = open(os.path.join(DATA, "BuildVariables.inc")).read()
+
+
+def var(name):
+    m = re.search(r'#define %s "(.*)"' % name, vars_text)
+    return m.group(1) if m else ""
+
+
+COMPONENTS = {}
+for m in re.finditer(r'\{ "([^"]+)", (nullptr|"[^"]*"), (true|false), \{([^}]*)\} \}', deps_text):
+    name, lib, _, req = m.groups()
+    COMPONENTS[name] = (None if lib == "nullptr" else lib.strip('"'), re.findall(r'"([^"]+)"', req))
+
+
+def libs(names):
+    out, seen = [], set()
+
+    def visit(n):
+        if n in seen:
+            return
+        seen.add(n)
+        if n not in COMPONENTS:
+            sys.exit("llvm-config: unknown component %s" % n)
+        lib, req = COMPONENTS[n]
+        if lib:
+            out.append("-l" + lib)
+        for r in req:
+            visit(r)
+
+    for n in names or sorted(COMPONENTS):
+        visit(n)
+    return out
+
+
+flags = [a for a in sys.argv[1:] if a.startswith("--")]
+names = [a for a in sys.argv[1:] if not a.startswith("--")]
+for f in flags:
+    if f == "--version":
+        print(open(os.path.join(DATA, "version")).read().strip())
+    elif f == "--components":
+        print(" ".join(sorted(COMPONENTS)))
+    elif f == "--cxxflags":
+        # __myos__ and <endian.h> first, as LLVM itself was compiled.
+        print("-I%s/include %s -D__myos__ -include endian.h" % (PREFIX, var("LLVM_CXXFLAGS")))
+    elif f == "--ldflags":
+        print("-L%s/lib" % PREFIX)
+    elif f == "--libs":
+        print(" ".join(libs(names)))
+    elif f == "--system-libs":
+        print("")
+    elif f == "--libdir":
+        print(PREFIX + "/lib")
+    elif f == "--bindir":
+        print(PREFIX + "/bin")
+    elif f == "--includedir":
+        print(PREFIX + "/include")
+    elif f == "--shared-mode":
+        print("static")
+    elif f == "--targets-built":
+        print(var("LLVM_TARGETS_BUILT"))
+    elif f == "--has-rtti":
+        print("NO")
+    elif f == "--assertion-mode":
+        print("OFF")
+    elif f == "--help":
+        # rustc's build reads this to see that --link-static exists.
+        sys.stderr.write("usage: llvm-config <OPTION>... [<COMPONENT>...]\n  --link-shared\n  --link-static\n")
+    elif f in ("--link-static", "--link-shared", "--verbose"):
+        pass
+    else:
+        sys.exit("llvm-config: unknown option %s" % f)

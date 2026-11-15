@@ -165,11 +165,26 @@ shell_intact() {
 	shell_pass a b && return 0
 	echo "the runner's shell no longer passes \"\$@\" on as words ($1)"
 	shell_show a b
-	echo "IFS: $(printf %s "$IFS" | od -t x1 | head -n 2 | tr '\n' ' ')"
+	echo "IFS: ${#IFS} byte(s): $(printf %s "$IFS" | od -t x1 | head -n 2 | tr '\n' ' ')"
+	# What else the shell holds beside that character (the terminal's
+	# width is the next word of its memory), and when: its pid, the last
+	# background job's, the time since boot.
+	echo "COLUMNS=${COLUMNS-unset} pid $$ last job ${!-none} up $(cut -d' ' -f1 /proc/uptime 2> /dev/null)"
 	IFS=' 	
 '
 	shell_pass a b || echo "and setting IFS again did not mend it"
 	return 1
+}
+# shell_phase WHEN: the same check where no test runs, at the runner's
+# start and after its first pass over the tests' files: a shell that
+# starts broken (an exec's fault), one that the pass breaks (its own
+# work: functions defined, the lists read) and one that a test breaks
+# are three different bugs. Said on the console, and the first test
+# fails for it.
+shell_phase() {
+	shell_intact "found so $1" > $OUT/shell.phase && return 0
+	sed 's/^/SHELL: /' $OUT/shell.phase
+	SHELL_BAD=1
 }
 
 # t [-t TAGS] NAME COMMAND...: run one test, if the selection takes it.
@@ -198,6 +213,11 @@ t() {
 	# the runner's own variables are named so that none clobbers them.
 	t_pre=0
 	shell_intact "found so before $t_name" > $OUT/$t_name.pre || t_pre=1
+	if [ -n "$SHELL_BAD" ]; then
+		cat $OUT/shell.phase >> $OUT/$t_name.pre
+		t_pre=1
+		SHELL_BAD=
+	fi
 	hung_watch_start $t_name
 	t_hung=$!
 	capture $OUT/$t_name.out "$@"
@@ -290,12 +310,15 @@ echo "tests: tags=${TAGS:--} skip=${SKIP:--}"
 # selected `pkg` tests use: those their tags name (a package's tests carry
 # its name; a test of the kernel or of another port names what it runs,
 # alpine_jq get-alpine, get_myos_list st). A `pkg` test that names none
-# uses the mirror itself (get-myos's into roots of their own). In the order
+# uses the mirror itself (get-myos's into roots of their own), and so does
+# a `disk` one: its package is too large for /tmp/apps (a tmpfs file is at
+# most 128 MiB) and the test installs it on the scratch disk. In the order
 # of NAMES; what they need get-myos installs with them.
 wanted_packages() {
 	w_want=
 	while read -r w_name w_tags; do
 		has "$w_tags" pkg || continue
+		has "$w_tags" disk && continue
 		for p in $1; do
 			has "$w_tags" "$p" && w_want="$w_want,$p"
 		done
@@ -378,9 +401,12 @@ source_tests() {
 # whatever the selection says (its failure fails them on their own). Then
 # the second pass runs them.
 rm -f $OUT/selected
+SHELL_BAD=
+shell_phase "at the runner's start"
 LISTING=1
 source_tests
 LISTING=
+shell_phase "after the first pass over the tests' files"
 if [ -s $OUT/selected ]; then
 	echo "selected: $(wc -l < $OUT/selected) tests"
 fi

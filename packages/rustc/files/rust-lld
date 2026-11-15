@@ -1,0 +1,29 @@
+#!/bin/sh
+# rustc's linker on myos: lld (the llvm app's) with where mlibc and
+# LLVM's runtimes are. A shared object and a program over shared objects
+# link the shared mlibc; such a program starts through /lib/ld.so and
+# takes its entry from mlibc's crt0.o (std's own is in the shared object
+# that holds std). Any other program is a static PIE.
+lib=/lib/mlibc/lib
+shared=0
+dynamic=0
+for a in "$@"; do
+	case "$a" in
+	-shared) shared=1 ;;
+	*.so) dynamic=1 ;;
+	esac
+done
+# rustc names the flavour of the generic driver: ld.lld is the one.
+if [ "$1" = -flavor ]; then
+	shift 2
+fi
+if [ $shared = 1 ]; then
+	exec /bin/custom/ld.lld "$@" --hash-style=gnu -L/lib -L$lib
+elif [ $dynamic = 1 ]; then
+	exec /bin/custom/ld.lld "$@" $lib/crt0.o --dynamic-linker=/lib/ld.so --export-dynamic \
+		--hash-style=gnu -L/lib -L$lib
+else
+	# No dynamic linker: lld then settles the weak symbols a static
+	# program leaves undefined itself, with no relocation for one to do.
+	exec /bin/custom/ld.lld "$@" --no-dynamic-linker -L$lib
+fi

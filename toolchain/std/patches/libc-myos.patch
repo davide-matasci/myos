@@ -844,7 +844,7 @@ to the libc crate: MIT OR Apache-2.0, as the crate
 +pub const O_LARGEFILE: c_int = 0x20000;
 --- a/src/unix/linux_like/myos/mod.rs
 +++ b/src/unix/linux_like/myos/mod.rs
-@@ -0,0 +1,927 @@
+@@ -0,0 +1,1185 @@
 +use crate::prelude::*;
 +use crate::{
 +    cc_t,
@@ -904,7 +904,7 @@ to the libc crate: MIT OR Apache-2.0, as the crate
 +pub type rlim_t = crate::c_ulong;
 +
 +s! {
-+    // mlibc's own layouts (its <locale.h> and abi-bits/sigevent.h).
++    // mlibc's own layout (its <locale.h>).
 +    pub struct lconv {
 +        pub decimal_point: *mut c_char,
 +        pub thousands_sep: *mut c_char,
@@ -930,15 +930,6 @@ to the libc crate: MIT OR Apache-2.0, as the crate
 +        pub int_n_sep_by_space: c_char,
 +        pub int_p_sign_posn: c_char,
 +        pub int_n_sign_posn: c_char,
-+    }
-+
-+    pub struct sigevent {
-+        pub sigev_value: crate::sigval,
-+        pub sigev_notify: c_int,
-+        pub sigev_signo: c_int,
-+        pub sigev_notify_function: Option<extern "C" fn(crate::sigval)>,
-+        pub sigev_notify_attributes: *mut crate::pthread_attr_t,
-+        pub sigev_notify_thread_id: crate::pid_t,
 +    }
 +
 +    pub struct siginfo_t {
@@ -1194,6 +1185,17 @@ to the libc crate: MIT OR Apache-2.0, as the crate
 +}
 +
 +s_no_extra_traits! {
++    // mlibc's own layout (abi-bits/sigevent.h); its traits are the
++    // ones `linux_like` writes for the struct.
++    pub struct sigevent {
++        pub sigev_value: crate::sigval,
++        pub sigev_notify: c_int,
++        pub sigev_signo: c_int,
++        pub sigev_notify_function: Option<extern "C" fn(crate::sigval)>,
++        pub sigev_notify_attributes: *mut crate::pthread_attr_t,
++        pub sigev_notify_thread_id: crate::pid_t,
++    }
++
 +    // Internal, for casts to access union fields
 +    struct sifields_sigchld {
 +        si_pid: crate::pid_t,
@@ -1479,6 +1481,135 @@ to the libc crate: MIT OR Apache-2.0, as the crate
 +pub const POSIX_FADV_NOREUSE: crate::c_int = 5;
 +pub const _SC_CLK_TCK: crate::c_int = 2;
 +pub const _SC_PAGESIZE: crate::c_int = 30;
++pub const _SC_PAGE_SIZE: crate::c_int = _SC_PAGESIZE;
++// The rest of sysconf's names (mlibc's <unistd.h>).
++pub const _SC_ARG_MAX: crate::c_int = 0;
++pub const _SC_CHILD_MAX: crate::c_int = 1;
++pub const _SC_NGROUPS_MAX: crate::c_int = 3;
++pub const _SC_OPEN_MAX: crate::c_int = 4;
++pub const _SC_STREAM_MAX: crate::c_int = 5;
++pub const _SC_TZNAME_MAX: crate::c_int = 6;
++pub const _SC_JOB_CONTROL: crate::c_int = 7;
++pub const _SC_SAVED_IDS: crate::c_int = 8;
++pub const _SC_REALTIME_SIGNALS: crate::c_int = 9;
++pub const _SC_PRIORITY_SCHEDULING: crate::c_int = 10;
++pub const _SC_TIMERS: crate::c_int = 11;
++pub const _SC_ASYNCHRONOUS_IO: crate::c_int = 12;
++pub const _SC_PRIORITIZED_IO: crate::c_int = 13;
++pub const _SC_SYNCHRONIZED_IO: crate::c_int = 14;
++pub const _SC_FSYNC: crate::c_int = 15;
++pub const _SC_MAPPED_FILES: crate::c_int = 16;
++pub const _SC_MEMLOCK: crate::c_int = 17;
++pub const _SC_MEMLOCK_RANGE: crate::c_int = 18;
++pub const _SC_MEMORY_PROTECTION: crate::c_int = 19;
++pub const _SC_MESSAGE_PASSING: crate::c_int = 20;
++pub const _SC_SEMAPHORES: crate::c_int = 21;
++pub const _SC_SHARED_MEMORY_OBJECTS: crate::c_int = 22;
++pub const _SC_AIO_LISTIO_MAX: crate::c_int = 23;
++pub const _SC_AIO_MAX: crate::c_int = 24;
++pub const _SC_AIO_PRIO_DELTA_MAX: crate::c_int = 25;
++pub const _SC_DELAYTIMER_MAX: crate::c_int = 26;
++pub const _SC_MQ_OPEN_MAX: crate::c_int = 27;
++pub const _SC_MQ_PRIO_MAX: crate::c_int = 28;
++pub const _SC_VERSION: crate::c_int = 29;
++pub const _SC_RTSIG_MAX: crate::c_int = 31;
++pub const _SC_SEM_NSEMS_MAX: crate::c_int = 32;
++pub const _SC_SEM_VALUE_MAX: crate::c_int = 33;
++pub const _SC_SIGQUEUE_MAX: crate::c_int = 34;
++pub const _SC_TIMER_MAX: crate::c_int = 35;
++pub const _SC_BC_BASE_MAX: crate::c_int = 36;
++pub const _SC_BC_DIM_MAX: crate::c_int = 37;
++pub const _SC_BC_SCALE_MAX: crate::c_int = 38;
++pub const _SC_BC_STRING_MAX: crate::c_int = 39;
++pub const _SC_COLL_WEIGHTS_MAX: crate::c_int = 40;
++pub const _SC_EXPR_NEST_MAX: crate::c_int = 42;
++pub const _SC_LINE_MAX: crate::c_int = 43;
++pub const _SC_RE_DUP_MAX: crate::c_int = 44;
++pub const _SC_2_VERSION: crate::c_int = 46;
++pub const _SC_2_C_BIND: crate::c_int = 47;
++pub const _SC_2_C_DEV: crate::c_int = 48;
++pub const _SC_2_FORT_DEV: crate::c_int = 49;
++pub const _SC_2_FORT_RUN: crate::c_int = 50;
++pub const _SC_2_SW_DEV: crate::c_int = 51;
++pub const _SC_2_LOCALEDEF: crate::c_int = 52;
++pub const _SC_IOV_MAX: crate::c_int = 60;
++pub const _SC_THREADS: crate::c_int = 67;
++pub const _SC_THREAD_SAFE_FUNCTIONS: crate::c_int = 68;
++pub const _SC_GETGR_R_SIZE_MAX: crate::c_int = 69;
++pub const _SC_LOGIN_NAME_MAX: crate::c_int = 71;
++pub const _SC_TTY_NAME_MAX: crate::c_int = 72;
++pub const _SC_THREAD_DESTRUCTOR_ITERATIONS: crate::c_int = 73;
++pub const _SC_THREAD_KEYS_MAX: crate::c_int = 74;
++pub const _SC_THREAD_STACK_MIN: crate::c_int = 75;
++pub const _SC_THREAD_THREADS_MAX: crate::c_int = 76;
++pub const _SC_THREAD_ATTR_STACKADDR: crate::c_int = 77;
++pub const _SC_THREAD_ATTR_STACKSIZE: crate::c_int = 78;
++pub const _SC_THREAD_PRIORITY_SCHEDULING: crate::c_int = 79;
++pub const _SC_THREAD_PRIO_INHERIT: crate::c_int = 80;
++pub const _SC_THREAD_PRIO_PROTECT: crate::c_int = 81;
++pub const _SC_THREAD_PROCESS_SHARED: crate::c_int = 82;
++pub const _SC_PHYS_PAGES: crate::c_int = 85;
++pub const _SC_AVPHYS_PAGES: crate::c_int = 86;
++pub const _SC_ATEXIT_MAX: crate::c_int = 87;
++pub const _SC_PASS_MAX: crate::c_int = 88;
++pub const _SC_XOPEN_VERSION: crate::c_int = 89;
++pub const _SC_XOPEN_XCU_VERSION: crate::c_int = 90;
++pub const _SC_XOPEN_UNIX: crate::c_int = 91;
++pub const _SC_XOPEN_CRYPT: crate::c_int = 92;
++pub const _SC_XOPEN_ENH_I18N: crate::c_int = 93;
++pub const _SC_XOPEN_SHM: crate::c_int = 94;
++pub const _SC_2_CHAR_TERM: crate::c_int = 95;
++pub const _SC_2_UPE: crate::c_int = 97;
++pub const _SC_XOPEN_XPG2: crate::c_int = 98;
++pub const _SC_XOPEN_XPG3: crate::c_int = 99;
++pub const _SC_XOPEN_XPG4: crate::c_int = 100;
++pub const _SC_NZERO: crate::c_int = 109;
++pub const _SC_XBS5_ILP32_OFF32: crate::c_int = 125;
++pub const _SC_XBS5_ILP32_OFFBIG: crate::c_int = 126;
++pub const _SC_XBS5_LP64_OFF64: crate::c_int = 127;
++pub const _SC_XBS5_LPBIG_OFFBIG: crate::c_int = 128;
++pub const _SC_XOPEN_LEGACY: crate::c_int = 129;
++pub const _SC_XOPEN_REALTIME: crate::c_int = 130;
++pub const _SC_XOPEN_REALTIME_THREADS: crate::c_int = 131;
++pub const _SC_ADVISORY_INFO: crate::c_int = 132;
++pub const _SC_BARRIERS: crate::c_int = 133;
++pub const _SC_CLOCK_SELECTION: crate::c_int = 137;
++pub const _SC_CPUTIME: crate::c_int = 138;
++pub const _SC_THREAD_CPUTIME: crate::c_int = 139;
++pub const _SC_MONOTONIC_CLOCK: crate::c_int = 149;
++pub const _SC_READER_WRITER_LOCKS: crate::c_int = 153;
++pub const _SC_SPIN_LOCKS: crate::c_int = 154;
++pub const _SC_REGEXP: crate::c_int = 155;
++pub const _SC_SHELL: crate::c_int = 157;
++pub const _SC_SPAWN: crate::c_int = 159;
++pub const _SC_SPORADIC_SERVER: crate::c_int = 160;
++pub const _SC_THREAD_SPORADIC_SERVER: crate::c_int = 161;
++pub const _SC_TIMEOUTS: crate::c_int = 164;
++pub const _SC_TYPED_MEMORY_OBJECTS: crate::c_int = 165;
++pub const _SC_2_PBS: crate::c_int = 168;
++pub const _SC_2_PBS_ACCOUNTING: crate::c_int = 169;
++pub const _SC_2_PBS_LOCATE: crate::c_int = 170;
++pub const _SC_2_PBS_MESSAGE: crate::c_int = 171;
++pub const _SC_2_PBS_TRACK: crate::c_int = 172;
++pub const _SC_SYMLOOP_MAX: crate::c_int = 173;
++pub const _SC_STREAMS: crate::c_int = 174;
++pub const _SC_2_PBS_CHECKPOINT: crate::c_int = 175;
++pub const _SC_V6_ILP32_OFF32: crate::c_int = 176;
++pub const _SC_V6_ILP32_OFFBIG: crate::c_int = 177;
++pub const _SC_V6_LP64_OFF64: crate::c_int = 178;
++pub const _SC_V6_LPBIG_OFFBIG: crate::c_int = 179;
++pub const _SC_TRACE: crate::c_int = 181;
++pub const _SC_TRACE_EVENT_FILTER: crate::c_int = 182;
++pub const _SC_TRACE_INHERIT: crate::c_int = 183;
++pub const _SC_TRACE_LOG: crate::c_int = 184;
++pub const _SC_IPV6: crate::c_int = 235;
++pub const _SC_RAW_SOCKETS: crate::c_int = 236;
++pub const _SC_SS_REPL_MAX: crate::c_int = 241;
++pub const _SC_THREAD_ROBUST_PRIO_INHERIT: crate::c_int = 247;
++pub const _SC_THREAD_ROBUST_PRIO_PROTECT: crate::c_int = 248;
++pub const _SC_MINSIGSTKSZ: crate::c_int = 249;
++pub const _SC_SIGSTKSZ: crate::c_int = 250;
++pub const _SC_TOTAL_PAGES: crate::c_int = 1000;
 +pub const _SC_GETPW_R_SIZE_MAX: crate::c_int = 70;
 +pub const _SC_NPROCESSORS_CONF: crate::c_int = 83;
 +pub const _SC_NPROCESSORS_ONLN: crate::c_int = 84;
@@ -1488,6 +1619,133 @@ to the libc crate: MIT OR Apache-2.0, as the crate
 +pub const PTHREAD_STACK_MIN: usize = 16384;
 +pub const TIOCSCTTY: crate::Ioctl = 21518;
 +pub const FIONREAD: crate::Ioctl = 21531;
++// The terminal's constants (abi-bits/termios.h, myos's own, and mlibc's
++// <termios.h>).
++pub const NCCS: usize = 32;
++pub const VEOF: usize = 4;
++pub const VTIME: usize = 5;
++pub const VMIN: usize = 6;
++pub const VSWTC: usize = 7;
++pub const VSTART: usize = 8;
++pub const VSTOP: usize = 9;
++pub const VSUSP: usize = 10;
++pub const VEOL: usize = 11;
++pub const VREPRINT: usize = 12;
++pub const VDISCARD: usize = 13;
++pub const VWERASE: usize = 14;
++pub const VEOL2: usize = 16;
++pub const IUCLC: crate::tcflag_t = 0o1000;
++pub const IXON: crate::tcflag_t = 0o2000;
++pub const IXOFF: crate::tcflag_t = 0o10000;
++pub const IUTF8: crate::tcflag_t = 0o40000;
++pub const OLCUC: crate::tcflag_t = 0o2;
++pub const ONLCR: crate::tcflag_t = 0o4;
++pub const NLDLY: crate::tcflag_t = 0o400;
++pub const CRDLY: crate::tcflag_t = 0o3000;
++pub const CR1: crate::tcflag_t = 0o1000;
++pub const CR2: crate::tcflag_t = 0o2000;
++pub const CR3: crate::tcflag_t = 0o3000;
++pub const TABDLY: crate::tcflag_t = 0o14000;
++pub const TAB1: crate::tcflag_t = 0o4000;
++pub const TAB2: crate::tcflag_t = 0o10000;
++pub const TAB3: crate::tcflag_t = 0o14000;
++pub const BSDLY: crate::tcflag_t = 0o20000;
++pub const BS1: crate::tcflag_t = 0o20000;
++pub const FFDLY: crate::tcflag_t = 0o100000;
++pub const FF1: crate::tcflag_t = 0o100000;
++pub const VTDLY: crate::tcflag_t = 0o40000;
++pub const VT1: crate::tcflag_t = 0o40000;
++pub const CSIZE: crate::tcflag_t = 0o60;
++pub const CS6: crate::tcflag_t = 0o20;
++pub const CS7: crate::tcflag_t = 0o40;
++pub const CS8: crate::tcflag_t = 0o60;
++pub const CSTOPB: crate::tcflag_t = 0o100;
++pub const CREAD: crate::tcflag_t = 0o200;
++pub const PARENB: crate::tcflag_t = 0o400;
++pub const PARODD: crate::tcflag_t = 0o1000;
++pub const HUPCL: crate::tcflag_t = 0o2000;
++pub const CLOCAL: crate::tcflag_t = 0o4000;
++pub const ISIG: crate::tcflag_t = 0o1;
++pub const ICANON: crate::tcflag_t = 0o2;
++pub const ECHOE: crate::tcflag_t = 0o20;
++pub const ECHOK: crate::tcflag_t = 0o40;
++pub const ECHONL: crate::tcflag_t = 0o100;
++pub const NOFLSH: crate::tcflag_t = 0o200;
++pub const TOSTOP: crate::tcflag_t = 0o400;
++pub const IEXTEN: crate::tcflag_t = 0o1000;
++pub const EXTA: crate::tcflag_t = 0o16;
++pub const EXTB: crate::tcflag_t = 0o17;
++pub const XCASE: crate::tcflag_t = 0o4;
++pub const ECHOCTL: crate::tcflag_t = 0o2000;
++pub const ECHOPRT: crate::tcflag_t = 0o4000;
++pub const ECHOKE: crate::tcflag_t = 0o10000;
++pub const FLUSHO: crate::tcflag_t = 0o20000;
++pub const PENDIN: crate::tcflag_t = 0o40000;
++pub const EXTPROC: crate::tcflag_t = 0o200000;
++pub const XTABS: crate::tcflag_t = 0o14000;
++pub const B0: crate::speed_t = 0o0;
++pub const B50: crate::speed_t = 0o1;
++pub const B75: crate::speed_t = 0o2;
++pub const B110: crate::speed_t = 0o3;
++pub const B134: crate::speed_t = 0o4;
++pub const B150: crate::speed_t = 0o5;
++pub const B200: crate::speed_t = 0o6;
++pub const B300: crate::speed_t = 0o7;
++pub const B600: crate::speed_t = 0o10;
++pub const B1200: crate::speed_t = 0o11;
++pub const B1800: crate::speed_t = 0o12;
++pub const B2400: crate::speed_t = 0o13;
++pub const B4800: crate::speed_t = 0o14;
++pub const B9600: crate::speed_t = 0o15;
++pub const B19200: crate::speed_t = 0o16;
++pub const B38400: crate::speed_t = 0o17;
++pub const CBAUD: crate::tcflag_t = 0o10017;
++pub const CBAUDEX: crate::tcflag_t = 0o10000;
++pub const B57600: crate::speed_t = 0o10001;
++pub const B115200: crate::speed_t = 0o10002;
++pub const B230400: crate::speed_t = 0o10003;
++pub const B460800: crate::speed_t = 0o10004;
++pub const B500000: crate::speed_t = 0o10005;
++pub const B576000: crate::speed_t = 0o10006;
++pub const B921600: crate::speed_t = 0o10007;
++pub const B1000000: crate::speed_t = 0o10010;
++pub const B1152000: crate::speed_t = 0o10011;
++pub const B1500000: crate::speed_t = 0o10012;
++pub const B2000000: crate::speed_t = 0o10013;
++pub const B2500000: crate::speed_t = 0o10014;
++pub const B3000000: crate::speed_t = 0o10015;
++pub const B3500000: crate::speed_t = 0o10016;
++pub const B4000000: crate::speed_t = 0o10017;
++pub const TCSANOW: c_int = 0;
++pub const TCSADRAIN: c_int = 1;
++pub const TCSAFLUSH: c_int = 2;
++pub const TIOCM_DTR: crate::tcflag_t = 0o2;
++pub const TIOCM_RTS: crate::tcflag_t = 0o4;
++pub const TIOCM_CTS: crate::tcflag_t = 0o40;
++pub const TIOCM_CAR: crate::tcflag_t = 0o100;
++pub const TIOCM_RNG: crate::tcflag_t = 0o200;
++pub const TIOCM_DSR: crate::tcflag_t = 0o400;
++pub const TIOCM_RI: crate::tcflag_t = 0o200;
++pub const TIOCM_CD: crate::tcflag_t = 0o100;
++pub const TIOCGSID: crate::tcflag_t = 0o52051;
++// The terminal ioctls (abi-bits/ioctls.h).
++pub const TCGETS: crate::Ioctl = 0x5401;
++pub const TCSETS: crate::Ioctl = 0x5402;
++pub const TCSETSW: crate::Ioctl = 0x5403;
++pub const TCSETSF: crate::Ioctl = 0x5404;
++pub const TIOCEXCL: crate::Ioctl = 0x540C;
++pub const TIOCNXCL: crate::Ioctl = 0x540D;
++pub const TIOCGPGRP: crate::Ioctl = 0x540F;
++pub const TIOCSPGRP: crate::Ioctl = 0x5410;
++pub const TIOCOUTQ: crate::Ioctl = 0x5411;
++pub const TIOCSTI: crate::Ioctl = 0x5412;
++pub const TIOCGWINSZ: crate::Ioctl = 0x5413;
++pub const TIOCSWINSZ: crate::Ioctl = 0x5414;
++pub const TIOCINQ: crate::Ioctl = FIONREAD;
++pub const TIOCNOTTY: crate::Ioctl = 0x5422;
++pub const FIONCLEX: crate::Ioctl = 0x5450;
++pub const FIOCLEX: crate::Ioctl = 0x5451;
++pub const FIOASYNC: crate::Ioctl = 0x5452;
 +pub const IOV_MAX: crate::c_int = 1024;
 +pub const FIONBIO: u64 = 21537;
 +pub const EAI_SYSTEM: crate::c_int = 9;

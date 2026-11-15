@@ -335,7 +335,111 @@ static int spin(void) {
     return 0;
 }
 
+/* `sched_smoke aspace`: a process's memory is its own. Every process of
+ * this program has `cell` at one address. Writers store into theirs, by
+ * hand in a forked child and through the kernel (a byte read from a pipe
+ * and from a file), as fast as they can on every CPU; watchers keep
+ * theirs zero and look at it between syscalls and forks. A store that
+ * lands in another address space (a copy-on-write page still shared, a
+ * copy-out through the wrong page tables) shows as a watcher's cell that
+ * is not zero. */
+static volatile int cell_before = -1, cell, cell_after = -1;
+
+static void aspace_writer(int secs) {
+    int p[2];
+    char path[] = "/tmp/aspace-XXXXXX";
+    int f = mkstemp(path);
+    if (pipe(p) < 0 || f < 0 || write(f, "u", 1) != 1) {
+        _exit(2);
+    }
+    unlink(path);
+    time_t end = time(NULL) + secs;
+    while (time(NULL) < end) {
+        for (int i = 0; i < 200; i++) {
+            if (write(p[1], "u", 1) != 1 || read(p[0], (void *)&cell, 1) != 1) {
+                _exit(2);
+            }
+            cell = 0;
+            if (pread(f, (void *)&cell, 1, 0) != 1) {
+                _exit(2);
+            }
+            cell = 'u';
+        }
+    }
+    _exit(0);
+}
+
+static void aspace_watcher(int secs) {
+    time_t end = time(NULL) + secs;
+    long forks = 0;
+    while (time(NULL) < end) {
+        for (int i = 0; i < 50; i++) {
+            /* A child that stores into its copy of the page, and one that
+             * leaves at once: the parent's stays as it was. */
+            pid_t c = fork();
+            if (c < 0) {
+                _exit(2);
+            }
+            if (c == 0) {
+                cell = 'u';
+                cell_before = 'u';
+                cell_after = 'u';
+                _exit(cell == 'u' ? 0 : 3);
+            }
+            int st = 0;
+            getpid();
+            if (cell != 0 || cell_before != -1 || cell_after != -1) {
+                printf("[ FAIL ] aspace: a watcher's cell is %d (%d, %d) after %ld forks, its child running\n",
+                       cell, cell_before, cell_after, forks);
+                _exit(1);
+            }
+            waitpid(c, &st, 0);
+            forks++;
+            if (cell != 0 || cell_before != -1 || cell_after != -1 || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+                printf("[ FAIL ] aspace: a watcher's cell is %d (%d, %d) after %ld forks (child status %d)\n",
+                       cell, cell_before, cell_after, forks, st);
+                _exit(1);
+            }
+        }
+    }
+    _exit(0);
+}
+
+static int aspace(int secs) {
+    enum { N = 8 };
+    pid_t kids[N];
+    for (int i = 0; i < N; i++) {
+        kids[i] = fork();
+        if (kids[i] < 0) {
+            return fail("fork");
+        }
+        if (kids[i] == 0) {
+            if (i % 2) {
+                aspace_writer(secs);
+            } else {
+                aspace_watcher(secs);
+            }
+        }
+    }
+    int bad = 0;
+    for (int i = 0; i < N; i++) {
+        int st = 0;
+        waitpid(kids[i], &st, 0);
+        if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+            bad = 1;
+        }
+    }
+    if (bad || cell != 0) {
+        return fail("aspace: a store reached another process");
+    }
+    printf("[ OK ] aspace\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "aspace") == 0) {
+        return aspace(argc > 2 ? atoi(argv[2]) : 5);
+    }
     if (argc > 1 && strcmp(argv[1], "shootdown") == 0) {
         return shootdown();
     }

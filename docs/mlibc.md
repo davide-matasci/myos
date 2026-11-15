@@ -235,7 +235,9 @@ keyed on what they compile against; their programs (`gio` and the
 smokes) are packages of their own, `glib-tools`, `image-libs-smoke`,
 `cairo-pango-smoke`, `gtk3-smoke` and `libsoup-smoke`, relinked when the
 libc changes (`docs/ports.md` "Cache keys"). tcc's sysroot is newlib's. The
-compiler (`packages/llvm`, above) is a program on mlibc too.
+compiler (`packages/llvm`, above) is a program on mlibc too, and so are
+the Rust compiler and cargo (`packages/rustc`), which link what its app
+carries of mlibc.
 
 ## Limits
 

@@ -2158,6 +2158,42 @@ myos_llvm_is_current() {
   done
 }
 
+# The Rust compiler and cargo for myos (packages/rustc): the pinned
+# nightly (its source is that nightly's tarball), the port's pin, patches
+# and scripts, the std's sources (its wiring is applied to the compiler's
+# library/ and its libc patch to the vendored crate), and the whole of
+# what the programs link: mlibc, libc++ and LibreSSL; the cross compilers
+# its build writes.
+myos_rustc_version_hash() {
+  local h
+  h="$(
+    {
+      myos_dep_hash mlibc
+      myos_dep_hash libcxx
+      myos_dep_hash libressl mlibc
+      myos_sysroot_version_hash
+      sha256sum "$MYOS_ROOT/rust-toolchain.toml"
+      find "$(myos_port_dir rustc)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+        _myos_write_cross_driver
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+}
+
+# Built an arch at a time (PORT_ARCH_JOBS): a stamp per arch, for the
+# arches MYOS_RUSTC_ARCHES lists (all by default).
+myos_rustc_is_current() {
+  local arch h stamp
+  h="$(myos_rustc_version_hash)"
+  for arch in ${MYOS_RUSTC_ARCHES:-x86_64 aarch64 riscv64}; do
+    stamp="$MYOS_ROOT/target/.myos-rustc-${arch}-version"
+    [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
+    [[ -f "$MYOS_ROOT/target/rustc-${arch}/bin/rustc" && -f "$MYOS_ROOT/target/rustc-${arch}/bin/cargo" ]] || return 1
+  done
+}
+
 # WebKitGTK's program (packages/webkitgtk-smoke), against mlibc: its
 # sources, and the whole of what it links: mlibc and libc++, the WebKit
 # archive (keyed on everything under it) and what WebKit leaves to its

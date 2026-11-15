@@ -50,6 +50,9 @@ t = re.sub(r'^channel = ".*"', 'channel = "' + probe + '"', t, count=1, flags=re
 open(p, "w").write(t)
 PYEDIT
 echo "Updated $file"
+# The rustc package is built from this nightly's source: its pin
+# (packages/rustc/versions.env) and patches follow by hand.
+echo "note: packages/rustc/versions.env pins the nightly's source tarball: update RUST_NIGHTLY and RUST_SRC_SHA256, and rebase its patches" >&2
 # The rust package's toolchain is the same nightly (its std is this sysroot).
 if [[ "$PROBE" =~ ^nightly-([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
   "$ROOT/packages/rust/pin.sh" "${BASH_REMATCH[1]}"

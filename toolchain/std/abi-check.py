@@ -139,7 +139,7 @@ def main() -> None:
     (OUT / "src/lib.rs").write_text("\n".join(asserts) + "\n")
     (OUT / "Cargo.toml").write_text(
         '[package]\nname = "std-abi-check"\nversion = "0.0.0"\nedition = "2021"\npublish = false\n\n'
-        f'[dependencies]\nlibc = {{ path = "{LIBC}", default-features = false }}\n\n[workspace]\n'
+        f'[dependencies]\nlibc = {{ path = "{LIBC}", default-features = false, features = ["extra_traits"] }}\n\n[workspace]\n'
     )
     r = subprocess.run(
         ["cargo", f"+{os.environ['MYOS_NIGHTLY']}", "build", "-q", "-Z", "unstable-options",

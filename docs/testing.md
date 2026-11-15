@@ -41,12 +41,13 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `pkg` | need the packages of this build, installed as apps or from the mirror itself. Every package's own test has `pkg` and its package's name |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs, the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares: rustc, Python (with GNU coreutils, bash and diffutils), an X client (`linux-compat/alpine-disks.sh`, built once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
+| `disk` | install their package themselves, on the scratch disk: one too large for `/tmp/apps`, where a file is at most 128 MiB (rustc). The runner's `packages` test leaves it out |
 | `install` | change the boot disk: `get-myos --upgrade` and `--install` on the scratch disk (`docs/install.md`) |
 | `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `timers`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
 | a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port's `test.sh`. The runner sets it on every test of the file. |
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests). Each is also tagged with its newlib test's name (`docs/mlibc.md`). |
-| `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |
+| `alpine`, `python`, `rust`, `rustc`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |
 
 ### Budgets and hung tests
 
@@ -77,7 +78,12 @@ net,pkg,heavy,install,alpine-disk` and `test`.
   `IFS`, and `IFS` is set again so that the tests after it are tested.
   CI #2639 and #2641 had forty tests fail with
   `/bin/etc/pty_smokeu2: not found` (the words joined by a `u`) from some
-  point on, on x86, and nothing said where it began.
+  point on, on x86, and nothing said where it began. CI #2649 then found
+  the shell so before its first test, so the check also runs at the
+  runner's start and after its first pass over the tests' files, where no
+  test runs (a `SHELL:` line on the console, and the first test fails
+  for it): a shell that starts broken, one the pass breaks and one a test
+  breaks are different bugs (issue #795).
 
 ## Writing a test
 
@@ -338,9 +344,10 @@ others under TCG.
 
 A machine's selection runs in parallel boots. Each long group runs whole,
 in a boot of its own: `ostest` (the curated os-test list), `alpine` (the
-apk installs), `rust` (the rust package's tests) and `pkg` (the packages'
+apk installs), `rust` (the rust package's tests), `rustc` (the rustc
+package's: the compiler installed on the scratch disk) and `pkg` (the packages'
 install, their tests and get-myos's, and the `install` tests). One light
-boot runs everything else. A full run is thus five boots per machine.
+boot runs everything else. A full run is thus six boots per machine.
 
 The x86 boots run under KVM, on the runner's CPU; the aarch64 and riscv64
 ones under TCG, every instruction emulated. That, not the kernel, is most

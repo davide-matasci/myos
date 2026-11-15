@@ -48,7 +48,7 @@ pages under [`docs/`](docs/) explain each part.
   [packages](docs/packages.md)).
 - **Userspace**: Rust programs (with a `std` port), C with newlib or
   mlibc, C++, and ported programs such as sbase, ubase, ripgrep, TinyCC,
-  clang and lld, vim, git and Python ([userspace](docs/userspace.md),
+  clang and lld, rustc and cargo, vim, git and Python ([userspace](docs/userspace.md),
   [ports](docs/ports.md), [mlibc](docs/mlibc.md)).
 - **Packages**: programs the image does not carry, installed as apps with
   `get-myos` and run with `run-myos` ([packages](docs/packages.md)).
