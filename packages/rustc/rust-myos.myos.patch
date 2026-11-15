@@ -1,0 +1,312 @@
+myos in the Rust compiler's source (the nightly rust-toolchain.toml pins,
+its source tarball): the targets <arch>-unknown-myos-mlibc as built-in
+ones, with myos as a host; what the compiler's build needs to make one
+for them; and the host side of the LLVM it carries. The library and the
+vendored crates are changed by scripts (toolchain/std/patches/wire-myos.py,
+port-crates.py), not here.
+
+- compiler/rustc_target: the three targets and their base (a unix on
+  mlibc: static PIEs linked by lld, or dynamic over mlibc's shared
+  objects), `myos` among the systems.
+- src/bootstrap: the targets are new to the stage0 compiler.
+- compiler/rustc_llvm: LLVM is linked with libc++, static.
+- compiler/rustc_driver_impl: no Ctrl-C handler (its crate goes through
+  nix, which does not know myos).
+- Cargo.lock, src/tools/cargo/Cargo.lock: the libc crate at 0.2.189, the
+  version libc-myos.patch is for (the compiler and cargo lock older ones).
+- src/llvm-project (LLVM 22, Rust's fork): the program finds itself by
+  argv[0], every file system is local, and struct winsize is
+  <termios.h>'s, as in packages/llvm's patch for LLVM 19.
+
+MIT OR Apache-2.0 as the compiler; the LLVM part Apache-2.0 WITH
+LLVM-exception as LLVM (THIRD_PARTY_NOTICES.md).
+
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2288,9 +2288,9 @@
+ 
+ [[package]]
+ name = "libc"
+-version = "0.2.183"
++version = "0.2.189"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
++checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+ 
+ [[package]]
+ name = "libffi"
+--- a/compiler/rustc_driver_impl/Cargo.toml
++++ b/compiler/rustc_driver_impl/Cargo.toml
+@@ -49,7 +49,9 @@
+     "Win32_System_Diagnostics_Debug",
+ ]
+ 
+-[target.'cfg(not(target_family = "wasm"))'.dependencies]
++# Not on myos: the handler's crate goes through `nix`, which does not know
++# the system. An interrupt ends the compiler there, by the signal's default.
++[target.'cfg(not(any(target_family = "wasm", target_os = "myos")))'.dependencies]
+ # tidy-alphabetical-start
+ ctrlc = "3.4.4"
+ # tidy-alphabetical-end
+--- a/compiler/rustc_driver_impl/src/lib.rs
++++ b/compiler/rustc_driver_impl/src/lib.rs
+@@ -1646,7 +1646,7 @@
+ /// Install our usual `ctrlc` handler, which sets [`rustc_const_eval::CTRL_C_RECEIVED`].
+ /// Making this handler optional lets tools can install a different handler, if they wish.
+ pub fn install_ctrlc_handler() {
+-    #[cfg(all(not(miri), not(target_family = "wasm")))]
++    #[cfg(all(not(miri), not(target_family = "wasm"), not(target_os = "myos")))]
+     ctrlc::set_handler(move || {
+         // Indicate that we have been signaled to stop, then give the rest of the compiler a bit of
+         // time to check CTRL_C_RECEIVED and run its own shutdown logic, but after a short amount
+--- a/compiler/rustc_llvm/build.rs
++++ b/compiler/rustc_llvm/build.rs
+@@ -512,12 +512,20 @@
+     // atomic operations. Some BSD uses Clang as its system
+     // compiler and provides no libatomic in its base system so
+     // does not want this.
+-    if target.starts_with("riscv") && !target.contains("freebsd") && !target.contains("openbsd") {
++    if target.starts_with("riscv")
++        && !target.contains("freebsd")
++        && !target.contains("openbsd")
++        && !target.contains("myos")
++    {
+         println!("cargo:rustc-link-lib=atomic");
+     }
+ 
+     // C++ runtime library
+-    if !target.contains("msvc") {
++    if target.contains("myos") {
++        // LLVM's own libc++ (libc++abi in it), static, from the directories
++        // the link is given: myos has no shared C++ runtime.
++        println!("cargo:rustc-link-lib=static:-bundle=c++");
++    } else if !target.contains("msvc") {
+         if let Some(s) = llvm_static_stdcpp {
+             assert!(cxxflags.into_iter().all(|flag| flag != "-stdlib=libc++"));
+             let path = PathBuf::from(s);
+--- a/compiler/rustc_target/src/spec/base/mod.rs
++++ b/compiler/rustc_target/src/spec/base/mod.rs
+@@ -23,6 +23,7 @@
+ pub(crate) mod linux_wasm;
+ pub(crate) mod lynxos178;
+ pub(crate) mod managarm_mlibc;
++pub(crate) mod myos_mlibc;
+ pub(crate) mod motor;
+ pub(crate) mod msvc;
+ pub(crate) mod netbsd;
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/base/myos_mlibc.rs
+@@ -0,0 +1,38 @@
++//! myos on mlibc (`<arch>-unknown-myos-mlibc`): a unix target whose
++//! programs are static PIEs linked with lld against mlibc and LLVM's
++//! libunwind, or dynamic ones over mlibc's shared objects.
++
++use crate::spec::{
++    Cc, Env, LinkerFlavor, Lld, Os, PanicStrategy, StackProbeType, TargetOptions, cvs,
++};
++
++pub(crate) fn opts() -> TargetOptions {
++    // Given for the plain linker: its lld twin gets them too.
++    let pre_link_args = TargetOptions::link_args(
++        LinkerFlavor::Gnu(Cc::No, Lld::No),
++        &["-z", "max-page-size=4096", "--eh-frame-hdr"],
++    );
++    // The C library, the unwinder and the compiler builtins its code
++    // calls, from the directories the link is given (the sysroot's, or
++    // `-L`).
++    let late_link_args =
++        TargetOptions::link_args(LinkerFlavor::Gnu(Cc::No, Lld::No), &["-lunwind", "-lc", "-lbuiltins"]);
++    TargetOptions {
++        os: Os::Myos,
++        env: Env::Mlibc,
++        families: cvs!["unix"],
++        linker_flavor: LinkerFlavor::Gnu(Cc::No, Lld::Yes),
++        linker: Some("rust-lld".into()),
++        pre_link_args,
++        late_link_args,
++        dynamic_linking: true,
++        executables: true,
++        has_rpath: true,
++        position_independent_executables: true,
++        static_position_independent_executables: true,
++        plt_by_default: false,
++        panic_strategy: PanicStrategy::Unwind,
++        stack_probes: StackProbeType::Inline,
++        ..Default::default()
++    }
++}
+--- a/compiler/rustc_target/src/spec/mod.rs
++++ b/compiler/rustc_target/src/spec/mod.rs
+@@ -1576,6 +1576,10 @@
+     ("riscv64gc-unknown-redox", riscv64gc_unknown_redox),
+     ("x86_64-unknown-redox", x86_64_unknown_redox),
+ 
++    ("x86_64-unknown-myos-mlibc", x86_64_unknown_myos_mlibc),
++    ("aarch64-unknown-myos-mlibc", aarch64_unknown_myos_mlibc),
++    ("riscv64-unknown-myos-mlibc", riscv64_unknown_myos_mlibc),
++
+     ("x86_64-unknown-managarm-mlibc", x86_64_unknown_managarm_mlibc),
+     ("aarch64-unknown-managarm-mlibc", aarch64_unknown_managarm_mlibc),
+     ("riscv64gc-unknown-managarm-mlibc", riscv64gc_unknown_managarm_mlibc),
+@@ -1996,6 +2000,7 @@
+         MacOs = "macos",
+         Managarm = "managarm",
+         Motor = "motor",
++        Myos = "myos",
+         NetBsd = "netbsd",
+         None = "none",
+         Nto = "nto",
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/aarch64_unknown_myos_mlibc.rs
+@@ -0,0 +1,23 @@
++use crate::spec::{Arch, Target, base};
++
++pub(crate) fn target() -> Target {
++    let mut base = base::myos_mlibc::opts();
++    base.features = "+v8a,+strict-align,+neon,+fp-armv8".into();
++    base.disable_redzone = true;
++    base.max_atomic_width = Some(128);
++
++    Target {
++        // A bare target for LLVM: myos is not one of its systems.
++        llvm_target: "aarch64-unknown-none".into(),
++        metadata: crate::spec::TargetMetadata {
++            description: Some("myos on mlibc (aarch64)".into()),
++            tier: Some(3),
++            host_tools: Some(true),
++            std: Some(true),
++        },
++        pointer_width: 64,
++        data_layout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32".into(),
++        arch: Arch::AArch64,
++        options: base,
++    }
++}
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/riscv64_unknown_myos_mlibc.rs
+@@ -0,0 +1,24 @@
++use crate::spec::{Arch, LlvmAbi, Target, base};
++
++pub(crate) fn target() -> Target {
++    let mut base = base::myos_mlibc::opts();
++    base.features = "+m,+a,+f,+d,+c".into();
++    base.llvm_abiname = LlvmAbi::Lp64d;
++    base.disable_redzone = true;
++    base.max_atomic_width = Some(64);
++
++    Target {
++        // A bare target for LLVM: myos is not one of its systems.
++        llvm_target: "riscv64-unknown-none-elf".into(),
++        metadata: crate::spec::TargetMetadata {
++            description: Some("myos on mlibc (riscv64)".into()),
++            tier: Some(3),
++            host_tools: Some(true),
++            std: Some(true),
++        },
++        pointer_width: 64,
++        data_layout: "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128".into(),
++        arch: Arch::RiscV64,
++        options: base,
++    }
++}
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/x86_64_unknown_myos_mlibc.rs
+@@ -0,0 +1,24 @@
++use crate::spec::{Arch, Target, base};
++
++pub(crate) fn target() -> Target {
++    let mut base = base::myos_mlibc::opts();
++    base.cpu = "x86-64".into();
++    base.features = "+sse2".into();
++    base.max_atomic_width = Some(64);
++
++    Target {
++        // A bare target for LLVM: myos is not one of its systems.
++        llvm_target: "x86_64-unknown-none".into(),
++        metadata: crate::spec::TargetMetadata {
++            description: Some("myos on mlibc (x86_64)".into()),
++            tier: Some(3),
++            host_tools: Some(true),
++            std: Some(true),
++        },
++        pointer_width: 64,
++        data_layout:
++            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128".into(),
++        arch: Arch::X86_64,
++        options: base,
++    }
++}
+--- a/src/bootstrap/src/core/sanity.rs
++++ b/src/bootstrap/src/core/sanity.rs
+@@ -34,6 +34,9 @@
+ /// when the newly-bumped stage 0 compiler now knows about the formerly-missing targets.
+ const STAGE0_MISSING_TARGETS: &[&str] = &[
+     // just a dummy comment so the list doesn't get onelined
++    "x86_64-unknown-myos-mlibc",
++    "aarch64-unknown-myos-mlibc",
++    "riscv64-unknown-myos-mlibc",
+ ];
+ 
+ /// Minimum version threshold for libstdc++ required when using prebuilt LLVM
+--- a/src/llvm-project/llvm/lib/Support/Unix/Path.inc
++++ b/src/llvm-project/llvm/lib/Support/Unix/Path.inc
+@@ -130,7 +130,7 @@
+     defined(__CYGWIN__) || defined(__DragonFly__) || defined(_AIX) ||          \
+     defined(__GNU__) ||                                                        \
+     (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__)) ||           \
+-    defined(__managarm__)
++    defined(__managarm__) || defined(__myos__)
+ static int test_dir(char ret[PATH_MAX], const char *dir, const char *bin) {
+   struct stat sb;
+   char fullpath[PATH_MAX];
+@@ -287,7 +287,10 @@
+   // Fall back to the classical detection.
+   if (getprogpath(exe_path, argv0))
+     return exe_path;
+-#elif defined(__OpenBSD__) || defined(__HAIKU__)
++// myos: the name the program was run under. /proc/self/exe names the
++// file, and the tools of the multicall program are links to one file: an
++// app's view may give the file under any of their names.
++#elif defined(__OpenBSD__) || defined(__HAIKU__) || defined(__myos__)
+   char exe_path[PATH_MAX];
+   // argv[0] only
+   if (getprogpath(exe_path, argv0) != NULL)
+@@ -564,6 +567,10 @@
+   // The file system can have an arbitrary structure on z/OS; must go with the
+   // conservative answer.
+   return false;
++#elif defined(__myos__)
++  // myos: every file system is the machine's own (there is no network one,
++  // and statvfs has no flags that would tell).
++  return true;
+ #else
+   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
+ #endif
+--- a/src/llvm-project/llvm/lib/Support/Unix/Process.inc
++++ b/src/llvm-project/llvm/lib/Support/Unix/Process.inc
+@@ -36,6 +36,11 @@
+ #endif
+ #ifdef HAVE_SYS_IOCTL_H
+ #include <sys/ioctl.h>
++#if defined(__myos__)
++// myos: struct winsize is <termios.h>'s (mlibc gives it to <sys/ioctl.h>
++// with its Linux option alone).
++#include <termios.h>
++#endif
+ #endif
+ 
+ //===----------------------------------------------------------------------===//
+--- a/src/tools/cargo/Cargo.lock
++++ b/src/tools/cargo/Cargo.lock
+@@ -3004,9 +3004,9 @@
+ 
+ [[package]]
+ name = "libc"
+-version = "0.2.186"
++version = "0.2.189"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
++checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+ 
+ [[package]]
+ name = "libgit2-sys"

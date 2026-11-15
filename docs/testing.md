@@ -47,7 +47,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `timers`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
 | a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port's `test.sh`. The runner sets it on every test of the file. |
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests). Each is also tagged with its newlib test's name (`docs/mlibc.md`). |
-| `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |
+| `alpine`, `python`, `rust`, `rustc`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |
 
 ### Budgets and hung tests
 
@@ -339,9 +339,10 @@ others under TCG.
 
 A machine's selection runs in parallel boots. Each long group runs whole,
 in a boot of its own: `ostest` (the curated os-test list), `alpine` (the
-apk installs), `rust` (the rust package's tests) and `pkg` (the packages'
+apk installs), `rust` (the rust package's tests), `rustc` (the rustc
+package's: the compiler installed on the scratch disk) and `pkg` (the packages'
 install, their tests and get-myos's, and the `install` tests). One light
-boot runs everything else. A full run is thus five boots per machine.
+boot runs everything else. A full run is thus six boots per machine.
 
 The x86 boots run under KVM, on the runner's CPU; the aarch64 and riscv64
 ones under TCG, every instruction emulated. That, not the kernel, is most

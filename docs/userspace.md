@@ -294,6 +294,22 @@ one of 3000 bytes, children with pipes, a status and a signal, files
 with their links and locks, TCP, UDP and unix sockets over the loopback,
 time and named threads; and `/bin/std/mlibc/dylib` (`std_dylib`, above).
 
+### Rust on myos
+
+The compiler itself is a program of the mlibc flavour: the **rustc**
+package (`packages/rustc/README.md`) is `rustc` and `cargo` with myos as
+their host, built from the pinned nightly's source with the same std.
+`get-myos rustc` (on a disk: the compiler's library is 155 MiB), then
+`run-myos rustc hello.rs` or `run-myos rustc:cargo build`: programs for
+`<arch>-unknown-myos-mlibc`, with build scripts and proc macros, linked
+by the llvm app's lld. Under emulation (x86_64, TCG) a small program
+compiles in about 15 s and a package with a build script and a proc
+macro builds in under 10.
+
+The **rust** package (`packages/rust/README.md`) is the older way: the
+official Linux toolchain under the Linux layer, building for the other
+flavour.
+
 ## C userspace (newlib and libgloss)
 
 C programs link against newlib with myos's libgloss
