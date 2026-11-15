@@ -148,6 +148,27 @@ selected() {
 	return 1
 }
 
+# disk_apps NAME...: the packages NAME installed as apps on the scratch
+# disk, under $DISK_APPS (run-myos -r $DISK_APPS NAME ...), for the tests
+# tagged `disk`: /tmp/apps is a tmpfs, whose files are the kernel heap's
+# (1 GiB at most for everything in it, 128 MiB a file), and a compiler is
+# a hundred MiB and more. The disk is formatted here unless a test before
+# left it mounted at /tmp/disk. get-myos's lines go to the console (fd
+# 3): the host ends a boot that is silent for 600 s.
+DISK_APPS=/tmp/disk/apps
+# The kernel heap the tests need free once the packages are in /tmp/apps,
+# in MiB (install_packages).
+HEAP_SPARE=256
+disk_apps() {
+	if ! grep -q " /tmp/disk ext2 " /proc/mounts; then
+		mkdir -p /tmp/disk && mkfs.ext2 /dev/nvme1n1/data > /dev/null \
+			&& mount /dev/nvme1n1/data /tmp/disk ext2 || return 1
+	fi
+	for da_name in "$@"; do
+		[ -e $DISK_APPS/$da_name/app ] || { get-myos -r $DISK_APPS -m $MIRROR "$@" 2>&3; return; }
+	done
+}
+
 # shell_intact WHEN: the runner's own shell still passes "$@" on as words.
 # CI #2639 and #2641 (x86): from some test on, every test given a command
 # with arguments failed with `/bin/etc/pty_smokeu2: not found`: the words
@@ -311,8 +332,8 @@ echo "tests: tags=${TAGS:--} skip=${SKIP:--}"
 # its name; a test of the kernel or of another port names what it runs,
 # alpine_jq get-alpine, get_myos_list st). A `pkg` test that names none
 # uses the mirror itself (get-myos's into roots of their own), and so does
-# a `disk` one: its package is too large for /tmp/apps (a tmpfs file is at
-# most 128 MiB) and the test installs it on the scratch disk. In the order
+# a `disk` one: its package is too large for /tmp/apps (disk_apps) and the
+# test installs it on the scratch disk. In the order
 # of NAMES; what they need get-myos installs with them.
 wanted_packages() {
 	w_want=
@@ -370,7 +391,21 @@ install_packages() {
 	# get-myos's line per package (stderr) goes to the console: the install of
 	# them all is minutes under TCG (python's alone is minutes on
 	# riscv64), and the host's stall watchdog wants the console moving.
-	get-myos -m $MIRROR $names 2>&3
+	get-myos -m $MIRROR $names 2>&3 || return 1
+	# /tmp/apps is a tmpfs: the apps are in the kernel heap, with what the
+	# tests' programs then take of it (WebKit most). CI #2652: with llvm's
+	# 120 MiB among them the aarch64 boot had 30 MiB left when surf ran,
+	# under the reserve a fork needs, and every test after it failed to
+	# fork. What is left is said on the console, and too little fails
+	# here, by name, not in whichever test meets the end of the heap.
+	pk_free=$(sed -n 's/^HeapFreeKiB: *//p' /proc/meminfo)
+	pk_size=$(sed -n 's/^HeapKiB: *//p' /proc/meminfo)
+	echo "packages: $((pk_free / 1024)) MiB of the kernel heap's $((pk_size / 1024)) free with the apps in /tmp/apps" >&3
+	if [ "$pk_free" -lt $((HEAP_SPARE * 1024)) ]; then
+		echo "the apps leave $((pk_free / 1024)) MiB of the kernel heap, under the $HEAP_SPARE the tests need:"
+		echo "a package this large installs on the scratch disk (a \`disk\` test, disk_apps)"
+		return 1
+	fi
 }
 # source_tests: the kernel's tests, then every port's (the packages' are
 # in the image too), in the order of their names. A ports file is
@@ -420,6 +455,9 @@ source_tests
 
 echo "TESTS DONE $passed/$total"
 echo "TESTS SKIPPED $skipped"
+# What the run left of the kernel heap (tmpfs and the tasks live in it):
+# beside the packages' line above, how much the tests themselves took.
+echo "kernel heap: $(($(sed -n 's/^HeapFreeKiB: *//p' /proc/meminfo) / 1024)) MiB free at the end"
 # netfs's conversation slots still in use once the tests are over: the
 # boot's own processes (dropbear's listener) and what a test left behind,
 # or a slot netfs lost track of (128 of those, and socket() fails with

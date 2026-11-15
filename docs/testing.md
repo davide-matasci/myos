@@ -41,13 +41,13 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `pkg` | need the packages of this build, installed as apps or from the mirror itself. Every package's own test has `pkg` and its package's name |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs, the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares: rustc, Python (with GNU coreutils, bash and diffutils), an X client (`linux-compat/alpine-disks.sh`, built once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
-| `disk` | install their package themselves, on the scratch disk: one too large for `/tmp/apps`, where a file is at most 128 MiB (rustc). The runner's `packages` test leaves it out |
+| `disk` | install their package themselves, on the scratch disk (the runner's `disk_apps`): the compilers, `llvm` and `rustc`. `/tmp/apps` is a tmpfs, so what is installed there is in the kernel heap: 1 GiB at most for every package of the boot together, and 128 MiB a file. The runner's `packages` test leaves them out |
 | `install` | change the boot disk: `get-myos --upgrade` and `--install` on the scratch disk (`docs/install.md`) |
 | `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `timers`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
 | a port's name (`oksh`, `c-smokes`, `curl`, `os-test`, ...) | come from that port's `test.sh`. The runner sets it on every test of the file. |
 | `mlibc` | run a C smoke built against mlibc instead of newlib (`user/c-mlibc/test.sh`, the `mlibc_` tests). Each is also tagged with its newlib test's name (`docs/mlibc.md`). |
-| `alpine`, `python`, `rust`, `rustc`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |
+| `alpine`, `python`, `rust`, `x11`, `ostest` | the long tests, by what they build, for a run of one of them alone |
 
 ### Budgets and hung tests
 
@@ -72,6 +72,15 @@ net,pkg,heavy,install,alpine-disk` and `test`.
   lists the key ranges). So a hung test shows what waits on what before
   the host gives up. It was added after CI #2295's lynx test stalled with
   every CPU idle and the console showed nothing more.
+- The packages of a boot are apps under `/tmp/apps`, a tmpfs: they are in
+  the kernel heap (1 GiB at most), with what the tests' programs then
+  take of it. The runner's `packages` test says on the console how much
+  is left once they are installed and fails, by name, under 256 MiB
+  (`HEAP_SPARE` in `run.sh`); the run's last lines say what was left at
+  the end. CI #2652's aarch64 boot had 30 MiB left when surf ran, under
+  the reserve a fork needs, and surf and every test after it failed to
+  fork: llvm's 120 MiB had taken the margin. A package that large is
+  tested from the scratch disk (`disk`, above).
 - The runner checks its own shell before and after each test: that a
   function still gets `"$@"` as separate words. A test that leaves the
   shell otherwise fails by name, with what `"$@"` became and the bytes of
@@ -344,8 +353,8 @@ others under TCG.
 
 A machine's selection runs in parallel boots. Each long group runs whole,
 in a boot of its own: `ostest` (the curated os-test list), `alpine` (the
-apk installs), `rust` (the rust package's tests), `rustc` (the rustc
-package's: the compiler installed on the scratch disk) and `pkg` (the packages'
+apk installs), `rust` (the rust package's tests), `disk` (the llvm and
+rustc packages': the compilers, installed on the scratch disk) and `pkg` (the packages'
 install, their tests and get-myos's, and the `install` tests). One light
 boot runs everything else. A full run is thus six boots per machine.
 
