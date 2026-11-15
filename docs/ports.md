@@ -114,7 +114,7 @@ comes from the initramfs.
 
 ### Ports built an arch at a time
 
-A port with `PORT_ARCH_JOBS=1` (`webkitgtk`) is built by CI as
+A port with `PORT_ARCH_JOBS=1` (`webkitgtk`, `llvm`, `rustc`) is built by CI as
 `<name>:<arch>`, one job per arch, with `MYOS_<NAME>_ARCHES` set to that
 arch (the name in capitals, `-` as `_`). Its script builds the arches
 the variable lists (all by default) and writes a stamp per arch. The
@@ -124,6 +124,10 @@ while it lacks it too waits for those jobs in the plan's second stage
 (`ports-after` in `ci-ports.yml`, "Cache keys" below), instead of
 building it in its own job; so its arches are always in the first stage,
 their key known or not.
+
+The keys of the two compilers (`myos_llvm_version_hash`,
+`myos_rustc_version_hash`) leave their `test.sh` and `README.md` out:
+neither is in what is built, and a rebuild is one to two hours an arch.
 
 ## Cache keys
 

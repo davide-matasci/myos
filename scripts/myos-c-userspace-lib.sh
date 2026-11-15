@@ -2137,7 +2137,9 @@ myos_llvm_version_hash() {
       myos_dep_hash mlibc
       myos_dep_hash libcxx
       sha256sum "$MYOS_ROOT/toolchain/libcxx/versions.env"
-      find "$(myos_port_dir llvm)" -type f -print0 2>/dev/null \
+      # Not its tests nor its notes: neither is in what is built, and
+      # a rebuild is hours.
+      find "$(myos_port_dir llvm)" -type f ! -name test.sh ! -name README.md -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver
@@ -2173,7 +2175,9 @@ myos_rustc_version_hash() {
       myos_dep_hash libressl mlibc
       myos_sysroot_version_hash
       sha256sum "$MYOS_ROOT/rust-toolchain.toml"
-      find "$(myos_port_dir rustc)" -type f -print0 2>/dev/null \
+      # Not its tests nor its notes: neither is in what is built, and
+      # a rebuild is hours.
+      find "$(myos_port_dir rustc)" -type f ! -name test.sh ! -name README.md -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver
