@@ -10,10 +10,12 @@
  * clock refused); on mlibc, getauxval over the kernel's auxiliary vector
  * (the page size, the entry, AT_SECURE 0), getrlimit and the main thread's
  * stack from pthread_attr_get_np; a 64 MiB malloc, which newlib takes from
- * the brk heap (256 MiB: an X server's screen-sized pixmaps).
+ * the brk heap (256 MiB: an X server's screen-sized pixmaps); on mlibc,
+ * readdir's d_type and d_ino, a symbolic link's own and not its target's.
  * Prints one `[ OK ] libc` or a `[ FAIL ] libc ...` line; the boot test
  * reads the exit status. */
 #define _GNU_SOURCE /* CLOCK_BOOTTIME */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <float.h>
@@ -574,10 +576,73 @@ static int check_big_malloc(void) {
     return 0;
 }
 
+/* readdir says what an entry is, not what a link points to: a link to a
+ * directory is DT_LNK with the link's own inode (a walk that trusted
+ * DT_DIR would follow it out of the tree), and so is one to nothing.
+ * On mlibc: newlib's readdir still follows the link (issue #798). */
+#ifdef __MLIBC_POSIX_OPTION
+static int check_readdir(void) {
+    const char *dir = "/tmp/libc-smoke-dir";
+    char path[64];
+    struct stat st;
+    int links = 0, files = 0, bad = 0;
+    mkdir(dir, 0755);
+    snprintf(path, sizeof path, "%s/file", dir);
+    close(open(path, O_WRONLY | O_CREAT, 0644));
+    snprintf(path, sizeof path, "%s/to-dir", dir);
+    unlink(path);
+    if (symlink("/tmp", path) != 0) {
+        return fail("symlink");
+    }
+    snprintf(path, sizeof path, "%s/to-nothing", dir);
+    unlink(path);
+    if (symlink("/nonexistent/target", path) != 0) {
+        return fail("symlink to nothing");
+    }
+    DIR *d = opendir(dir);
+    if (d == NULL) {
+        return fail("opendir");
+    }
+    for (struct dirent *e; (e = readdir(d)) != NULL;) {
+        if (strncmp(e->d_name, "to-", 3) == 0) {
+            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            if (e->d_type != DT_LNK || lstat(path, &st) != 0 || st.st_ino != e->d_ino) {
+                printf("[ FAIL ] libc readdir: %s has d_type %d\n", e->d_name, e->d_type);
+                bad = 1;
+            }
+            links++;
+        } else if (strcmp(e->d_name, "file") == 0) {
+            files += e->d_type == DT_REG;
+        }
+    }
+    closedir(d);
+    snprintf(path, sizeof path, "%s/to-dir", dir);
+    unlink(path);
+    snprintf(path, sizeof path, "%s/to-nothing", dir);
+    unlink(path);
+    snprintf(path, sizeof path, "%s/file", dir);
+    unlink(path);
+    rmdir(dir);
+    if (bad) {
+        return 1;
+    }
+    if (links != 2 || files != 1) {
+        printf("[ FAIL ] libc readdir: %d links, %d files\n", links, files);
+        return 1;
+    }
+    return 0;
+}
+#else
+static int check_readdir(void) {
+    return 0;
+}
+#endif
+
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
         || check_termios() || check_double() || check_long_double() || check_timers() || check_clocks()
-        || check_auxv() || check_limits() || check_sysdeps() || check_memory() || check_big_malloc()) {
+        || check_auxv() || check_limits() || check_sysdeps() || check_memory() || check_big_malloc()
+        || check_readdir()) {
         return 1;
     }
     printf("[ OK ] libc\n");

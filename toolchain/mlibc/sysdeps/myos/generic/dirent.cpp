@@ -157,8 +157,10 @@ int Sysdeps<ReadEntries>::operator()(int handle, void *buffer, size_t max_size, 
 		ent->d_name[n] = '\0';
 		ent->d_reclen = (unsigned short)reclen;
 		ent->d_off = ++l.index;
+		// The entry's own inode and type: a symbolic link's, not its
+		// target's.
 		struct stat st;
-		if (__myos_fstatat(handle, ent->d_name, &st, 0) == 0) {
+		if (__myos_fstatat(handle, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
 			ent->d_ino = st.st_ino;
 			ent->d_type = type_of(st.st_mode);
 		} else {
