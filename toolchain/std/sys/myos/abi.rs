@@ -173,15 +173,9 @@ pub fn exec_name(buf: &mut [u8]) -> usize {
     }
 }
 
-/// End the process. On the mlibc flavour through the C library, which
-/// runs its `atexit` functions and flushes its streams first.
+/// End the process.
 #[inline]
 pub fn exit(code: i32) -> ! {
-    #[cfg(target_env = "mlibc")]
-    unsafe {
-        super::libc::exit(code)
-    }
-    #[cfg(not(target_env = "mlibc"))]
     raw_exit(code as usize);
 }
 

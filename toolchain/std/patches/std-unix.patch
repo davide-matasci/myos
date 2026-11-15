@@ -1,0 +1,686 @@
+The mlibc flavour of the myos targets (`<arch>-unknown-myos-mlibc`) as a
+unix target: `target_os = "myos"` added to std's unix code, over the libc
+crate's myos module (libc-myos.patch). Applied by wire-myos.py to the
+library tree of the pinned nightly, after its own wiring.
+
+Adapted from Managarm's std port, another system on mlibc (patch
+0005-library-std-add-managarm-support.patch of
+https://github.com/managarm/bootstrap-managarm, patches/rust; by Dennis
+Bonke and the Managarm contributors), renamed and rebased onto this
+nightly. A patch to the Rust standard library: MIT OR Apache-2.0, as the
+library (THIRD_PARTY_NOTICES.md).
+
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -81,6 +81,8 @@
+ ]
+ 
+ [patch.crates-io]
++# myos: the libc crate with the mlibc flavour in it (patches/libc-myos.patch).
++libc = { path = "vendor/libc-0.2.189" }
+ # See comments in `library/rustc-std-workspace-core/README.md` for what's going on here
+ rustc-std-workspace-core = { path = 'rustc-std-workspace-core' }
+ rustc-std-workspace-alloc = { path = 'rustc-std-workspace-alloc' }
+--- a/std/src/os/mod.rs
++++ b/std/src/os/mod.rs
+@@ -78,7 +78,7 @@
+ ))]
+ pub mod fd;
+ 
+-#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", doc))]
++#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc"), doc))]
+ mod net;
+ 
+ // # Ordinary platforms
+@@ -144,6 +144,9 @@
+ pub mod l4re;
+ #[cfg(target_os = "macos")]
+ pub mod macos;
++#[cfg(all(target_os = "myos", target_env = "mlibc"))]
++#[path = "myos_mlibc/mod.rs"]
++pub mod myos;
+ #[cfg(target_os = "motor")]
+ pub mod motor;
+ #[cfg(target_os = "netbsd")]
+--- a/std/src/os/net/linux_ext/mod.rs
++++ b/std/src/os/net/linux_ext/mod.rs
+@@ -8,6 +8,7 @@
+ #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+ pub(crate) mod socket;
+ 
++#[cfg(not(all(target_os = "myos", target_env = "mlibc")))]
+ #[stable(feature = "tcp_quickack", since = "1.89.0")]
+ pub(crate) mod tcp;
+ 
+--- a/std/src/os/net/mod.rs
++++ b/std/src/os/net/mod.rs
+@@ -9,5 +9,5 @@
+         all(target_vendor = "fortanix", target_env = "sgx")
+     )
+ )))]
+-#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", doc))]
++#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc"), doc))]
+ pub(super) mod linux_ext;
+--- a/std/src/os/unix/mod.rs
++++ b/std/src/os/unix/mod.rs
+@@ -67,6 +67,8 @@
+     pub use crate::os::l4re::*;
+     #[cfg(target_os = "linux")]
+     pub use crate::os::linux::*;
++    #[cfg(all(target_os = "myos", target_env = "mlibc"))]
++    pub use crate::os::myos::*;
+     #[cfg(target_os = "netbsd")]
+     pub use crate::os::netbsd::*;
+     #[cfg(any(target_os = "nto", target_os = "qnx"))]
+--- a/std/src/os/unix/net/ancillary.rs
++++ b/std/src/os/unix/net/ancillary.rs
+@@ -195,6 +195,7 @@
+     doc,
+     not(target_os = "android"),
+     not(target_os = "linux"),
++    not(all(target_os = "myos", target_env = "mlibc")),
+     not(target_os = "netbsd"),
+     not(target_os = "freebsd"),
+     not(target_os = "cygwin"),
+@@ -204,7 +205,7 @@
+ pub struct SocketCred(());
+ 
+ /// Unix credential.
+-#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+ #[derive(Clone)]
+ pub struct SocketCred(libc::ucred);
+@@ -219,8 +220,8 @@
+ #[derive(Clone)]
+ pub struct SocketCred(libc::sockcred2);
+ 
+-#[doc(cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin")))]
+-#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[doc(cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc"))))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ impl SocketCred {
+     /// Creates a Unix credential struct.
+     ///
+@@ -408,6 +409,7 @@
+     doc,
+     not(target_os = "android"),
+     not(target_os = "linux"),
++    not(all(target_os = "myos", target_env = "mlibc")),
+     not(target_os = "netbsd"),
+     not(target_os = "freebsd"),
+     not(target_os = "cygwin"),
+@@ -418,7 +420,7 @@
+ /// This control message contains unix credentials.
+ ///
+ /// The level is equal to `SOL_SOCKET` and the type is equal to `SCM_CREDENTIALS` or `SCM_CREDS`.
+-#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+ pub struct ScmCredentials<'a>(AncillaryDataIter<'a, libc::ucred>);
+ 
+@@ -434,6 +436,7 @@
+     doc,
+     target_os = "android",
+     target_os = "linux",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "netbsd",
+     target_os = "freebsd",
+     target_os = "cygwin",
+@@ -463,6 +466,7 @@
+         doc,
+         target_os = "android",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "freebsd",
+         target_os = "cygwin",
+@@ -493,6 +497,7 @@
+         doc,
+         target_os = "android",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "freebsd",
+         target_os = "cygwin",
+@@ -513,7 +518,7 @@
+             match (*cmsg).cmsg_level {
+                 libc::SOL_SOCKET => match (*cmsg).cmsg_type {
+                     libc::SCM_RIGHTS => Ok(AncillaryData::as_rights(data)),
+-                    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++                    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+                     libc::SCM_CREDENTIALS => Ok(AncillaryData::as_credentials(data)),
+                     #[cfg(target_os = "freebsd")]
+                     libc::SCM_CREDS2 => Ok(AncillaryData::as_credentials(data)),
+@@ -734,6 +739,7 @@
+         doc,
+         target_os = "android",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "freebsd",
+         target_os = "cygwin",
+--- a/std/src/os/unix/net/datagram.rs
++++ b/std/src/os/unix/net/datagram.rs
+@@ -4,6 +4,7 @@
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "openbsd",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "netbsd",
+     target_os = "solaris",
+     target_os = "illumos",
+@@ -15,9 +16,9 @@
+ use libc::MSG_NOSIGNAL;
+ 
+ use super::{SocketAddr, sockaddr_un};
+-#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ use super::{SocketAncillary, recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to};
+-#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ use crate::io::{IoSlice, IoSliceMut};
+ use crate::net::Shutdown;
+ use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+@@ -32,6 +33,7 @@
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "openbsd",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "netbsd",
+     target_os = "solaris",
+     target_os = "illumos",
+@@ -430,7 +432,7 @@
+     ///     Ok(())
+     /// }
+     /// ```
+-    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+     pub fn recv_vectored_with_ancillary_from(
+         &self,
+@@ -486,7 +488,7 @@
+     ///     Ok(())
+     /// }
+     /// ```
+-    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+     pub fn recv_vectored_with_ancillary(
+         &self,
+@@ -627,7 +629,7 @@
+     ///     Ok(())
+     /// }
+     /// ```
+-    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+     pub fn send_vectored_with_ancillary_to<P: AsRef<Path>>(
+         &self,
+@@ -675,7 +677,7 @@
+     ///     Ok(())
+     /// }
+     /// ```
+-    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+     pub fn send_vectored_with_ancillary(
+         &self,
+--- a/std/src/os/unix/net/mod.rs
++++ b/std/src/os/unix/net/mod.rs
+@@ -4,8 +4,8 @@
+ #![stable(feature = "unix_socket", since = "1.10.0")]
+ 
+ mod addr;
+-#[doc(cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin")))]
+-#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[doc(cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc"))))]
++#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ mod ancillary;
+ mod datagram;
+ mod listener;
+@@ -17,6 +17,7 @@
+     target_os = "linux",
+     target_os = "dragonfly",
+     target_os = "freebsd",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "netbsd",
+     target_os = "openbsd",
+     target_os = "nto",
+@@ -28,7 +29,7 @@
+ 
+ #[stable(feature = "unix_socket", since = "1.10.0")]
+ pub use self::addr::*;
+-#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+ pub use self::ancillary::*;
+ #[stable(feature = "unix_socket", since = "1.10.0")]
+@@ -42,6 +43,7 @@
+     target_os = "linux",
+     target_os = "dragonfly",
+     target_os = "freebsd",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "netbsd",
+     target_os = "openbsd",
+     target_os = "nto",
+--- a/std/src/os/unix/net/stream.rs
++++ b/std/src/os/unix/net/stream.rs
+@@ -7,6 +7,7 @@
+         target_os = "solaris", target_os = "illumos",
+         target_os = "haiku", target_os = "nto",
+         target_os = "qnx", target_os = "cygwin",
++        all(target_os = "myos", target_env = "mlibc"),
+     ) => {
+         use libc::MSG_NOSIGNAL;
+     }
+@@ -16,11 +17,12 @@
+ }
+ 
+ use super::{SocketAddr, sockaddr_un};
+-#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ use super::{SocketAncillary, recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to};
+ #[cfg(any(
+     target_os = "android",
+     target_os = "linux",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "netbsd",
+@@ -251,6 +253,7 @@
+     #[cfg(any(
+         target_os = "android",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "dragonfly",
+         target_os = "freebsd",
+         target_os = "netbsd",
+@@ -548,7 +551,7 @@
+     ///     Ok(())
+     /// }
+     /// ```
+-    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+     pub fn recv_vectored_with_ancillary(
+         &self,
+@@ -597,7 +600,7 @@
+     ///     Ok(())
+     /// }
+     /// ```
+-    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
+     pub fn send_vectored_with_ancillary(
+         &self,
+--- a/std/src/os/unix/net/ucred.rs
++++ b/std/src/os/unix/net/ucred.rs
+@@ -34,10 +34,10 @@
+     target_os = "qnx"
+ ))]
+ pub(super) use self::impl_bsd::peer_cred;
+-#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ pub(super) use self::impl_linux::peer_cred;
+ 
+-#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin"))]
++#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+ mod impl_linux {
+     use libc::{SO_PEERCRED, SOL_SOCKET, c_void, getsockopt, socklen_t, ucred};
+ 
+--- a/std/src/sys/args/unix.rs
++++ b/std/src/sys/args/unix.rs
+@@ -88,6 +88,7 @@
+     target_os = "hurd",
+     target_os = "rtems",
+     target_os = "nuttx",
++    target_env = "mlibc",
+ ))]
+ mod imp {
+     use crate::ffi::c_char;
+--- a/std/src/sys/env_consts.rs
++++ b/std/src/sys/env_consts.rs
+@@ -202,6 +202,17 @@
+     pub const EXE_EXTENSION: &str = "";
+ }
+ 
++#[cfg(all(target_os = "myos", target_env = "mlibc"))]
++pub mod os {
++    pub const FAMILY: &str = "unix";
++    pub const OS: &str = "myos";
++    pub const DLL_PREFIX: &str = "lib";
++    pub const DLL_SUFFIX: &str = ".so";
++    pub const DLL_EXTENSION: &str = "so";
++    pub const EXE_SUFFIX: &str = "";
++    pub const EXE_EXTENSION: &str = "";
++}
++
+ #[cfg(target_os = "netbsd")]
+ pub mod os {
+     pub const FAMILY: &str = "unix";
+--- a/std/src/sys/fd/unix.rs
++++ b/std/src/sys/fd/unix.rs
+@@ -69,6 +69,7 @@
+     target_os = "openbsd",
+     target_vendor = "apple",
+     target_os = "cygwin",
++    all(target_os = "myos", target_env = "mlibc"),
+ ))]
+ const fn max_iov() -> usize {
+     libc::IOV_MAX as usize
+@@ -92,6 +93,7 @@
+     target_os = "espidf",
+     target_os = "freebsd",
+     target_os = "linux",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_os = "netbsd",
+     target_os = "nuttx",
+     target_os = "nto",
+@@ -222,6 +224,7 @@
+         target_os = "hurd",
+         target_os = "illumos",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "openbsd", // OpenBSD 2.7
+         all(target_os = "macos", target_arch = "aarch64"),
+@@ -248,6 +251,7 @@
+         target_os = "hurd",
+         target_os = "illumos",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_vendor = "apple",
+@@ -431,6 +435,7 @@
+         target_os = "hurd",
+         target_os = "illumos",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "openbsd", // OpenBSD 2.7
+         all(target_os = "macos", target_arch = "aarch64"),
+@@ -457,6 +462,7 @@
+         target_os = "hurd",
+         target_os = "illumos",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_vendor = "apple",
+@@ -572,6 +578,7 @@
+         target_os = "nto",
+         target_os = "qnx",
+         target_os = "wasi",
++        all(target_os = "myos", target_env = "mlibc"),
+     )))]
+     pub fn set_cloexec(&self) -> io::Result<()> {
+         unsafe {
+@@ -597,6 +604,7 @@
+         target_os = "nto",
+         target_os = "qnx",
+         target_os = "wasi",
++        all(target_os = "myos", target_env = "mlibc"),
+     ))]
+     pub fn set_cloexec(&self) -> io::Result<()> {
+         unsafe {
+--- a/std/src/sys/fs/unix.rs
++++ b/std/src/sys/fs/unix.rs
+@@ -15,9 +15,10 @@
+     target_os = "hurd",
+     target_os = "illumos",
+     target_vendor = "apple",
++    all(target_os = "myos", target_env = "mlibc"),
+ ))]
+ use libc::dirfd;
+-#[cfg(any(target_os = "fuchsia", target_os = "illumos", target_vendor = "apple"))]
++#[cfg(any(target_os = "fuchsia", target_os = "illumos", target_vendor = "apple", all(target_os = "myos", target_env = "mlibc")))]
+ use libc::fstatat as fstatat64;
+ #[cfg(any(all(target_os = "linux", not(target_env = "musl")), target_os = "hurd"))]
+ use libc::fstatat64;
+@@ -349,7 +350,7 @@
+ }
+ 
+ fn get_path_from_fd(fd: c_int) -> Option<PathBuf> {
+-    #[cfg(any(target_os = "linux", target_os = "illumos", target_os = "solaris"))]
++    #[cfg(any(target_os = "linux", target_os = "illumos", target_os = "solaris", all(target_os = "myos", target_env = "mlibc"),))]
+     fn get_path(fd: c_int) -> Option<PathBuf> {
+         let mut p = PathBuf::from("/proc/self/fd");
+         p.push(&fd.to_string());
+@@ -416,6 +417,7 @@
+         target_os = "netbsd",
+         target_os = "illumos",
+         target_os = "solaris",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_vendor = "apple",
+     )))]
+     fn get_path(_fd: c_int) -> Option<PathBuf> {
+@@ -1096,6 +1098,7 @@
+             target_os = "fuchsia",
+             target_os = "hurd",
+             target_os = "illumos",
++            all(target_os = "myos", target_env = "mlibc"),
+             target_vendor = "apple",
+         ),
+         not(miri) // no dirfd on Miri
+@@ -1127,6 +1130,7 @@
+             target_os = "fuchsia",
+             target_os = "hurd",
+             target_os = "illumos",
++            all(target_os = "myos", target_env = "mlibc"),
+             target_vendor = "apple",
+         )),
+         miri // no dirfd on Miri
+@@ -1186,6 +1190,7 @@
+         target_os = "illumos",
+         target_os = "l4re",
+         target_os = "linux",
++        all(target_os = "myos", target_env = "mlibc"),
+         target_os = "nto",
+         target_os = "qnx",
+         target_os = "redox",
+@@ -1465,6 +1470,7 @@
+             target_os = "nto",
+             target_os = "qnx",
+             target_os = "hurd",
++            all(target_os = "myos", target_env = "mlibc"),
+         ))]
+         unsafe fn os_datasync(fd: c_int) -> c_int {
+             libc::fdatasync(fd)
+@@ -1480,6 +1486,7 @@
+             target_os = "nto",
+             target_os = "qnx",
+             target_os = "hurd",
++            all(target_os = "myos", target_env = "mlibc"),
+             target_vendor = "apple",
+         )))]
+         unsafe fn os_datasync(fd: c_int) -> c_int {
+@@ -1500,6 +1507,7 @@
+                 target_os = "illumos",
+                 target_os = "aix",
+                 target_os = "android",
++                all(target_os = "myos", target_env = "mlibc"),
+                 target_vendor = "apple",
+             ) => {
+                 cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_EX) })?;
+@@ -1524,6 +1532,7 @@
+                 target_os = "illumos",
+                 target_os = "aix",
+                 target_os = "android",
++                all(target_os = "myos", target_env = "mlibc"),
+                 target_vendor = "apple",
+             ) => {
+                 cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_SH) })?;
+@@ -1548,6 +1557,7 @@
+                 target_os = "illumos",
+                 target_os = "aix",
+                 target_os = "android",
++                all(target_os = "myos", target_env = "mlibc"),
+                 target_vendor = "apple",
+             ) => {
+                 let result = cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) });
+@@ -1583,6 +1593,7 @@
+                 target_os = "illumos",
+                 target_os = "aix",
+                 target_os = "android",
++                all(target_os = "myos", target_env = "mlibc"),
+                 target_vendor = "apple",
+             ) => {
+                 let result = cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) });
+@@ -1618,6 +1629,7 @@
+                 target_os = "illumos",
+                 target_os = "aix",
+                 target_os = "android",
++                all(target_os = "myos", target_env = "mlibc"),
+                 target_vendor = "apple",
+             ) => {
+                 cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_UN) })?;
+--- a/std/src/sys/io/error/unix.rs
++++ b/std/src/sys/io/error/unix.rs
+@@ -18,6 +18,7 @@
+             target_os = "l4re",
+             target_os = "hurd",
+             target_os = "teeos",
++            all(target_os = "myos", target_env = "mlibc"),
+         ),
+         link_name = "__errno_location"
+     )]
+--- a/std/src/sys/net/connection/socket/unix.rs
++++ b/std/src/sys/net/connection/socket/unix.rs
+@@ -78,6 +78,7 @@
+                 target_os = "nto",
+                 target_os = "qnx",
+                 target_os = "solaris",
++                all(target_os = "myos", target_env = "mlibc"),
+             ) => {
+                 // On platforms that support it we pass the SOCK_CLOEXEC
+                 // flag to atomically create the socket and set it as
+@@ -121,6 +122,7 @@
+                     target_os = "illumos",
+                     target_os = "linux",
+                     target_os = "hurd",
++                    all(target_os = "myos", target_env = "mlibc"),
+                     target_os = "netbsd",
+                     target_os = "openbsd",
+                     target_os = "cygwin",
+@@ -253,6 +255,7 @@
+                 target_os = "illumos",
+                 target_os = "linux",
+                 target_os = "hurd",
++                all(target_os = "myos", target_env = "mlibc"),
+                 target_os = "netbsd",
+                 target_os = "openbsd",
+                 target_os = "cygwin",
+@@ -354,7 +357,7 @@
+         self.recv_from_with_flags(buf, 0)
+     }
+ 
+-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     pub fn recv_msg(&self, msg: &mut libc::msghdr) -> io::Result<usize> {
+         let n = cvt(unsafe { libc::recvmsg(self.as_raw_fd(), msg, libc::MSG_CMSG_CLOEXEC) })?;
+         Ok(n as usize)
+@@ -378,7 +381,7 @@
+         self.0.is_write_vectored()
+     }
+ 
+-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     pub fn send_msg(&self, msg: &mut libc::msghdr) -> io::Result<usize> {
+         let n = cvt(unsafe { libc::sendmsg(self.as_raw_fd(), msg, 0) })?;
+         Ok(n as usize)
+@@ -548,12 +551,12 @@
+         Ok(raw != 0)
+     }
+ 
+-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     pub fn set_passcred(&self, passcred: bool) -> io::Result<()> {
+         unsafe { setsockopt(self, libc::SOL_SOCKET, libc::SO_PASSCRED, passcred as libc::c_int) }
+     }
+ 
+-    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
++    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")))]
+     pub fn passcred(&self) -> io::Result<bool> {
+         let passcred: libc::c_int =
+             unsafe { getsockopt(self, libc::SOL_SOCKET, libc::SO_PASSCRED)? };
+--- a/std/src/sys/pal/unix/mod.rs
++++ b/std/src/sys/pal/unix/mod.rs
+@@ -6,6 +6,8 @@
+ #[cfg(target_os = "fuchsia")]
+ pub mod fuchsia;
+ pub mod futex;
++#[cfg(all(target_os = "myos", target_env = "mlibc"))]
++mod myos;
+ pub mod stack_overflow;
+ pub mod sync;
+ pub mod thread_parking;
+--- a/std/src/sys/paths/unix.rs
++++ b/std/src/sys/paths/unix.rs
+@@ -270,7 +270,8 @@
+     target_os = "hurd",
+     target_os = "android",
+     target_os = "nuttx",
+-    target_os = "emscripten"
++    target_os = "emscripten",
++    all(target_os = "myos", target_env = "mlibc")
+ ))]
+ pub fn current_exe() -> io::Result<PathBuf> {
+     match crate::fs::read_link("/proc/self/exe") {
+--- a/std/src/sys/random/mod.rs
++++ b/std/src/sys/random/mod.rs
+@@ -44,7 +44,7 @@
+         mod hermit;
+         pub use hermit::fill_bytes;
+     }
+-    any(target_os = "horizon", target_os = "cygwin") => {
++    any(target_os = "horizon", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")) => {
+         // FIXME(horizon): add arc4random_buf to shim-3ds
+         mod getrandom;
+         pub use getrandom::fill_bytes;
+--- a/std/src/sys/thread/unix.rs
++++ b/std/src/sys/thread/unix.rs
+@@ -162,6 +162,7 @@
+             target_os = "cygwin",
+             target_os = "redox",
+             target_os = "wasi",
++            all(target_os = "myos", target_env = "mlibc"),
+         ) => {
+             #[allow(unused_assignments)]
+             #[allow(unused_mut)]
+@@ -397,6 +398,7 @@
+     target_os = "illumos",
+     target_os = "vxworks",
+     target_os = "cygwin",
++    all(target_os = "myos", target_env = "mlibc"),
+     target_vendor = "apple",
+     target_os = "netbsd",
+ ))]
+@@ -429,13 +431,14 @@
+     target_os = "freebsd",
+     target_os = "dragonfly",
+     target_os = "nuttx",
+-    target_os = "cygwin"
++    target_os = "cygwin",
++    all(target_os = "myos", target_env = "mlibc"),
+ ))]
+ pub fn set_name(name: &CStr) {
+     unsafe {
+         cfg_select! {
+-            any(target_os = "linux", target_os = "cygwin") => {
+-                // Linux and Cygwin limits the allowed length of the name.
++            any(target_os = "linux", target_os = "cygwin", all(target_os = "myos", target_env = "mlibc")) => {
++                // Linux, Cygwin and myos limit the allowed length of the name.
+                 const TASK_COMM_LEN: usize = 16;
+                 let name = truncate_cstr::<{ TASK_COMM_LEN }>(name);
+             }
+--- a/unwind/src/lib.rs
++++ b/unwind/src/lib.rs
+@@ -217,3 +217,6 @@
+ #[link(name = "unwind", kind = "static", modifiers = "-bundle", cfg(target_feature = "crt-static"))]
+ #[link(name = "unwind", cfg(not(target_feature = "crt-static")))]
+ unsafe extern "C" {}
++
++// myos: LLVM's libunwind, which the target's link names itself
++// (`late-link-args` in targets/<arch>-unknown-myos-mlibc.json).

@@ -16,6 +16,9 @@
     "tier": 3
   },
   "os": "myos",
+  "target-family": [
+    "unix"
+  ],
   "panic-strategy": "unwind",
   "plt-by-default": false,
   "position-independent-executables": true,
