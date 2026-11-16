@@ -579,6 +579,10 @@ cmd_push() (
 cmd_plan() (
   misses=""
   undefined=" "
+  # One answer per piece and key for the whole plan (myos_piece_output_record).
+  MYOS_DEP_HASH_MISSES="$(mktemp -d)"
+  export MYOS_DEP_HASH_MISSES
+  trap 'rm -rf "$MYOS_DEP_HASH_MISSES"' EXIT
   ensure_oras >&2
   if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
     oras_login >&2 || true

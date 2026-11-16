@@ -292,6 +292,14 @@ myos_piece_output_record() (
     return 0
   fi
   if command -v myos_dep_hash_hook >/dev/null 2>&1; then
+    # The registry's "no" is remembered where the caller gives a place for
+    # it (MYOS_DEP_HASH_MISSES, the CI plan's: a directory of its own run):
+    # a port near the bottom, mlibc, is asked about once for every port
+    # over it, hundreds of times when the registry lacks it.
+    miss="${MYOS_DEP_HASH_MISSES:+$MYOS_DEP_HASH_MISSES/$(printf '%s\n' "$piece" | tr : -)-$vh}"
+    if [ -n "$miss" ] && [ -e "$miss" ]; then
+      return 1
+    fi
     if h="$(myos_dep_hash_hook "$piece" "$vh")" && [ -n "$h" ]; then
       rec="$(myos_dep_hash_cache "$piece")"
       mkdir -p "$(dirname "$rec")"
@@ -300,6 +308,7 @@ myos_piece_output_record() (
       printf '%s\n' "$h"
       return 0
     fi
+    [ -z "$miss" ] || : >"$miss"
   fi
   return 1
 )
