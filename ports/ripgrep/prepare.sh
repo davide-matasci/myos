@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch ripgrep, apply minimal myos Cargo.toml patch section + pcre2-sys build hook.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=ports/ripgrep/versions.env
-source "$ROOT/ports/ripgrep/versions.env"
+. "$ROOT/ports/ripgrep/versions.env"
 
 "$ROOT/ports/ripgrep/fetch.sh"
 "$ROOT/packages/coreutils/prepare.sh"
@@ -65,22 +65,20 @@ fi
 )
 
 # Patch pcre2-sys build.rs once cargo has fetched it (prefer prebuilt PCRE2).
-find_pcre2_sys() {
-  local ver="$PCRE2_SYS_VERSION"
-  local -a roots=(
-    "${CARGO_HOME:-$HOME/.cargo}/registry/src"
+find_pcre2_sys() (
+  ver="$PCRE2_SYS_VERSION"
+  for root in \
+    "${CARGO_HOME:-$HOME/.cargo}/registry/src" \
     "/usr/local/cargo/registry/src"
-  )
-  local root dir
-  for root in "${roots[@]}"; do
+  do
     for dir in "$root"/index.crates.io-*; do
-      [[ -d "$dir/pcre2-sys-$ver" ]] || continue
+      [ -d "$dir/pcre2-sys-$ver" ] || continue
       printf '%s\n' "$dir/pcre2-sys-$ver"
       return 0
     done
   done
   return 1
-}
+)
 
 # Ensure the crate is downloaded.
 (
@@ -95,7 +93,7 @@ PCRE2_SYS="$(find_pcre2_sys)" || {
   ( cd "$RG" && cargo "+${MYOS_NIGHTLY:-nightly-2026-07-26}" metadata --features pcre2 -q >/dev/null )
   PCRE2_SYS="$(find_pcre2_sys)"
 }
-if [[ -z "${PCRE2_SYS:-}" || ! -d "$PCRE2_SYS" ]]; then
+if [ -z "${PCRE2_SYS:-}" ] || [ ! -d "$PCRE2_SYS" ]; then
   echo "error: pcre2-sys-$PCRE2_SYS_VERSION not in cargo registry" >&2
   exit 1
 fi
@@ -110,7 +108,7 @@ fi
 # ignore: non-unix from_path returns "unsupported platform" so WalkBuilder never
 # yields explicit file paths on myos. Rewrite stub to use fs::metadata (SYS_STAT).
 IGNORE_WALK="$(find "$RG" -path '*/crates/ignore/src/walk.rs' | head -1)"
-if [[ -n "$IGNORE_WALK" ]]; then
+if [ -n "$IGNORE_WALK" ]; then
   python3 "$ROOT/ports/ripgrep/patch-ignore-myos.py" "$IGNORE_WALK"
 fi
 
