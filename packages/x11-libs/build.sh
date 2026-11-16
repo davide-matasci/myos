@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build the X client libraries for the three arches: xorgproto, xtrans,
 # libXau, xcb-proto, libxcb (core only, no extension libraries), libX11
 # (thread-safe from the start, no XKB), libXext (MIT-SHM's XShm* among its
@@ -14,12 +14,12 @@
 #
 # Then links the boot test x11_smoke against them.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/x11-libs/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_x11_libs_is_current; then
   echo "x11 libraries up to date"
@@ -42,10 +42,10 @@ NM_BIN="$(command -v llvm-nm 2>/dev/null || echo nm)"
 
 # build ARCH NAME-VERSION CONFIGURE-ARGS...: configure out of tree, make,
 # install into the arch's stage.
-build_one() {
-  local arch="$1" pkg="$2"
+build_one() (
+  arch="$1" pkg="$2"
   shift 2
-  local dir="$WORK/$libc-$arch/$pkg"
+  dir="$WORK/$libc-$arch/$pkg"
   echo "==> $pkg ($arch)"
   rm -rf "$dir"
   mkdir -p "$dir"
@@ -60,15 +60,15 @@ build_one() {
   # libtool archives name the install paths, not the stage: the next
   # library's link would look for /lib/x11/lib/libXau.la.
   find "$STAGE" -name '*.la' -delete
-}
+)
 
 # build_arch ARCH LIBC: the stage of LIBC, newlib or mlibc.
-build_arch() {
-  local arch="$1" libc="$2"
+build_arch() (
+  arch="$1" libc="$2"
   STAGE="$ROOT/target/x11-libs-${arch}"
-  [[ "$libc" == mlibc ]] && STAGE="$ROOT/target/x11-libs-mlibc-${arch}"
-  local work="$WORK/$libc-$arch"
-  local cc="$work-cc"
+  [ "$libc" = mlibc ] && STAGE="$ROOT/target/x11-libs-mlibc-${arch}"
+  work="$WORK/$libc-$arch"
+  cc="$work-cc"
   rm -rf "$STAGE" "$work"
   mkdir -p "$STAGE" "$work"
   # The compiler (scripts/myos-c-userspace-lib.sh), with the headers the
@@ -96,13 +96,14 @@ build_arch() {
   # fetch a package of nothing.
   printf 'Name: pthread stubs\nDescription: pthreads are in libc\nVersion: 0.5\nCflags:\nLibs:\n' \
     > "$STAGE$PREFIX/lib/pkgconfig/pthread-stubs.pc"
-  local ext no_ext=()
+  no_ext=""
   for ext in composite damage dbe dpms dri2 dri3 ge glx present randr record render \
              resource screensaver shape shm sync xevie xfixes xfree86-dri xinerama \
              xinput xkb xprint selinux xtest xv xvmc; do
-    no_ext+=("--disable-$ext")
+    no_ext="$no_ext --disable-$ext"
   done
-  build_one "$arch" "libxcb-$LIBXCB_VERSION" --disable-devel-docs --without-doxygen "${no_ext[@]}"
+  # shellcheck disable=SC2086
+  build_one "$arch" "libxcb-$LIBXCB_VERSION" --disable-devel-docs --without-doxygen $no_ext
   # newlib's malloc(0) returns a pointer; IPv6 is left to a later need.
   # Xlib's locks are on libgloss's pthreads, which its constructor turns on
   # (XInitThreads) before main.
@@ -114,7 +115,7 @@ build_arch() {
   build_one "$arch" "libXext-$LIBXEXT_VERSION" --disable-specs --disable-malloc0returnsnull \
     --without-xmlto --without-fop
   # mlibc's malloc(0) is not NULL either.
-  local m0=--disable-malloc0returnsnull
+  m0=--disable-malloc0returnsnull
   build_one "$arch" "libXrender-$LIBXRENDER_VERSION" "$m0"
   build_one "$arch" "libXfixes-$LIBXFIXES_VERSION"
   build_one "$arch" "libXi-$LIBXI_VERSION" --disable-specs "$m0" --without-xmlto --without-fop \
@@ -126,7 +127,7 @@ build_arch() {
   build_one "$arch" "libXcursor-$LIBXCURSOR_VERSION" --with-icondir="$PREFIX/share/icons"
   build_one "$arch" "libXinerama-$LIBXINERAMA_VERSION" "$m0"
 
-  if [[ "$libc" == newlib ]]; then
+  if [ "$libc" = newlib ]; then
     "$cc" -O2 -Wall -Wextra -I"$STAGE$PREFIX/include" "$HERE/x11_smoke.c" \
       -o "$ROOT/target/x11-smoke-${arch}-unknown-none" \
       -L"$STAGE$PREFIX/lib" -lX11 -lxcb -lXau
@@ -134,7 +135,7 @@ build_arch() {
   # xcb-proto's install byte-compiles xcbgen whatever the environment says.
   find "$STAGE" -name __pycache__ -type d -prune -exec rm -rf {} +
   echo "x11 libraries ($libc) -> $STAGE"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch" newlib

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build TinyX's Xfbdev for the three arches, with the myos patches
 # (*.myos.patch: the kdrive OS layer on /dev/fb and /dev/console/kbd, no
 # XTEST, current proto headers) and libfontenc and libXfont 1.x,
@@ -6,12 +6,12 @@
 # fonts are libXfont's built-in `fixed` and `cursor`. Then the boot test
 # tinyx_smoke, an X client, and startx, which runs a session.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/tinyx/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_tinyx_is_current; then
   echo "tinyx up to date"
@@ -33,21 +33,19 @@ build_triple="$(sh "$SRC/libXfont-$LIBXFONT_VERSION/config.guess")"
 
 # configure_make DIR CONFIGURE-ARGS...: configure in DIR (in tree), make,
 # install into the stage.
-configure_make() {
-  local dir="$1"
+configure_make() (
+  dir="$1"
   shift
-  (
-    cd "$dir"
-    ./configure --build="$build_triple" --host="${arch}-unknown-elf" \
-      --prefix="$PREFIX" --disable-shared --enable-static "$@" >configure.log 2>&1 \
-      || { tail -40 configure.log >&2; exit 1; }
-    make -j"$jobs" >make.log 2>&1 || { grep -E "error" make.log | head -40 >&2; exit 1; }
-  )
-}
+  cd "$dir"
+  ./configure --build="$build_triple" --host="${arch}-unknown-elf" \
+    --prefix="$PREFIX" --disable-shared --enable-static "$@" >configure.log 2>&1 \
+    || { tail -40 configure.log >&2; exit 1; }
+  make -j"$jobs" >make.log 2>&1 || { grep -E "error" make.log | head -40 >&2; exit 1; }
+)
 
-build_arch() {
-  local arch="$1"
-  local dir="$WORK/$arch" stage="$WORK/$arch/stage" cc="$WORK/$arch-cc"
+build_arch() (
+  arch="$1"
+  dir="$WORK/$arch" stage="$WORK/$arch/stage" cc="$WORK/$arch-cc"
   echo "==> tinyx ($arch)"
   rm -rf "$dir"
   mkdir -p "$dir"
@@ -89,7 +87,6 @@ build_arch() {
   # miinitext.c defines, as K&R parameter lists clang refuses.
   cp -a "$SRC/tinyx" "$dir/tinyx"
   rm -rf "$dir/tinyx/.git"
-  local p
   for p in "$HERE"/*.myos.patch; do
     patch -d "$dir/tinyx" -p1 --forward --batch -s < "$p"
   done
@@ -108,7 +105,7 @@ build_arch() {
     -o "$ROOT/target/tinyx-smoke-${arch}-unknown-none" \
     -L"$stage$PREFIX/lib" -lXext -lX11 -lxcb -lXau
   echo "tinyx -> target/xfbdev-${arch}-unknown-none"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"

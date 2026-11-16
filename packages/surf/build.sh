@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build surf for the three arches against mlibc and packages/
 # webkitgtk's archive (libwebkit2gtk-4.1.a and its pkg-config file, over
 # GTK 3, libsoup and the rest), as packages/webkitgtk-smoke's program is:
@@ -8,16 +8,16 @@
 # (surf.myos.patch: no gcr, no web extension); config.h is the stock
 # config.def.h. Then the boot test's helper, surf_check.c.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/surf/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/surf/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=ports/libressl/versions.env
-source "$ROOT/ports/libressl/versions.env"
+. "$ROOT/ports/libressl/versions.env"
 
 if myos_surf_is_current; then
   echo "surf up to date"
@@ -64,9 +64,9 @@ for arch in x86_64 aarch64 riscv64; do
   pc "$build/pc" sqlite3 3 "$T/sqlite-mlibc-$arch" -lsqlite3
   pcdir="$T/webkitgtk-mlibc-$arch/lib/pkgconfig"
   for m in zlib glib image-libs cairo-pango x11-xft gtk3 libsoup; do
-    pcdir+=":$T/$m-mlibc-$arch/lib/pkgconfig"
+    pcdir="$pcdir:$T/$m-mlibc-$arch/lib/pkgconfig"
   done
-  pcdir+=":$T/libsoup-mlibc-$arch/lib/gio/modules/pkgconfig:$build/pc:$build/x11-pc"
+  pcdir="$pcdir:$T/libsoup-mlibc-$arch/lib/gio/modules/pkgconfig:$build/pc:$build/x11-pc"
   # surf's config.mk flags (its library directories unused: no web
   # extension), against WebKit, GTK and Xlib.
   # shellcheck disable=SC2046

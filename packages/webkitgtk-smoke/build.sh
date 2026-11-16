@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Link WebKitGTK's program, smoke.c, for the three arches against mlibc
 # and packages/webkitgtk's archive (libwebkit2gtk-4.1.a and its pkg-config
 # file, over GTK 3, libsoup and the rest), as surf is: its main renamed
@@ -6,14 +6,14 @@
 # MultiCall.cpp) runs, or WebKit's web or network process when the program
 # runs itself again as one.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/webkitgtk-smoke/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=ports/libressl/versions.env
-source "$ROOT/ports/libressl/versions.env"
+. "$ROOT/ports/libressl/versions.env"
 
 if myos_webkitgtk_smoke_is_current; then
   echo "webkitgtk-smoke up to date"
@@ -56,9 +56,9 @@ for arch in x86_64 aarch64 riscv64; do
   pc "$build/pc" sqlite3 3 "$T/sqlite-mlibc-$arch" -lsqlite3
   pcdir="$T/webkitgtk-mlibc-$arch/lib/pkgconfig"
   for m in zlib glib image-libs cairo-pango x11-xft gtk3 libsoup; do
-    pcdir+=":$T/$m-mlibc-$arch/lib/pkgconfig"
+    pcdir="$pcdir:$T/$m-mlibc-$arch/lib/pkgconfig"
   done
-  pcdir+=":$T/libsoup-mlibc-$arch/lib/gio/modules/pkgconfig:$build/pc:$build/x11-pc"
+  pcdir="$pcdir:$T/libsoup-mlibc-$arch/lib/gio/modules/pkgconfig:$build/pc:$build/x11-pc"
   # shellcheck disable=SC2046
   "$build/cc" -Os -Wall -Dmain=webkit_myos_program_main \
     $(PKG_CONFIG_LIBDIR="$pcdir" pkg-config --cflags webkit2gtk-4.1) \

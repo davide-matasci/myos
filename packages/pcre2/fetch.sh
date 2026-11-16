@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch pinned PCRE2 sources into target/pcre2-src.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 SRC="$ROOT/target/pcre2-src"
 STAMP="$ROOT/target/.pcre2-src-version"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$PCRE2_VERSION" && -f "$SRC/src/pcre2_compile.c" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$PCRE2_VERSION" ] && [ -f "$SRC/src/pcre2_compile.c" ]; then
   echo "pcre2 sources up to date ($PCRE2_VERSION)"
   exit 0
 fi

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build WebKitGTK (the webkit2gtk-4.1 API: GTK 3 and libsoup 3) and
 # the libraries it needs beyond the other packages' against mlibc for the
 # three arches (issue #616), static, into one prefix per arch,
@@ -14,18 +14,18 @@
 # WebKit draws with Skia on the CPU and never loads GL: there is no EGL
 # (webkitgtk-*.myos.patch).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/webkitgtk/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/webkitgtk/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=packages/cairo-pango/versions.env
-source "$ROOT/packages/cairo-pango/versions.env"
+. "$ROOT/packages/cairo-pango/versions.env"
 # shellcheck source=ports/libressl/versions.env
-source "$ROOT/ports/libressl/versions.env"
+. "$ROOT/ports/libressl/versions.env"
 
 if myos_webkitgtk_is_current; then
   echo "webkitgtk up to date"
@@ -56,9 +56,9 @@ GUESS="$(sh "$T/libgpg-error-src/build-aux/config.guess")"
 
 # ICU's tools, built for the build host: a cross build of ICU runs them
 # (--with-cross-build) to package its data.
-build_icu_host() {
-  local host="$T/icu-host"
-  [[ -f "$host/.done-$ICU_VERSION" ]] && return
+build_icu_host() (
+  host="$T/icu-host"
+  [ -f "$host/.done-$ICU_VERSION" ] && return
   echo "==> ICU (build host)"
   rm -rf "$host"
   mkdir -p "$host"
@@ -68,12 +68,12 @@ build_icu_host() {
   make -C "$host" -j"$(nproc)" >"$host/make.log" 2>&1 \
     || { grep -n "error" "$host/make.log" | head -20 >&2; exit 1; }
   touch "$host/.done-$ICU_VERSION"
-}
+)
 
 # autotools DIR SRC HOST [CONFIGURE-OPTION...]: SRC configured in DIR for
 # the arch's myos (configure's HOST) and installed into $out, static.
-autotools() {
-  local dir="$1" src="$2" host="$3"
+autotools() (
+  dir="$1" src="$2" host="$3"
   shift 3
   mkdir -p "$dir"
   (cd "$dir" && CC="$build/cc" CXX="$build/c++" AR="${arch}-unknown-myos-ar" \
@@ -84,9 +84,9 @@ autotools() {
   make -C "$dir" -j"$(nproc)" install >"$dir/make.log" 2>&1 \
     || { grep -n "error" "$dir/make.log" | head -20 >&2 || true; tail -20 "$dir/make.log" >&2; exit 1; }
   echo "${dir##*/} -> $out"
-}
+)
 
-build_libs() {
+build_libs() (
   # ICU's common and i18n libraries. Its data (every locale, 33 MB) is a
   # file of its own, icudt<version>l.dat, that ICU opens from
   # /lib/webkitgtk (ICU_DATA_DIR), where the package puts it
@@ -94,10 +94,13 @@ build_libs() {
   # tmpfs file holds (128 MiB), where the boot tests install apps. Built
   # as for Linux (its make fragment and its code's platform): mlibc is
   # Linux-shaped, and ICU knows no other platform myos would be.
-  CPPFLAGS='-D__linux__ -DICU_DATA_DIR=\"/lib/webkitgtk\"' autotools "$build/icu" \
-    "$T/icu-src/source" "${arch}-unknown-linux-gnu" --with-cross-build="$T/icu-host" \
-    --with-data-packaging=archive --disable-tools --disable-tests --disable-samples \
-    --disable-extras --disable-icuio --disable-layoutex
+  (
+    export CPPFLAGS='-D__linux__ -DICU_DATA_DIR=\"/lib/webkitgtk\"'
+    autotools "$build/icu" \
+      "$T/icu-src/source" "${arch}-unknown-linux-gnu" --with-cross-build="$T/icu-host" \
+      --with-data-packaging=archive --disable-tools --disable-tests --disable-samples \
+      --disable-extras --disable-icuio --disable-layoutex
+  )
   mkdir -p "$out/share/icu-data"
   cp "$out/share/icu/$ICU_VERSION"/icudt*l.dat "$out/share/icu-data/"
 
@@ -107,12 +110,14 @@ build_libs() {
   # writes it, the mutex's size from readelf (every arch's objects), into
   # a copy of the source, where its header generator looks (syscfg/, the
   # host's OS: "none").
-  local size lock="$build/libgpg-error-src/src/syscfg/lock-obj-pub.none.h"
+  lock="$build/libgpg-error-src/src/syscfg/lock-obj-pub.none.h"
   cp -r "$T/libgpg-error-src" "$build/libgpg-error-src"
   printf '#include <pthread.h>\npthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;\n' >"$build/mtx.c"
   "$build/cc" -c "$build/mtx.c" -o "$build/mtx.o"
   size="$(readelf -sW "$build/mtx.o" | awk '$8 == "mtx" { print $3 }')"
-  [[ "$size" =~ ^[1-9][0-9]*$ ]] || { echo "error: pthread_mutex_t's size: \"$size\"" >&2; exit 1; }
+  case "$size" in
+    "" | 0* | *[!0-9]*) echo "error: pthread_mutex_t's size: \"$size\"" >&2; exit 1 ;;
+  esac
   cat >"$lock" <<EOF
 ## lock-obj-pub.${arch}-unknown-none.h, as gen-lock-obj.sh writes it
 typedef struct
@@ -148,7 +153,7 @@ EOF
   cp "$build/harfbuzz-out/lib/libharfbuzz-icu.a" "$out/lib/"
   cp "$build/harfbuzz-out/lib/pkgconfig/harfbuzz-icu.pc" "$out/lib/pkgconfig/"
   cp "$build/harfbuzz-out/include/harfbuzz/hb-icu.h" "$out/include/"
-}
+)
 
 # pc DIR NAME VERSION PREFIX LIBS: a pkg-config file for a library built
 # without one (LibreSSL's and SQLite's mlibc builds; as packages/libsoup).
@@ -172,13 +177,13 @@ EOF
 # and mimalloc, riscv64's default) are made of Linux system calls.
 # The build tree is kept until the build succeeds, so a failed run goes
 # on where it stopped.
-build_webkit() {
-  local cmake="$T/webkitgtk-cmake-$arch" prefixes="" m
-  local ssl="$T/libressl-mlibc-$arch" sqlite="$T/sqlite-mlibc-$arch"
+build_webkit() (
+  cmake="$T/webkitgtk-cmake-$arch" prefixes=""
+  ssl="$T/libressl-mlibc-$arch" sqlite="$T/sqlite-mlibc-$arch"
   for m in "$out" "$T/zlib-mlibc-$arch" "$T/glib-mlibc-$arch" "$T/image-libs-mlibc-$arch" \
     "$T/cairo-pango-mlibc-$arch" "$T/x11-xft-mlibc-$arch" "$T/x11-xft-mlibc-$arch/lib/x11" \
     "$T/gtk3-mlibc-$arch" "$T/libsoup-mlibc-$arch" "$ssl" "$sqlite"; do
-    prefixes+="${prefixes:+ }$m"
+    prefixes="$prefixes${prefixes:+ }$m"
   done
   mkdir -p "$cmake" "$build/pc"
   pc "$build/pc" libcrypto "$LIBRESSL_VERSION" "$ssl" -lcrypto
@@ -189,20 +194,26 @@ build_webkit() {
   # which takes flags only on its command line; and no dynamic symbol
   # table (--export-dynamic, megabytes a static program never looks in).
   cat >"$build/link" <<'EOF'
-#!/usr/bin/env bash
-args=()
+#!/bin/sh
+# The command is added after the given arguments, which are then dropped,
+# twice: the response files first.
+n=$#
 for a in "$@"; do
-  if [[ "$a" == @* ]]; then
-    read -d "" -ra words <"${a#@}" || true
-    args+=("${words[@]}")
-  else
-    args+=("$a")
-  fi
+  case "$a" in
+    @*)
+      set -f
+      set -- "$@" $(cat "${a#@}")
+      set +f ;;
+    *) set -- "$@" "$a" ;;
+  esac
 done
-for i in "${!args[@]}"; do
-  [[ "${args[$i]}" == -Wl,--export-dynamic ]] && unset 'args[i]'
+shift "$n"
+n=$#
+for a in "$@"; do
+  [ "$a" = -Wl,--export-dynamic ] || set -- "$@" "$a"
 done
-exec "${args[@]}"
+shift "$n"
+exec "$@"
 EOF
   chmod +x "$build/link"
   cat >"$build/toolchain.cmake" <<EOF
@@ -231,11 +242,10 @@ EOF
   # dependencies (CMake asks pkg-config for shared libraries' flags: GTK's
   # X libraries, libsoup's, libwebp's) and GIO's TLS backend, which
   # MultiCall.cpp registers.
-  local libs
   libs="$(PKG_CONFIG_LIBDIR="$pc:$build/pc:$build/x11-pc:$T/libsoup-mlibc-$arch/lib/gio/modules/pkgconfig" \
     pkg-config --static --libs gtk+-3.0 libsoup-3.0 gioopenssl libwebp libwebpdemux)"
-  local flags="-D__linux__ -D__linux -DEGL_NO_PLATFORM_SPECIFIC_TYPES -I$HERE/compat"
-  flags+=" -isystem $T/x11-xft-mlibc-$arch/lib/x11/include"
+  flags="-D__linux__ -D__linux -DEGL_NO_PLATFORM_SPECIFIC_TYPES -I$HERE/compat"
+  flags="$flags -isystem $T/x11-xft-mlibc-$arch/lib/x11/include"
   # JavaScriptCore on riscv64 is its C interpreter (CLoop), no JIT and no
   # WebAssembly: this WebKit builds neither there (the in-place WebAssembly
   # interpreter has no RISC-V half, the JIT's headers break without it),
@@ -245,15 +255,16 @@ EOF
   # The sampling profiler (it reads a stopped thread's registers from a
   # signal handler's ucontext, docs/signals.md) is the JIT builds': CLoop
   # has none.
-  local jsc=()
-  [[ "$arch" != riscv64 ]] || jsc+=(-DENABLE_SAMPLING_PROFILER=OFF -DENABLE_C_LOOP=ON -DENABLE_JIT=OFF
-    -DENABLE_FTL_JIT=OFF -DENABLE_DFG_JIT=OFF -DENABLE_WEBASSEMBLY=OFF)
+  jsc=""
+  [ "$arch" != riscv64 ] || jsc="-DENABLE_SAMPLING_PROFILER=OFF -DENABLE_C_LOOP=ON -DENABLE_JIT=OFF \
+    -DENABLE_FTL_JIT=OFF -DENABLE_DFG_JIT=OFF -DENABLE_WEBASSEMBLY=OFF"
+  # shellcheck disable=SC2086
   PKG_CONFIG_LIBDIR="$pc:$build/pc:$build/x11-pc" cmake -G Ninja -S "$T/webkitgtk-src" -B "$cmake" \
     -DCMAKE_TOOLCHAIN_FILE="$build/toolchain.cmake" -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_INSTALL_PREFIX="$out" \
     -DPORT=GTK -DWEBKIT_MYOS=ON -DWEBKIT_MYOS_PROGRAM="$HERE/program.c" \
-    -DWEBKIT_MYOS_PROGRAM_NAME=webkit-program -DWEBKIT_MYOS_PROGRAM_LIBRARIES="${libs// /;}" \
-    -DUSE_GTK4=OFF -DENABLE_X11_TARGET=ON "${jsc[@]}" \
+    -DWEBKIT_MYOS_PROGRAM_NAME=webkit-program -DWEBKIT_MYOS_PROGRAM_LIBRARIES="$(printf '%s\n' "$libs" | sed 's/ /;/g')" \
+    -DUSE_GTK4=OFF -DENABLE_X11_TARGET=ON $jsc \
     -DENABLE_WAYLAND_TARGET=OFF -DENABLE_QUARTZ_TARGET=OFF -DENABLE_INTROSPECTION=OFF \
     -DENABLE_DOCUMENTATION=OFF -DENABLE_JOURNALD_LOG=OFF -DENABLE_MINIBROWSER=OFF \
     -DENABLE_WEBDRIVER=OFF -DENABLE_GAMEPAD=OFF -DENABLE_SPELLCHECK=OFF \
@@ -275,7 +286,7 @@ EOF
     || { grep -n "error" "$cmake/ninja.log" | head -30 >&2 || true; tail -20 "$cmake/ninja.log" >&2; exit 1; }
   install_webkit
   rm -rf "$cmake"
-}
+)
 
 # What surf links (in $out): the headers and pkg-config files WebKit's
 # install puts (its install's other steps want the shell and the
@@ -285,8 +296,7 @@ EOF
 # WebCore, Skia, ...) and MultiCall.cpp's main, so a program linking it
 # renames its own (webkit_myos_program_main). webkit2gtk-4.1.pc names the
 # rest, the libraries' own static dependencies.
-install_webkit() {
-  local f objs=() o a
+install_webkit() (
   {
     echo "set(CMAKE_INSTALL_PREFIX \"$out\")"
     find "$cmake" -name cmake_install.cmake -print0 | xargs -0 awk '
@@ -296,29 +306,32 @@ install_webkit() {
   } >"$cmake/install-files.cmake"
   cmake -P "$cmake/install-files.cmake" >"$cmake/install.log" 2>&1 \
     || { tail -20 "$cmake/install.log" >&2; exit 1; }
-  read -d "" -ra words <"$cmake/CMakeFiles/MyosProgram.rsp" || true
-  for f in "${words[@]}"; do
+  # The words of the link's response file are the positional parameters.
+  set -f
+  # shellcheck disable=SC2046
+  set -- $(cat "$cmake/CMakeFiles/MyosProgram.rsp")
+  set +f
+  for f in "$@"; do
     case "$f" in
       *program.c.o) ;;
-      *.o) objs+=("$cmake/$f") ;;
+      *.o) printf '%s\n' "$cmake/$f" ;;
       lib/*.a)
         # WebKit's own archives are thin: their members, by path.
         a="$cmake/$f"
-        while read -r o; do
-          [[ "$o" == /* ]] || o="$(dirname "$a")/$o"
-          objs+=("$o")
-        done < <("${arch}-unknown-myos-ar" t "$a") ;;
+        "${arch}-unknown-myos-ar" t "$a" | while read -r o; do
+          case "$o" in /*) ;; *) o="$(dirname "$a")/$o" ;; esac
+          printf '%s\n' "$o"
+        done ;;
     esac
-  done
+  done >"$cmake/archive.list"
   rm -f "$out/lib/libwebkit2gtk-4.1.a"
-  printf '%s\n' "${objs[@]}" >"$cmake/archive.list"
   "${arch}-unknown-myos-ar" qcs "$out/lib/libwebkit2gtk-4.1.a" @"$cmake/archive.list"
   # The other libraries the program links: the absolute paths and -l of
   # its link (not WebKit's own) and the static dependencies passed in.
-  local private=""
-  for f in "${words[@]}"; do
+  private=""
+  for f in "$@"; do
     case "$f" in
-      /*.a|-l*) private+=" $f" ;;
+      /*.a|-l*) private="$private $f" ;;
     esac
   done
   # A program links it as WebKit links its own, with --gc-sections: code
@@ -341,15 +354,15 @@ EOF
   # JavaScriptCore is in the same archive.
   sed -i 's/^Libs: .*/Libs: -Wl,--gc-sections -L${libdir} -lwebkit2gtk-4.1/' "$out/lib/pkgconfig/javascriptcoregtk-4.1.pc"
   rm -f "$out/lib/pkgconfig/webkit2gtk-web-extension-4.1.pc"
-}
+)
 
-build_arch() {
-  local arch="$1"
-  local build="$T/webkitgtk-build-$arch"
-  local out="$T/webkitgtk-mlibc-${arch}"
-  local pc="$out/lib/pkgconfig" m
+build_arch() (
+  arch="$1"
+  build="$T/webkitgtk-build-$arch"
+  out="$T/webkitgtk-mlibc-${arch}"
+  pc="$out/lib/pkgconfig"
   for m in zlib glib image-libs cairo-pango x11-xft gtk3 libsoup; do
-    pc+=":$T/$m-mlibc-$arch/lib/pkgconfig"
+    pc="$pc:$T/$m-mlibc-$arch/lib/pkgconfig"
   done
   echo "==> webkitgtk ($arch, mlibc)"
   rm -rf "$build" "$out"
@@ -359,7 +372,7 @@ build_arch() {
   build_webkit
   rm -rf "$build"
   echo "webkitgtk ($arch) -> $out"
-}
+)
 
 # The arches MYOS_WEBKITGTK_ARCHES lists, a stamp each: CI builds one per
 # job (PORT_ARCH_JOBS).

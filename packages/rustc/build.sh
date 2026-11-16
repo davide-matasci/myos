@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build the Rust compiler and cargo with myos as their host, for the
 # arches MYOS_RUSTC_ARCHES lists (all three by default), into
 # target/rustc-<arch>:
@@ -30,14 +30,14 @@
 # (files/llvm-config). cargo's TLS is the mlibc build of LibreSSL; curl,
 # libgit2, libssh2 and zlib are the copies their crates carry.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/rustc/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/rustc/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_rustc_is_current; then
   echo "rustc up to date"
@@ -66,13 +66,13 @@ STD="$ROOT/toolchain/std"
 # The pinned nightly's lld, for the links of myos programs on the build
 # machine (the std port's linker too, targets/*.json).
 RUST_LLD="$(dirname "$(rustc "+$MYOS_NIGHTLY" --print target-libdir)")/bin/rust-lld"
-[[ -x "$RUST_LLD" ]] || { echo "error: no rust-lld in the $MYOS_NIGHTLY toolchain" >&2; exit 1; }
+[ -x "$RUST_LLD" ] || { echo "error: no rust-lld in the $MYOS_NIGHTLY toolchain" >&2; exit 1; }
 
 # myos in the source, on the pristine tree: once per set of patches, so
 # that a second run does not touch the sources (and rebuild everything).
 prep="$({ cat "$HERE/rust-myos.myos.patch" "$HERE/port-crates.py"; myos_sysroot_version_hash; } | sha256sum | cut -d' ' -f1)"
-if [[ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$prep" ]]; then
-  if [[ -e "$SRC/.myos-patched" ]]; then
+if [ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$prep" ]; then
+  if [ -e "$SRC/.myos-patched" ]; then
     rm -f "$SRC/.myos-fetched"
     "$HERE/fetch.sh"
   fi
@@ -86,32 +86,34 @@ if [[ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$prep" ]]; then
 fi
 
 # write_toolchain ARCH DIR: the cross tools of one arch.
-write_toolchain() {
-  local arch="$1" tc="$2" c
+write_toolchain() (
+  arch="$1" tc="$2"
   mkdir -p "$tc"
   myos_write_cross_cc "$arch" "$tc/cc.real"
   myos_write_cross_cxx "$arch" "$tc/c++.real"
   for c in cc c++; do
     cat >"$tc/$c" <<EOF
-#!/usr/bin/env bash
+#!/bin/sh
 # The cross compiler behind a filter: a build script's cc crate names the
 # Rust target (--target=$arch-unknown-myos-mlibc), which this clang does
-# not know; the driver below names the one it compiles for.
-args=()
+# not know; the driver below names the one it compiles for. The arguments
+# kept are added after the given ones, which are then dropped.
+n=\$#
 for a in "\$@"; do
   case "\$a" in
     --target=*-myos-mlibc | --target=*-myos) ;;
-    *) args+=("\$a") ;;
+    *) set -- "\$@" "\$a" ;;
   esac
 done
-exec "$tc/$c.real" "\${args[@]}"
+shift "\$n"
+exec "$tc/$c.real" "\$@"
 EOF
     chmod +x "$tc/$c"
   done
   # rustc's linker for the target on the build machine, as files/rust-lld
   # is on myos: lld with where mlibc and LLVM's runtimes are.
   cat >"$tc/ld" <<EOF
-#!/usr/bin/env bash
+#!/bin/sh
 # A shared object and a program over shared objects link the shared
 # mlibc; such a program starts through /lib/ld.so and takes its entry
 # from mlibc's crt0.o (std's own is in the shared object that holds std).
@@ -119,28 +121,32 @@ EOF
 mlibc="$T/mlibc-$arch"
 cxx="$T/libcxx-$arch"
 # The build system writes some arguments for a compiler driver
-# (-Wl,a,b): they are the linker's a b.
-shared=0 dynamic=0 args=()
+# (-Wl,a,b): they are the linker's a b. The linker's arguments are added
+# after the given ones, which are then dropped.
+shared=0 dynamic=0 n=\$#
 for a in "\$@"; do
   case "\$a" in
     -shared) shared=1 ;;
     *.so) dynamic=1 ;;
   esac
-  if [[ "\$a" == -Wl,-z,origin ]]; then
-    # \$ORIGIN in a RUNPATH needs no flag, and mlibc's ld.so says so of
-    # one it does not know at every start.
-    continue
-  elif [[ "\$a" == -Wl,* ]]; then
-    IFS=, read -ra parts <<<"\${a#-Wl,}"
-    args+=("\${parts[@]}")
-  else
-    args+=("\$a")
-  fi
+  case "\$a" in
+    -Wl,-z,origin)
+      # \$ORIGIN in a RUNPATH needs no flag, and mlibc's ld.so says so of
+      # one it does not know at every start.
+      continue ;;
+    -Wl,*)
+      IFS=,
+      set -f
+      set -- "\$@" \${a#-Wl,}
+      set +f
+      unset IFS ;;
+    *) set -- "\$@" "\$a" ;;
+  esac
 done
-set -- "\${args[@]}"
-if ((shared)); then
+shift "\$n"
+if [ "\$shared" = 1 ]; then
   exec "$RUST_LLD" -flavor gnu "\$@" --hash-style=gnu -L"\$mlibc/shared" -L"\$mlibc/lib" -L"\$cxx/lib"
-elif ((dynamic)); then
+elif [ "\$dynamic" = 1 ]; then
   exec "$RUST_LLD" -flavor gnu "\$@" "\$mlibc/lib/crt0.o" --dynamic-linker=/lib/ld.so --export-dynamic \\
     --hash-style=gnu -L"\$mlibc/shared" -L"\$mlibc/lib" -L"\$cxx/lib"
 else
@@ -152,17 +158,20 @@ EOF
   # CMake's links: their response files (@file), spelled out for the
   # cross driver, which takes flags only on its command line.
   cat >"$tc/link" <<'EOF'
-#!/usr/bin/env bash
-args=()
+#!/bin/sh
+# The command is added after the given arguments, which are then dropped.
+n=$#
 for a in "$@"; do
-  if [[ "$a" == @* ]]; then
-    read -d "" -ra words <"${a#@}" || true
-    args+=("${words[@]}")
-  else
-    args+=("$a")
-  fi
+  case "$a" in
+    @*)
+      set -f
+      set -- "$@" $(cat "${a#@}")
+      set +f ;;
+    *) set -- "$@" "$a" ;;
+  esac
 done
-exec "${args[@]}"
+shift "$n"
+exec "$@"
 EOF
   chmod +x "$tc/ld" "$tc/link"
   # "Linux" for CMake: a Unix with ELF. The compiler says what the system
@@ -183,14 +192,14 @@ set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
 set(CMAKE_C_LINKER_LAUNCHER $tc/link)
 set(CMAKE_CXX_LINKER_LAUNCHER $tc/link)
 EOF
-}
+)
 
 # build_llvm ARCH TC PREFIX: LLVM's libraries for myos, and the
 # llvm-config that describes them to rustc's build.
-build_llvm() {
-  local arch="$1" tc="$2" prefix="$3" build="$T/rustc-llvm-build-$1" bare stamp
+build_llvm() (
+  arch="$1" tc="$2" prefix="$3" build="$T/rustc-llvm-build-$1"
   stamp="$({ printf '%s\n' "$RUST_SRC_SHA256"; cat "$HERE/rust-myos.myos.patch" "$HERE/files/llvm-config"; myos_dep_hash mlibc; myos_dep_hash libcxx; } | sha256sum | cut -d' ' -f1)"
-  if [[ "$(cat "$prefix/.myos-version" 2>/dev/null)" == "$stamp" ]]; then
+  if [ "$(cat "$prefix/.myos-version" 2>/dev/null)" = "$stamp" ]; then
     return
   fi
   echo "==> rustc: LLVM's libraries ($arch-unknown-myos)"
@@ -205,7 +214,7 @@ build_llvm() {
   # __myos__, which this cross compiler does not define, and <endian.h>
   # first (packages/llvm/build.sh). No sigaltstack on myos. Not the
   # shared LTO and remarks plugins: nothing here loads them.
-  local flags="-D__myos__ -include endian.h"
+  flags="-D__myos__ -include endian.h"
   cmake -G Ninja -S "$SRC/src/llvm-project/llvm" -B "$build" \
     -DCMAKE_TOOLCHAIN_FILE="$tc/toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" \
@@ -233,11 +242,10 @@ build_llvm() {
   chmod +x "$prefix/bin/llvm-config"
   rm -rf "$build"
   printf '%s' "$stamp" >"$prefix/.myos-version"
-}
+)
 
-build_arch() {
-  local arch="$1" triple="$1-unknown-myos-mlibc" out="$T/rustc-$1" tc="$T/rustc-tc-$1" llvm="$T/rustc-llvm-$1"
-  local host stage2 std tools var f b
+build_arch() (
+  arch="$1" triple="$1-unknown-myos-mlibc" out="$T/rustc-$1" tc="$T/rustc-tc-$1" llvm="$T/rustc-llvm-$1"
   host="$(rustc "+$MYOS_NIGHTLY" -vV | sed -n 's/^host: //p')"
   write_toolchain "$arch" "$tc"
   build_llvm "$arch" "$tc" "$llvm"
@@ -312,12 +320,12 @@ EOF
   for f in "$std"/*.rlib; do
     b="$(basename "$f" .rlib)"
     cp "$f" "$out/lib/rustlib/$triple/lib/"
-    [[ ! -e "$std/$b.rmeta" ]] || cp "$std/$b.rmeta" "$out/lib/rustlib/$triple/lib/"
+    [ ! -e "$std/$b.rmeta" ] || cp "$std/$b.rmeta" "$out/lib/rustlib/$triple/lib/"
   done
   cp "$HERE/files/rust-lld" "$out/lib/rustlib/$triple/bin/rust-lld"
   chmod +x "$out/lib/rustlib/$triple/bin/rust-lld"
   echo "rustc ($arch) -> $out"
-}
+)
 
 # The arches MYOS_RUSTC_ARCHES lists, a stamp each: CI builds one per job
 # (PORT_ARCH_JOBS).

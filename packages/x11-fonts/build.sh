@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The fonts for Xft clients: DejaVu Sans Mono (regular, bold, oblique, bold
 # oblique), DejaVu Sans (regular: the braille patterns and other symbols
 # the Mono faces lack, which fontconfig falls back to) and the DejaVu
@@ -7,12 +7,12 @@
 # fonts.conf looks). Unpacked with python3's tarfile (.tar.bz2 only, and
 # bzip2 is not a build prerequisite).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/x11-fonts/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_x11_fonts_is_current; then
   echo "x11-fonts up to date"
@@ -23,13 +23,13 @@ CACHE="$ROOT/target/crate-fetch-x11-fonts"
 OUT="$ROOT/target/x11-fonts"
 tarball="$CACHE/dejavu-fonts-ttf-$DEJAVU_VERSION.tar.bz2"
 mkdir -p "$CACHE"
-if [[ ! -f "$tarball" ]]; then
+if [ ! -f "$tarball" ]; then
   echo "==> fetch DejaVu $DEJAVU_VERSION"
   curl -L --fail --retry 5 --retry-all-errors --retry-delay 2 -o "$tarball.partial" "$DEJAVU_URL"
   mv "$tarball.partial" "$tarball"
 fi
 got="$(sha256sum "$tarball" | awk '{print $1}')"
-if [[ "$got" != "$DEJAVU_SHA256" ]]; then
+if [ "$got" != "$DEJAVU_SHA256" ]; then
   echo "error: DejaVu tarball sha256 $got != pin $DEJAVU_SHA256" >&2
   rm -f "$tarball"
   exit 1

@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build Vim (FEAT_NORMAL) with newlib + myos libgloss + ncurses termcap,
 # and stage its runtime files.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_vim_is_current; then
   echo "vim ELFs up to date"
@@ -22,7 +22,7 @@ MYOS="$HERE"
 
 # BASIC_SRC and XDIFF_SRC from upstream Makefile (FEAT_NORMAL's diff needs
 # xdiff). No GUI / libvterm / interpreters.
-VIM_SRCS=(
+VIM_SRCS="
   alloc.c arabic.c arglist.c autocmd.c beval.c blob.c blowfish.c buffer.c
   change.c charset.c cindent.c clientserver.c clipboard.c cmdexpand.c cmdhist.c
   crypt.c crypt_zip.c debugger.c dict.c diff.c digraph.c drawline.c drawscreen.c
@@ -44,22 +44,21 @@ VIM_SRCS=(
   viminfo.c window.c bufwrite.c
   xdiff/xdiffi.c xdiff/xemit.c xdiff/xprepare.c xdiff/xutils.c
   xdiff/xhistogram.c xdiff/xpatience.c
-)
+"
 
-link_prog() {
-  local arch="$1"
+link_prog() (
+  arch="$1"
   shift
-  local objs=(${@+"$@"})
-  local triple="${arch}-unknown-myos"
-  local out="$ROOT/target/vim-${arch}-unknown-none"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local lib="$prefix/${triple}/lib"
-  local nclib="$ROOT/target/ncurses-${arch}/lib"
-  local ld="${triple}-ld"
+  triple="${arch}-unknown-myos"
+  out="$ROOT/target/vim-${arch}-unknown-none"
+  prefix="$ROOT/target/newlib-${arch}"
+  lib="$prefix/${triple}/lib"
+  nclib="$ROOT/target/ncurses-${arch}/lib"
+  ld="${triple}-ld"
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" -L"$nclib" \
+    "$lib/crt0.o" "$@" -L"$lib" -L"$nclib" \
     --start-group -lncurses -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "vim -> $out"
@@ -68,57 +67,57 @@ link_prog() {
   elif command -v size >/dev/null 2>&1; then
     size "$out" || true
   fi
-}
+)
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local ncinc="$ROOT/target/ncurses-${arch}/include"
-  local cc="${triple}-cc"
-  local objdir="$ROOT/target/vim-obj-${arch}"
-  local extra=()
-  local src base obj
-  local objs=()
-  local cppflags=(
-    -DHAVE_CONFIG_H
-    -DFEAT_NORMAL
-    -D_DEFAULT_SOURCE
-    -D_GNU_SOURCE
-    -D_BSD_SOURCE
-    -I"$WORK"
-    -I"$WORK/proto"
-    -I"$MYOS/include" -I"$MYOS"
-    -I"$ROOT/toolchain/newlib/libgloss/myos"
-    -I"$ncinc"
+build_arch() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  ncinc="$ROOT/target/ncurses-${arch}/include"
+  cc="${triple}-cc"
+  objdir="$ROOT/target/vim-obj-${arch}"
+  extra=""
+  objs=""
+  # The preprocessor's flags are the positional parameters.
+  set -- \
+    -DHAVE_CONFIG_H \
+    -DFEAT_NORMAL \
+    -D_DEFAULT_SOURCE \
+    -D_GNU_SOURCE \
+    -D_BSD_SOURCE \
+    -I"$WORK" \
+    -I"$WORK/proto" \
+    -I"$MYOS/include" -I"$MYOS" \
+    -I"$ROOT/toolchain/newlib/libgloss/myos" \
+    -I"$ncinc" \
     -include myos_compat.h
-  )
 
   rm -rf "$objdir"
   mkdir -p "$objdir"
 
   echo "==> vim ($triple)"
-  for src in "${VIM_SRCS[@]+"${VIM_SRCS[@]}"}"; do
+  for src in $VIM_SRCS; do
     base="$(basename "$src" .c)"
     obj="$objdir/${base}.o"
     "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
       -ffunction-sections -fdata-sections \
       -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
       -Wno-pointer-sign -Wno-missing-field-initializers \
-      -isystem "$inc" "${cppflags[@]+"${cppflags[@]}"}" \
+      -isystem "$inc" "$@" \
       -c "$WORK/$src" -o "$obj"
-    objs+=("$obj")
+    objs="$objs $obj"
   done
 
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
-    extra+=("$objdir/trunctfdf2.o")
+    extra="$extra $objdir/trunctfdf2.o"
   fi
 
-  link_prog "$arch" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}"
-}
+  # shellcheck disable=SC2086
+  link_prog "$arch" $objs $extra
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"
@@ -133,8 +132,19 @@ RT="$ROOT/target/vim-runtime"
 rm -rf "$RT"
 mkdir -p "$RT"
 rsync -a --exclude='testdir' \
-  "$ROOT/target/vim-myos-build/runtime/"{syntax,colors,ftplugin,indent,autoload} \
-  "$ROOT/target/vim-myos-build/runtime/"{defaults,filetype,ftoff,ftplugin,ftplugof,indent,indoff,scripts}.vim \
+  "$ROOT/target/vim-myos-build/runtime/syntax" \
+  "$ROOT/target/vim-myos-build/runtime/colors" \
+  "$ROOT/target/vim-myos-build/runtime/ftplugin" \
+  "$ROOT/target/vim-myos-build/runtime/indent" \
+  "$ROOT/target/vim-myos-build/runtime/autoload" \
+  "$ROOT/target/vim-myos-build/runtime/defaults.vim" \
+  "$ROOT/target/vim-myos-build/runtime/filetype.vim" \
+  "$ROOT/target/vim-myos-build/runtime/ftoff.vim" \
+  "$ROOT/target/vim-myos-build/runtime/ftplugin.vim" \
+  "$ROOT/target/vim-myos-build/runtime/ftplugof.vim" \
+  "$ROOT/target/vim-myos-build/runtime/indent.vim" \
+  "$ROOT/target/vim-myos-build/runtime/indoff.vim" \
+  "$ROOT/target/vim-myos-build/runtime/scripts.vim" \
   "$RT/"
 
 echo "$(myos_vim_version_hash)" >"$MYOS_VIM_VERSION"
