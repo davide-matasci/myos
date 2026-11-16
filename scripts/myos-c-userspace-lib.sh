@@ -1,8 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Shared version stamps for newlib + C userspace smoke ELFs (CI cache invalidation).
 set -euo pipefail
 
-MYOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A sourced file cannot tell where it is: the script that sources this one
+# says where the checkout is (ROOT, or MYOS_ROOT).
+MYOS_ROOT="${MYOS_ROOT:-${ROOT:?set ROOT to the checkout before sourcing this file}}"
 export MYOS_ROOT
 
 MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
@@ -23,23 +25,33 @@ MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
 # pull request). The file's content, not the host's compiler, so a local
 # clone on another Ubuntu still pulls what CI built (`AGENTS.md`, "Fast
 # local setup").
-myos_hash() {
-  local input
-  input="keys=outputs-2"$'\n'"$(sha256sum "$MYOS_ROOT/Dockerfile")"$'\n'"$(cat)"
-  if grep -q '^dep-hash-unknown:' <<<"$input"; then
-    grep '^dep-hash-unknown:' <<<"$input" | sort -u \
+myos_hash() (
+  input="keys=outputs-2
+$(sha256sum "$MYOS_ROOT/Dockerfile")
+$(cat)"
+  # In here-documents: the input can be longer than an argument may be
+  # (printf is not a builtin of every shell).
+  if grep '^dep-hash-unknown:' >/dev/null <<EOF
+$input
+EOF
+  then
+    grep '^dep-hash-unknown:' <<EOF | sort -u \
       | sed 's/^dep-hash-unknown:/myos: cache key undefined: the outputs of /; s/$/ are neither built here nor in the registry/' >&2
+$input
+EOF
     printf 'unknown-%s\n' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     return 0
   fi
-  awk -v root="$MYOS_ROOT/" '{ i = index($0, root); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(root)) } 1' <<<"$input" \
+  awk -v root="$MYOS_ROOT/" '{ i = index($0, root); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(root)) } 1' <<EOF \
     | sha256sum | awk '{print $1}'
-}
+$input
+EOF
+)
 
 # The directory of a port: under ports/ (in the image) or packages/ (a
 # package, see docs/ports.md); a port moves between the two by moving it.
 myos_port_dir() {
-  if [[ -d "$MYOS_ROOT/ports/$1" ]]; then
+  if [ -d "$MYOS_ROOT/ports/$1" ]; then
     echo "$MYOS_ROOT/ports/$1"
   else
     echo "$MYOS_ROOT/packages/$1"
@@ -68,43 +80,55 @@ myos_port_dir() {
 
 MYOS_DEP_HASH_CACHE="$MYOS_ROOT/target/.myos-dep-hash"
 
+# myos_fn_source NAME...: the text of functions of this file, as it is
+# written here, in a port's input hash: the flags its build takes and the
+# cross compiler it writes are part of what it is built from.
+myos_fn_source() {
+  for _fs_name in "$@"; do
+    awk -v fn="$_fs_name" '
+      index($0, fn "() ") == 1 { on = 1 }
+      on { print }
+      on && /^[})]$/ { exit }' "$MYOS_ROOT/scripts/myos-c-userspace-lib.sh"
+  done
+}
+
 # The port library (scripts/ports.sh: the descriptors), once, on first use.
 myos_ports_lib() {
-  if ! declare -F myos_port_outputs >/dev/null; then
+  if ! command -v myos_port_outputs >/dev/null 2>&1; then
     # shellcheck source=scripts/ports.sh
-    source "$MYOS_ROOT/scripts/ports.sh"
+    . "$MYOS_ROOT/scripts/ports.sh"
   fi
 }
 
 # The outputs stamp of a piece (a port, or `<name>:<arch>` of a port built
 # an arch at a time): target/.myos-<name>[-<arch>]-outputs.
-myos_outputs_stamp() {
-  local name="${1%%:*}"
-  if [[ "$1" == *:* ]]; then
-    echo "$MYOS_ROOT/target/.myos-${name}-${1#*:}-outputs"
-  else
-    echo "$MYOS_ROOT/target/.myos-${name}-outputs"
-  fi
-}
+myos_outputs_stamp() (
+  name="${1%%:*}"
+  case "$1" in
+    *:*) echo "$MYOS_ROOT/target/.myos-${name}-${1#*:}-outputs" ;;
+    *) echo "$MYOS_ROOT/target/.myos-${name}-outputs" ;;
+  esac
+)
 
 # The registry's record of a piece's output hash (a pull or the CI plan
 # writes it from the artifact's annotation): the same `<input hash>
 # <output hash>` line as the stamp.
 myos_dep_hash_cache() {
-  echo "$MYOS_DEP_HASH_CACHE/${1//:/-}"
+  echo "$MYOS_DEP_HASH_CACHE/$(printf '%s\n' "$1" | tr : -)"
 }
 
 # Whether a piece is current: its port's myos_<name>_is_current, for the
 # one arch of `<name>:<arch>`.
-myos_piece_is_current() {
-  local name="${1%%:*}" var
-  if [[ "$1" == *:* ]]; then
-    var="MYOS_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')_ARCHES"
-    (export "$var=${1#*:}"; "myos_${name//-/_}_is_current")
-  else
-    "myos_${name//-/_}_is_current"
-  fi
-}
+myos_piece_is_current() (
+  name="${1%%:*}"
+  fn="myos_$(printf '%s' "$name" | tr - _)_is_current"
+  case "$1" in
+    *:*)
+      var="MYOS_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')_ARCHES"
+      (export "$var=${1#*:}"; "$fn") ;;
+    *) "$fn" ;;
+  esac
+)
 
 # The hash of what a piece leaves under target/: its PORT_OUTPUTS, every
 # file by relative path and content (a symbolic link by its target), the
@@ -153,11 +177,10 @@ myos_outputs_flavour_filter() {
 # libc.so, docs/mlibc.md "Shared objects"): no port compiles against one,
 # and a program that links one keys on its bytes.
 myos_elf_program() {
-  local magic type
-  magic="$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-  [[ "$magic" == 7f454c46 ]] || return 1
-  type="$(od -An -tu2 -j16 -N2 "$1" 2>/dev/null | tr -d ' ')"
-  [[ "$type" == 2 || "$type" == 3 ]]
+  _ep_magic="$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  [ "$_ep_magic" = 7f454c46 ] || return 1
+  _ep_type="$(od -An -tu2 -j16 -N2 "$1" 2>/dev/null | tr -d ' ')"
+  [ "$_ep_type" = 2 ] || [ "$_ep_type" = 3 ]
 }
 
 # The interface of a static library or an object FILE, what a program over
@@ -172,38 +195,41 @@ myos_elf_interface() {
 # stamps left out; of FLAVOUR's files alone (`newlib`, `mlibc`) when given,
 # or of its interface (`compile`, above).
 myos_outputs_hash_files() {
-  local name="${1%%:*}" arch="" flavour="${2:-}"
-  [[ "$1" == *:* ]] && arch="${1#*:}"
+  _ohf_name="${1%%:*}" _ohf_arch="" _ohf_flavour="${2:-}"
+  case "$1" in *:*) _ohf_arch="${1#*:}" ;; esac
   myos_ports_lib
   (
     cd "$MYOS_ROOT"
-    local p f
     # shellcheck disable=SC2086
-    myos_port_outputs "$name" $arch \
+    myos_port_outputs "$_ohf_name" $_ohf_arch \
       | grep -v -e '/\.myos-[^/]*-version$' -e '/\.myos-[^/]*-outputs$' \
       | while IFS= read -r p; do
-          [[ -e "$p" || -L "$p" ]] || continue
-          if [[ -d "$p" && ! -L "$p" ]]; then
+          [ -e "$p" ] || [ -L "$p" ] || continue
+          if [ -d "$p" ] && [ ! -L "$p" ]; then
             find "$p" \( -type f -o -type l \)
           else
             echo "$p"
           fi
         done \
       | grep -v '^target/newlib-[^/]*/[^/]*/lib/libtcc1\.a$' \
-      | myos_outputs_flavour_filter "$flavour" "$name" "$arch" \
+      | myos_outputs_flavour_filter "$_ohf_flavour" "$_ohf_name" "$_ohf_arch" \
       | LC_ALL=C sort \
       | while IFS= read -r f; do
-          if [[ -L "$f" ]]; then
+          if [ -L "$f" ]; then
             printf '%s  %s\n' "$(readlink "$f" | sha256sum | awk '{print $1}')" "$f"
-          elif [[ "$f" == *-manifest-*.txt ]]; then
-            printf '%s  %s\n' "$(sed "s|$MYOS_ROOT/||g" "$f" | sha256sum | awk '{print $1}')" "$f"
-          elif [[ "$flavour" == compile && "$f" == *.[ao] ]]; then
-            printf '%s  %s\n' "$(myos_elf_interface "$f" | sha256sum | awk '{print $1}')" "$f"
-          elif [[ "$flavour" == compile && "$f" != target/*-host/* ]] && myos_elf_program "$f"; then
-            : # a program is not part of the interface
-          else
-            sha256sum "$f"
+            continue
           fi
+          case "$_ohf_flavour:$f" in
+            *-manifest-*.txt)
+              printf '%s  %s\n' "$(sed "s|$MYOS_ROOT/||g" "$f" | sha256sum | awk '{print $1}')" "$f" ;;
+            compile:*.[ao])
+              printf '%s  %s\n' "$(myos_elf_interface "$f" | sha256sum | awk '{print $1}')" "$f" ;;
+            compile:target/*-host/*) sha256sum "$f" ;;
+            compile:*)
+              # a program is not part of the interface
+              myos_elf_program "$f" || sha256sum "$f" ;;
+            *) sha256sum "$f" ;;
+          esac
         done \
       | sha256sum | awk '{print $1}'
   )
@@ -212,12 +238,13 @@ myos_outputs_hash_files() {
 # Whether a piece's outputs come in both flavours (files under a `-mlibc-`
 # directory and files elsewhere).
 myos_outputs_dual() {
-  local name="${1%%:*}" arch="" list
-  [[ "$1" == *:* ]] && arch="${1#*:}"
+  _od_name="${1%%:*}" _od_arch=""
+  case "$1" in *:*) _od_arch="${1#*:}" ;; esac
   myos_ports_lib
   # shellcheck disable=SC2086
-  list="$(cd "$MYOS_ROOT" && myos_port_outputs "$name" $arch | grep -v -e '/\.myos-[^/]*-version$' -e '/\.myos-[^/]*-outputs$')"
-  grep -q -E '^target/[^/]*-mlibc-' <<<"$list" && grep -q -v -E '^target/[^/]*-mlibc-' <<<"$list"
+  _od_list="$(cd "$MYOS_ROOT" && myos_port_outputs "$_od_name" $_od_arch | grep -v -e '/\.myos-[^/]*-version$' -e '/\.myos-[^/]*-outputs$')"
+  printf '%s\n' "$_od_list" | grep -E '^target/[^/]*-mlibc-' >/dev/null \
+    && printf '%s\n' "$_od_list" | grep -v -E '^target/[^/]*-mlibc-' >/dev/null
 }
 
 # Record a current piece's output hash in its outputs stamp (the registry
@@ -225,10 +252,9 @@ myos_outputs_dual() {
 # (`newlib=<hash> mlibc=<hash>`), and its compile flavour's
 # (`compile=<hash>`): what the stamp holds after the input hash, and the
 # registry's annotation.
-myos_outputs_record() {
-  local piece="$1" fn h stamp
-  fn="myos_${piece%%:*}_version_hash"
-  fn="${fn//-/_}"
+myos_outputs_record() (
+  piece="$1"
+  fn="$(printf '%s' "myos_${piece%%:*}_version_hash" | tr - _)"
   if ! myos_piece_is_current "$piece"; then
     echo "error: $piece is not current: nothing to record" >&2
     return 1
@@ -243,19 +269,19 @@ myos_outputs_record() {
   printf '%s %s\n' "$("$fn")" "$h" >"$stamp.tmp.$$"
   mv -f "$stamp.tmp.$$" "$stamp"
   printf '%s\n' "$h"
-}
+)
 
 # A piece's output record for input hash VH (the hash, then a dual port's
 # flavours, as myos_outputs_record writes it): the registry's record, else
 # its outputs stamp (either when it is VH's), else from its files when it
 # is current here (recorded then), else what myos_dep_hash_hook (the
 # registry script's, asking the registry) gives. Nothing, and 1, otherwise.
-myos_piece_output_record() {
-  local piece="$1" vh="$2" rec rv rh h
+myos_piece_output_record() (
+  piece="$1" vh="$2"
   for rec in "$(myos_dep_hash_cache "$piece")" "$(myos_outputs_stamp "$piece")"; do
-    if [[ -f "$rec" ]]; then
+    if [ -f "$rec" ]; then
       read -r rv rh <"$rec" || true
-      if [[ "$rv" == "$vh" && -n "$rh" ]]; then
+      if [ "$rv" = "$vh" ] && [ -n "$rh" ]; then
         printf '%s\n' "$rh"
         return 0
       fi
@@ -265,8 +291,8 @@ myos_piece_output_record() {
     myos_outputs_record "$piece"
     return 0
   fi
-  if declare -F myos_dep_hash_hook >/dev/null; then
-    if h="$(myos_dep_hash_hook "$piece" "$vh")" && [[ -n "$h" ]]; then
+  if command -v myos_dep_hash_hook >/dev/null 2>&1; then
+    if h="$(myos_dep_hash_hook "$piece" "$vh")" && [ -n "$h" ]; then
       rec="$(myos_dep_hash_cache "$piece")"
       mkdir -p "$(dirname "$rec")"
       printf '%s %s\n' "$vh" "$h" >"$rec.tmp.$$"
@@ -276,30 +302,30 @@ myos_piece_output_record() {
     fi
   fi
   return 1
-}
+)
 
 # A piece's output hash for input hash VH (myos_piece_output_record's first
 # word). Nothing, and 1, when there is none.
-myos_piece_output_hash() {
-  local rec
+myos_piece_output_hash() (
   rec="$(myos_piece_output_record "$1" "$2")" || return 1
   printf '%s\n' "${rec%% *}"
-}
+)
 
 # The output hash of FLAVOUR (`newlib`, `mlibc`, `compile`) of a piece at
 # input hash VH; nothing when its record has none (not a port with that
 # flavour, or recorded before the flavours were).
-myos_piece_flavour_hash() {
-  local piece="$1" vh="$2" flavour="$3" rec word
+myos_piece_flavour_hash() (
+  piece="$1" vh="$2" flavour="$3"
   rec="$(myos_piece_output_record "$piece" "$vh")" || return 1
   for word in $rec; do
-    if [[ "$word" == "$flavour="* ]]; then
-      printf '%s\n' "${word#*=}"
-      return 0
-    fi
+    case "$word" in
+      "$flavour="*)
+        printf '%s\n' "${word#*=}"
+        return 0 ;;
+    esac
   done
   return 1
-}
+)
 
 # In a port's input hash: the output hash of port NAME it builds against,
 # as `outputs:<piece>:<hash>` lines (one per arch for a port built an arch
@@ -310,31 +336,34 @@ myos_piece_flavour_hash() {
 # other files are not in the key; the whole hash while the dependency's
 # record has no such flavour (one made before it was recorded).
 myos_dep_hash() {
-  local name="$1" flavour="${2:-}" fn vh piece h fh lines=""
-  fn="myos_${name//-/_}_version_hash"
-  if ! declare -F "$fn" >/dev/null; then
-    echo "error: no function $fn (scripts/myos-c-userspace-lib.sh)" >&2
-    printf 'dep-hash-unknown:%s\n' "$name"
+  _dh_name="$1" _dh_flavour="${2:-}" _dh_lines=""
+  _dh_fn="myos_$(printf '%s' "$_dh_name" | tr - _)_version_hash"
+  if ! command -v "$_dh_fn" >/dev/null 2>&1; then
+    echo "error: no function $_dh_fn (scripts/myos-c-userspace-lib.sh)" >&2
+    printf 'dep-hash-unknown:%s\n' "$_dh_name"
     return 0
   fi
-  vh="$("$fn")"
-  if [[ -z "$vh" || "$vh" == unknown-* ]]; then
-    printf 'dep-hash-unknown:%s\n' "$name"
-    return 0
-  fi
+  _dh_vh="$("$_dh_fn")"
+  case "$_dh_vh" in
+    ""|unknown-*)
+      printf 'dep-hash-unknown:%s\n' "$_dh_name"
+      return 0 ;;
+  esac
   myos_ports_lib
-  for piece in $(myos_port_jobs "$name"); do
-    if ! h="$(myos_piece_output_hash "$piece" "$vh")" || [[ -z "$h" ]]; then
-      printf 'dep-hash-unknown:%s\n' "$name"
+  for _dh_piece in $(myos_port_jobs "$_dh_name"); do
+    if ! _dh_h="$(myos_piece_output_hash "$_dh_piece" "$_dh_vh")" || [ -z "$_dh_h" ]; then
+      printf 'dep-hash-unknown:%s\n' "$_dh_name"
       return 0
     fi
-    if [[ -n "$flavour" ]] && fh="$(myos_piece_flavour_hash "$piece" "$vh" "$flavour")" && [[ -n "$fh" ]]; then
-      lines="${lines}outputs-${flavour}:${piece}:${fh}"$'\n'
+    if [ -n "$_dh_flavour" ] && _dh_fh="$(myos_piece_flavour_hash "$_dh_piece" "$_dh_vh" "$_dh_flavour")" && [ -n "$_dh_fh" ]; then
+      _dh_lines="${_dh_lines}outputs-${_dh_flavour}:${_dh_piece}:${_dh_fh}
+"
     else
-      lines="${lines}outputs:${piece}:${h}"$'\n'
+      _dh_lines="${_dh_lines}outputs:${_dh_piece}:${_dh_h}
+"
     fi
   done
-  printf '%s' "$lines"
+  printf '%s' "$_dh_lines"
 }
 
 # riscv64 userspace is rv64gc with the lp64d ABI (hard float), as Linux's:
@@ -346,7 +375,8 @@ MYOS_RISCV64_ISA="-march=rv64gc -mabi=lp64d"
 # myos_arch_cflags ARCH: the ISA flags of a C compile for ARCH's userspace
 # (riscv64's MYOS_RISCV64_ISA; the other arches take clang's defaults).
 myos_arch_cflags() {
-  [[ "$1" == riscv64 ]] && printf '%s ' $MYOS_RISCV64_ISA
+  # shellcheck disable=SC2086
+  [ "$1" = riscv64 ] && printf '%s ' $MYOS_RISCV64_ISA
   return 0
 }
 
@@ -415,26 +445,25 @@ MYOS_SBASE_MIN_BUILT=90
 
 # Rust std is statically linked into uutils/ripgrep; include sysroot stamp.
 # shellcheck source=toolchain/std/lib.sh
-source "$MYOS_ROOT/toolchain/std/lib.sh"
+. "$MYOS_ROOT/toolchain/std/lib.sh"
 
 # macOS bash 3.2 helpers live here; scripts source this file.
 # Homebrew's llvm is keg-only, so ld.lld is often not on PATH. Probe the
 # standard keg locations once, up front.
 myos_ensure_llvm_bin() {
   if ! command -v ld.lld >/dev/null 2>&1; then
-    local d
-    for d in /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin; do
-      if [ -x "$d/ld.lld" ]; then
-        PATH="$d:$PATH"
+    for _elb_d in /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin; do
+      if [ -x "$_elb_d/ld.lld" ]; then
+        PATH="$_elb_d:$PATH"
         export PATH
         return 0
       fi
     done
     # Custom HOMEBREW_PREFIX or other brew location: ask brew itself.
     if command -v brew >/dev/null 2>&1; then
-      d="$(brew --prefix llvm 2>/dev/null)/bin"
-      if [ -x "$d/ld.lld" ]; then
-        PATH="$d:$PATH"
+      _elb_d="$(brew --prefix llvm 2>/dev/null)/bin"
+      if [ -x "$_elb_d/ld.lld" ]; then
+        PATH="$_elb_d:$PATH"
         export PATH
         return 0
       fi
@@ -444,8 +473,7 @@ myos_ensure_llvm_bin() {
   fi
 }
 
-myos_newlib_version_hash() {
-  local h
+myos_newlib_version_hash() (
   h="$(
     {
       echo "newlib_tag=$MYOS_NEWLIB_TAG"
@@ -459,18 +487,18 @@ myos_newlib_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_newlib_prefix_ok() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$MYOS_ROOT/target/newlib-${arch}/${triple}/lib"
-  [[ -f "$prefix/libc.a" && -f "$prefix/libgloss.a" && -f "$prefix/crt0.o" && -f "$prefix/crti.o" && -f "$prefix/crtn.o" ]]
-}
+myos_newlib_prefix_ok() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  prefix="$MYOS_ROOT/target/newlib-${arch}/${triple}/lib"
+  [ -f "$prefix/libc.a" ] && [ -f "$prefix/libgloss.a" ] && [ -f "$prefix/crt0.o" ] && [ -f "$prefix/crti.o" ] && [ -f "$prefix/crtn.o" ]
+)
 
 myos_newlib_is_current() {
-  [[ -f "$MYOS_NEWLIB_VERSION" ]] \
-    && [[ "$(cat "$MYOS_NEWLIB_VERSION")" == "$(myos_newlib_version_hash)" ]] \
+  [ -f "$MYOS_NEWLIB_VERSION" ] \
+    && [ "$(cat "$MYOS_NEWLIB_VERSION")" = "$(myos_newlib_version_hash)" ] \
     && myos_newlib_prefix_ok x86_64 \
     && myos_newlib_prefix_ok aarch64 \
     && myos_newlib_prefix_ok riscv64
@@ -478,8 +506,7 @@ myos_newlib_is_current() {
 
 # mlibc (toolchain/mlibc): its pins, its port files and the C both libcs
 # share, all of it the input of the three sysroots.
-myos_mlibc_version_hash() {
-  local h
+myos_mlibc_version_hash() (
   h="$(
     {
       echo "riscv64_isa=$MYOS_RISCV64_ISA"
@@ -495,51 +522,47 @@ myos_mlibc_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_mlibc_is_current() {
-  local arch
-  [[ -f "$MYOS_MLIBC_VERSION" ]] \
-    && [[ "$(cat "$MYOS_MLIBC_VERSION")" == "$(myos_mlibc_version_hash)" ]] \
+myos_mlibc_is_current() (
+  [ -f "$MYOS_MLIBC_VERSION" ] \
+    && [ "$(cat "$MYOS_MLIBC_VERSION")" = "$(myos_mlibc_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/libc.a" && -f "$MYOS_ROOT/target/mlibc-${arch}/lib/crt0.o" \
-      && -f "$MYOS_ROOT/target/mlibc-${arch}/shared/ld.so" && -f "$MYOS_ROOT/target/mlibc-${arch}/shared/libc.so" ]] || return 1
+    [ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/libc.a" ] && [ -f "$MYOS_ROOT/target/mlibc-${arch}/lib/crt0.o" ] \
+      && [ -f "$MYOS_ROOT/target/mlibc-${arch}/shared/ld.so" ] && [ -f "$MYOS_ROOT/target/mlibc-${arch}/shared/libc.so" ] || return 1
   done
   return 0
-}
+)
 
 # libc++, libc++abi and libunwind against mlibc (toolchain/libcxx): its
 # pins and scripts, and mlibc's interface (a library port: what it
 # compiles against, docs/ports.md "Cache keys"; its smoke is the mlibc
 # smokes').
-myos_libcxx_version_hash() {
-  local h
+myos_libcxx_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
       find "$MYOS_ROOT/toolchain/libcxx" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags the build takes (below).
-      declare -f myos_mlibc_hosted_cflags myos_libcxx_cxxflags
+      myos_fn_source myos_mlibc_hosted_cflags myos_libcxx_cxxflags
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_libcxx_is_current() {
-  local arch
-  [[ -f "$MYOS_LIBCXX_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LIBCXX_VERSION")" == "$(myos_libcxx_version_hash)" ]] \
+myos_libcxx_is_current() (
+  [ -f "$MYOS_LIBCXX_VERSION" ] \
+    && [ "$(cat "$MYOS_LIBCXX_VERSION")" = "$(myos_libcxx_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/libcxx-${arch}/lib/libc++.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/libcxx-${arch}/lib/libc++.a" ] || return 1
   done
   return 0
-}
+)
 
-myos_c_hello_version_hash() {
-  local h
+myos_c_hello_version_hash() (
   h="$(
     {
       myos_newlib_version_hash
@@ -549,23 +572,22 @@ myos_c_hello_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
 myos_c_hello_is_current() {
-  [[ -f "$MYOS_C_HELLO_VERSION" ]] \
-    && [[ "$(cat "$MYOS_C_HELLO_VERSION")" == "$(myos_c_hello_version_hash)" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-hello-x86_64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-hello-aarch64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-hello-riscv64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-socket_smoke-x86_64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-socket_smoke-aarch64-unknown-none" ]] \
-    && [[ -f "$MYOS_ROOT/target/c-socket_smoke-riscv64-unknown-none" ]]
+  [ -f "$MYOS_C_HELLO_VERSION" ] \
+    && [ "$(cat "$MYOS_C_HELLO_VERSION")" = "$(myos_c_hello_version_hash)" ] \
+    && [ -f "$MYOS_ROOT/target/c-hello-x86_64-unknown-none" ] \
+    && [ -f "$MYOS_ROOT/target/c-hello-aarch64-unknown-none" ] \
+    && [ -f "$MYOS_ROOT/target/c-hello-riscv64-unknown-none" ] \
+    && [ -f "$MYOS_ROOT/target/c-socket_smoke-x86_64-unknown-none" ] \
+    && [ -f "$MYOS_ROOT/target/c-socket_smoke-aarch64-unknown-none" ] \
+    && [ -f "$MYOS_ROOT/target/c-socket_smoke-riscv64-unknown-none" ]
 }
 
 # get-myos (user/get-myos): its sources, the shared pkgtools, the build
 # script, and what it links (newlib, zlib).
-myos_get_myos_version_hash() {
-  local h
+myos_get_myos_version_hash() (
   h="$(
     {
       sha256sum "$MYOS_ROOT/user/get-myos/get-myos.c" "$MYOS_ROOT/user/get-myos/pkgtools.c" \
@@ -576,23 +598,21 @@ myos_get_myos_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_get_myos_is_current() {
-  local arch
-  [[ -f "$MYOS_GET_MYOS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GET_MYOS_VERSION")" == "$(myos_get_myos_version_hash)" ]] \
+myos_get_myos_is_current() (
+  [ -f "$MYOS_GET_MYOS_VERSION" ] \
+    && [ "$(cat "$MYOS_GET_MYOS_VERSION")" = "$(myos_get_myos_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/get-myos-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/get-myos-${arch}-unknown-none" ] || return 1
   done
   return 0
-}
+)
 
 # get-alpine (packages/get-alpine): its source, get-myos's shared pkgtools,
 # the build script, and what it links (newlib, zlib).
-myos_get_alpine_version_hash() {
-  local h
+myos_get_alpine_version_hash() (
   h="$(
     {
       sha256sum "$MYOS_ROOT/packages/get-alpine/get-alpine.c" "$MYOS_ROOT/packages/get-alpine/build.sh" \
@@ -602,130 +622,126 @@ myos_get_alpine_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_get_alpine_is_current() {
-  local arch
-  [[ -f "$MYOS_GET_ALPINE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GET_ALPINE_VERSION")" == "$(myos_get_alpine_version_hash)" ]] \
+myos_get_alpine_is_current() (
+  [ -f "$MYOS_GET_ALPINE_VERSION" ] \
+    && [ "$(cat "$MYOS_GET_ALPINE_VERSION")" = "$(myos_get_alpine_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/get-alpine-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/get-alpine-${arch}-unknown-none" ] || return 1
   done
   return 0
-}
+)
 
 # The C smoke programs beside c-hello and socket_smoke (user/c, the
-# `c-smokes` port): `name source`, built by scripts/build-c-smokes.sh.
-MYOS_C_SMOKES=(
-  "tcp-listen-smoke user/c/tcp_listen_smoke.c"
-  "pty-smoke user/c/pty_smoke.c"
-  "urandom-smoke user/c/urandom_smoke.c"
-  "tty-smoke user/c/tty_smoke.c"
-  "unix-smoke user/c/unix_smoke.c"
-  "fb-smoke user/c/fb_smoke.c"
-  "poll-smoke user/c/poll_smoke.c"
-  "kbd-smoke user/c/kbd_smoke.c"
-  "mouse-smoke user/c/mouse_smoke.c"
-  "uio-smoke user/c/uio_smoke.c"
-  "pthread-smoke user/c/pthread_smoke.c"
-  "netconv-smoke user/c/netconv_smoke.c"
-  "loopback-smoke user/c/loopback_smoke.c"
-  "child-smoke user/c/child_smoke.c"
-  "libc-smoke user/c/libc_smoke.c"
-  "sec user/c/sec.c"
-  "at-smoke user/c/at_smoke.c"
-  "fileio-smoke user/c/fileio_smoke.c"
-  "mmap-smoke user/c/mmap_smoke.c"
-  "bigimage-smoke user/c/bigimage_smoke.c"
-  "shm-smoke user/c/shm_smoke.c"
-  "fault-smoke user/c/fault_smoke.c"
-  "jit-smoke user/c/jit_smoke.c"
-  "ctor-smoke user/c/ctor_smoke.c"
-  "sched-smoke user/c/sched_smoke.c"
-  "memhog user/c/memhog.c"
-  "bench user/c/bench.c"
-  "evfd-smoke user/c/evfd_smoke.c"
-  "epoll-smoke user/c/epoll_smoke.c"
-  "sigfd-smoke user/c/sigfd_smoke.c"
-  "sigspin-smoke user/c/sigspin_smoke.c"
-  "sigexec-smoke user/c/sigexec_smoke.c"
-  "pcidev-smoke user/c/pcidev_smoke.c"
-  "tap-smoke user/c/tap_smoke.c"
-  "multihome-smoke user/c/multihome_smoke.c"
-  "ipv6-smoke user/c/ipv6_smoke.c"
-  "play user/c/play.c"
-  "battery user/c/battery.c"
-)
+# `c-smokes` port): `name:source` words, built by scripts/build-c-smokes.sh.
+MYOS_C_SMOKES="
+  tcp-listen-smoke:user/c/tcp_listen_smoke.c
+  pty-smoke:user/c/pty_smoke.c
+  urandom-smoke:user/c/urandom_smoke.c
+  tty-smoke:user/c/tty_smoke.c
+  unix-smoke:user/c/unix_smoke.c
+  fb-smoke:user/c/fb_smoke.c
+  poll-smoke:user/c/poll_smoke.c
+  kbd-smoke:user/c/kbd_smoke.c
+  mouse-smoke:user/c/mouse_smoke.c
+  uio-smoke:user/c/uio_smoke.c
+  pthread-smoke:user/c/pthread_smoke.c
+  netconv-smoke:user/c/netconv_smoke.c
+  loopback-smoke:user/c/loopback_smoke.c
+  child-smoke:user/c/child_smoke.c
+  libc-smoke:user/c/libc_smoke.c
+  sec:user/c/sec.c
+  at-smoke:user/c/at_smoke.c
+  fileio-smoke:user/c/fileio_smoke.c
+  mmap-smoke:user/c/mmap_smoke.c
+  bigimage-smoke:user/c/bigimage_smoke.c
+  shm-smoke:user/c/shm_smoke.c
+  fault-smoke:user/c/fault_smoke.c
+  jit-smoke:user/c/jit_smoke.c
+  ctor-smoke:user/c/ctor_smoke.c
+  sched-smoke:user/c/sched_smoke.c
+  memhog:user/c/memhog.c
+  bench:user/c/bench.c
+  evfd-smoke:user/c/evfd_smoke.c
+  epoll-smoke:user/c/epoll_smoke.c
+  sigfd-smoke:user/c/sigfd_smoke.c
+  sigspin-smoke:user/c/sigspin_smoke.c
+  sigexec-smoke:user/c/sigexec_smoke.c
+  pcidev-smoke:user/c/pcidev_smoke.c
+  tap-smoke:user/c/tap_smoke.c
+  multihome-smoke:user/c/multihome_smoke.c
+  ipv6-smoke:user/c/ipv6_smoke.c
+  play:user/c/play.c
+  battery:user/c/battery.c
+"
 
 # All the C smokes (scripts/build-c-smokes.sh): c-hello's inputs plus the
 # other smoke sources and their build scripts.
-myos_c_smokes_version_hash() {
-  local h entry
+myos_c_smokes_version_hash() (
   h="$(
     {
       myos_c_hello_version_hash
-      for entry in "${MYOS_C_SMOKES[@]}"; do
-        sha256sum "$MYOS_ROOT/${entry#* }"
+      for entry in $MYOS_C_SMOKES; do
+        sha256sum "$MYOS_ROOT/${entry#*:}"
       done
       sha256sum "$MYOS_ROOT/scripts/build-c-smokes.sh"
     } | myos_hash
   )"
   printf '%s' "$h"
-}
-myos_c_smokes_is_current() {
-  local arch bin
-  [[ -f "$MYOS_C_SMOKES_VERSION" ]] \
-    && [[ "$(cat "$MYOS_C_SMOKES_VERSION")" == "$(myos_c_smokes_version_hash)" ]] \
+)
+myos_c_smokes_is_current() (
+  [ -f "$MYOS_C_SMOKES_VERSION" ] \
+    && [ "$(cat "$MYOS_C_SMOKES_VERSION")" = "$(myos_c_smokes_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
-      [[ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ]] || return 1
+    # shellcheck disable=SC2086
+    for bin in c-hello c-socket_smoke $(printf '%s\n' $MYOS_C_SMOKES | cut -d: -f1); do
+      [ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ] || return 1
     done
   done
   return 0
-}
+)
 
 # The same programs against mlibc (user/c-mlibc, the `c-smokes-mlibc`
 # port, `scripts/build-c-smokes.sh mlibc`): target/<name>-mlibc-<arch>-unknown-none,
 # c-hello and socket_smoke included.
 # The C smokes against mlibc and the C++ smoke against libc++
 # (user/c-mlibc): programs, keyed on the whole of what they link.
-myos_c_smokes_mlibc_version_hash() {
-  local h entry
+myos_c_smokes_mlibc_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
       myos_dep_hash libcxx
       sha256sum "$MYOS_ROOT/user/c/hello.c" "$MYOS_ROOT/user/c/socket_smoke.c"
-      for entry in "${MYOS_C_SMOKES[@]}"; do
-        sha256sum "$MYOS_ROOT/${entry#* }"
+      for entry in $MYOS_C_SMOKES; do
+        sha256sum "$MYOS_ROOT/${entry#*:}"
       done
       sha256sum "$MYOS_ROOT/user/c-mlibc/cxx_smoke.cpp" "$MYOS_ROOT"/user/c-mlibc/dl_*.c
       sha256sum "$MYOS_ROOT/scripts/build-c-smokes.sh"
-      declare -f myos_libcxx_cxxflags myos_libcxx_link myos_mlibc_link myos_mlibc_link_dynamic myos_mlibc_link_shared
+      myos_fn_source myos_libcxx_cxxflags myos_libcxx_link myos_mlibc_link myos_mlibc_link_dynamic myos_mlibc_link_shared
     } | myos_hash
   )"
   printf '%s' "$h"
-}
-myos_c_smokes_mlibc_is_current() {
-  local arch bin
-  [[ -f "$MYOS_C_SMOKES_MLIBC_VERSION" ]] \
-    && [[ "$(cat "$MYOS_C_SMOKES_MLIBC_VERSION")" == "$(myos_c_smokes_mlibc_version_hash)" ]] \
+)
+myos_c_smokes_mlibc_is_current() (
+  [ -f "$MYOS_C_SMOKES_MLIBC_VERSION" ] \
+    && [ "$(cat "$MYOS_C_SMOKES_MLIBC_VERSION")" = "$(myos_c_smokes_mlibc_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    for bin in cxx-smoke dl-smoke dl-smoke-lib dl-smoke-plugin c-hello c-socket_smoke $(printf '%s\n' "${MYOS_C_SMOKES[@]}" | cut -d' ' -f1); do
-      [[ -f "$MYOS_ROOT/target/${bin}-mlibc-${arch}-unknown-none" ]] || return 1
+    # shellcheck disable=SC2086
+    for bin in cxx-smoke dl-smoke dl-smoke-lib dl-smoke-plugin c-hello c-socket_smoke $(printf '%s\n' $MYOS_C_SMOKES | cut -d: -f1); do
+      [ -f "$MYOS_ROOT/target/${bin}-mlibc-${arch}-unknown-none" ] || return 1
     done
   done
   return 0
-}
+)
 
 # The std-on-mlibc demo (user/std-mlibc): the sysroot, mlibc and its
 # sources.
 MYOS_STD_MLIBC_VERSION="$MYOS_ROOT/target/.myos-std-mlibc-version"
-myos_std_mlibc_version_hash() {
-  local h
+myos_std_mlibc_version_hash() (
   h="$(
     {
       myos_dep_hash sysroot
@@ -733,28 +749,26 @@ myos_std_mlibc_version_hash() {
       myos_dep_hash libcxx
       find "$MYOS_ROOT/user/std-mlibc" \( -name target -o -name Cargo.lock \) -prune -o -type f -print0 \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags
+      myos_fn_source myos_mlibc_cflags
     } | myos_hash
   )"
   printf '%s' "$h"
-}
-myos_std_mlibc_is_current() {
-  local arch
-  [[ -f "$MYOS_STD_MLIBC_VERSION" ]] \
-    && [[ "$(cat "$MYOS_STD_MLIBC_VERSION")" == "$(myos_std_mlibc_version_hash)" ]] \
+)
+myos_std_mlibc_is_current() (
+  [ -f "$MYOS_STD_MLIBC_VERSION" ] \
+    && [ "$(cat "$MYOS_STD_MLIBC_VERSION")" = "$(myos_std_mlibc_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/std-mlibc-mix-${arch}-unknown-myos-mlibc" \
-      && -f "$MYOS_ROOT/target/std-mlibc-unwind-${arch}-unknown-myos-mlibc" \
-      && -f "$MYOS_ROOT/target/std-mlibc-unix-${arch}-unknown-myos-mlibc" \
-      && -f "$MYOS_ROOT/target/std-mlibc-dylib-${arch}-unknown-myos-mlibc" \
-      && -f "$MYOS_ROOT/target/std-mlibc-dylib-rt-${arch}-unknown-myos-mlibc" \
-      && -f "$MYOS_ROOT/target/std-mlibc-dylib-plugin-${arch}-unknown-myos-mlibc" ]] || return 1
+    [ -f "$MYOS_ROOT/target/std-mlibc-mix-${arch}-unknown-myos-mlibc" ] \
+      && [ -f "$MYOS_ROOT/target/std-mlibc-unwind-${arch}-unknown-myos-mlibc" ] \
+      && [ -f "$MYOS_ROOT/target/std-mlibc-unix-${arch}-unknown-myos-mlibc" ] \
+      && [ -f "$MYOS_ROOT/target/std-mlibc-dylib-${arch}-unknown-myos-mlibc" ] \
+      && [ -f "$MYOS_ROOT/target/std-mlibc-dylib-rt-${arch}-unknown-myos-mlibc" ] \
+      && [ -f "$MYOS_ROOT/target/std-mlibc-dylib-plugin-${arch}-unknown-myos-mlibc" ] || return 1
   done
-}
+)
 
-myos_sbase_version_hash() {
-  local h
+myos_sbase_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -767,38 +781,36 @@ myos_sbase_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_sbase_manifest_count() {
-  local manifest="$1"
-  [[ -f "$manifest" ]] || return 1
+myos_sbase_manifest_count() (
+  manifest="$1"
+  [ -f "$manifest" ] || return 1
   wc -l <"$manifest" | tr -d ' '
-}
+)
 
 # Names that land in a port manifest (skip blanks and # comments).
-myos_bins_txt_count() {
-  local file="$1"
-  [[ -f "$file" ]] || return 1
+myos_bins_txt_count() (
+  file="$1"
+  [ -f "$file" ] || return 1
   grep -E -cve '^[[:space:]]*(#|$)' "$file"
-}
+)
 
-myos_sbase_is_current() {
-  local arch manifest count
-  [[ -f "$MYOS_SBASE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_SBASE_VERSION")" == "$(myos_sbase_version_hash)" ]] \
+myos_sbase_is_current() (
+  [ -f "$MYOS_SBASE_VERSION" ] \
+    && [ "$(cat "$MYOS_SBASE_VERSION")" = "$(myos_sbase_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     manifest="$MYOS_ROOT/target/sbase-manifest-${arch}.txt"
     count="$(myos_sbase_manifest_count "$manifest")" || return 1
-    if ((count < MYOS_SBASE_MIN_BUILT)); then
+    if [ "$count" -lt "$MYOS_SBASE_MIN_BUILT" ]; then
       return 1
     fi
-    [[ -f "$MYOS_ROOT/target/sbase-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/sbase-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_oksh_version_hash() {
-  local h
+myos_oksh_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -810,20 +822,18 @@ myos_oksh_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_oksh_is_current() {
-  local arch
-  [[ -f "$MYOS_OKSH_VERSION" ]] \
-    && [[ "$(cat "$MYOS_OKSH_VERSION")" == "$(myos_oksh_version_hash)" ]] \
+myos_oksh_is_current() (
+  [ -f "$MYOS_OKSH_VERSION" ] \
+    && [ "$(cat "$MYOS_OKSH_VERSION")" = "$(myos_oksh_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/oksh-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/oksh-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_limine_version_hash() {
-  local h
+myos_limine_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -832,20 +842,18 @@ myos_limine_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_limine_is_current() {
-  local arch
-  [[ -f "$MYOS_LIMINE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LIMINE_VERSION")" == "$(myos_limine_version_hash)" ]] \
+myos_limine_is_current() (
+  [ -f "$MYOS_LIMINE_VERSION" ] \
+    && [ "$(cat "$MYOS_LIMINE_VERSION")" = "$(myos_limine_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/limine-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/limine-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_ubase_version_hash() {
-  local h
+myos_ubase_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -858,31 +866,29 @@ myos_ubase_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_ubase_is_current() {
-  local arch manifest
-  [[ -f "$MYOS_UBASE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_UBASE_VERSION")" == "$(myos_ubase_version_hash)" ]] \
+myos_ubase_is_current() (
+  [ -f "$MYOS_UBASE_VERSION" ] \
+    && [ "$(cat "$MYOS_UBASE_VERSION")" = "$(myos_ubase_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     manifest="$MYOS_ROOT/target/ubase-manifest-${arch}.txt"
-    [[ -f "$manifest" ]] || return 1
+    [ -f "$manifest" ] || return 1
     while IFS= read -r line; do
-      [[ -n "$line" ]] || continue
-      local path="${line#*:}"
-      [[ -f "$path" ]] || return 1
+      [ -n "$line" ] || continue
+      path="${line#*:}"
+      [ -f "$path" ] || return 1
     done <"$manifest"
-    [[ -f "$MYOS_ROOT/target/ubase-getty-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/ubase-login-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/ubase-getty-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/ubase-login-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_coreutils_version_hash() {
-  local h
+myos_coreutils_version_hash() (
   h="$(
     {
-      # uutils links libstd from the myos sysroot — abi.rs etc. must bust this stamp
+      # uutils links libstd from the myos sysroot: abi.rs etc. must bust this stamp
       # (d72287e a2=0 fix was skipped in CI: "uutils coreutils up to date").
       myos_sysroot_version_hash
       sha256sum "$MYOS_ROOT/packages/coreutils/build-uutils.sh"
@@ -898,34 +904,32 @@ myos_coreutils_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_coreutils_manifest_count() {
-  local manifest="$1"
-  [[ -f "$manifest" ]] || return 1
+myos_coreutils_manifest_count() (
+  manifest="$1"
+  [ -f "$manifest" ] || return 1
   wc -l <"$manifest" | tr -d ' '
-}
+)
 
-myos_coreutils_is_current() {
-  local arch manifest count expected triple
-  [[ -f "$MYOS_COREUTILS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_COREUTILS_VERSION")" == "$(myos_coreutils_version_hash)" ]] \
+myos_coreutils_is_current() (
+  [ -f "$MYOS_COREUTILS_VERSION" ] \
+    && [ "$(cat "$MYOS_COREUTILS_VERSION")" = "$(myos_coreutils_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"
     manifest="$MYOS_ROOT/target/coreutils-manifest-${arch}.txt"
     count="$(myos_coreutils_manifest_count "$manifest")" || return 1
     expected="$(myos_bins_txt_count "$MYOS_ROOT/packages/coreutils/bins.txt")" || return 1
-    if ((count < expected)); then
+    if [ "$count" -lt "$expected" ]; then
       return 1
     fi
-    [[ -f "$MYOS_ROOT/target/coreutils-${triple}" ]] || return 1
+    [ -f "$MYOS_ROOT/target/coreutils-${triple}" ] || return 1
   done
-}
+)
 
 
-myos_ripgrep_version_hash() {
-  local h
+myos_ripgrep_version_hash() (
   h="$(
     {
       sha256sum "$MYOS_ROOT/ports/ripgrep/build.sh"
@@ -941,27 +945,25 @@ myos_ripgrep_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_ripgrep_is_current() {
-  local arch triple
-  [[ -f "$MYOS_RIPGREP_VERSION" ]] \
-    && [[ "$(cat "$MYOS_RIPGREP_VERSION")" == "$(myos_ripgrep_version_hash)" ]] \
+myos_ripgrep_is_current() (
+  [ -f "$MYOS_RIPGREP_VERSION" ] \
+    && [ "$(cat "$MYOS_RIPGREP_VERSION")" = "$(myos_ripgrep_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"
-    [[ -f "$MYOS_ROOT/target/rg-${triple}" ]] || return 1
+    [ -f "$MYOS_ROOT/target/rg-${triple}" ] || return 1
   done
-}
+)
 
 
 myos_dropbear_version_hash() {
-  if [[ -f "$MYOS_ROOT/ports/dropbear/versions.env" ]]; then
+  if [ -f "$MYOS_ROOT/ports/dropbear/versions.env" ]; then
     # shellcheck disable=SC1091
-    source "$MYOS_ROOT/ports/dropbear/versions.env"
+    . "$MYOS_ROOT/ports/dropbear/versions.env"
   fi
-  local h
-  h="$(
+  _dvh_h="$(
     {
       echo "$MYOS_DROPBEAR_VERSION"
       sha256sum "$MYOS_ROOT/ports/dropbear/build.sh" \
@@ -977,27 +979,25 @@ myos_dropbear_version_hash() {
       myos_dep_hash newlib
     } | myos_hash
   )"
-  printf '%s' "$h"
+  printf '%s' "$_dvh_h"
 }
 
-myos_dropbear_is_current() {
-  local arch
-  [[ -f "$MYOS_DROPBEAR_VERSION_STAMP" ]] \
-    && [[ "$(cat "$MYOS_DROPBEAR_VERSION_STAMP")" == "$(myos_dropbear_version_hash)" ]] \
+myos_dropbear_is_current() (
+  [ -f "$MYOS_DROPBEAR_VERSION_STAMP" ] \
+    && [ "$(cat "$MYOS_DROPBEAR_VERSION_STAMP")" = "$(myos_dropbear_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/dropbear-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/dbclient-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/dropbearkey-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/dropbear-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/dbclient-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/dropbearkey-${arch}-unknown-none" ] || return 1
   done
   return 0
-}
+)
 
 # Linux compatibility layer userspace (linux-compat/build.sh): musl and the
 # Linux test binaries. Not the launcher, which has its own script and is
 # part of the kernels bundle, nor get-alpine, a package.
-myos_linux_compat_version_hash() {
-  local h
+myos_linux_compat_version_hash() (
   h="$(
     {
       sha256sum "$MYOS_ROOT/linux-compat/build.sh" || true
@@ -1008,31 +1008,29 @@ myos_linux_compat_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_linux_compat_is_current() {
-  local arch f
-  [[ -f "$MYOS_LINUX_COMPAT_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LINUX_COMPAT_VERSION")" == "$(myos_linux_compat_version_hash)" ]] \
+myos_linux_compat_is_current() (
+  [ -f "$MYOS_LINUX_COMPAT_VERSION" ] \
+    && [ "$(cat "$MYOS_LINUX_COMPAT_VERSION")" = "$(myos_linux_compat_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/linux-smoke-${arch}-linux-musl" ]] || return 1
+    [ -f "$MYOS_ROOT/target/linux-smoke-${arch}-linux-musl" ] || return 1
     for f in "ld-musl-${arch}.so.1" libsmoke.so libsmoke2.so linux-dyn linux-nopie linux-dyn-nopie; do
-      [[ -f "$MYOS_ROOT/target/linux-compat/${arch}/$f" ]] || return 1
+      [ -f "$MYOS_ROOT/target/linux-compat/${arch}/$f" ] || return 1
     done
   done
   return 0
-}
+)
 
 myos_curl_version_hash() {
   # curl's hash_curl() includes the CURL_VERSION value from versions.env.
   # Source it here so the registry stamp matches curl/build.sh's own gate.
-  if [[ -f "$MYOS_ROOT/ports/curl/versions.env" ]]; then
+  if [ -f "$MYOS_ROOT/ports/curl/versions.env" ]; then
     # shellcheck disable=SC1091
-    source "$MYOS_ROOT/ports/curl/versions.env"
+    . "$MYOS_ROOT/ports/curl/versions.env"
   fi
-  local h
-  h="$(
+  _cvh_h="$(
     {
       # Mirror ports/curl/build.sh hash_curl() exactly so the registry stamp
       # matches the script own short-circuit (no apostrophes in comments:
@@ -1048,19 +1046,18 @@ myos_curl_version_hash() {
       myos_dep_hash newlib
     } | myos_hash
   )"
-  printf '%s' "$h"
+  printf '%s' "$_cvh_h"
 }
 
 # The stamp and the three ELFs: what a curl build produces.
-myos_curl_elfs_current() {
-  local arch
-  [[ -f "$MYOS_CURL_VERSION" ]] \
-    && [[ "$(cat "$MYOS_CURL_VERSION")" == "$(myos_curl_version_hash)" ]] \
+myos_curl_elfs_current() (
+  [ -f "$MYOS_CURL_VERSION" ] \
+    && [ "$(cat "$MYOS_CURL_VERSION")" = "$(myos_curl_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/curl-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/curl-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # Every output of the port (PORT_OUTPUTS): the ELFs and the CA bundle the
 # build fetches, which the image ships as /lib/cacert.pem. A registry
@@ -1068,12 +1065,11 @@ myos_curl_elfs_current() {
 # check wants every port file, so a missing bundle rebuilt the kernels in
 # every CI run); ports/curl/build.sh fetches it without rebuilding curl.
 myos_curl_is_current() {
-  myos_curl_elfs_current && [[ -f "$MYOS_ROOT/target/cacert.pem" ]]
+  myos_curl_elfs_current && [ -f "$MYOS_ROOT/target/cacert.pem" ]
 }
 
 
-myos_tcc_version_hash() {
-  local h
+myos_tcc_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1087,24 +1083,22 @@ myos_tcc_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_tcc_is_current() {
-  local arch triple
-  [[ -f "$MYOS_TCC_VERSION" ]] \
-    && [[ "$(cat "$MYOS_TCC_VERSION")" == "$(myos_tcc_version_hash)" ]] \
-    && [[ -f "$MYOS_ROOT/target/tcc-include/stddef.h" ]] \
+myos_tcc_is_current() (
+  [ -f "$MYOS_TCC_VERSION" ] \
+    && [ "$(cat "$MYOS_TCC_VERSION")" = "$(myos_tcc_version_hash)" ] \
+    && [ -f "$MYOS_ROOT/target/tcc-include/stddef.h" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     triple="${arch}-unknown-myos"
-    [[ -f "$MYOS_ROOT/target/tcc-${triple}" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/libtcc1-${triple}.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/tcc-${triple}" ] || return 1
+    [ -f "$MYOS_ROOT/target/libtcc1-${triple}.a" ] || return 1
   done
-}
+)
 
 
-myos_vim_version_hash() {
-  local h
+myos_vim_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1118,22 +1112,20 @@ myos_vim_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_vim_is_current() {
-  local arch
-  [[ -f "$MYOS_VIM_VERSION" ]] \
-    && [[ "$(cat "$MYOS_VIM_VERSION")" == "$(myos_vim_version_hash)" ]] \
+myos_vim_is_current() (
+  [ -f "$MYOS_VIM_VERSION" ] \
+    && [ "$(cat "$MYOS_VIM_VERSION")" = "$(myos_vim_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/vim-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/vim-${arch}-unknown-none" ] || return 1
   done
-  [[ -f "$MYOS_ROOT/target/vim-runtime/defaults.vim" ]] || return 1
-}
+  [ -f "$MYOS_ROOT/target/vim-runtime/defaults.vim" ] || return 1
+)
 
 
-myos_ncurses_version_hash() {
-  local h
+myos_ncurses_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1147,24 +1139,22 @@ myos_ncurses_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_ncurses_is_current() {
-  local arch
-  [[ -f "$MYOS_NCURSES_VERSION" ]] \
-    && [[ "$(cat "$MYOS_NCURSES_VERSION")" == "$(myos_ncurses_version_hash)" ]] \
+myos_ncurses_is_current() (
+  [ -f "$MYOS_NCURSES_VERSION" ] \
+    && [ "$(cat "$MYOS_NCURSES_VERSION")" = "$(myos_ncurses_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/ncurses-${arch}/lib/libncurses.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/ncurses-mlibc-${arch}/lib/libpanel.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/ncurses-${arch}/lib/libncurses.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/ncurses-mlibc-${arch}/lib/libpanel.a" ] || return 1
   done
-}
+)
 
 # clear: ncurses' progs/{clear,clear_cmd,tty_settings}.c linked against the
-# ncurses library. No own source pin — fold in the ncurses hash, which already
+# ncurses library. No own source pin: fold in the ncurses hash, which already
 # covers newlib, the ncurses source and its build.
-myos_clear_version_hash() {
-  local h
+myos_clear_version_hash() (
   h="$(
     {
       myos_dep_hash ncurses
@@ -1173,17 +1163,16 @@ myos_clear_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_clear_is_current() {
-  local arch
-  [[ -f "$MYOS_CLEAR_VERSION" ]] \
-    && [[ "$(cat "$MYOS_CLEAR_VERSION")" == "$(myos_clear_version_hash)" ]] \
+myos_clear_is_current() (
+  [ -f "$MYOS_CLEAR_VERSION" ] \
+    && [ "$(cat "$MYOS_CLEAR_VERSION")" = "$(myos_clear_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/clear-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/clear-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 
 # The second C library, mlibc (toolchain/mlibc, docs/mlibc.md): a port opts
@@ -1192,8 +1181,8 @@ myos_clear_is_current() {
 # myos_mlibc_cflags ARCH: the compiler's flags for a program against mlibc
 # (clang for the bare target, as the newlib wrappers run it, with the
 # arch's ISA, myos_arch_cflags).
-myos_mlibc_cflags() {
-  local arch="$1"
+myos_mlibc_cflags() (
+  arch="$1"
   # mlibc's headers before clang's: freestanding, clang's limits.h does not
   # include the libc's after itself. Its stdc-predef.h first, as clang
   # includes glibc's on Linux (__STDC_ISO_10646__: wchar_t holds Unicode).
@@ -1201,9 +1190,9 @@ myos_mlibc_cflags() {
     -isystem "$MYOS_ROOT/target/mlibc-${arch}/include" -isystem "$(clang -print-resource-dir)/include" \
     -include stdc-predef.h
   myos_arch_cflags "$arch"
-  [[ "$arch" == riscv64 ]] && printf '%s ' -mno-relax
+  [ "$arch" = riscv64 ] && printf '%s ' -mno-relax
   return 0
-}
+)
 # myos_mlibc_link ARCH OUT INPUT...: a static PIE of the INPUTs (objects,
 # -L, -l) against mlibc, the way scripts/build-c-smokes.sh links against
 # newlib: its crt0 first, then libc.a and the compiler builtins a program
@@ -1212,60 +1201,59 @@ myos_mlibc_cflags() {
 # for C++: a freestanding compile mangles main like any function, and
 # libc++ takes it for a freestanding library (__STDC_HOSTED__ 0); mlibc is
 # a hosted one.
-myos_mlibc_hosted_cflags() {
-  local f
+myos_mlibc_hosted_cflags() (
   for f in $(myos_mlibc_cflags "$1"); do
-    [[ "$f" == -ffreestanding ]] || printf '%s ' "$f"
+    [ "$f" = -ffreestanding ] || printf '%s ' "$f"
   done
-}
+)
 
 # myos_libcxx_cxxflags ARCH: the compiler's flags for C++ against libc++
 # and mlibc (toolchain/libcxx): libc++'s headers before mlibc's and
 # clang's, and _GNU_SOURCE, as g++ defines it for C++ on Linux: libc++'s
 # headers call the *_l locale functions mlibc declares under it.
-myos_libcxx_cxxflags() {
-  local arch="$1"
+myos_libcxx_cxxflags() (
+  arch="$1"
   printf '%s ' -nostdinc++ -isystem "$MYOS_ROOT/target/libcxx-${arch}/include/c++/v1" -D_GNU_SOURCE
   myos_mlibc_hosted_cflags "$arch"
-}
+)
 
 # myos_libcxx_link ARCH OUT INPUT...: a static PIE of C++ INPUTs, with
 # libc++ (libc++abi in it), libunwind and mlibc. With the .eh_frame index
 # (PT_GNU_EH_FRAME), where libunwind finds a throw's frames through
 # dl_iterate_phdr (clang's own link adds it; ld.lld alone does not).
-myos_libcxx_link() {
-  local arch="$1" out="$2"
+myos_libcxx_link() (
+  arch="$1" out="$2"
   shift 2
   myos_mlibc_link "$arch" "$out" --eh-frame-hdr "$@" -L"$MYOS_ROOT/target/libcxx-${arch}/lib" \
     --start-group -lc++ -lunwind --end-group
-}
+)
 
-myos_mlibc_link() {
-  local arch="$1" out="$2" lib="$MYOS_ROOT/target/mlibc-$1/lib"
+myos_mlibc_link() (
+  arch="$1" out="$2" lib="$MYOS_ROOT/target/mlibc-$1/lib"
   shift 2
   ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
     "$lib/crt0.o" "$@" -L"$lib" -lc -lbuiltins
-}
+)
 
 # myos_mlibc_link_dynamic ARCH OUT INPUT...: a program of the INPUTs against
 # the shared mlibc (docs/mlibc.md "Shared objects"): the kernel starts it
 # through /lib/ld.so, which loads libc.so and the objects it names. Its
 # symbols are exported, for the objects it loads to call back into.
-myos_mlibc_link_dynamic() {
-  local arch="$1" out="$2" root="$MYOS_ROOT/target/mlibc-$1"
+myos_mlibc_link_dynamic() (
+  arch="$1" out="$2" root="$MYOS_ROOT/target/mlibc-$1"
   shift 2
   ld.lld -pie --dynamic-linker=/lib/ld.so --export-dynamic --entry=_start -z max-page-size=4096 \
     --hash-style=gnu -o "$out" "$root/lib/crt0.o" "$@" -L"$root/shared" -lc -L"$root/lib" -lbuiltins
-}
+)
 
 # myos_mlibc_link_shared ARCH OUT INPUT...: a shared object of the INPUTs
 # (compiled -fPIC, as everything is) against the shared mlibc.
-myos_mlibc_link_shared() {
-  local arch="$1" out="$2" root="$MYOS_ROOT/target/mlibc-$1"
+myos_mlibc_link_shared() (
+  arch="$1" out="$2" root="$MYOS_ROOT/target/mlibc-$1"
   shift 2
   ld.lld -shared -z max-page-size=4096 --hash-style=gnu -o "$out" "$@" \
     -L"$root/shared" -lc -L"$root/lib" -lbuiltins
-}
+)
 
 # myos_write_cross_cc ARCH OUT [CFLAG...]: write OUT, a cc for autoconf
 # and meson ports: clang against the port's libc's sysroot with the
@@ -1283,23 +1271,33 @@ myos_write_cross_cc() {
 # mlibc and libc++ (toolchain/libcxx): clang++ with myos_libcxx_cxxflags,
 # and a link with libc++, libc++abi and libunwind as myos_libcxx_link's
 # (a meson port's C++ compiler: harfbuzz).
-myos_write_cross_cxx() {
-  PORT_LIBC=mlibc _myos_write_cross_driver c++ "$@"
+myos_write_cross_cxx() (
+  PORT_LIBC=mlibc
+  _myos_write_cross_driver c++ "$@"
+)
+
+# myos_sh_quote WORD: WORD as one word of shell text (a flag in the cross
+# driver below): as it is when plain, in single quotes otherwise.
+myos_sh_quote() {
+  case "$1" in
+    ""|*[!A-Za-z0-9_./=+:,@%-]*) printf '%s\n' "$1" | sed "s/'/'\\\\''/g; 1s/^/'/; \$s/\$/'/" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
 }
 
-_myos_write_cross_driver() {
-  local lang="$1" arch="$2" out="$3"
+_myos_write_cross_driver() (
+  lang="$1" arch="$2" out="$3"
   shift 3
-  local elf="${arch}-unknown-none"
-  local libc="${PORT_LIBC:-newlib}"
-  local sysroot="$MYOS_ROOT/target/newlib-${arch}/${arch}-unknown-myos"
-  local libs="--start-group -lc -lgloss -lg --end-group"
-  local compiler=clang clanginc incs extra="" flags="" f
-  local base="--target=$elf $(myos_arch_cflags "$arch")-ffreestanding -fPIC -nostdinc"
+  elf="${arch}-unknown-none"
+  libc="${PORT_LIBC:-newlib}"
+  sysroot="$MYOS_ROOT/target/newlib-${arch}/${arch}-unknown-myos"
+  libs="--start-group -lc -lgloss -lg --end-group"
+  compiler=clang extra="" flags=""
+  base="--target=$elf $(myos_arch_cflags "$arch")-ffreestanding -fPIC -nostdinc"
   clanginc="$(clang -print-resource-dir)/include"
   incs="-isystem $clanginc -isystem $sysroot/include"
   for f in "$@"; do
-    flags="$flags $(printf '%q' "$f")"
+    flags="$flags $(myos_sh_quote "$f")"
   done
   case "$libc" in
     newlib)
@@ -1316,57 +1314,69 @@ _myos_write_cross_driver() {
       sysroot="$MYOS_ROOT/target/mlibc-${arch}"
       incs="-isystem $sysroot/include -isystem $clanginc -include stdc-predef.h" # myos_mlibc_cflags
       libs="-lc -lbuiltins"
-      [[ "$arch" == riscv64 ]] && flags="$flags -mno-relax" ;;
+      [ "$arch" = riscv64 ] && flags="$flags -mno-relax" ;;
     *) echo "error: PORT_LIBC=$libc: newlib or mlibc" >&2; return 1 ;;
   esac
-  if [[ "$lang" == c++ ]]; then
+  if [ "$lang" = c++ ]; then
     # Hosted (libc++ takes a freestanding compile for a freestanding
     # library), over libc++'s headers.
     compiler=clang++ base="" incs="$(myos_libcxx_cxxflags "$arch")"
     libs="--eh-frame-hdr -L$MYOS_ROOT/target/libcxx-${arch}/lib --start-group -lc++ -lunwind --end-group $libs"
   fi
+  # No line of the driver is a lone `}`: myos_fn_source ends a function there.
   cat > "$out" <<EOC
-#!/usr/bin/env bash
+#!/bin/sh
 compiler=$compiler
-cflags=($base $incs$flags)
 sysroot=$sysroot
 extra="$extra"
 libs="$libs"
+# The compiler with the flags of every compile.
+compile() { "\$compiler" $base $incs$flags "\$@"; }
 EOC
   cat >> "$out" <<'EOC'
+# quote WORD: q is WORD as one word of shell text, for the lists below:
+# strings of such words, which eval takes apart again.
+sq() { printf '%s\n' "$1" | sed "s/'/'\\\\''/g; 1s/^/'/; \$s/\$/'/"; }
+quote() { case "$1" in ""|*[!A-Za-z0-9_./=+:,@%-]*) q="$(sq "$1")" ;; *) q="$1" ;; esac; }
 # Compiling, and the compiler's own queries (meson's --version).
 for a in "$@"; do
-  case "$a" in -c|-E|-S|-M|-MM|--version|-dumpversion|-dumpmachine) exec "$compiler" "${cflags[@]}" "$@" ;; esac
+  case "$a" in -c|-E|-S|-M|-MM|--version|-dumpversion|-dumpmachine) compile "$@"; exit ;; esac
 done
 # Linking: compile what is source here, then ld.lld, keeping the order of
 # the objects, -L and -l.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 out=a.out
-flags=() srcs=() inputs=()
+flags="" srcs="" inputs="" n=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift ;;
-    -include|-isystem|-I|-D|-U|-x|-MF|-MT|-MQ) flags+=("$1" "$2"); shift ;;
-    *.c|*.cc|*.cpp|*.cxx) srcs+=("$1"); inputs+=("$tmp/${#srcs[@]}.o") ;;
-    -Wl,*) IFS=, read -ra w <<< "${1#-Wl,}"; inputs+=("${w[@]}") ;;
-    -Xlinker) inputs+=("$2"); shift ;;
-    -L*|-l*) inputs+=("$1") ;;
+    -include|-isystem|-I|-D|-U|-x|-MF|-MT|-MQ) quote "$1"; flags="$flags $q"; quote "$2"; flags="$flags $q"; shift ;;
+    *.c|*.cc|*.cpp|*.cxx) n=$((n + 1)); quote "$1"; srcs="$srcs $q"; quote "$tmp/$n.o"; inputs="$inputs $q" ;;
+    -Wl,*) set -f; IFS=,
+      for w in ${1#-Wl,}; do quote "$w"; inputs="$inputs $q"; done
+      unset IFS; set +f ;;
+    -Xlinker) quote "$2"; inputs="$inputs $q"; shift ;;
+    -L*|-l*) quote "$1"; inputs="$inputs $q" ;;
     -pthread|-static|-rdynamic) ;;
-    -*) flags+=("$1") ;;
-    *) inputs+=("$1") ;;
+    -*) quote "$1"; flags="$flags $q" ;;
+    *) quote "$1"; inputs="$inputs $q" ;;
   esac
   shift
 done
-for i in "${!srcs[@]}"; do
-  "$compiler" "${cflags[@]}" "${flags[@]}" -c "${srcs[$i]}" -o "$tmp/$((i + 1)).o" || exit 1
+eval "set -- $srcs"
+n=0
+for s in "$@"; do
+  n=$((n + 1))
+  eval "compile $flags"' -c "$s" -o "$tmp/$n.o"' || exit 1
 done
+eval "set -- $inputs"
 exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
-  "$sysroot/lib/crt0.o" "${inputs[@]}" $extra \
+  "$sysroot/lib/crt0.o" "$@" $extra \
   -L"$sysroot/lib" $libs
 EOC
   chmod +x "$out"
-}
+)
 
 # myos_mlibc_meson_cross ARCH DIR PKGCONFIG-DIR...: a meson cross build's
 # files for an mlibc port in DIR: the cross compilers (DIR/cc, DIR/c++),
@@ -1377,15 +1387,15 @@ EOC
 # tools run on the build host (packages/glib's host build): the machine
 # file's binaries come first where meson's gnome module looks for them,
 # before any GLib the build host has.
-myos_mlibc_meson_cross() {
-  local arch="$1" dir="$2" cpu="$1" f pc=""
-  local x11="$MYOS_ROOT/target/x11-xft-mlibc-${arch}/lib/x11" host="$MYOS_ROOT/target/glib-host/bin"
+myos_mlibc_meson_cross() (
+  arch="$1" dir="$2" cpu="$1" pc=""
+  x11="$MYOS_ROOT/target/x11-xft-mlibc-${arch}/lib/x11" host="$MYOS_ROOT/target/glib-host/bin"
   shift 2
   mkdir -p "$dir/x11-pc"
   PORT_LIBC=mlibc myos_write_cross_cc "$arch" "$dir/cc" -O2
   myos_write_cross_cxx "$arch" "$dir/c++" -O2
   for f in "$x11"/lib/pkgconfig/*.pc "$x11"/share/pkgconfig/*.pc; do
-    [[ -f "$f" ]] || continue
+    [ -f "$f" ] || continue
     sed "s#/lib/x11#$x11#g" "$f" >"$dir/x11-pc/${f##*/}"
   done
   for f in "$@" "$dir/x11-pc"; do
@@ -1420,14 +1430,14 @@ cpu_family = '$arch'
 cpu = '$cpu'
 endian = 'little'
 EOC
-}
+)
 
 # myos_mlibc_meson_build DIR SRC PREFIX [OPTION...]: SRC built with meson
 # over DIR/cross.txt (myos_mlibc_meson_cross) in DIR/<SRC's name>, static
 # (prefer_static: pkg-config --static, so a check links what a static
 # library needs), and installed into PREFIX.
-myos_mlibc_meson_build() {
-  local dir="$1" src="$2" prefix="$3" name="${2##*/}"
+myos_mlibc_meson_build() (
+  dir="$1" src="$2" prefix="$3" name="${2##*/}"
   shift 3
   meson setup "$dir/$name" "$src" --cross-file "$dir/cross.txt" \
     --prefix "$prefix" --libdir lib --includedir include --buildtype release \
@@ -1436,10 +1446,9 @@ myos_mlibc_meson_build() {
   ninja -C "$dir/$name" install >"$dir/$name-ninja.log" 2>&1 \
     || { grep -n "error" "$dir/$name-ninja.log" | head -20 >&2; tail -20 "$dir/$name-ninja.log" >&2; return 1; }
   echo "$name -> $prefix"
-}
+)
 
-myos_x11_libs_version_hash() {
-  local h
+myos_x11_libs_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1449,22 +1458,20 @@ myos_x11_libs_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_x11_libs_is_current() {
-  local arch
-  [[ -f "$MYOS_X11_LIBS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_X11_LIBS_VERSION")" == "$(myos_x11_libs_version_hash)" ]] \
+myos_x11_libs_is_current() (
+  [ -f "$MYOS_X11_LIBS_VERSION" ] \
+    && [ "$(cat "$MYOS_X11_LIBS_VERSION")" = "$(myos_x11_libs_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/x11-libs-${arch}/lib/x11/lib/libX11.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/x11-libs-mlibc-${arch}/lib/x11/lib/libXinerama.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/x11-smoke-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/x11-libs-${arch}/lib/x11/lib/libX11.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/x11-libs-mlibc-${arch}/lib/x11/lib/libXinerama.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/x11-smoke-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_tinyx_version_hash() {
-  local h
+myos_tinyx_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1475,22 +1482,20 @@ myos_tinyx_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_tinyx_is_current() {
-  local arch
-  [[ -f "$MYOS_TINYX_VERSION" ]] \
-    && [[ "$(cat "$MYOS_TINYX_VERSION")" == "$(myos_tinyx_version_hash)" ]] \
+myos_tinyx_is_current() (
+  [ -f "$MYOS_TINYX_VERSION" ] \
+    && [ "$(cat "$MYOS_TINYX_VERSION")" = "$(myos_tinyx_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/startx-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/xfbdev-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/tinyx-smoke-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/startx-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_x11_xft_version_hash() {
-  local h
+myos_x11_xft_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1500,38 +1505,35 @@ myos_x11_xft_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_x11_xft_is_current() {
-  local arch
-  [[ -f "$MYOS_X11_XFT_VERSION" ]] \
-    && [[ "$(cat "$MYOS_X11_XFT_VERSION")" == "$(myos_x11_xft_version_hash)" ]] \
+myos_x11_xft_is_current() (
+  [ -f "$MYOS_X11_XFT_VERSION" ] \
+    && [ "$(cat "$MYOS_X11_XFT_VERSION")" = "$(myos_x11_xft_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/x11-xft-${arch}/lib/x11/lib/libXft.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/x11-xft-mlibc-${arch}/lib/x11/lib/libXft.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/xft-smoke-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/fc-match-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/x11-xft-${arch}/lib/x11/lib/libXft.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/x11-xft-mlibc-${arch}/lib/x11/lib/libXft.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/xft-smoke-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/fc-match-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_x11_fonts_version_hash() {
-  local h
+myos_x11_fonts_version_hash() (
   h="$(
     find "$(myos_port_dir x11-fonts)" -type f -print0 2>/dev/null \
       | sort -z | xargs -0 sha256sum | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
 myos_x11_fonts_is_current() {
-  [[ -f "$MYOS_X11_FONTS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_X11_FONTS_VERSION")" == "$(myos_x11_fonts_version_hash)" ]] \
-    && [[ -f "$MYOS_ROOT/target/x11-fonts/DejaVuSansMono.ttf" ]]
+  [ -f "$MYOS_X11_FONTS_VERSION" ] \
+    && [ "$(cat "$MYOS_X11_FONTS_VERSION")" = "$(myos_x11_fonts_version_hash)" ] \
+    && [ -f "$MYOS_ROOT/target/x11-fonts/DejaVuSansMono.ttf" ]
 }
 
-myos_dwm_version_hash() {
-  local h
+myos_dwm_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1541,21 +1543,19 @@ myos_dwm_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_dwm_is_current() {
-  local arch
-  [[ -f "$MYOS_DWM_VERSION" ]] \
-    && [[ "$(cat "$MYOS_DWM_VERSION")" == "$(myos_dwm_version_hash)" ]] \
+myos_dwm_is_current() (
+  [ -f "$MYOS_DWM_VERSION" ] \
+    && [ "$(cat "$MYOS_DWM_VERSION")" = "$(myos_dwm_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/dwm-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/dwm-smoke-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/dwm-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/dwm-smoke-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_st_version_hash() {
-  local h
+myos_st_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1565,21 +1565,19 @@ myos_st_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_st_is_current() {
-  local arch
-  [[ -f "$MYOS_ST_VERSION" ]] \
-    && [[ "$(cat "$MYOS_ST_VERSION")" == "$(myos_st_version_hash)" ]] \
+myos_st_is_current() (
+  [ -f "$MYOS_ST_VERSION" ] \
+    && [ "$(cat "$MYOS_ST_VERSION")" = "$(myos_st_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/st-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/st-smoke-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/st-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/st-smoke-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_bottom_version_hash() {
-  local h
+myos_bottom_version_hash() (
   h="$(
     {
       # Rust: the std sysroot, and the myos libc/errno/rustix crates the
@@ -1594,21 +1592,19 @@ myos_bottom_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_bottom_is_current() {
-  local arch
-  [[ -f "$MYOS_BOTTOM_VERSION" ]] \
-    && [[ "$(cat "$MYOS_BOTTOM_VERSION")" == "$(myos_bottom_version_hash)" ]] \
+myos_bottom_is_current() (
+  [ -f "$MYOS_BOTTOM_VERSION" ] \
+    && [ "$(cat "$MYOS_BOTTOM_VERSION")" = "$(myos_bottom_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/btm-${arch}-unknown-myos" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/btm-smoke-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/btm-${arch}-unknown-myos" ] || return 1
+    [ -f "$MYOS_ROOT/target/btm-smoke-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_dmenu_version_hash() {
-  local h
+myos_dmenu_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1618,23 +1614,21 @@ myos_dmenu_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_dmenu_is_current() {
-  local arch
-  [[ -f "$MYOS_DMENU_VERSION" ]] \
-    && [[ "$(cat "$MYOS_DMENU_VERSION")" == "$(myos_dmenu_version_hash)" ]] \
+myos_dmenu_is_current() (
+  [ -f "$MYOS_DMENU_VERSION" ] \
+    && [ "$(cat "$MYOS_DMENU_VERSION")" = "$(myos_dmenu_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/dmenu-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/stest-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/dmenu-smoke-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/dmenu-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/stest-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/dmenu-smoke-${arch}-unknown-none" ] || return 1
   done
-  [[ -f "$MYOS_ROOT/target/dmenu_run" && -f "$MYOS_ROOT/target/dmenu_path" ]]
-}
+  [ -f "$MYOS_ROOT/target/dmenu_run" ] && [ -f "$MYOS_ROOT/target/dmenu_path" ]
+)
 
-myos_x11_apps_version_hash() {
-  local h
+myos_x11_apps_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1644,20 +1638,18 @@ myos_x11_apps_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_x11_apps_is_current() {
-  local arch
-  [[ -f "$MYOS_X11_APPS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_X11_APPS_VERSION")" == "$(myos_x11_apps_version_hash)" ]] \
+myos_x11_apps_is_current() (
+  [ -f "$MYOS_X11_APPS_VERSION" ] \
+    && [ "$(cat "$MYOS_X11_APPS_VERSION")" = "$(myos_x11_apps_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/xev-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/xev-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_x11_dev_version_hash() {
-  local h
+myos_x11_dev_version_hash() (
   h="$(
     {
       myos_dep_hash x11-libs
@@ -1666,20 +1658,18 @@ myos_x11_dev_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_x11_dev_is_current() {
-  local arch
-  [[ -f "$MYOS_X11_DEV_VERSION" ]] \
-    && [[ "$(cat "$MYOS_X11_DEV_VERSION")" == "$(myos_x11_dev_version_hash)" ]] \
+myos_x11_dev_is_current() (
+  [ -f "$MYOS_X11_DEV_VERSION" ] \
+    && [ "$(cat "$MYOS_X11_DEV_VERSION")" = "$(myos_x11_dev_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/x11-dev-${arch}/lib/x11/lib/libX11.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/x11-dev-${arch}/lib/x11/lib/libX11.a" ] || return 1
   done
-}
+)
 
-myos_zlib_version_hash() {
-  local h
+myos_zlib_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1692,23 +1682,21 @@ myos_zlib_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_zlib_is_current() {
-  local arch
-  [[ -f "$MYOS_ZLIB_VERSION" ]] \
-    && [[ "$(cat "$MYOS_ZLIB_VERSION")" == "$(myos_zlib_version_hash)" ]] \
+myos_zlib_is_current() (
+  [ -f "$MYOS_ZLIB_VERSION" ] \
+    && [ "$(cat "$MYOS_ZLIB_VERSION")" = "$(myos_zlib_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/zlib-${arch}/lib/libz.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/zlib-mlibc-${arch}/lib/libz.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/zlib-${arch}/lib/libz.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/zlib-mlibc-${arch}/lib/libz.a" ] || return 1
   done
-}
+)
 
 # LibreSSL: its pin, scripts, patch and source-list reader, and the two
 # libcs it is built against.
-myos_libressl_version_hash() {
-  local h
+myos_libressl_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1718,25 +1706,23 @@ myos_libressl_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_libressl_is_current() {
-  local arch dir lib
-  [[ -f "$MYOS_LIBRESSL_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LIBRESSL_VERSION")" == "$(myos_libressl_version_hash)" ]] \
+myos_libressl_is_current() (
+  [ -f "$MYOS_LIBRESSL_VERSION" ] \
+    && [ "$(cat "$MYOS_LIBRESSL_VERSION")" = "$(myos_libressl_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     for dir in "libressl-${arch}" "libressl-mlibc-${arch}"; do
       for lib in crypto ssl tls; do
-        [[ -f "$MYOS_ROOT/target/${dir}/lib/lib${lib}.a" ]] || return 1
+        [ -f "$MYOS_ROOT/target/${dir}/lib/lib${lib}.a" ] || return 1
       done
-      [[ -f "$MYOS_ROOT/target/${dir}/include/tls.h" ]] || return 1
+      [ -f "$MYOS_ROOT/target/${dir}/include/tls.h" ] || return 1
     done
   done
-}
+)
 
-myos_pcre2_version_hash() {
-  local h
+myos_pcre2_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1746,23 +1732,21 @@ myos_pcre2_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_pcre2_is_current() {
-  local arch
-  [[ -f "$MYOS_PCRE2_VERSION" ]] \
-    && [[ "$(cat "$MYOS_PCRE2_VERSION")" == "$(myos_pcre2_version_hash)" ]] \
+myos_pcre2_is_current() (
+  [ -f "$MYOS_PCRE2_VERSION" ] \
+    && [ "$(cat "$MYOS_PCRE2_VERSION")" = "$(myos_pcre2_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/pcre2-${arch}/lib/libpcre2-8.a" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/pcre2-mlibc-${arch}/lib/libpcre2-8.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/pcre2-${arch}/lib/libpcre2-8.a" ] || return 1
+    [ -f "$MYOS_ROOT/target/pcre2-mlibc-${arch}/lib/libpcre2-8.a" ] || return 1
   done
-}
+)
 
 # nginx: its source pin, build script, config and patches, and what it
 # links (newlib, zlib, PCRE2, LibreSSL).
-myos_nginx_version_hash() {
-  local h
+myos_nginx_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1774,21 +1758,19 @@ myos_nginx_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_nginx_is_current() {
-  local arch
-  [[ -f "$MYOS_NGINX_VERSION" ]] \
-    && [[ "$(cat "$MYOS_NGINX_VERSION")" == "$(myos_nginx_version_hash)" ]] \
+myos_nginx_is_current() (
+  [ -f "$MYOS_NGINX_VERSION" ] \
+    && [ "$(cat "$MYOS_NGINX_VERSION")" = "$(myos_nginx_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/nginx-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/nginx-${arch}-unknown-none" ] || return 1
   done
-  [[ -f "$MYOS_ROOT/target/nginx-conf/mime.types" ]]
-}
+  [ -f "$MYOS_ROOT/target/nginx-conf/mime.types" ]
+)
 
-myos_git_version_hash() {
-  local h
+myos_git_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1802,24 +1784,22 @@ myos_git_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_git_elfs_present() {
-  local arch
+myos_git_elfs_present() (
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/git-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/git-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 myos_git_is_current() {
-  [[ -f "$MYOS_GIT_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GIT_VERSION")" == "$(myos_git_version_hash)" ]] \
+  [ -f "$MYOS_GIT_VERSION" ] \
+    && [ "$(cat "$MYOS_GIT_VERSION")" = "$(myos_git_version_hash)" ] \
     || return 1
   myos_git_elfs_present
 }
 
-myos_lynx_version_hash() {
-  local h
+myos_lynx_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1839,20 +1819,18 @@ myos_lynx_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_lynx_is_current() {
-  local arch
-  [[ -f "$MYOS_LYNX_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LYNX_VERSION")" == "$(myos_lynx_version_hash)" ]] \
+myos_lynx_is_current() (
+  [ -f "$MYOS_LYNX_VERSION" ] \
+    && [ "$(cat "$MYOS_LYNX_VERSION")" = "$(myos_lynx_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/lynx-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/lynx-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_lua_version_hash() {
-  local h
+myos_lua_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -1864,23 +1842,21 @@ myos_lua_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_lua_is_current() {
-  local arch
-  [[ -f "$MYOS_LUA_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LUA_VERSION")" == "$(myos_lua_version_hash)" ]] \
+myos_lua_is_current() (
+  [ -f "$MYOS_LUA_VERSION" ] \
+    && [ "$(cat "$MYOS_LUA_VERSION")" = "$(myos_lua_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/lua-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/lua-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # SQLite (packages/sqlite), against mlibc: its pin and scripts, and mlibc.
 # SQLite (packages/sqlite), against mlibc: its pin and scripts, and
 # mlibc's interface (a library port).
-myos_sqlite_version_hash() {
-  local h
+myos_sqlite_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -1889,22 +1865,20 @@ myos_sqlite_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_sqlite_is_current() {
-  local arch
-  [[ -f "$MYOS_SQLITE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_SQLITE_VERSION")" == "$(myos_sqlite_version_hash)" ]] \
+myos_sqlite_is_current() (
+  [ -f "$MYOS_SQLITE_VERSION" ] \
+    && [ "$(cat "$MYOS_SQLITE_VERSION")" = "$(myos_sqlite_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/sqlite-mlibc-${arch}/lib/libsqlite3.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/sqlite-mlibc-${arch}/lib/libsqlite3.a" ] || return 1
   done
-}
+)
 
 # libedit (packages/libedit), against mlibc: its pin and scripts, mlibc's
 # interface and the ncurses it compiles against (a library port).
-myos_libedit_version_hash() {
-  local h
+myos_libedit_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -1914,24 +1888,22 @@ myos_libedit_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_libedit_is_current() {
-  local arch
-  [[ -f "$MYOS_LIBEDIT_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LIBEDIT_VERSION")" == "$(myos_libedit_version_hash)" ]] \
+myos_libedit_is_current() (
+  [ -f "$MYOS_LIBEDIT_VERSION" ] \
+    && [ "$(cat "$MYOS_LIBEDIT_VERSION")" = "$(myos_libedit_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/libedit-mlibc-${arch}/lib/libedit.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/libedit-mlibc-${arch}/lib/libedit.a" ] || return 1
   done
-}
+)
 
 # GLib (packages/glib), against mlibc: its pins and scripts, mlibc's
 # interface (a library port: what it compiles against, not the libc it
 # never links; docs/ports.md "Cache keys"), the mlibc builds of zlib and
 # PCRE2 and the compiler flags. Its programs are glib-tools' (below).
-myos_glib_version_hash() {
-  local h
+myos_glib_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -1940,31 +1912,29 @@ myos_glib_version_hash() {
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags and the cc the build takes.
-      declare -f myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_glib_is_current() {
-  local arch
-  [[ -f "$MYOS_GLIB_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GLIB_VERSION")" == "$(myos_glib_version_hash)" ]] \
+myos_glib_is_current() (
+  [ -f "$MYOS_GLIB_VERSION" ] \
+    && [ "$(cat "$MYOS_GLIB_VERSION")" = "$(myos_glib_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/libgio-2.0.a" ]] || return 1
-    [[ -d "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/gio-tool" ]] || return 1
+    [ -f "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/libgio-2.0.a" ] || return 1
+    [ -d "$MYOS_ROOT/target/glib-mlibc-${arch}/lib/gio-tool" ] || return 1
   done
-  [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ]] \
-    && [[ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ]] \
-    && [[ -x "$MYOS_ROOT/target/glib-host/bin/gdbus-codegen" ]]
-}
+  [ -x "$MYOS_ROOT/target/glib-host/bin/glib-compile-resources" ] \
+    && [ -x "$MYOS_ROOT/target/glib-host/bin/glib-mkenums" ] \
+    && [ -x "$MYOS_ROOT/target/glib-host/bin/gdbus-codegen" ]
+)
 
 # The image libraries (packages/image-libs), against mlibc: their pins and
 # scripts, mlibc's interface (a library port), the mlibc builds of zlib and
 # the X libraries and the compiler flags.
-myos_image_libs_version_hash() {
-  local h
+myos_image_libs_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -1972,28 +1942,26 @@ myos_image_libs_version_hash() {
       myos_dep_hash x11-libs mlibc
       find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_image_libs_is_current() {
-  local arch
-  [[ -f "$MYOS_IMAGE_LIBS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_IMAGE_LIBS_VERSION")" == "$(myos_image_libs_version_hash)" ]] \
+myos_image_libs_is_current() (
+  [ -f "$MYOS_IMAGE_LIBS_VERSION" ] \
+    && [ "$(cat "$MYOS_IMAGE_LIBS_VERSION")" = "$(myos_image_libs_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/image-libs-mlibc-${arch}/lib/libpixman-1.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/image-libs-mlibc-${arch}/lib/libpixman-1.a" ] || return 1
   done
-}
+)
 
 # The text and drawing libraries (packages/cairo-pango), against mlibc:
 # their pins and scripts, and the interfaces of what they compile against
 # (a library port): mlibc, libc++, GLib, the image libraries, the X
 # libraries and font stack; the compiler flags.
-myos_cairo_pango_version_hash() {
-  local h
+myos_cairo_pango_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -2003,29 +1971,27 @@ myos_cairo_pango_version_hash() {
       myos_dep_hash x11-xft mlibc
       find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_cairo_pango_is_current() {
-  local arch
-  [[ -f "$MYOS_CAIRO_PANGO_VERSION" ]] \
-    && [[ "$(cat "$MYOS_CAIRO_PANGO_VERSION")" == "$(myos_cairo_pango_version_hash)" ]] \
+myos_cairo_pango_is_current() (
+  [ -f "$MYOS_CAIRO_PANGO_VERSION" ] \
+    && [ "$(cat "$MYOS_CAIRO_PANGO_VERSION")" = "$(myos_cairo_pango_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/cairo-pango-mlibc-${arch}/lib/libpangocairo-1.0.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/cairo-pango-mlibc-${arch}/lib/libpangocairo-1.0.a" ] || return 1
   done
-}
+)
 
 # GTK 3 and ATK (packages/gtk3), against mlibc: their pins, patch and
 # scripts, and the interfaces of what they compile against (a library
 # port): mlibc, libc++, GLib, the image, text and drawing libraries, the
 # X libraries and font stack.
-myos_gtk3_version_hash() {
-  local h
+myos_gtk3_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -2039,24 +2005,22 @@ myos_gtk3_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_gtk3_is_current() {
-  local arch
-  [[ -f "$MYOS_GTK3_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GTK3_VERSION")" == "$(myos_gtk3_version_hash)" ]] \
+myos_gtk3_is_current() (
+  [ -f "$MYOS_GTK3_VERSION" ] \
+    && [ "$(cat "$MYOS_GTK3_VERSION")" = "$(myos_gtk3_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/gtk3-mlibc-${arch}/lib/libgtk-3.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/gtk3-mlibc-${arch}/lib/libgtk-3.a" ] || return 1
   done
-}
+)
 
 # The network libraries (packages/libsoup), against mlibc: their pins,
 # patch and scripts, and the interfaces of what they compile against (a
 # library port): mlibc, libc++, GLib, LibreSSL, SQLite; the cross
 # compilers and the meson helpers.
-myos_libsoup_version_hash() {
-  local h
+myos_libsoup_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -2066,22 +2030,21 @@ myos_libsoup_version_hash() {
       myos_dep_hash sqlite compile
       find "$(myos_port_dir libsoup)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_libsoup_is_current() {
-  local arch
-  [[ -f "$MYOS_LIBSOUP_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LIBSOUP_VERSION")" == "$(myos_libsoup_version_hash)" ]] \
+myos_libsoup_is_current() (
+  [ -f "$MYOS_LIBSOUP_VERSION" ] \
+    && [ "$(cat "$MYOS_LIBSOUP_VERSION")" = "$(myos_libsoup_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/libsoup-mlibc-${arch}/lib/libsoup-3.0.a" ]] || return 1
+    [ -f "$MYOS_ROOT/target/libsoup-mlibc-${arch}/lib/libsoup-3.0.a" ] || return 1
   done
-}
+)
 
 # WebKitGTK (packages/webkitgtk), against mlibc: its pins, patches and
 # scripts, cairo-pango's pins (its HarfBuzz is built again), and the
@@ -2091,8 +2054,7 @@ myos_libsoup_is_current() {
 # libxml2, libpsl and nghttp2; not GIO's TLS backend or LibreSSL, which
 # only its programs link: issue #664), SQLite; the cross compilers and
 # meson helpers. A libc fix rebuilds none of it (#773).
-myos_webkitgtk_version_hash() {
-  local h
+myos_webkitgtk_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc compile
@@ -2106,32 +2068,30 @@ myos_webkitgtk_version_hash() {
       myos_dep_hash sqlite compile
       find "$(myos_port_dir webkitgtk)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
 # Built an arch at a time (PORT_ARCH_JOBS): a stamp per arch, for the
 # arches MYOS_WEBKITGTK_ARCHES lists (all by default).
-myos_webkitgtk_is_current() {
-  local arch h stamp
+myos_webkitgtk_is_current() (
   h="$(myos_webkitgtk_version_hash)"
   for arch in ${MYOS_WEBKITGTK_ARCHES:-x86_64 aarch64 riscv64}; do
     stamp="$MYOS_ROOT/target/.myos-webkitgtk-${arch}-version"
-    [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/webkitgtk-mlibc-${arch}/lib/libwebkit2gtk-4.1.a" ]] || return 1
+    [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$h" ] || return 1
+    [ -f "$MYOS_ROOT/target/webkitgtk-mlibc-${arch}/lib/libwebkit2gtk-4.1.a" ] || return 1
   done
-}
+)
 
 # LLVM's compiler on myos (packages/llvm), against mlibc and libc++: its
 # patches and scripts, the LLVM pin (toolchain/libcxx's: one version in
 # the tree), and the whole of mlibc and libc++, which the program links
 # and whose development files the package ships; the cross compilers its
 # build writes.
-myos_llvm_version_hash() {
-  local h
+myos_llvm_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2141,24 +2101,23 @@ myos_llvm_version_hash() {
       # a rebuild is hours.
       find "$(myos_port_dir llvm)" -type f ! -name test.sh ! -name README.md -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
 # Built an arch at a time (PORT_ARCH_JOBS): a stamp per arch, for the
 # arches MYOS_LLVM_ARCHES lists (all by default).
-myos_llvm_is_current() {
-  local arch h stamp
+myos_llvm_is_current() (
   h="$(myos_llvm_version_hash)"
   for arch in ${MYOS_LLVM_ARCHES:-x86_64 aarch64 riscv64}; do
     stamp="$MYOS_ROOT/target/.myos-llvm-${arch}-version"
-    [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/llvm-${arch}/bin/llvm" ]] || return 1
+    [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$h" ] || return 1
+    [ -f "$MYOS_ROOT/target/llvm-${arch}/bin/llvm" ] || return 1
   done
-}
+)
 
 # The Rust compiler and cargo for myos (packages/rustc): the pinned
 # nightly (its source is that nightly's tarball), the port's pin, patches
@@ -2166,8 +2125,7 @@ myos_llvm_is_current() {
 # library/ and its libc patch to the vendored crate), and the whole of
 # what the programs link: mlibc, libc++ and LibreSSL; the cross compilers
 # its build writes.
-myos_rustc_version_hash() {
-  local h
+myos_rustc_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2179,31 +2137,29 @@ myos_rustc_version_hash() {
       # a rebuild is hours.
       find "$(myos_port_dir rustc)" -type f ! -name test.sh ! -name README.md -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
 # Built an arch at a time (PORT_ARCH_JOBS): a stamp per arch, for the
 # arches MYOS_RUSTC_ARCHES lists (all by default).
-myos_rustc_is_current() {
-  local arch h stamp
+myos_rustc_is_current() (
   h="$(myos_rustc_version_hash)"
   for arch in ${MYOS_RUSTC_ARCHES:-x86_64 aarch64 riscv64}; do
     stamp="$MYOS_ROOT/target/.myos-rustc-${arch}-version"
-    [[ -f "$stamp" && "$(cat "$stamp")" == "$h" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/rustc-${arch}/bin/rustc" && -f "$MYOS_ROOT/target/rustc-${arch}/bin/cargo" ]] || return 1
+    [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$h" ] || return 1
+    [ -f "$MYOS_ROOT/target/rustc-${arch}/bin/rustc" ] && [ -f "$MYOS_ROOT/target/rustc-${arch}/bin/cargo" ] || return 1
   done
-}
+)
 
 # WebKitGTK's program (packages/webkitgtk-smoke), against mlibc: its
 # sources, and the whole of what it links: mlibc and libc++, the WebKit
 # archive (keyed on everything under it) and what WebKit leaves to its
 # programs: libsoup whole (GIO's TLS backend) and LibreSSL.
-myos_webkitgtk_smoke_version_hash() {
-  local h
+myos_webkitgtk_smoke_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2213,29 +2169,27 @@ myos_webkitgtk_smoke_version_hash() {
       myos_dep_hash libressl mlibc
       find "$(myos_port_dir webkitgtk-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_webkitgtk_smoke_is_current() {
-  local arch
-  [[ -f "$MYOS_WEBKITGTK_SMOKE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_WEBKITGTK_SMOKE_VERSION")" == "$(myos_webkitgtk_smoke_version_hash)" ]] \
+myos_webkitgtk_smoke_is_current() (
+  [ -f "$MYOS_WEBKITGTK_SMOKE_VERSION" ] \
+    && [ "$(cat "$MYOS_WEBKITGTK_SMOKE_VERSION")" = "$(myos_webkitgtk_smoke_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/webkitgtk-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/webkitgtk-smoke-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # surf (packages/surf), against mlibc: its pin, patch and scripts, and the
 # whole of what it links: mlibc and libc++, the WebKit archive (keyed on
 # everything under it) and what WebKit leaves to its programs: libsoup
 # whole (GIO's TLS backend) and LibreSSL.
-myos_surf_version_hash() {
-  local h
+myos_surf_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2245,29 +2199,27 @@ myos_surf_version_hash() {
       myos_dep_hash libressl mlibc
       find "$(myos_port_dir surf)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_surf_is_current() {
-  local arch
-  [[ -f "$MYOS_SURF_VERSION" ]] \
-    && [[ "$(cat "$MYOS_SURF_VERSION")" == "$(myos_surf_version_hash)" ]] \
+myos_surf_is_current() (
+  [ -f "$MYOS_SURF_VERSION" ] \
+    && [ "$(cat "$MYOS_SURF_VERSION")" = "$(myos_surf_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/surf-mlibc-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/surf-check-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/surf-mlibc-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/surf-check-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # GLib's programs (packages/glib-tools), against mlibc: its sources, and
 # the whole of what they link: mlibc, GLib's prefix (gio's objects among
 # it), the mlibc builds of zlib and PCRE2; the cc.
-myos_glib_tools_version_hash() {
-  local h
+myos_glib_tools_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2276,28 +2228,26 @@ myos_glib_tools_version_hash() {
       myos_dep_hash pcre2 mlibc
       find "$(myos_port_dir glib-tools)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_glib_tools_is_current() {
-  local arch
-  [[ -f "$MYOS_GLIB_TOOLS_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GLIB_TOOLS_VERSION")" == "$(myos_glib_tools_version_hash)" ]] \
+myos_glib_tools_is_current() (
+  [ -f "$MYOS_GLIB_TOOLS_VERSION" ] \
+    && [ "$(cat "$MYOS_GLIB_TOOLS_VERSION")" = "$(myos_glib_tools_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ]] || return 1
-    [[ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/glib-smoke-mlibc-${arch}-unknown-none" ] || return 1
+    [ -f "$MYOS_ROOT/target/gio-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # The image libraries' smoke (packages/image-libs-smoke), against mlibc:
 # its source, and the whole of what it links: mlibc, the image libraries,
 # the mlibc builds of zlib and the X libraries; the cc.
-myos_image_libs_smoke_version_hash() {
-  local h
+myos_image_libs_smoke_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2306,28 +2256,26 @@ myos_image_libs_smoke_version_hash() {
       myos_dep_hash x11-libs mlibc
       find "$(myos_port_dir image-libs-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_image_libs_smoke_is_current() {
-  local arch
-  [[ -f "$MYOS_IMAGE_LIBS_SMOKE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_IMAGE_LIBS_SMOKE_VERSION")" == "$(myos_image_libs_smoke_version_hash)" ]] \
+myos_image_libs_smoke_is_current() (
+  [ -f "$MYOS_IMAGE_LIBS_SMOKE_VERSION" ] \
+    && [ "$(cat "$MYOS_IMAGE_LIBS_SMOKE_VERSION")" = "$(myos_image_libs_smoke_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/image-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/image-smoke-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # The text and drawing libraries' smoke (packages/cairo-pango-smoke),
 # against mlibc: its source, and the whole of what it links: mlibc and
 # libc++, cairo-pango's prefix, GLib, the image libraries, the X libraries
 # and font stack; the cross compilers.
-myos_cairo_pango_smoke_version_hash() {
-  local h
+myos_cairo_pango_smoke_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2338,28 +2286,26 @@ myos_cairo_pango_smoke_version_hash() {
       myos_dep_hash x11-xft mlibc
       find "$(myos_port_dir cairo-pango-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_cairo_pango_smoke_is_current() {
-  local arch
-  [[ -f "$MYOS_CAIRO_PANGO_SMOKE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_CAIRO_PANGO_SMOKE_VERSION")" == "$(myos_cairo_pango_smoke_version_hash)" ]] \
+myos_cairo_pango_smoke_is_current() (
+  [ -f "$MYOS_CAIRO_PANGO_SMOKE_VERSION" ] \
+    && [ "$(cat "$MYOS_CAIRO_PANGO_SMOKE_VERSION")" = "$(myos_cairo_pango_smoke_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/cairo-pango-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/cairo-pango-smoke-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # GTK 3's smoke (packages/gtk3-smoke), against mlibc: its source, and the
 # whole of what it links: mlibc and libc++, GTK 3's prefix, the text,
 # image and X libraries, GLib; the cross compilers.
-myos_gtk3_smoke_version_hash() {
-  local h
+myos_gtk3_smoke_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2371,28 +2317,26 @@ myos_gtk3_smoke_version_hash() {
       myos_dep_hash x11-xft mlibc
       find "$(myos_port_dir gtk3-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
+      myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
         _myos_write_cross_driver myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_gtk3_smoke_is_current() {
-  local arch
-  [[ -f "$MYOS_GTK3_SMOKE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_GTK3_SMOKE_VERSION")" == "$(myos_gtk3_smoke_version_hash)" ]] \
+myos_gtk3_smoke_is_current() (
+  [ -f "$MYOS_GTK3_SMOKE_VERSION" ] \
+    && [ "$(cat "$MYOS_GTK3_SMOKE_VERSION")" = "$(myos_gtk3_smoke_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/gtk3-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/gtk3-smoke-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # The network libraries' smoke (packages/libsoup-smoke), against mlibc:
 # its source, and the whole of what it links: mlibc and libc++, libsoup's
 # prefix (GIO's TLS backend among it), GLib, LibreSSL, SQLite; the cc.
-myos_libsoup_smoke_version_hash() {
-  local h
+myos_libsoup_smoke_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2403,27 +2347,25 @@ myos_libsoup_smoke_version_hash() {
       myos_dep_hash sqlite
       find "$(myos_port_dir libsoup-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      declare -f myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_libsoup_smoke_is_current() {
-  local arch
-  [[ -f "$MYOS_LIBSOUP_SMOKE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_LIBSOUP_SMOKE_VERSION")" == "$(myos_libsoup_smoke_version_hash)" ]] \
+myos_libsoup_smoke_is_current() (
+  [ -f "$MYOS_LIBSOUP_SMOKE_VERSION" ] \
+    && [ "$(cat "$MYOS_LIBSOUP_SMOKE_VERSION")" = "$(myos_libsoup_smoke_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/libsoup-smoke-mlibc-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/libsoup-smoke-mlibc-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
 # CPython (packages/python), against mlibc: its sysroot's hash, zlib's pin
 # (the module's zlib is built from that source), the libraries of its other
 # modules (LibreSSL, ncurses, SQLite, libedit) and the port's files.
-myos_python_version_hash() {
-  local h
+myos_python_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
@@ -2437,23 +2379,21 @@ myos_python_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_python_outputs_present() {
-  local arch
+myos_python_outputs_present() (
   for arch in x86_64 aarch64 riscv64; do
-    [[ -x "$MYOS_ROOT/target/python-${arch}/usr/bin/python3.13" ]] || return 1
+    [ -x "$MYOS_ROOT/target/python-${arch}/usr/bin/python3.13" ] || return 1
   done
-}
+)
 
 myos_python_is_current() {
-  [[ -f "$MYOS_PYTHON_VERSION" ]] \
-    && [[ "$(cat "$MYOS_PYTHON_VERSION")" == "$(myos_python_version_hash)" ]] \
+  [ -f "$MYOS_PYTHON_VERSION" ] \
+    && [ "$(cat "$MYOS_PYTHON_VERSION")" = "$(myos_python_version_hash)" ] \
     && myos_python_outputs_present
 }
 
-myos_openssl_version_hash() {
-  local h
+myos_openssl_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -2463,40 +2403,37 @@ myos_openssl_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_openssl_is_current() {
-  local arch
-  [[ -f "$MYOS_OPENSSL_VERSION" ]] \
-    && [[ "$(cat "$MYOS_OPENSSL_VERSION")" == "$(myos_openssl_version_hash)" ]] \
+myos_openssl_is_current() (
+  [ -f "$MYOS_OPENSSL_VERSION" ] \
+    && [ "$(cat "$MYOS_OPENSSL_VERSION")" = "$(myos_openssl_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/openssl-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/openssl-${arch}-unknown-none" ] || return 1
   done
-  [[ -f "$MYOS_ROOT/target/openssl-src/openssl.cnf" ]] || return 1
-}
+  [ -f "$MYOS_ROOT/target/openssl-src/openssl.cnf" ] || return 1
+)
 
 # acme is a shell script: no toolchain in its hash.
-myos_acme_version_hash() {
-  local h
+myos_acme_version_hash() (
   h="$(
     find "$(myos_port_dir acme)" -type f -print0 2>/dev/null \
       | sort -z | xargs -0 sha256sum | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
 myos_acme_is_current() {
-  [[ -f "$MYOS_ACME_VERSION" ]] \
-    && [[ "$(cat "$MYOS_ACME_VERSION")" == "$(myos_acme_version_hash)" ]] \
+  [ -f "$MYOS_ACME_VERSION" ] \
+    && [ "$(cat "$MYOS_ACME_VERSION")" = "$(myos_acme_version_hash)" ] \
     || return 1
-  [[ -f "$MYOS_ROOT/target/acme-app/lib/acme/acme.sh" && -f "$MYOS_ROOT/target/acme-app/bin/custom/acme" ]]
+  [ -f "$MYOS_ROOT/target/acme-app/lib/acme/acme.sh" ] && [ -f "$MYOS_ROOT/target/acme-app/bin/custom/acme" ]
 }
 
 # rust copies the sysroot's std and fills in its script: the sysroot and the
 # package's files.
-myos_rust_version_hash() {
-  local h
+myos_rust_version_hash() (
   h="$(
     {
       myos_sysroot_version_hash
@@ -2505,20 +2442,18 @@ myos_rust_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_rust_is_current() {
-  local arch
-  [[ -f "$MYOS_RUST_VERSION" ]] \
-    && [[ "$(cat "$MYOS_RUST_VERSION")" == "$(myos_rust_version_hash)" ]] \
+myos_rust_is_current() (
+  [ -f "$MYOS_RUST_VERSION" ] \
+    && [ "$(cat "$MYOS_RUST_VERSION")" = "$(myos_rust_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/rust-$arch/bin/custom/rust" ]] || return 1
+    [ -f "$MYOS_ROOT/target/rust-$arch/bin/custom/rust" ] || return 1
   done
-}
+)
 
-myos_make_version_hash() {
-  local h
+myos_make_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -2528,20 +2463,18 @@ myos_make_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_make_is_current() {
-  local arch
-  [[ -f "$MYOS_MAKE_VERSION" ]] \
-    && [[ "$(cat "$MYOS_MAKE_VERSION")" == "$(myos_make_version_hash)" ]] \
+myos_make_is_current() (
+  [ -f "$MYOS_MAKE_VERSION" ] \
+    && [ "$(cat "$MYOS_MAKE_VERSION")" = "$(myos_make_version_hash)" ] \
     || return 1
   for arch in x86_64 aarch64 riscv64; do
-    [[ -f "$MYOS_ROOT/target/make-${arch}-unknown-none" ]] || return 1
+    [ -f "$MYOS_ROOT/target/make-${arch}-unknown-none" ] || return 1
   done
-}
+)
 
-myos_os_test_version_hash() {
-  local h
+myos_os_test_version_hash() (
   h="$(
     {
       myos_dep_hash newlib
@@ -2555,16 +2488,15 @@ myos_os_test_version_hash() {
     } | myos_hash
   )"
   printf '%s' "$h"
-}
+)
 
-myos_os_test_is_current() {
-  local arch marker
-  [[ -f "$MYOS_OS_TEST_VERSION" ]] \
-    && [[ "$(cat "$MYOS_OS_TEST_VERSION")" == "$(myos_os_test_version_hash)" ]] \
+myos_os_test_is_current() (
+  [ -f "$MYOS_OS_TEST_VERSION" ] \
+    && [ "$(cat "$MYOS_OS_TEST_VERSION")" = "$(myos_os_test_version_hash)" ] \
     || return 1
-  [[ -f "$MYOS_ROOT/target/os-test-embed/basic/ctype/isalnum.c" ]] || return 1
+  [ -f "$MYOS_ROOT/target/os-test-embed/basic/ctype/isalnum.c" ] || return 1
   for arch in x86_64 aarch64 riscv64; do
     marker="$MYOS_ROOT/target/os-test-prebuilt/${arch}/basic/arpa_inet/htons"
-    [[ -f "$marker" ]] || return 1
+    [ -f "$marker" ] || return 1
   done
-}
+)
