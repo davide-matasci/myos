@@ -21,6 +21,31 @@ pub struct Link {
     pub qos: bool,
     /// A WPA2 network's keys.
     pub rsn: Option<Rsn>,
+    /// What crossed the link so far.
+    pub counts: Counts,
+}
+
+/// The frames that crossed a link, for `wifi stats`: where they stop
+/// when netd gets no answer.
+#[derive(Default)]
+pub struct Counts {
+    /// netd's frames: handed to the radio, refused by it (its queue
+    /// full) or not encrypted.
+    pub sent: u32,
+    pub refused: u32,
+    /// The radio's count of frames the access point did not acknowledge,
+    /// when the link came.
+    pub unacked_from: u32,
+    /// Frames heard: all of them, those the access point sent, its data
+    /// frames; of those, the ones that went to netd, the ones not
+    /// decrypted (a WPA2 network's), and the others (to another station,
+    /// or not LLC/SNAP).
+    pub heard: u32,
+    pub from_ap: u32,
+    pub data: u32,
+    pub delivered: u32,
+    pub undecrypted: u32,
+    pub unwanted: u32,
 }
 
 /// Why joining failed.
@@ -68,7 +93,8 @@ fn join_steps(radio: &mut dyn Radio, bss: Bss, rsn: &[u8]) -> Result<Link, Refus
     if !radio.associated(aid, ht.is_some()) {
         return Err(Refused::Radio(b"association"));
     }
-    Ok(Link { bss, aid, qos: ht.is_some(), rsn: None })
+    let counts = Counts { unacked_from: radio.unacked().unwrap_or(0), ..Counts::default() };
+    Ok(Link { bss, aid, qos: ht.is_some(), rsn: None, counts })
 }
 
 /// Leave the network.
