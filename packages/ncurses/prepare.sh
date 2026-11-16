@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Host-configure ncurses to generate headers/makefiles, then patch cfg for myos.
 #
 # Upstream configure cannot --host=*-myos (config.sub) and myos-cc cannot create
 # host executables, so we configure for the build machine and cross-compile with
 # overridden CC in build.sh.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$HERE/fetch.sh"
 
@@ -13,11 +13,11 @@ SRC="$ROOT/target/ncurses-src"
 WORK="$ROOT/target/ncurses-myos-build"
 
 # shellcheck source=ports/ncurses/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 STAMP="$WORK/.myos-prepare-version"
 EXPECTED_STAMP="$NCURSES_VERSION:$NCURSES_SHA256:fallbacks=dumb,ansi,vt100,linux"
-if [[ -f "$WORK/include/ncurses_cfg.h" && -f "$WORK/ncurses/Makefile" && -f "$STAMP" ]] \
-  && [[ "$(cat "$STAMP")" == "$EXPECTED_STAMP" ]]; then
+if [ -f "$WORK/include/ncurses_cfg.h" ] && [ -f "$WORK/ncurses/Makefile" ] && [ -f "$STAMP" ] \
+  && [ "$(cat "$STAMP")" = "$EXPECTED_STAMP" ]; then
   echo "ncurses prepare tree up to date ($WORK)"
   exit 0
 fi

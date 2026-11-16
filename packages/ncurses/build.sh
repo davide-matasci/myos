@@ -1,13 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build static libncurses.a (termcap + tinfo + base) for myos arches,
 # against each C library: newlib's into target/ncurses-<arch> (vim, lynx,
 # clear), mlibc's with libpanel.a too into target/ncurses-mlibc-<arch>
 # (python's curses; a libc's stdio and errno are its own).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_ncurses_is_current; then
   echo "ncurses libs up to date"
@@ -22,15 +22,13 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 WORK="$ROOT/target/ncurses-myos-build"
 
 # build_arch ARCH LIBC
-build_arch() {
-  local arch="$1" libc="$2"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local cc out sys
-  local clanginc
+build_arch() (
+  arch="$1" libc="$2"
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
   clanginc="$(clang -print-resource-dir)/include"
-  if [[ "$libc" == mlibc ]]; then
+  if [ "$libc" = mlibc ]; then
     cc=clang
     out="$ROOT/target/ncurses-mlibc-${arch}"
     sys="$(myos_mlibc_cflags "$arch")"
@@ -55,10 +53,9 @@ build_arch() {
   # set -e, which would fail the whole build. If the full fallback list fails,
   # regenerate with an empty list — MKfallback.sh emits the _nc_fallback /
   # _nc_fallback2 stubs unconditionally, so the library still links.
-  local fb_sh="$ROOT/target/ncurses-src/ncurses/tinfo/MKfallback.sh"
-  local fb_src="$ROOT/target/ncurses-src/misc/terminfo.src"
-  local fb_info="$ROOT/target/ncurses-prefix/share/terminfo"
-  local tic_path infocmp_path
+  fb_sh="$ROOT/target/ncurses-src/ncurses/tinfo/MKfallback.sh"
+  fb_src="$ROOT/target/ncurses-src/misc/terminfo.src"
+  fb_info="$ROOT/target/ncurses-prefix/share/terminfo"
   tic_path="$(sed -n 's/^TIC_PATH[[:space:]]*=[[:space:]]*//p' "$WORK/ncurses/Makefile")"
   infocmp_path="$(sed -n 's/^INFOCMP_PATH[[:space:]]*=[[:space:]]*//p' "$WORK/ncurses/Makefile")"
   if ! make -C "$WORK/ncurses" ./fallback.c >/dev/null 2>&1 \
@@ -73,21 +70,20 @@ build_arch() {
   # ncurses' Makefile uses plain `ar` unless told otherwise; Apple's BSD ar
   # writes ELF archive symbol tables rust-lld cannot index (members like
   # fallback.o/_nc_fallback never get pulled in at link time), so pin AR/ARFLAGS.
-  local vars=(
-    AR="$(command -v llvm-ar 2>/dev/null || echo ar)"
-    ARFLAGS=rcs
-    RANLIB="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
-    CC="$cc"
-    BUILD_CC=gcc
-    BUILD_CFLAGS="-O2"
-    BUILD_CPPFLAGS="-DHAVE_CONFIG_H -I$WORK/ncurses -I$ROOT/target/ncurses-src/ncurses -I$WORK/include -I$ROOT/target/ncurses-src/include"
-    CFLAGS="-ffreestanding -fPIC -O2 -std=gnu99"
+  set -- \
+    AR="$(command -v llvm-ar 2>/dev/null || echo ar)" \
+    ARFLAGS=rcs \
+    RANLIB="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)" \
+    CC="$cc" \
+    BUILD_CC=gcc \
+    BUILD_CFLAGS="-O2" \
+    BUILD_CPPFLAGS="-DHAVE_CONFIG_H -I$WORK/ncurses -I$ROOT/target/ncurses-src/ncurses -I$WORK/include -I$ROOT/target/ncurses-src/include" \
+    CFLAGS="-ffreestanding -fPIC -O2 -std=gnu99" \
     CPPFLAGS="-DHAVE_CONFIG_H -I$WORK/ncurses -I$ROOT/target/ncurses-src/ncurses -I$WORK/include -I$ROOT/target/ncurses-src/include $sys -D_DEFAULT_SOURCE -D_GNU_SOURCE"
-  )
-  make -C "$WORK/ncurses" "${vars[@]}" ../lib/libncurses.a
+  make -C "$WORK/ncurses" "$@" ../lib/libncurses.a
   # The panel library, for mlibc's python (its curses.panel).
-  if [[ "$libc" == mlibc ]]; then
-    make -C "$WORK/panel" "${vars[@]}" ../lib/libpanel.a
+  if [ "$libc" = mlibc ]; then
+    make -C "$WORK/panel" "$@" ../lib/libpanel.a
   fi
 
   rm -rf "$out"
@@ -96,11 +92,11 @@ build_arch() {
   # Also expose as libtinfo for consumers that expect a split tinfo.
   cp "$WORK/lib/libncurses.a" "$out/lib/libtinfo.a"
   for h in curses.h term.h termcap.h unctrl.h ncurses_dll.h; do
-    if [[ -f "$WORK/include/$h" ]]; then
+    if [ -f "$WORK/include/$h" ]; then
       cp "$WORK/include/$h" "$out/include/$h"
     fi
   done
-  if [[ "$libc" == mlibc ]]; then
+  if [ "$libc" = mlibc ]; then
     cp "$WORK/lib/libpanel.a" "$out/lib/libpanel.a"
     cp "$ROOT/target/ncurses-src/panel/panel.h" "$out/include/panel.h"
     # ncurses.h too: what a program that wants ncurses' own name includes.
@@ -109,7 +105,7 @@ build_arch() {
     cp "$out/lib/libncurses.a" "$ROOT/target/libncurses-${triple}.a"
   fi
   echo "ncurses ($libc) -> $out/lib/libncurses.a"
-}
+)
 
 for arch in ${MYOS_NCURSES_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch" newlib

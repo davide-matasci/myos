@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from the fetched GNU make tarball.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=ports/make/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 "$HERE/fetch.sh"
 
 SRCROOT="$ROOT/target/make-src"
