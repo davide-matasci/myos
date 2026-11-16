@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build the `linux` launcher (linux-compat/launcher.c, a native myos program
 # on newlib) for x86_64, aarch64 and riscv64:
 #   target/linux-launcher-<arch>-unknown-none
@@ -8,11 +8,11 @@
 # get-alpine) are linux-compat/build.sh. Skips arches whose launcher is newer
 # than its inputs.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
-ARCHES=(x86_64 aarch64 riscv64)
+ARCHES="x86_64 aarch64 riscv64"
 SRC="$ROOT/linux-compat/launcher.c"
 
 myos_ensure_llvm_bin
@@ -20,13 +20,14 @@ myos_ensure_llvm_bin
 "$ROOT/toolchain/newlib/tool-wrappers.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
-for arch in "${ARCHES[@]}"; do
+for arch in $ARCHES; do
   out="$ROOT/target/linux-launcher-$arch-unknown-none"
   triple="$arch-unknown-myos"
   nl="$ROOT/target/newlib-$arch"
   # A libgloss change (the syscalls it makes) needs a new launcher too.
-  if [[ -f "$out" && "$out" -nt "$SRC" && "$out" -nt "${BASH_SOURCE[0]}" \
-        && "$out" -nt "$nl/$triple/lib/libgloss.a" ]]; then
+  # shellcheck disable=SC3013 # -nt is in POSIX.1-2024
+  if [ -f "$out" ] && [ "$out" -nt "$SRC" ] && [ "$out" -nt "$0" ] \
+        && [ "$out" -nt "$nl/$triple/lib/libgloss.a" ]; then
     continue
   fi
   echo "==> linux launcher ($arch, myos newlib)"
