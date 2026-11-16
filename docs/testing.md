@@ -142,7 +142,7 @@ one from the port's own `host.sh` (`PORT_HOST=host.sh`). The launcher
 knows no test:
 
 1. The guest side prints `HOST <port> <args>` to fd 3.
-2. The launcher runs `bash <port dir>/host.sh <args>` on the host, in the
+2. The launcher runs `sh <port dir>/host.sh <args>` on the host, in the
    background.
 3. The guest side waits, with a bound, for the effect: a file the session
    touched, a reply on its socket.

@@ -74,8 +74,8 @@ build_arch() (
   make -C "$WORK" -j"$make_jobs" \
     uname_S=Linux \
     PROFILE= \
-    SHELL=/bin/bash \
-    SHELL_PATH=/bin/bash \
+    SHELL=/bin/sh \
+    SHELL_PATH=/bin/sh \
     CC="$cc" \
     AR=ar \
     RANLIB=ranlib \
