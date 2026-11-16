@@ -48,12 +48,12 @@ CI_FEATURES="${MYOS_CI_FEATURES:-}"
 # `linux-compat`): in ci-build.tar always, so the ISO job and a full boot
 # build their images from the same tar; the `linux` launcher is in
 # HELLO_OK_ELFS (every image).
-linux_compat_members() {
+linux_compat_members() (
   for arch in x86_64 aarch64 riscv64; do
     echo "target/linux-smoke-${arch}-linux-musl"
     echo "target/linux-compat/${arch}"
   done
-}
+)
 
 # The version stamps of every image port, the toolchains included
 # (scripts/ports.sh --stamps): they encode the userspace content myos

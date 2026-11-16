@@ -24,7 +24,7 @@
 if [ "${0##*/}" = ports.sh ]; then
   MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 else
-  MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-${MYOS_ROOT:-${ROOT:?set ROOT to the checkout before sourcing scripts/ports.sh}}}"
+  MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-${ROOT:-${MYOS_ROOT:?set ROOT to the checkout before sourcing scripts/ports.sh}}}"
 fi
 MYOS_ARCHES="x86_64 aarch64 riscv64"
 
@@ -407,7 +407,7 @@ if [ "${0##*/}" = ports.sh ]; then
     --stamps)
       for n in $(myos_port_names image); do
         myos_port_load "$n"
-        [ -n "$PORT_BUILD" ] && myos_port_stamp
+        [ -z "$PORT_BUILD" ] || myos_port_stamp
       done
       ;;
     --matrix) myos_ports_matrix ;;
