@@ -247,6 +247,7 @@ carries of mlibc.
   for the mlibc flavour of the target, `<arch>-unknown-myos-mlibc`
   (`docs/userspace.md` "`std` on mlibc"), static or over Rust shared
   objects.
-- A fork while another thread holds one of mlibc's own locks (the
-  allocator's, stdio's) hangs the child in its first `malloc` or
-  `fprintf`, because mlibc's fork takes none of them (issue #544).
+- A fork while another thread holds a stream's lock hangs the child in
+  its first `fprintf` on that stream: of mlibc's own locks the fork holds
+  the allocator's alone (the sysdeps' `Fork`, over a `lock_all` that
+  `patch.sh` adds to the allocator), not stdio's (issue #544).
