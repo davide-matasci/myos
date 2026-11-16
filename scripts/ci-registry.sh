@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Pull/push myos userspace *outputs* as GHCR OCI artifacts (oras).
 #
 # Tags are the stamp hashes from myos-c-userspace-lib.sh / toolchain/std/lib.sh:
@@ -32,13 +32,13 @@
 #   MYOS_CI_REGISTRY_PUSH     false/0 skips push (fork PRs)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 # shellcheck source=scripts/ports.sh
-source "$ROOT/scripts/ports.sh"
+. "$ROOT/scripts/ports.sh"
 
 ORAS_VERSION="1.3.3"
 ORAS_LINUX_AMD64_SHA256="9ce999f8d2de03fc03968b29d743077a58783e545e5eaa53917ca177352d0e59"
@@ -51,15 +51,11 @@ ORAS_OUTPUTS_ANNOTATION="org.myos.ci.outputs"
 # Every port with a build script in build order (the toolchains first:
 # sysroot and newlib, which the others pull; image and package ports), then
 # the Linux layer's musl pieces and the kernels.
-ALL_PORTS=()
-while read -r name; do
-  ALL_PORTS+=("$name")
-done < <(myos_port_build_order all)
-ALL_PORTS+=(linux-compat kernels)
+ALL_PORTS="$(myos_port_build_order all | tr '\n' ' ')linux-compat kernels"
 
 usage() {
   echo "usage: $0 pull|push|current|exists|outputs PORT | plan PORT... | login" >&2
-  echo "  PORT: ${ALL_PORTS[*]} all" >&2
+  echo "  PORT: $ALL_PORTS all" >&2
   exit 2
 }
 
@@ -67,14 +63,14 @@ usage() {
 # toolchain/std/lib.sh: a port NAME has myos_<name>_version_hash and
 # myos_<name>_is_current (dashes as underscores; the sysroot's are in
 # toolchain/std/lib.sh).
-port_fn() {
-  local fn="myos_${1//-/_}_$2"
-  if ! declare -F "$fn" >/dev/null; then
+port_fn() (
+  fn="myos_$(printf '%s' "$1" | tr - _)_$2"
+  if ! command -v "$fn" >/dev/null 2>&1; then
     echo "error: no function $fn for port $1 (scripts/myos-c-userspace-lib.sh)" >&2
     return 2
   fi
   echo "$fn"
-}
+)
 
 # The pieces PORT stands for: itself, or `PORT:<arch>` per arch for a port
 # built an arch at a time (a piece stands for itself).
@@ -87,17 +83,16 @@ port_pieces() {
 
 # A piece's port and arch: `NAME:ARCH` sets MYOS_<NAME>_ARCHES=ARCH for the
 # port's functions (its build script and is_current read it).
-piece_env() {
-  local name="${1%%:*}"
+piece_env() (
+  name="${1%%:*}"
   name="$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')"
   printf 'MYOS_%s_ARCHES=%s' "$name" "${1#*:}"
-}
+)
 
 # A piece's input hash; 1 (nothing printed) when it is undefined: the
 # outputs of a port it builds against are neither built here nor in the
 # registry (myos_hash's `unknown-...`).
-port_hash() {
-  local fn h
+port_hash() (
   case "$1" in
     *:*) port_hash "${1%%:*}" ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --print-hash | tr -d '
@@ -105,11 +100,13 @@ port_hash() {
     *)
       fn="$(port_fn "$1" version_hash)" || return 2
       h="$("$fn")"
-      [[ -n "$h" && "$h" != unknown-* ]] || return 1
+      case "$h" in
+        ''|unknown-*) return 1 ;;
+      esac
       printf '%s' "$h"
       ;;
   esac
-}
+)
 
 # The pieces with an output hash: the ports (the sysroot, the kernels and
 # the Linux layer are keyed by their sources alone; nothing builds against
@@ -135,46 +132,42 @@ print(h)' "$ORAS_OUTPUTS_ANNOTATION"
 
 # Keep the registry's output hash of PIECE at input hash HASH where the
 # dependents' hashes look first (myos_piece_output_hash).
-cache_outputs() {
-  local piece="$1" hash="$2" outputs="$3" rec
-  rec="$(myos_dep_hash_cache "$piece")"
+cache_outputs() (
+  rec="$(myos_dep_hash_cache "$1")"
   mkdir -p "$(dirname "$rec")"
-  printf '%s %s\n' "$hash" "$outputs" >"$rec.tmp.$$"
+  printf '%s %s\n' "$2" "$3" >"$rec.tmp.$$"
   mv -f "$rec.tmp.$$" "$rec"
-}
+)
 
 # myos_dep_hash's way to the registry (scripts/myos-c-userspace-lib.sh):
 # the output hash of PIECE at input hash HASH, from the annotation of its
 # manifest (no download); nothing, and 1, when the registry lacks it.
-myos_dep_hash_hook() {
-  local piece="$1" hash="$2" ref json
-  has_outputs_key "$piece" || return 1
-  ref="$(registry_ref "$piece" "$hash")"
+myos_dep_hash_hook() (
+  has_outputs_key "$1" || return 1
+  ref="$(registry_ref "$1" "$2")"
   ensure_oras >&2
-  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+  if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
     oras_login >/dev/null 2>&1 || true
   fi
   json="$(oras manifest fetch "$ref" 2>/dev/null)" || return 1
-  annotation_outputs <<<"$json"
-}
+  printf '%s\n' "$json" | annotation_outputs
+)
 
-port_is_current() {
-  local fn
+port_is_current() (
   case "$1" in
     *:*) (export "$(piece_env "$1")"; port_is_current "${1%%:*}") ;;
     kernels) "$ROOT/scripts/ci-build-kernels.sh" --is-current ;;
     *) fn="$(port_fn "$1" is_current)" || return 2; "$fn" ;;
   esac
-}
+)
 
 # Print repo-relative paths to pack. Directories are included recursively.
 # Never lists *-src / *-myos-build / object trees: a port's descriptor names
 # its outputs (PORT_OUTPUTS, scripts/ports.sh --outputs; the sysroot's is
 # the slim pack: stamp, manifest, precompiled rlibs and target specs, never
 # the patched library/ source tree under rustlib/src).
-port_members() {
-  local port="$1"
-  local arch triple
+port_members() (
+  port="$1"
   case "$port" in
     linux-compat)
       # The per-arch output dirs only: never the musl prefixes / sources /
@@ -191,80 +184,74 @@ port_members() {
     *:*) myos_port_outputs "${port%%:*}" "${port#*:}" ;;
     *) myos_port_outputs "$port" ;;
   esac
-}
+)
 
-# macOS bash 3.2 has no ${var,,}; use tr.
+# POSIX sh has no ${var,,}; use tr.
 lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 repo_lower() {
-  local repo="${GITHUB_REPOSITORY:-davide-matasci/myos}"
-  lower "$repo"
+  lower "${GITHUB_REPOSITORY:-davide-matasci/myos}"
 }
 
 registry_ref() {
-  local port="$1" hash="$2"
   # GHCR repository names must be lowercase; stamp hashes may contain hex.
   # A piece's `:` is a `-` (ci-webkitgtk-x86_64).
-  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "$(lower "${port//:/-}")" "$hash"
+  printf 'ghcr.io/%s/ci-%s:%s' "$(repo_lower)" "$(lower "$1" | tr : -)" "$2"
 }
 
-package_name() {
-  local port="$1"
-  local repo
+package_name() (
   repo="$(repo_lower)"
-  printf '%s/ci-%s' "${repo#*/}" "$(lower "${port//:/-}")"
-}
+  printf '%s/ci-%s' "${repo#*/}" "$(lower "$1" | tr : -)"
+)
 
 ensure_oras() {
-  local bindir="${MYOS_ORAS_BINDIR:-$ROOT/target/.oras-bin}"
-  export PATH="$bindir:$PATH"
-  if [[ -x "$bindir/oras" ]]; then
+  _eo_bindir="${MYOS_ORAS_BINDIR:-$ROOT/target/.oras-bin}"
+  export PATH="$_eo_bindir:$PATH"
+  if [ -x "$_eo_bindir/oras" ]; then
     return 0
   fi
-  local uname_s uname_m os arch url sha tgz
-  uname_s="$(uname -s)"
-  uname_m="$(uname -m)"
-  case "$uname_s" in
-    Linux) os=linux ;;
+  _eo_uname_s="$(uname -s)"
+  _eo_uname_m="$(uname -m)"
+  case "$_eo_uname_s" in
+    Linux) _eo_os=linux ;;
     *) echo "error: install oras (https://github.com/oras-project/oras/releases)" >&2; return 1 ;;
   esac
-  case "$uname_m" in
-    x86_64|amd64) arch=amd64; sha="$ORAS_LINUX_AMD64_SHA256" ;;
-    aarch64|arm64) arch=arm64; sha="$ORAS_LINUX_ARM64_SHA256" ;;
-    *) echo "error: unsupported arch $uname_m for pinned oras" >&2; return 1 ;;
+  case "$_eo_uname_m" in
+    x86_64|amd64) _eo_arch=amd64; _eo_sha="$ORAS_LINUX_AMD64_SHA256" ;;
+    aarch64|arm64) _eo_arch=arm64; _eo_sha="$ORAS_LINUX_ARM64_SHA256" ;;
+    *) echo "error: unsupported arch $_eo_uname_m for pinned oras" >&2; return 1 ;;
   esac
-  url="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_${os}_${arch}.tar.gz"
-  mkdir -p "$bindir"
-  tgz="$(mktemp "${TMPDIR:-/tmp}/oras.XXXXXX.tar.gz")"
+  _eo_url="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_${_eo_os}_${_eo_arch}.tar.gz"
+  mkdir -p "$_eo_bindir"
+  _eo_tgz="$(mktemp "${TMPDIR:-/tmp}/oras.XXXXXX.tar.gz")"
   # Retried on any error, backing off for about a minute: GitHub's release
   # host answered 504 for over 20 s and left a job without oras for its
   # first pull (newlib's), which no later pull redid.
-  curl -fsSL --retry 6 --retry-all-errors "$url" -o "$tgz"
-  echo "${sha}  ${tgz}" | sha256sum -c - >/dev/null
-  tar -xzf "$tgz" -C "$bindir" oras
-  rm -f "$tgz"
-  chmod +x "$bindir/oras"
+  curl -fsSL --retry 6 --retry-all-errors "$_eo_url" -o "$_eo_tgz"
+  echo "${_eo_sha}  ${_eo_tgz}" | sha256sum -c - >/dev/null
+  tar -xzf "$_eo_tgz" -C "$_eo_bindir" oras
+  rm -f "$_eo_tgz"
+  chmod +x "$_eo_bindir/oras"
 }
 
 # One oras login per job: `login` writes the marker, the pulls and pushes
 # that follow (in parallel, from ci-build-pull-and-kernels.sh) skip theirs.
-login_marker() {
-  local base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+login_marker() (
+  base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   printf '%s' "${base%/}/myos-ci-registry-login-ok"
-}
+)
 
-oras_login() {
-  local user token err
-  if [[ -f "$(login_marker)" ]]; then
+oras_login() (
+  if [ -f "$(login_marker)" ]; then
     return 0
   fi
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   user="${GITHUB_ACTOR:-${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY:-davide-matasci/myos}}}"
   user="${user%%/*}"
   user="$(lower "$user")"
-  if [[ -z "$token" || -z "$user" ]]; then
+  if [ -z "$token" ] || [ -z "$user" ]; then
     echo "registry login failed: missing GITHUB_TOKEN or username"
     echo "registry login failed: missing GITHUB_TOKEN or username" >&2
     return 1
@@ -281,66 +268,74 @@ oras_login() {
   fi
   rm -f "$err"
   touch "$(login_marker)"
-}
+)
 
 can_push() {
   case "${MYOS_CI_REGISTRY_PUSH:-}" in
     0|false|FALSE|no|NO) return 1 ;;
   esac
-  [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]
+  [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]
 }
 
 # Manifests record absolute ELF paths; rewrite to this checkout so is_current holds.
-rewrite_manifest_paths() {
-  local port="$1"
-  local f tmp line name path rel
+rewrite_manifest_paths() (
+  port="$1"
   case "$port" in
     sbase|ubase) ;;
     *) return 0 ;;
   esac
-  shopt -s nullglob
   for f in "$ROOT/target/${port}-manifest-"*.txt; do
+    [ -e "$f" ] || continue
     tmp="$(mktemp)"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -n "$line" ]] || continue
-      if [[ "$line" != *:* ]]; then
-        printf '%s\n' "$line"
-        continue
-      fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      case "$line" in
+        *:*) ;;
+        *)
+          printf '%s\n' "$line"
+          continue
+          ;;
+      esac
       name="${line%%:*}"
       path="${line#*:}"
-      if [[ "$path" == *"/target/"* ]]; then
-        rel="target/${path#*/target/}"
-        path="$ROOT/$rel"
-      elif [[ "$path" == target/* ]]; then
-        path="$ROOT/$path"
-      elif [[ "$path" == /* && ! -f "$path" ]]; then
-        path="$ROOT/target/$(basename "$path")"
-      fi
+      case "$path" in
+        *"/target/"*)
+          rel="target/${path#*/target/}"
+          path="$ROOT/$rel"
+          ;;
+        target/*)
+          path="$ROOT/$path"
+          ;;
+        /*)
+          if [ ! -f "$path" ]; then
+            path="$ROOT/target/$(basename "$path")"
+          fi
+          ;;
+      esac
       printf '%s:%s\n' "$name" "$path"
     done <"$f" >"$tmp"
     mv "$tmp" "$f"
   done
-}
+)
 
-existing_members() {
-  local port="$1" rel
+existing_members() (
   while IFS= read -r rel; do
-    [[ -n "$rel" ]] || continue
-    if [[ -e "$ROOT/$rel" ]]; then
+    [ -n "$rel" ] || continue
+    if [ -e "$ROOT/$rel" ]; then
       printf '%s\n' "$rel"
     fi
-  done < <(port_members "$port" | awk 'NF && !seen[$0]++')
-}
+  done <<EOF
+$(port_members "$1" | awk 'NF && !seen[$0]++')
+EOF
+)
 
-try_public_package() {
-  local port="$1"
-  local token owner pkg enc url
+try_public_package() (
+  port="$1"
   token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  [[ -n "$token" ]] || return 0
+  [ -n "$token" ] || return 0
   owner="${GITHUB_REPOSITORY_OWNER:-${GITHUB_REPOSITORY:-davide-matasci/myos}}"; owner="${owner%%/*}"
   pkg="$(package_name "$port")"
-  enc="${pkg//\//%2F}"
+  enc="$(printf '%s\n' "$pkg" | sed 's|/|%2F|g')"
   for url in \
     "https://api.github.com/user/packages/container/${enc}/visibility" \
     "https://api.github.com/orgs/${owner}/packages/container/${enc}/visibility"
@@ -352,45 +347,39 @@ try_public_package() {
       "$url" \
       -d '{"visibility":"public"}' >/dev/null 2>&1 || true
   done
-}
+)
 
-force_replace_marker() {
-  local port="$1"
+force_replace_marker() (
   # Prefer runner temp /tmp — never under target/ (builds may wipe it).
-  local base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
-  printf '%s' "${base%/}/myos-ci-registry-replace-${port}"
-}
+  base="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+  printf '%s' "${base%/}/myos-ci-registry-replace-$1"
+)
 
 mark_force_replace() {
-  local port="$1" hash="$2"
-  printf '%s\n' "$hash" >"$(force_replace_marker "$port")"
+  printf '%s\n' "$2" >"$(force_replace_marker "$1")"
 }
 
 clear_force_replace() {
-  local port="$1"
-  rm -f "$(force_replace_marker "$port")"
+  rm -f "$(force_replace_marker "$1")"
 }
 
 needs_force_replace() {
-  local port="$1" hash="$2" marker
-  marker="$(force_replace_marker "$port")"
   # Presence alone: pull may have stored a different hash if stamps used to be
   # non-deterministic across the same job.
-  [[ -f "$marker" ]]
+  [ -f "$(force_replace_marker "$1")" ]
 }
 
 # 0 when the registry has PORT at its current input hash (manifest only, no
 # download): what the CI plan asks before running a toolchain job.
-cmd_exists() {
-  local port="$1"
-  local hash ref
+cmd_exists() (
+  port="$1"
   if ! hash="$(port_hash "$port")"; then
     echo "registry lacks ${port}: its key is undefined (a dependency's outputs are not in the registry)"
     return 1
   fi
   ref="$(registry_ref "$port" "$hash")"
   ensure_oras
-  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+  if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
     oras_login || true
   fi
   if oras manifest fetch "$ref" >/dev/null 2>&1; then
@@ -399,16 +388,15 @@ cmd_exists() {
   fi
   echo "registry lacks ${port} ${hash}"
   return 1
-}
+)
 
 cmd_login() {
   ensure_oras
   oras_login
 }
 
-cmd_pull() {
-  local port="$1"
-  local hash ref tmp tarball outputs
+cmd_pull() (
+  port="$1"
   if ! hash="$(port_hash "$port")"; then
     echo "registry miss ${port}: its key is undefined (a dependency's outputs are not built here nor in the registry)"
     return 0
@@ -418,7 +406,7 @@ cmd_pull() {
   ensure_oras
   # Token present: require login so private GHCR packages are visible.
   # Anonymous fetch only when no token (public packages / empty GHCR).
-  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+  if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
     if ! oras_login; then
       mark_force_replace "$port" "$hash"
       echo "registry miss ${port}: login failed ${hash}"
@@ -438,13 +426,12 @@ cmd_pull() {
     return 0
   fi
   tarball=""
-  local f
   for f in "$tmp"/*.tar.zst "$tmp"/*.tar.zstd; do
-    [[ -f "$f" ]] || continue
+    [ -f "$f" ] || continue
     tarball="$f"
     break
   done
-  if [[ -z "$tarball" ]]; then
+  if [ -z "$tarball" ]; then
     rm -rf "$tmp"
     mark_force_replace "$port" "$hash"
     echo "registry miss ${port}: no tarball ${hash}"
@@ -464,10 +451,10 @@ cmd_pull() {
     # The output hash, as the registry has it (the artifact's own stamp
     # says the same; one without is recorded from its files).
     if has_outputs_key "$port"; then
-      if outputs="$(oras manifest fetch "$ref" 2>/dev/null | annotation_outputs)" && [[ -n "$outputs" ]]; then
+      if outputs="$(oras manifest fetch "$ref" 2>/dev/null | annotation_outputs)" && [ -n "$outputs" ]; then
         cache_outputs "$port" "$hash" "$outputs"
       fi
-      [[ -f "$(myos_outputs_stamp "$port")" ]] || myos_outputs_record "$port" >/dev/null
+      [ -f "$(myos_outputs_stamp "$port")" ] || myos_outputs_record "$port" >/dev/null
     fi
     echo "registry hit ${port} ${hash}"
   else
@@ -476,14 +463,18 @@ cmd_pull() {
     # Name what the package lacks: the port is rebuilt (or completed) and
     # pushed in its place, and the log says why.
     while IFS= read -r f; do
-      [[ -z "$f" || -e "$ROOT/$f" ]] || echo "registry pull ${port}: missing member ${f}"
-    done < <(port_members "$port" | awk 'NF && !seen[$0]++')
+      { [ -z "$f" ] || [ -e "$ROOT/$f" ]; } || echo "registry pull ${port}: missing member ${f}"
+    done <<EOF
+$(port_members "$port" | awk 'NF && !seen[$0]++')
+EOF
   fi
-}
+)
 
-cmd_push() {
-  local port="$1"
-  local hash ref tmp list status outputs="" theirs annotate=()
+# The output hash's annotation is this function's argument list (`set --`).
+cmd_push() (
+  port="$1"
+  outputs=""
+  set --
   if ! can_push; then
     echo "registry skip push (disabled)"
     return 0
@@ -517,12 +508,12 @@ cmd_push() {
   if has_outputs_key "$port"; then
     outputs="$(myos_outputs_record "$port")"
     cache_outputs "$port" "$hash" "$outputs"
-    annotate=(--annotation "${ORAS_OUTPUTS_ANNOTATION}=${outputs}")
+    set -- --annotation "${ORAS_OUTPUTS_ANNOTATION}=${outputs}"
   fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/myos-ci-reg.XXXXXX")"
   list="$tmp/members.txt"
   existing_members "$port" >"$list"
-  if [[ ! -s "$list" ]]; then
+  if [ ! -s "$list" ]; then
     rm -rf "$tmp"
     echo "registry skip push ${port}: nothing to pack"
     return 0
@@ -542,15 +533,15 @@ cmd_push() {
   set +e
   (
     cd "$tmp" && oras push "$ref" \
-      --artifact-type "$ORAS_ARTIFACT_TYPE" "${annotate[@]+"${annotate[@]}"}" \
+      --artifact-type "$ORAS_ARTIFACT_TYPE" "$@" \
       "${port}.tar.zst:${ORAS_LAYER_TYPE}" >/dev/null
   ) 2>"$tmp/oras.err"
   status=$?
   set -e
-  if (( status != 0 )); then
+  if [ "$status" -ne 0 ]; then
     echo "registry push failed ${port}"
     echo "registry push failed ${port}" >&2
-    if [[ -s "$tmp/oras.err" ]]; then
+    if [ -s "$tmp/oras.err" ]; then
       cat "$tmp/oras.err"
       cat "$tmp/oras.err" >&2
     fi
@@ -566,15 +557,15 @@ cmd_push() {
   # port was already there and takes that build before keying anything on
   # its own (ci-build-port.sh). What is left of the race is the time
   # between two requests, not the pack's.
-  if [[ -n "${outputs:-}" ]]; then
-    if theirs="$(oras manifest fetch "$ref" 2>/dev/null | annotation_outputs)" && [[ "$theirs" != "$outputs" ]]; then
+  if [ -n "${outputs:-}" ]; then
+    if theirs="$(oras manifest fetch "$ref" 2>/dev/null | annotation_outputs)" && [ "$theirs" != "$outputs" ]; then
       cache_outputs "$port" "$hash" "$theirs"
       echo "registry skip push ${port}: already present ${hash} (another build's outputs replaced this push)"
       return 0
     fi
   fi
   echo "registry push ${port} ${hash}"
-}
+)
 
 # The CI plan: of the pieces of the PORTs given, in build order, the ones
 # the registry lacks at their input hash (manifests only, no download), one
@@ -585,10 +576,11 @@ cmd_push() {
 # no key until that dependency is pushed, and may be a hit then, the
 # dependency's outputs unchanged (the plan's second stage asks again,
 # scripts/ci-ports-plan.sh).
-cmd_plan() {
-  local port piece hash ref json outputs misses="" undefined=" "
+cmd_plan() (
+  misses=""
+  undefined=" "
   ensure_oras >&2
-  if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
+  if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
     oras_login >&2 || true
   fi
   for port in "$@"; do
@@ -602,7 +594,7 @@ cmd_plan() {
       ref="$(registry_ref "$piece" "$hash")"
       if json="$(oras manifest fetch "$ref" 2>/dev/null)"; then
         echo "registry has ${piece} ${hash}" >&2
-        if has_outputs_key "$piece" && outputs="$(annotation_outputs <<<"$json")" && [[ -n "$outputs" ]]; then
+        if has_outputs_key "$piece" && outputs="$(printf '%s\n' "$json" | annotation_outputs)" && [ -n "$outputs" ]; then
           cache_outputs "$piece" "$hash" "$outputs"
         fi
       else
@@ -611,19 +603,19 @@ cmd_plan() {
       fi
     done
   done
+  # shellcheck disable=SC2086
   for port in $(printf '%s\n' $misses | awk 'NF && !seen[$0]++'); do
-    if [[ "$undefined" == *" $port "* ]]; then
-      echo "$port undefined"
-    else
-      echo "$port missing"
-    fi
+    case "$undefined" in
+      *" $port "*) echo "$port undefined" ;;
+      *) echo "$port missing" ;;
+    esac
   done
-}
+)
 
 # PORT's output hash per piece (`<piece> <hash>`): recorded from its files
 # when it is current here, else the registry's.
-cmd_outputs() {
-  local port="$1" piece hash h
+cmd_outputs() (
+  port="$1"
   for piece in $(port_pieces "$port"); do
     if ! hash="$(port_hash "$piece")"; then
       echo "error: ${piece}: its key is undefined" >&2
@@ -635,36 +627,35 @@ cmd_outputs() {
     fi
     echo "$piece $h"
   done
-}
+)
 
 # CMD (pull, push, exists) for each piece of PORT: exists fails when a
 # piece is missing.
-run_pieces() {
-  local cmd="$1" port="$2" piece status=0
-  for piece in $(port_pieces "$port"); do
-    "cmd_${cmd}" "$piece" || status=1
+run_pieces() (
+  status=0
+  for piece in $(port_pieces "$2"); do
+    "cmd_$1" "$piece" || status=1
   done
   return $status
-}
+)
 
-run_many() {
-  local cmd="$1"
-  local port
-  for port in "${ALL_PORTS[@]+"${ALL_PORTS[@]}"}"; do
-    run_pieces "$cmd" "$port"
+run_many() (
+  # shellcheck disable=SC2086
+  for port in $ALL_PORTS; do
+    run_pieces "$1" "$port"
   done
-}
+)
 
-[[ $# -ge 1 ]] || usage
+[ $# -ge 1 ] || usage
 CMD="$1"
 PORT="${2:-}"
 case "$CMD" in
   current)
-    [[ -n "$PORT" ]] || usage
+    [ -n "$PORT" ] || usage
     port_is_current "$PORT"
     ;;
   exists)
-    [[ -n "$PORT" ]] || usage
+    [ -n "$PORT" ] || usage
     run_pieces exists "$PORT"
     ;;
   login)
@@ -675,12 +666,12 @@ case "$CMD" in
     cmd_plan "$@"
     ;;
   outputs)
-    [[ -n "$PORT" ]] || usage
+    [ -n "$PORT" ] || usage
     cmd_outputs "$PORT"
     ;;
   pull|push)
-    [[ -n "$PORT" ]] || usage
-    if [[ "$PORT" == all ]]; then
+    [ -n "$PORT" ] || usage
+    if [ "$PORT" = all ]; then
       run_many "$CMD"
     else
       port_hash "$PORT" >/dev/null

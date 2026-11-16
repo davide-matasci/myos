@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The CI build job: pull every prebuilt port from GHCR, build what is
 # missing, then the kernels and the images (ci-build-kernels.sh).
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
 
 # One registry login for the whole job (the pulls below run in parallel).
 ./scripts/ci-registry.sh login || true
 ./scripts/ci-registry.sh pull sysroot || true
-if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
+if ls -d target/myos-sysroot-*.tar.zst > /dev/null 2>&1; then
   export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
 fi
 ./toolchain/std/fetch-sysroot.sh
@@ -20,28 +20,27 @@ fi
 # the pulls run several at a time (they wait on the network, not the CPU); a port the registry lacks is built by
 # ci-build-kernels.sh and pushed here afterwards. A hit is never pushed
 # again: that round trip per port used to cost as much as the pulls.
-pieces=()
+pieces=""
 while read -r name _; do
-  [[ "$name" == sysroot ]] || pieces+=("$name")
-done < <(./scripts/ports.sh --build-list all)
-pieces+=(linux-compat)
+  { [ -z "$name" ] || [ "$name" = sysroot ]; } || pieces="$pieces $name"
+done <<EOF
+$(./scripts/ports.sh --build-list all)
+EOF
+pieces="$pieces linux-compat"
 logs="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/myos-ci-pull.XXXXXX")"
-jobs=0
-for p in "${pieces[@]}"; do
-  ./scripts/ci-registry.sh pull "$p" >"$logs/$p" 2>&1 || true &
-  jobs=$((jobs + 1))
-  if (( jobs >= 12 )); then
-    wait -n || true
-    jobs=$((jobs - 1))
-  fi
-done
-wait
-misses=()
-for p in "${pieces[@]}"; do
+# Twelve at a time (xargs -P: the shell has no `wait` for the first of
+# several jobs).
+# shellcheck disable=SC2086,SC2016
+printf '%s\n' $pieces | xargs -P 12 -n 1 sh -c '
+  ./scripts/ci-registry.sh pull "$2" >"$1/$2" 2>&1 || true
+' pull-bg "$logs" || true
+misses=""
+# shellcheck disable=SC2086
+for p in $pieces; do
   cat "$logs/$p"
   # A port of several pieces (an arch each) misses when one does.
   if ! grep -q "^registry hit " "$logs/$p" || grep -q "^registry miss " "$logs/$p"; then
-    misses+=("$p")
+    misses="$misses $p"
   fi
 done
 rm -rf "$logs"
@@ -53,15 +52,16 @@ MYOS_CI_KERNELS_PUSH=0 ./scripts/ci-build-kernels.sh
 # and uploads, and the job's last step waits for them
 # (ci-registry-push-wait.sh). Detached, with no handle on this step's
 # output, so the step ends now.
-pushes=("${misses[@]+"${misses[@]}"}" kernels)
+pushes="${misses# }${misses:+ }kernels"
 state="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/myos-ci-push"
 rm -rf "$state"
 mkdir -p "$state"
-setsid nohup bash -c '
+# shellcheck disable=SC2086
+setsid nohup sh -c '
   for p in "$@"; do
     ./scripts/ci-registry.sh push "$p" || true
   done
   touch "'"$state"'/done"
-' push-bg "${pushes[@]}" </dev/null >"$state/log" 2>&1 &
+' push-bg $pushes </dev/null >"$state/log" 2>&1 &
 echo "$!" >"$state/pid"
-echo "==> registry pushes in the background: ${pushes[*]}"
+echo "==> registry pushes in the background: $pushes"

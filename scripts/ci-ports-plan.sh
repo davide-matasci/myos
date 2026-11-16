@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The plan jobs of ci-ports.yml: ask the registry (manifests only, no
 # download) which pieces it lacks at their current input hash, in build
 # order (ci-registry.sh plan: a port's hash covers its dependencies' output
@@ -26,21 +26,22 @@
 # their job: its arches are all in the first stage, where each builds a
 # missing dependency itself. The build job pulls every port either way.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true
 
 stage="${1:-first}"
 matrix="$(./scripts/ports.sh --matrix)"
-mapfile -t ports < <(python3 -c 'import json, sys
-for e in json.load(sys.stdin): print(e["port"])' <<<"$matrix")
+ports="$(printf '%s\n' "$matrix" | python3 -c 'import json, sys
+for e in json.load(sys.stdin): print(e["port"])')"
 
 ./scripts/ci-registry.sh login || true
 # `<port> missing|undefined` per line.
-misses="$(./scripts/ci-registry.sh plan sysroot newlib "${ports[@]}")"
+# shellcheck disable=SC2086
+misses="$(./scripts/ci-registry.sh plan sysroot newlib $ports)"
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
-python3 -c 'import json, sys
+printf '%s\n' "$matrix" | python3 -c 'import json, sys
 out, stage, plan = sys.argv[1:4]
 state = dict(line.split() for line in plan.splitlines() if line.strip())
 lacking = [e for e in json.load(sys.stdin) if e["port"] in state]
@@ -55,5 +56,5 @@ with open(out, "a") as f:
     f.write("replan=" + ("true" if len(now) < len(lacking) else "false") + "\n")
     for t in ("sysroot", "newlib"):
         f.write(t + "=" + ("true" if t in state else "false") + "\n")' \
-  "$out" "$stage" "$misses" <<<"$matrix"
-echo "registry lacks: $(tr '\n' ' ' <<<"$misses" | sed 's/ $//;s/^$/nothing/')"
+  "$out" "$stage" "$misses"
+echo "registry lacks: $(printf '%s\n' "$misses" | tr '\n' ' ' | sed 's/ $//;s/^$/nothing/')"
