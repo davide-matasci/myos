@@ -299,7 +299,7 @@ time and named threads; and `/bin/std/mlibc/dylib` (`std_dylib`, above).
 The compiler itself is a program of the mlibc flavour: the **rustc**
 package (`packages/rustc/README.md`) is `rustc` and `cargo` with myos as
 their host, built from the pinned nightly's source with the same std.
-`get-myos rustc` (on a disk: the compiler's library is 155 MiB), then
+`get-myos rustc` (on a disk: the compiler's library is 145 MiB), then
 `run-myos rustc hello.rs` or `run-myos rustc:cargo build`: programs for
 `<arch>-unknown-myos-mlibc`, with build scripts and proc macros, linked
 by the llvm app's lld. Under emulation (x86_64, TCG) a small program
