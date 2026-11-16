@@ -578,9 +578,7 @@ static int check_big_malloc(void) {
 
 /* readdir says what an entry is, not what a link points to: a link to a
  * directory is DT_LNK with the link's own inode (a walk that trusted
- * DT_DIR would follow it out of the tree), and so is one to nothing.
- * On mlibc: newlib's readdir still follows the link (issue #798). */
-#ifdef __MLIBC_POSIX_OPTION
+ * DT_DIR would follow it out of the tree), and so is one to nothing. */
 static int check_readdir(void) {
     const char *dir = "/tmp/libc-smoke-dir";
     char path[64];
@@ -632,11 +630,6 @@ static int check_readdir(void) {
     }
     return 0;
 }
-#else
-static int check_readdir(void) {
-    return 0;
-}
-#endif
 
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()
