@@ -6,16 +6,22 @@
 # check by every POSIX shell found on the host (yash is the strict one).
 #
 #   scripts/check-posix-sh.sh [FILE...]    (default: every script checked in)
-set -eu
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 if [ $# -eq 0 ]; then
-  # The files with a shell's shebang, and the sourced ones (`*.sh`).
+  # The files with a shell's shebang, and the sourced ones (`*.sh`); found
+  # without git, which refuses a checkout another user owns (CI's
+  # container).
   # shellcheck disable=SC2046
-  set -- $({ git grep -lE '^#! ?(/usr)?/bin/(env )?[a-z]*sh( |$)'; git ls-files '*.sh'; } | sort -u)
+  set -- $({
+    grep -rlE --exclude-dir=target --exclude-dir=.git '^#! ?(/usr)?/bin/(env )?[a-z]*sh( |$)' . || true
+    find . \( -path ./target -o -path ./.git \) -prune -o -type f -name '*.sh' -print
+  } | sed 's|^\./||' | sort -u)
 fi
+[ $# -gt 0 ] || { echo "error: no script to check" >&2; exit 1; }
 
 command -v shellcheck >/dev/null 2>&1 || { echo "error: shellcheck not found" >&2; exit 1; }
 
@@ -42,7 +48,9 @@ done
 # shellcheck's SC3xxx are its "not in POSIX sh" findings. Two are in
 # POSIX.1-2024, which it does not know yet: SC3040 (set -o pipefail) and
 # SC3013 (test's -nt and -ot).
-if shellcheck -s sh -S warning -f gcc "$@" | grep -E '\[SC3[0-9]+\]' | grep -vE '\[SC30(40|13)\]'; then
+# (shellcheck exits 1 for its other findings; one grep or the other finds
+# nothing when all is well.)
+if { shellcheck -s sh -S warning -f gcc "$@" || true; } | { grep -E '\[SC3[0-9]+\]' || true; } | grep -vE '\[SC30(40|13)\]'; then
   status=1
 fi
 [ $status -eq 0 ] && echo "check-posix-sh: $# scripts, POSIX sh"
