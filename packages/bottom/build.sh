@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build bottom (btm) for the three arches on the myos std sysroot:
 # the bottom, crossterm, sysinfo, dirs-sys and parking_lot_core crates from
 # crates.io with their myos patches (*.myos.patch, README.md), every other
@@ -6,12 +6,12 @@
 # rustix crates the Rust ports share (packages/coreutils/prepare.sh). Then
 # btm_smoke, the boot test's pty driver (C).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/bottom/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_bottom_is_current; then
   echo "bottom up to date"

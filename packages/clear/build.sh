@@ -1,13 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build ncurses' `clear` program (clears the terminal) for the myos
 # arches, linked against the static libncurses.a the ncurses package builds.
 # No own source pin: the three progs/*.c files come from the ncurses source
 # tree (ports/packages share one checkout under target/ncurses-src).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_clear_is_current; then
   echo "clear ELFs up to date"
@@ -31,66 +31,66 @@ SRC="$ROOT/target/ncurses-src"
 WORK="$ROOT/target/ncurses-myos-build"
 
 # clear.c + its two helpers; the rest (terminfo lookup, tputs) is in libncurses.
-CLEAR_SRCS=(clear clear_cmd tty_settings)
+CLEAR_SRCS="clear clear_cmd tty_settings"
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local lib="$prefix/${triple}/lib"
-  local nclib="$ROOT/target/ncurses-${arch}/lib"
-  local cc="${triple}-cc"
-  local ld="${triple}-ld"
-  local objdir="$ROOT/target/clear-obj-${arch}"
-  local out="$ROOT/target/clear-${arch}-unknown-none"
-  local clanginc
+build_arch() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  lib="$prefix/${triple}/lib"
+  nclib="$ROOT/target/ncurses-${arch}/lib"
+  cc="${triple}-cc"
+  ld="${triple}-ld"
+  objdir="$ROOT/target/clear-obj-${arch}"
+  out="$ROOT/target/clear-${arch}-unknown-none"
   clanginc="$("$cc" -print-resource-dir)/include"
 
   # Same include set the ncurses library build uses (HAVE_CONFIG_H + the
   # generated/source ncurses headers), plus progs/ for clear_cmd.h and
   # tty_settings.h. -nostdinc with the clang + newlib sysroots, as elsewhere.
-  local cppflags=(
-    -DHAVE_CONFIG_H
-    -I"$SRC/progs"
-    -I"$WORK/ncurses" -I"$SRC/ncurses"
-    -I"$WORK/include" -I"$SRC/include"
-    -nostdinc -isystem "$clanginc" -isystem "$inc"
-    -I"$ROOT/toolchain/newlib/libgloss/myos"
-    -D_DEFAULT_SOURCE -D_GNU_SOURCE
-  )
+  # compile ARG...: the cc with these flags, then ARG...
+  compile() {
+    "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
+      -DHAVE_CONFIG_H \
+      -I"$SRC/progs" \
+      -I"$WORK/ncurses" -I"$SRC/ncurses" \
+      -I"$WORK/include" -I"$SRC/include" \
+      -nostdinc -isystem "$clanginc" -isystem "$inc" \
+      -I"$ROOT/toolchain/newlib/libgloss/myos" \
+      -D_DEFAULT_SOURCE -D_GNU_SOURCE \
+      "$@"
+  }
 
-  local objs=()
-  local extra=()
-  local f o
+  # The objects, then the extra ones: the positional parameters.
+  set --
   rm -rf "$objdir"
   mkdir -p "$objdir"
   echo "==> clear ($triple)"
-  for f in "${CLEAR_SRCS[@]}"; do
+  for f in $CLEAR_SRCS; do
     o="$objdir/${f}.o"
     echo "  CC ${f}.c"
-    "$cc" -ffreestanding -fPIC -O2 -std=gnu99 "${cppflags[@]}" \
-      -c "$SRC/progs/${f}.c" -o "$o"
-    objs+=("$o")
+    compile -c "$SRC/progs/${f}.c" -o "$o"
+    set -- "$@" "$o"
   done
 
   # newlib's printf/scanf pull the long-double builtins on aarch64 and
   # riscv64; link the same helpers lua and vim do.
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
-    extra+=("$objdir/trunctfdf2.o")
+    set -- "$@" "$objdir/trunctfdf2.o"
   fi
 
   echo "  LD clear ($triple)"
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" "${extra[@]+"${extra[@]}"}" -L"$lib" -L"$nclib" \
+    "$lib/crt0.o" "$@" -L"$lib" -L"$nclib" \
     --start-group -lncurses -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "clear -> $out"
   ls -lh "$out"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"

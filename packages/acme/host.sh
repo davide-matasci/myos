@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The host's side of acme's test (test.sh, docs/testing.md): the launcher
 # runs `host.sh serve` for the guest's `HOST acme serve` line. It runs the
 # test ACME server (acme-server.py) at 10.0.2.2:14000 for the guest, which
@@ -6,7 +6,7 @@
 # of port 5002, until the guest asks it to stop (GET /stop) or ten minutes
 # pass; a failed run shows its log.
 set -u
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"
 
 case "${1:-}" in
 serve) ;;

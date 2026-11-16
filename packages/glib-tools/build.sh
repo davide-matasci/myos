@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Link GLib's programs for the three arches against mlibc and
 # packages/glib's archives: gio (GIO's command, from the objects GLib's
 # build leaves in lib/gio-tool) and the smoke (smoke.c, the package's
@@ -6,12 +6,12 @@
 # link and GLib never compiles against (the libc's C first) relinks them
 # and rebuilds no library (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/glib-tools/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 
 if myos_glib_tools_is_current; then
   echo "glib-tools up to date"
