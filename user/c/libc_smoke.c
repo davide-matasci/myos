@@ -604,7 +604,7 @@ static int check_readdir(void) {
     for (struct dirent *e; (e = readdir(d)) != NULL;) {
         if (strncmp(e->d_name, "to-", 3) == 0) {
             snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-            if (e->d_type != DT_LNK || lstat(path, &st) != 0 || st.st_ino != e->d_ino) {
+            if (e->d_type != DT_LNK || fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW) != 0 || st.st_ino != e->d_ino) {
                 printf("[ FAIL ] libc readdir: %s has d_type %d\n", e->d_name, e->d_type);
                 bad = 1;
             }
