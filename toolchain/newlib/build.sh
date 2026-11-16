@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build newlib libc + myos libgloss for x86_64 and AArch64.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_newlib_is_current; then
   echo "newlib + libgloss up to date"
@@ -40,11 +40,11 @@ TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROV
 # inherits it.
 export newlib_cv_initfinit_array=yes
 
-build_one() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local build="$ROOT/target/newlib-build-${arch}"
-  local prefix="$ROOT/target/newlib-${arch}"
+build_one() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  build="$ROOT/target/newlib-build-${arch}"
+  prefix="$ROOT/target/newlib-${arch}"
 
   echo "==> newlib libc ($triple) [HAVE_FCNTL HAVE_RENAME]"
   rm -rf "$build"
@@ -55,10 +55,10 @@ build_one() {
   # to Linux above), configure ignores the *_FOR_TARGET tools given below
   # and asks the target compiler for them; Apple clang answers with Xcode's
   # Mach-O ar and ranlib, which break on ELF archives. Its cached answers
-  # are set to the wrappers instead.
-  local binutils_paths=() tool
+  # are set to the wrappers instead (this function's argument list).
+  set --
   for tool in ar as ld nm objdump ranlib strip; do
-    binutils_paths+=("ac_cv_path_$(echo "$tool" | tr a-z A-Z)_FOR_TARGET=$ROOT/target/newlib-bin/${triple}-${tool}")
+    set -- "$@" "ac_cv_path_$(echo "$tool" | tr a-z A-Z)_FOR_TARGET=$ROOT/target/newlib-bin/${triple}-${tool}"
   done
 
   "$ROOT/target/newlib-src/configure" \
@@ -79,10 +79,9 @@ build_one() {
     NM_FOR_TARGET="${triple}-nm" \
     CFLAGS_FOR_TARGET="$TARGET_CFLAGS" \
     CXXFLAGS_FOR_TARGET="$TARGET_CFLAGS" \
-    "${binutils_paths[@]}"
+    "$@"
 
   # Portable core count: nproc is GNU coreutils and absent on macOS.
-  local jobs
   jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
   make -j"$jobs" all-target-newlib
   make install-target-newlib
@@ -91,7 +90,7 @@ build_one() {
   "${triple}-ar" d "$prefix/${triple}/lib/libc.a" libc_a-lock.o
   "$ROOT/toolchain/newlib/build-libgloss.sh" "$arch" "$prefix"
   echo "newlib + libgloss -> $prefix"
-}
+)
 
 build_one x86_64
 build_one aarch64

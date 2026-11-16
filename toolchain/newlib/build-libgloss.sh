@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build myos libgloss.a + crt0.o for one architecture.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 arch="${1:?arch}"
 prefix="${2:?prefix}"
@@ -24,7 +24,7 @@ cp "$ROOT/toolchain/newlib/libgloss/myos/termios.h" "$inc/termios.h"
 # regex.h sys/types, machine/setjmp.h sigsetjmp) into the sysroot so
 # host-prebuilds and guest tcc see the same declarations as libgloss.a.
 for hdr in search.h endian.h regex.h; do
-  if [[ -f "$NEWLIB_SRC/newlib/libc/include/$hdr" ]]; then
+  if [ -f "$NEWLIB_SRC/newlib/libc/include/$hdr" ]; then
     cp "$NEWLIB_SRC/newlib/libc/include/$hdr" "$inc/$hdr"
   fi
 done
@@ -151,7 +151,7 @@ if mark not in s:
     s = s.replace(tail, mark + "\n#ifndef __DYNAMIC_REENT__\n#define __DYNAMIC_REENT__\n#endif\n\n" + tail)
     open(path, "w").write(s)
 PY
-if [[ -f "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" ]]; then
+if [ -f "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" ]; then
   mkdir -p "$inc/machine"
   cp "$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h" "$inc/machine/setjmp.h"
 fi
@@ -185,7 +185,7 @@ done
 # fnmatch from newlib's own libc/posix — not wired into this newlib target's
 # libc build, but os-test regex/*.c need the full API and nginx's `include`
 # globs. Compile the upstream sources verbatim.
-if [[ -d "$NEWLIB_SRC/newlib/libc/posix" ]]; then
+if [ -d "$NEWLIB_SRC/newlib/libc/posix" ]; then
   # collate.c + collcmp.c back the locale hooks regex and glob use
   # (__collate_load_error, __collate_range_cmp); same -I as the regex sources.
   for rf in regcomp regexec regerror regfree collate collcmp; do

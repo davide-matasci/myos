@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Install the myos sysdeps into the fetched mlibc tree (as libgloss/myos is
 # installed into newlib's), with the C both libcs share beside them, and
 # make mlibc's build know the system: every edit of an upstream file is a
 # python replacement here, applied once (patch.sh's way in toolchain/newlib).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 SRC="${MLIBC_SRC:-$ROOT/target/mlibc-src}"
 PORT="$SRC/sysdeps/myos"
 
-if [[ ! -f "$SRC/meson.build" ]]; then
+if [ ! -f "$SRC/meson.build" ]; then
   echo "mlibc source missing at $SRC (run toolchain/mlibc/fetch.sh)" >&2
   exit 1
 fi
@@ -30,7 +30,7 @@ done
 # (the signal numbers and flags, the termios flags, checked in here).
 for h in "$SRC"/abis/linux/*.h; do
   name="$(basename "$h")"
-  [[ -e "$PORT/include/abi-bits/$name" ]] || ln -s "../../../../abis/linux/$name" "$PORT/include/abi-bits/$name"
+  [ -e "$PORT/include/abi-bits/$name" ] || ln -s "../../../../abis/linux/$name" "$PORT/include/abi-bits/$name"
 done
 
 # Without a feature macro mlibc's headers show POSIX 1990 and what
