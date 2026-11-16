@@ -12,14 +12,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 if [ $# -eq 0 ]; then
-  # The files with a shell's shebang, and the sourced ones (`*.sh`); found
-  # without git, which refuses a checkout another user owns (CI's
-  # container).
+  # The checked-in files with a shell's shebang, and the sourced ones
+  # (`*.sh`). (safe.directory: git refuses a checkout another user owns,
+  # CI's container, and an empty list would pass.)
   # shellcheck disable=SC2046
   set -- $({
-    grep -rlE --exclude-dir=target --exclude-dir=.git '^#! ?(/usr)?/bin/(env )?[a-z]*sh( |$)' . || true
-    find . \( -path ./target -o -path ./.git \) -prune -o -type f -name '*.sh' -print
-  } | sed 's|^\./||' | sort -u)
+    git -c safe.directory="$ROOT" grep -lE '^#! ?(/usr)?/bin/(env )?[a-z]*sh( |$)' || true
+    git -c safe.directory="$ROOT" ls-files '*.sh'
+  } | sort -u)
 fi
 [ $# -gt 0 ] || { echo "error: no script to check" >&2; exit 1; }
 

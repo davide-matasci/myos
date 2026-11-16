@@ -4,7 +4,7 @@ set -euo pipefail
 
 # A sourced file cannot tell where it is: the script that sources this one
 # says where the checkout is (ROOT, or MYOS_ROOT).
-MYOS_ROOT="${MYOS_ROOT:-${ROOT:?set ROOT to the checkout before sourcing this file}}"
+MYOS_ROOT="${ROOT:-${MYOS_ROOT:?set ROOT to the checkout before sourcing this file}}"
 export MYOS_ROOT
 
 MYOS_NEWLIB_TAG="${NEWLIB_TAG:-newlib-4.4.0}"
@@ -83,13 +83,21 @@ MYOS_DEP_HASH_CACHE="$MYOS_ROOT/target/.myos-dep-hash"
 # myos_fn_source NAME...: the text of functions of this file, as it is
 # written here, in a port's input hash: the flags its build takes and the
 # cross compiler it writes are part of what it is built from.
+# (In the file's order, whatever the arguments'; a name that is no function
+# here is an error, not a hash of less.)
 myos_fn_source() {
-  for _fs_name in "$@"; do
-    awk -v fn="$_fs_name" '
-      index($0, fn "() ") == 1 { on = 1 }
-      on { print }
-      on && /^[})]$/ { exit }' "$MYOS_ROOT/scripts/myos-c-userspace-lib.sh"
-  done
+  awk -v names="$*" '
+    BEGIN { n = split(names, name, " ") }
+    !on { for (i = 1; i <= n; i++) if (index($0, name[i] "() ") == 1) { on = 1; seen[i] = 1 } }
+    on { print }
+    on && /^[})]$/ { on = 0 }
+    END {
+      for (i = 1; i <= n; i++) if (!seen[i]) {
+        print "error: myos_fn_source: no function " name[i] > "/dev/stderr"
+        status = 1
+      }
+      exit status
+    }' "$MYOS_ROOT/scripts/myos-c-userspace-lib.sh"
 }
 
 # The port library (scripts/ports.sh: the descriptors), once, on first use.
@@ -300,7 +308,8 @@ myos_piece_output_record() (
     if [ -n "$miss" ] && [ -e "$miss" ]; then
       return 1
     fi
-    if h="$(myos_dep_hash_hook "$piece" "$vh")" && [ -n "$h" ]; then
+    # (Asked twice before a "no" is kept: one failed request is not one.)
+    if { h="$(myos_dep_hash_hook "$piece" "$vh")" || { [ -n "$miss" ] && h="$(myos_dep_hash_hook "$piece" "$vh")"; }; } && [ -n "$h" ]; then
       rec="$(myos_dep_hash_cache "$piece")"
       mkdir -p "$(dirname "$rec")"
       printf '%s %s\n' "$vh" "$h" >"$rec.tmp.$$"
@@ -1380,7 +1389,7 @@ for s in "$@"; do
   eval "compile $flags"' -c "$s" -o "$tmp/$n.o"' || exit 1
 done
 eval "set -- $inputs"
-exec ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
+ld.lld -pie --no-dynamic-linker --entry=_start -z max-page-size=4096 -o "$out" \
   "$sysroot/lib/crt0.o" "$@" $extra \
   -L"$sysroot/lib" $libs
 EOC
@@ -1921,7 +1930,7 @@ myos_glib_version_hash() (
       find "$(myos_port_dir glib)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       # The flags and the cc the build takes.
-      myos_fn_source myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_mlibc_hosted_cflags myos_write_cross_cc _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -1951,7 +1960,7 @@ myos_image_libs_version_hash() (
       myos_dep_hash x11-libs mlibc
       find "$(myos_port_dir image-libs)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -1981,7 +1990,7 @@ myos_cairo_pango_version_hash() (
       find "$(myos_port_dir cairo-pango)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2040,7 +2049,7 @@ myos_libsoup_version_hash() (
       find "$(myos_port_dir libsoup)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2078,7 +2087,7 @@ myos_webkitgtk_version_hash() (
       find "$(myos_port_dir webkitgtk)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross myos_mlibc_meson_build
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross myos_mlibc_meson_build
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2111,7 +2120,7 @@ myos_llvm_version_hash() (
       find "$(myos_port_dir llvm)" -type f ! -name test.sh ! -name README.md -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver
+        _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2147,7 +2156,7 @@ myos_rustc_version_hash() (
       find "$(myos_port_dir rustc)" -type f ! -name test.sh ! -name README.md -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver
+        _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2179,7 +2188,7 @@ myos_webkitgtk_smoke_version_hash() (
       find "$(myos_port_dir webkitgtk-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2209,7 +2218,7 @@ myos_surf_version_hash() (
       find "$(myos_port_dir surf)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2237,7 +2246,7 @@ myos_glib_tools_version_hash() (
       myos_dep_hash pcre2 mlibc
       find "$(myos_port_dir glib-tools)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2265,7 +2274,7 @@ myos_image_libs_smoke_version_hash() (
       myos_dep_hash x11-libs mlibc
       find "$(myos_port_dir image-libs-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2296,7 +2305,7 @@ myos_cairo_pango_smoke_version_hash() (
       find "$(myos_port_dir cairo-pango-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2327,7 +2336,7 @@ myos_gtk3_smoke_version_hash() (
       find "$(myos_port_dir gtk3-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
       myos_fn_source myos_mlibc_cflags myos_libcxx_cxxflags myos_write_cross_cc myos_write_cross_cxx \
-        _myos_write_cross_driver myos_mlibc_meson_cross
+        _myos_write_cross_driver myos_sh_quote myos_mlibc_meson_cross
     } | myos_hash
   )"
   printf '%s' "$h"
@@ -2356,7 +2365,7 @@ myos_libsoup_smoke_version_hash() (
       myos_dep_hash sqlite
       find "$(myos_port_dir libsoup-smoke)" -type f -print0 2>/dev/null \
         | sort -z | xargs -0 sha256sum
-      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver
+      myos_fn_source myos_mlibc_cflags myos_write_cross_cc _myos_write_cross_driver myos_sh_quote
     } | myos_hash
   )"
   printf '%s' "$h"

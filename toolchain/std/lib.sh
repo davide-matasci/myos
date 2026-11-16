@@ -4,7 +4,7 @@ set -euo pipefail
 
 # The checkout comes from the script that sources this file (ROOT): a
 # sourced file cannot know its own path.
-MYOS_ROOT="${MYOS_ROOT:-${ROOT:?set ROOT to the checkout before sourcing this file}}"
+MYOS_ROOT="${ROOT:-${MYOS_ROOT:?set ROOT to the checkout before sourcing this file}}"
 export MYOS_ROOT
 
 myos_read_toolchain_channel() (
