@@ -118,6 +118,11 @@ impl Radio for Intel {
         self.irq
     }
 
+    /// The firmware says how each frame went.
+    fn unacked(&self) -> Option<u32> {
+        Some(self.dev.tx_failed())
+    }
+
     fn pending(&self) -> bool {
         self.dev.pending()
     }
