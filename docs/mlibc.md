@@ -193,7 +193,7 @@ run-myos llvm:llvm-readelf -h x.o
 ```
 
 The app holds what a program is built against: clang's own headers
-(`/lib/clang/19`) and the development tree of the target, `/lib/mlibc`:
+(`/lib/clang/22`) and the development tree of the target, `/lib/mlibc`:
 `include/` (mlibc's headers, libc++'s in `c++/v1`) and `lib/` (`crt0.o`,
 `libc.a` and its companions, the compiler builtins as `libbuiltins.a`,
 `libc++.a` with libc++abi in it, `libunwind.a`), the host arch's.
@@ -214,8 +214,7 @@ clang knows myos by `llvm-myos.myos.patch`:
   the system's `libc.so` ("Shared objects"). `--sysroot=DIR` looks in
   `DIR/lib/mlibc`.
 - **The program's own path** is the name it was run under (`argv[0]`),
-  not `/proc/self/exe`: the tools are links to one file, and an app's
-  view may name that file by any of them (issue #796).
+  as the tools of the one program are run by theirs.
 
 There is no alternate signal stack on myos (`sigaltstack`), so LLVM is
 built without its use of one: a stack overflow in the compiler is a plain

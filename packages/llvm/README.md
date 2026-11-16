@@ -8,11 +8,15 @@ LLVM's compiler on myos: clang, lld and the binutils as one program
   `toolchain/libcxx`'s pin (one LLVM version in the tree), into
   `target/llvm-src`.
 - `llvm-myos.myos.patch`: the `myos` OS of the triple, clang's target and
-  driver toolchain for it, and the two places LLVM's support library asks
-  what system it is on (the program's path, whether a file is local).
+  driver toolchain for it, and the places LLVM's support library asks
+  what system it is on (the program's path, whether a file is local,
+  where `struct winsize` is).
 - `build.sh`: CMake's cross build against mlibc and libc++ with the build
   machine's clang, for the arches `MYOS_LLVM_ARCHES` lists; it writes
-  `target/llvm-<arch>`. About 2,700 compiles an arch.
+  `target/llvm-<arch>`. About 2,700 compiles an arch. Beside the
+  program it keeps LLVM's own libraries and headers (`dev/`, with
+  `files/llvm-config` to describe them on the build machine): the LLVM
+  `packages/rustc` links its compiler against. They are not in the app.
 - `test.sh`: on the running system, a C and a C++ program compiled, linked
   and run; an object for each of the three arches; the linker and a
   shared object.

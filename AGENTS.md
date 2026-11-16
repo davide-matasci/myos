@@ -49,7 +49,7 @@ don't change it except through `scripts/bump-nightly.sh`.
 ```sh
 ./toolchain/newlib/build.sh          # newlib + libgloss for the 3 arches (once)
 ./toolchain/mlibc/build.sh           # mlibc for the 3 arches (once; meson, ninja, clang 19+)
-./toolchain/libcxx/build.sh          # libc++, libc++abi, libunwind against mlibc (once; cmake)
+./toolchain/libcxx/build.sh          # libc++, libc++abi, libunwind against mlibc (once; cmake, clang 20+)
 ./ports/<name>/build.sh              # a port; skips itself when up to date
 cargo build                          # x86_64 kernel + images (target/*.img)
 cargo run -- [uefi|aarch64|riscv64]  # build and boot in QEMU (default: x86 BIOS)

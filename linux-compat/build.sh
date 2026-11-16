@@ -48,7 +48,7 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 RISCV64_ISA=(-march=rv64gc -mabi=lp64d)
 
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
-CRT_TAG=llvmorg-19.1.7
+CRT_TAG=llvmorg-22.1.8
 CRT_BASE_JSDELIVR="https://cdn.jsdelivr.net/gh/llvm/llvm-project@$CRT_TAG/compiler-rt/lib/builtins"
 CRT_BASE_GITHUB="https://raw.githubusercontent.com/llvm/llvm-project/$CRT_TAG/compiler-rt/lib/builtins"
 CRT_SRC="$ROOT/target/linux-compat/compiler-rt-$CRT_TAG"

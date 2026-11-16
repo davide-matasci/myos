@@ -72,7 +72,7 @@ pages under [`docs/`](docs/) explain each part.
 
 | Tool | Used for |
 |------|----------|
-| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23) |
+| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23), 20 or later for libc++ and what is built against it |
 | `make` | building newlib |
 | `meson`, `ninja-build` | building mlibc (`toolchain/mlibc`, [mlibc](docs/mlibc.md)) |
 | `cmake` | building the C++ runtimes against mlibc: libc++, libc++abi, libunwind (`toolchain/libcxx`, [mlibc](docs/mlibc.md) "C++") |
