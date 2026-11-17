@@ -1256,6 +1256,37 @@ mem_heap_classes() {
 }
 t -t mm mem_heap_classes mem_heap_classes
 
+# A file in a tmpfs takes about its own size of the kernel heap, however it
+# was written. Its data was one block that grew by doubling: 17 MB ended
+# in 32 MiB of heap, 100 files of 50 kB each in 12.8 MB. What an install
+# left of the heap then went with the sizes of get-myos's first writes to
+# each file, which are the network's: 251 to 342 MiB free after the same
+# packages (CI #2671, under the `packages` test's 256).
+mem_tmpfs_fit() {
+	rm -rf /tmp/fit
+	mkdir /tmp/fit || return 1
+	dd if=/dev/zero of=/tmp/fit/warm bs=4096 count=16 2> /dev/null || return 1
+	rm /tmp/fit/warm
+	before=$(heap_free)
+	dd if=/dev/zero of=/tmp/fit/big bs=4096 count=4200 2> /dev/null || return 1
+	[ "$(wc -c < /tmp/fit/big)" -eq $((4096 * 4200)) ] || return 1
+	big=$((before - $(heap_free)))
+	before=$(heap_free)
+	tf_i=0
+	while [ $tf_i -lt 100 ]; do
+		{ dd if=/dev/zero bs=4000 count=10; dd if=/dev/zero bs=1000 count=10; } > /tmp/fit/f$tf_i 2> /dev/null
+		tf_i=$((tf_i + 1))
+	done
+	[ "$(wc -c < /tmp/fit/f99)" -eq 50000 ] || return 1
+	small=$((before - $(heap_free)))
+	rm -r /tmp/fit
+	echo "tmpfs: 17 MB took $big KiB of the heap, 100 files of 50 kB $small KiB"
+	# The megabyte a large file may have ahead of its end and one more;
+	# an eighth of each small file, a page each and a megabyte.
+	[ "$big" -le $((4096 * 4200 / 1024 + 2048)) ] && [ "$small" -le $((5000000 / 1024 * 9 / 8 + 400 + 1024)) ]
+}
+t -t mm,fs mem_tmpfs_fit mem_tmpfs_fit
+
 # A producer that never checks its writes ends with its consumer: `head`
 # exits, the next write of `yes` has no reader, and SIGPIPE's default
 # action ends `yes` (docs/signals.md). Without it `yes` spun forever.

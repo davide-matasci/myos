@@ -102,9 +102,11 @@ initramfs. A directory exists through its files, so an empty one carries a
 tmpfs is the writable mount at `/tmp`. Its files live in the kernel heap,
 up to 128 MiB per file (issue #338; a write or truncate past that fails
 with `EFBIG`, a write the heap has no room for with `ENOSPC`). A file's
-data takes a block of the heap's size classes (`kernel/src/heap.rs`): up to
-256 KiB its size rounded up, to a power of two below a page and to a whole
-page above it; larger files take their exact size. Its paths
+data is kept in blocks of 256 KiB, the largest of the heap's size classes
+(`kernel/src/heap.rs`), the last one as long as the file's end needs: a
+file grows by taking another block, without a copy of what it holds, and
+takes its size of the heap and less than a block more (at most an eighth
+of itself more while it is under 2 MiB), however it was written. Its paths
 and symlink targets go up to `PATH_MAX`. devfs at `/dev` holds the device
 nodes.
 
