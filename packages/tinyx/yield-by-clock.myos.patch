@@ -1,0 +1,27 @@
+--- a/dix/dispatch.c
++++ b/dix/dispatch.c
+@@ -402,7 +402,7 @@
+ 
+             requestingClient = client;
+ #ifdef SMART_SCHEDULE
+-            start_tick = SmartScheduleTime;
++            start_tick = GetTimeInMillis();
+ #endif
+             while (!isItTimeToYield) {
+                 if (*icheck[0] != *icheck[1]) {
+@@ -410,8 +410,14 @@
+                     FlushIfCriticalOutputPending();
+                 }
+ #ifdef SMART_SCHEDULE
++                /* myos: the slice is measured on the clock, not in the
++                   SIGALRM ticks of SmartScheduleTime. A signal acts at the
++                   server's next syscall, and rendering a client's requests
++                   makes none: on a 4K screen a scrolling st kept the server
++                   for its whole batch, and the pointer, read and drawn only
++                   between slices, stood still meanwhile. */
+                 if (!SmartScheduleDisable &&
+-                    (SmartScheduleTime - start_tick) >= SmartScheduleSlice) {
++                    (long) (GetTimeInMillis() - start_tick) >= SmartScheduleSlice) {
+                     /* Penalize clients which consume ticks */
+                     if (client->smart_priority > SMART_MIN_PRIORITY)
+                         client->smart_priority--;

@@ -57,6 +57,7 @@ Fonts: libXfont's built-in `fixed` and `cursor` (the font path is
 | `builtin-fonts.myos.patch` | `KDRIVESERVER` in `dix-config.h`, which registers libXfont's built-in fonts |
 | `shadow.myos.patch` | the server draws into a shadow framebuffer in RAM and copies what changed to `/dev/fb` (kdrive does only for a rotated screen): on a PC the framebuffer is the graphics device's memory, write-combining (`docs/fb.md`), where a read is uncached, and antialiased text reads every pixel back. Not at 24 bits per pixel (QEMU in UTM), which kdrive's shadow copy does not convert to |
 | `cursor-scale.myos.patch` | every cursor is scaled by `-dpi` / 75 (whole steps), its hot spot with it: the cursor font's 16-pixel glyphs are a speck on a laptop's dense panel |
+| `yield-by-clock.myos.patch` | a client's slice of the server (at most 20 ms, then the server reads the pointer and the keyboard and updates the screen) is measured on the clock: kdrive counts it in SIGALRM ticks, and a signal acts at the server's next syscall, which rendering makes none of. A 4K screen's scrolling st held the server for whole batches and the pointer stood still |
 
 `include/` and `myos_compat.h` hold the libc bits TinyX expects
 (`linux/fb.h` for `fbdev.c`, `net/if.h`, `lstat`); libgloss's
