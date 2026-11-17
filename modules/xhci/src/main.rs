@@ -307,6 +307,46 @@ unsafe extern "C" fn clear_halt(ctrl: usize, hdev: u32, endpoint: u8) -> i32 {
 
 static IRQS: AtomicU32 = AtomicU32::new(0);
 
+/// Each controller's PCI function (`bus << 16 | slot << 8 | func`), for
+/// [`report_registers`].
+static FUNCTIONS: [AtomicU32; hc::MAX_CTRL] = [const { AtomicU32::new(0) }; hc::MAX_CTRL];
+/// The report is made once.
+static REPORTED: AtomicU32 = AtomicU32::new(0);
+
+/// Capability registers that cannot be the controller's were read
+/// (`Controller::regs`, issue #810): say what they were (CAPLENGTH and
+/// HCIVERSION, HCSPARAMS1, DBOFF, RTSOFF), what DBOFF and RTSOFF are on a
+/// second read, and the function's command register and BAR 0, which tell
+/// a BAR that moved or a function turned off from a read gone wrong.
+pub fn report_registers(index: u8, first: [u32; 4], again: [u32; 2]) {
+    if REPORTED.swap(1, Ordering::Relaxed) != 0 {
+        return;
+    }
+    let api = api();
+    let f = FUNCTIONS[usize::from(index) % hc::MAX_CTRL].load(Ordering::Relaxed);
+    let (bus, slot, func) = ((f >> 16) as u8, (f >> 8) as u8, f as u8);
+    let mut buf = [0u8; 200];
+    let mut w = Writer { buf: &mut buf, len: 0 };
+    w.str("xhci: capability registers read as");
+    for v in first {
+        w.str(" ");
+        w.dec(v);
+    }
+    w.str(", again");
+    for v in again {
+        w.str(" ");
+        w.dec(v);
+    }
+    w.str("; pci command ");
+    w.dec(api.pci_cfg_read32(bus, slot, func, 0x04) & 0xFFFF);
+    w.str(" bar0 ");
+    w.dec(api.pci_cfg_read32(bus, slot, func, 0x10));
+    w.str(" ");
+    w.dec(api.pci_cfg_read32(bus, slot, func, 0x14));
+    let n = w.len;
+    status_fail(api, core::str::from_utf8(&buf[..n]).unwrap_or("xhci: capability registers"));
+}
+
 unsafe extern "C" fn irq_handler(ctx: *mut c_void) {
     IRQS.fetch_add(1, Ordering::Relaxed);
     let Some(c) = controller(ctx as usize as u8) else {
@@ -342,6 +382,7 @@ fn probe(api: &KernelApi) -> usize {
         if api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size) != 0 || size < 0x1000 {
             continue;
         }
+        FUNCTIONS[index].store(u32::from(bus) << 16 | u32::from(slot) << 8 | u32::from(func), Ordering::Relaxed);
         if CONTROLLERS.iter().filter_map(sync::Once::get).any(|c| c.mmio() == va) {
             continue;
         }
