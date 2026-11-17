@@ -1,19 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the openssl(1) sources into target/openssl-src: apps/openssl, the
 # compat headers (what newlib lacks, declared) and the default configuration
 # files of the LibreSSL tarball ports/libressl pins (that port's own tree is
 # not there when its libraries came from the CI registry).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=ports/libressl/versions.env
-source "$ROOT/ports/libressl/versions.env"
+. "$ROOT/ports/libressl/versions.env"
 
 SRC="$ROOT/target/openssl-src"
 STAMP="$ROOT/target/.openssl-src-version"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$LIBRESSL_VERSION" && -f "$SRC/apps/openssl/openssl.c" \
-    && -f "$SRC/include/compat/stdlib.h" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$LIBRESSL_VERSION" ] && [ -f "$SRC/apps/openssl/openssl.c" ] \
+    && [ -f "$SRC/include/compat/stdlib.h" ]; then
   echo "openssl sources up to date ($LIBRESSL_VERSION)"
   exit 0
 fi

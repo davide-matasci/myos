@@ -1,17 +1,17 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the LibreSSL sources into target/libressl-src, with myos's patches
 # (*.myos.patch: the default CA file).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 SRC="$ROOT/target/libressl-src"
 STAMP="$ROOT/target/.libressl-src-version"
 WANT="$LIBRESSL_VERSION $(cat "$HERE"/*.myos.patch | sha256sum | cut -d' ' -f1)"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$WANT" && -d "$SRC/crypto" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANT" ] && [ -d "$SRC/crypto" ]; then
   echo "libressl sources up to date ($LIBRESSL_VERSION)"
   exit 0
 fi

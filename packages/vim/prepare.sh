@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from fetched upstream Vim (config.h + stubs + patches).
 #
 # Config choice: hand-written packages/vim/config.h for FEAT_NORMAL freestanding
 # (documented in that file). Host configure is NOT used — it enables
 # terminfo/ncurses and Linux-only APIs myos lacks.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$HERE/fetch.sh"
 
@@ -34,8 +34,8 @@ cp "$MYOS/pathdef.c" "$WORK/src/auto/pathdef.c"
 cp "$MYOS/myos_compat.h" "$WORK/src/myos_compat.h"
 
 # Apply ordered myos patches when present.
-shopt -s nullglob
 for p in "$MYOS"/*.myos.patch; do
+  [ -e "$p" ] || continue
   echo "apply $(basename "$p")"
   patch -d "$WORK" -p1 --forward --batch < "$p"
 done

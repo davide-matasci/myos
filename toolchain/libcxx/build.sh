@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build LLVM's C++ runtimes against mlibc for the three arches, with
 # LLVM's runtimes CMake: target/libcxx-<arch> holds include/c++/v1 (the
 # headers, with this build's __config_site), lib/libc++.a (libc++abi
@@ -18,12 +18,12 @@
 # (LIBCXX_HAS_PTHREAD_API). No time zone database (no tzdata in the
 # image).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/libcxx/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_libcxx_is_current; then
   echo "libc++ up to date"
@@ -38,21 +38,19 @@ SRC="$ROOT/target/libcxx-src"
 # Absolute paths: CMake takes a bare tool name as relative to the build.
 # llvm-ar from clang's own directory when it is not on PATH (Ubuntu's
 # versioned LLVM, CI's image), for objects of every arch.
-llvm_tool() {
+llvm_tool() (
   command -v "$1" 2>/dev/null && return
-  local d
   d="$(dirname "$(readlink -f "$(command -v clang)")")"
-  if [[ -x "$d/$1" ]]; then echo "$d/$1"; else command -v "$2"; fi
-}
+  if [ -x "$d/$1" ]; then echo "$d/$1"; else command -v "$2"; fi
+)
 AR_BIN="$(llvm_tool llvm-ar ar)"
 RANLIB_BIN="$(llvm_tool llvm-ranlib ranlib)"
 CLANGXX="$(command -v clang++)"
 
-build_arch() {
-  local arch="$1"
-  local build="$ROOT/target/libcxx-build-${arch}"
-  local prefix="$ROOT/target/libcxx-${arch}"
-  local flags
+build_arch() (
+  arch="$1"
+  build="$ROOT/target/libcxx-build-${arch}"
+  prefix="$ROOT/target/libcxx-${arch}"
   flags="$(myos_mlibc_hosted_cflags "$arch") -D_GNU_SOURCE"
 
   echo "==> libc++ ($arch, mlibc)"
@@ -108,7 +106,7 @@ build_arch() {
   ninja -C "$build" install-unwind install-cxxabi install-cxx \
     >"$build/ninja.log" 2>&1 || { grep -m1 -B2 -A20 "error:" "$build/ninja.log" >&2 || tail -40 "$build/ninja.log" >&2; exit 1; }
   echo "libc++ -> $prefix"
-}
+)
 
 for arch in ${MYOS_LIBCXX_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

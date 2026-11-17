@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build the network libraries of WebKitGTK's stack (issue #616)
 # against mlibc for the three arches: libxml2, libpsl (its public suffix
 # list built in), nghttp2 (the library alone), libsoup 3 and
@@ -8,16 +8,16 @@
 # LibreSSL and SQLite. The smoke over all of them is the libsoup-smoke
 # package's: a library port ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/libsoup/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/libsoup/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=ports/libressl/versions.env
-source "$ROOT/ports/libressl/versions.env"
+. "$ROOT/ports/libressl/versions.env"
 
 if myos_libsoup_is_current; then
   echo "libsoup up to date"
@@ -55,11 +55,11 @@ Libs: -L$4/lib $5
 EOF
 }
 
-build_arch() {
-  local arch="$1"
-  local build="$T/libsoup-build-$arch"
-  local out="$T/libsoup-mlibc-${arch}"
-  local ssl="$T/libressl-mlibc-$arch" sqlite="$T/sqlite-mlibc-$arch"
+build_arch() (
+  arch="$1"
+  build="$T/libsoup-build-$arch"
+  out="$T/libsoup-mlibc-${arch}"
+  ssl="$T/libressl-mlibc-$arch" sqlite="$T/sqlite-mlibc-$arch"
   echo "==> libsoup ($arch, mlibc)"
   rm -rf "$build" "$out"
   mkdir -p "$out/lib/pkgconfig" "$out/include" "$build/pc" "$build/nghttp2"
@@ -78,7 +78,6 @@ build_arch() {
   myos_mlibc_meson_build "$build" "$T/libpsl-src" "$out" -Druntime=no -Dbuiltin=true \
     -Dtests=false -Ddocs=false
   # HTTP/2: the library alone, with its autoconf build.
-  local guess
   guess="$(sh "$T/nghttp2-src/config.guess")"
   (cd "$build/nghttp2" && CC="$build/cc" AR="${arch}-unknown-myos-ar" \
     RANLIB="${arch}-unknown-myos-ranlib" "$T/nghttp2-src/configure" \
@@ -99,7 +98,7 @@ build_arch() {
     -Dtests=false -Dinstalled_tests=false
   rm -rf "$build"
   echo "libsoup ($arch) -> $out"
-}
+)
 
 for arch in ${MYOS_LIBSOUP_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

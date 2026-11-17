@@ -1,41 +1,40 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build trimmed curl (HTTPS GET + -o) with userspace sockets + LibreSSL.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 STAMP="$MYOS_CURL_VERSION"
 
-pack_curl_aliases() {
+pack_curl_aliases() (
   # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
   # Keep canonical curl-* and pack-alias coreutils-curl-* in sync either way so
   # aarch64/riscv initramfs does not log "skip curl-*" when only the alias landed.
-  local arch src alias
   for arch in x86_64 aarch64 riscv64; do
     src="$ROOT/target/curl-${arch}-unknown-none"
     alias="$ROOT/target/coreutils-curl-${arch}-unknown-none"
-    if [[ -f "$src" ]]; then
+    if [ -f "$src" ]; then
       cp "$src" "$alias"
-    elif [[ -f "$alias" ]]; then
+    elif [ -f "$alias" ]; then
       cp "$alias" "$src"
     fi
   done
-}
+)
 
 # The CA bundle (CURL_CA_BUNDLE=/lib/cacert.pem) is an output of this port
 # next to the ELFs; fetch.sh fetches it with the sources, and a tree with
 # the ELFs but not the bundle (a registry package packed without it) only
 # needs that fetch.
-ensure_ca_bundle() {
-  local ca="$ROOT/target/cacert.pem"
-  [[ -f "$ca" ]] && return 0
+ensure_ca_bundle() (
+  ca="$ROOT/target/cacert.pem"
+  [ -f "$ca" ] && return 0
   echo "fetch CA bundle"
   curl -fsSL "$CACERT_URL" -o "$ca"
-}
+)
 
 if myos_curl_elfs_current; then
   echo "curl ELFs up to date"
@@ -64,8 +63,7 @@ if 'dynbuf.h' not in s and old in s:
 PYEDIT
 fi
 # Expand CSOURCES from Makefile.inc
-LIB_SRCS=()
-  while IFS= read -r line; do LIB_SRCS+=("$line"); done < <(python3 - "$SRC/lib/Makefile.inc" <<'PY'
+LIB_SRCS="$(python3 - "$SRC/lib/Makefile.inc" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 vars = {}
@@ -79,7 +77,7 @@ for f in expand(vars['CSOURCES']).split():
     if f.endswith('.c'):
         print(f)
 PY
-)
+)"
 
 skip_src() {
   case "$1" in
@@ -91,52 +89,50 @@ skip_src() {
   esac
 }
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local lib="$prefix/${triple}/lib"
-  local cc="${triple}-cc"
-  local tls="$ROOT/target/libressl-${arch}"
-  local objdir="$ROOT/target/curl-build-${arch}"
-  local out="$ROOT/target/curl-${arch}-unknown-none"
-  local clang_res
+build_arch() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  lib="$prefix/${triple}/lib"
+  cc="${triple}-cc"
+  tls="$ROOT/target/libressl-${arch}"
+  objdir="$ROOT/target/curl-build-${arch}"
+  out="$ROOT/target/curl-${arch}-unknown-none"
   clang_res="$(clang -print-resource-dir)/include"
 
   echo "==> curl ($triple)"
   rm -rf "$objdir"
   mkdir -p "$objdir/tool"
 
-  local cflags=(
-    -ffreestanding -fPIC -Os -g0
-    -DHAVE_CONFIG_H
-    -DBUILDING_LIBCURL
-    -DCURL_STATICLIB
-    -DHTTP_ONLY
-    -isystem "$clang_res"
-    -isystem "$inc"
-    -I"$SRC/include"
-    -I"$SRC/lib"
-    -I"$tls/include"
-    -Wno-unused-parameter
-    -Wno-sign-compare
-    -Wno-unused-function
+  # The compiler's flags are the positional parameters.
+  set -- \
+    -ffreestanding -fPIC -Os -g0 \
+    -DHAVE_CONFIG_H \
+    -DBUILDING_LIBCURL \
+    -DCURL_STATICLIB \
+    -DHTTP_ONLY \
+    -isystem "$clang_res" \
+    -isystem "$inc" \
+    -I"$SRC/include" \
+    -I"$SRC/lib" \
+    -I"$tls/include" \
+    -Wno-unused-parameter \
+    -Wno-sign-compare \
+    -Wno-unused-function \
     -Wno-deprecated-declarations
-  )
 
-  local objs=()
-  local f o
-  local compiled=0 skipped=0 failed=0
-  for f in "${LIB_SRCS[@]+"${LIB_SRCS[@]}"}"; do
+  objs=""
+  compiled=0 skipped=0 failed=0
+  for f in $LIB_SRCS; do
     if skip_src "$f"; then
       skipped=$((skipped+1))
       continue
     fi
-    [[ -f "$SRC/lib/$f" ]] || continue
+    [ -f "$SRC/lib/$f" ] || continue
     o="$objdir/$(echo "$f" | tr '/' '_').o"
-    if "$cc" "${cflags[@]+"${cflags[@]}"}" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/$(echo "$f" | tr '/' '_').err"; then
-      objs+=("$o")
+    if "$cc" "$@" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/$(echo "$f" | tr '/' '_').err"; then
+      objs="$objs $o"
       compiled=$((compiled+1))
     else
       failed=$((failed+1))
@@ -148,8 +144,7 @@ build_arch() {
   echo "  lib: compiled=$compiled skipped=$skipped"
 
   # tool: parse CURL_CFILES
-  TOOL_SRCS=()
-  while IFS= read -r line; do TOOL_SRCS+=("$line"); done < <(python3 - "$SRC/src/Makefile.inc" <<'PY'
+  TOOL_SRCS="$(python3 - "$SRC/src/Makefile.inc" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 vars = {}
@@ -162,30 +157,30 @@ for f in expand(vars.get('CURL_CFILES','')).split():
     if f.endswith('.c'):
         print(f)
 PY
-)
+)"
 
   # Provide empty hugehelp if missing
-  if [[ ! -f "$SRC/src/tool_hugehelp.c" ]]; then
+  if [ ! -f "$SRC/src/tool_hugehelp.c" ]; then
     printf 'const char *curl_hugehelp = "";\n' >"$SRC/src/tool_hugehelp.c"
   fi
 
-  local tool_objs=()
-  local tool_cflags=("${cflags[@]+"${cflags[@]}"}")
-  # tool is not BUILDING_LIBCURL
-  local tcflags=()
-  local x
-  for x in "${cflags[@]+"${cflags[@]}"}"; do
-    [[ "$x" == "-DBUILDING_LIBCURL" ]] && continue
-    tcflags+=("$x")
+  tool_objs="" ntool_objs=0
+  # tool is not BUILDING_LIBCURL: the flags without it take the place of
+  # the library's in the positional parameters.
+  nlib=$#
+  for x in "$@"; do
+    [ "$x" = "-DBUILDING_LIBCURL" ] && continue
+    set -- "$@" "$x"
   done
-  tcflags+=(-I"$SRC/src" -UBUILDING_LIBCURL)
+  shift "$nlib"
+  set -- "$@" -I"$SRC/src" -UBUILDING_LIBCURL
 
-  for f in "${TOOL_SRCS[@]+"${TOOL_SRCS[@]}"}"; do
-    local path="$SRC/src/$f"
-    [[ -f "$path" ]] || continue
+  for f in $TOOL_SRCS; do
+    path="$SRC/src/$f"
+    [ -f "$path" ] || continue
     o="$objdir/tool/$(basename "$f" .c).o"
-    if "$cc" "${tcflags[@]+"${tcflags[@]}"}" -c "$path" -o "$o" 2>"$objdir/tool/$(basename "$f").err"; then
-      tool_objs+=("$o")
+    if "$cc" "$@" -c "$path" -o "$o" 2>"$objdir/tool/$(basename "$f").err"; then
+      tool_objs="$tool_objs $o" ntool_objs=$((ntool_objs + 1))
     else
       echo "FAIL tool $f" >&2
       head -10 "$objdir/tool/$(basename "$f").err" >&2 || true
@@ -194,35 +189,36 @@ PY
   done
   # CURLX compiled without BUILDING_LIBCURL → curlx_* symbols (lib has Curl_*).
   for f in base64.c dynbuf.c; do
-    [[ -f "$SRC/lib/$f" ]] || continue
+    [ -f "$SRC/lib/$f" ] || continue
     o="$objdir/tool/curlx_${f%.c}.o"
-    if "$cc" "${tcflags[@]+"${tcflags[@]}"}" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/tool/curlx_${f%.c}.err"; then
-      tool_objs+=("$o")
+    if "$cc" "$@" -c "$SRC/lib/$f" -o "$o" 2>"$objdir/tool/curlx_${f%.c}.err"; then
+      tool_objs="$tool_objs $o" ntool_objs=$((ntool_objs + 1))
     else
       echo "FAIL curlx $f" >&2
       head -5 "$objdir/tool/curlx_${f%.c}.err" >&2 || true
       return 1
     fi
   done
-  echo "  tool: ${#tool_objs[@]} objs"
+  echo "  tool: $ntool_objs objs"
 
-  local extra=()
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
-    local tf="$objdir/trunctfdf2.o"
+  extra=""
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
+    tf="$objdir/trunctfdf2.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"
-    extra+=("$tf")
+    extra="$tf"
   fi
 
   echo "  LD curl"
+  # shellcheck disable=SC2086
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${tool_objs[@]+"${tool_objs[@]}"}" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}" \
+    "$lib/crt0.o" $tool_objs $objs ${extra:+"$extra"} \
     -L"$lib" -L"$tls/lib" \
     --start-group -lssl -lcrypto -lc -lgloss -lg --end-group
 
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   ls -lh "$out"
-}
+)
 
 for arch in ${MYOS_CURL_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build mlibc for x86_64, aarch64 and riscv64 with clang: libc.a, the
 # crt objects and the headers go to target/mlibc-<arch> (lib/, include/),
 # the sysroot a program is compiled and linked against (docs/mlibc.md), and
@@ -7,10 +7,10 @@
 # objects links and the image carries in /lib). Apart from lib/, where a
 # plain -lc must go on finding the archive.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_mlibc_is_current; then
   echo "mlibc up to date"
@@ -36,24 +36,24 @@ CRT="$ROOT/target/mlibc-compiler-rt"
 # older may have a versioned one beside it).
 CLANG=""
 for c in clang clang-21 clang-20 clang-19; do
-  if command -v "$c" >/dev/null 2>&1 && [[ "$("$c" -dumpversion | cut -d. -f1)" -ge 19 ]]; then
+  if command -v "$c" >/dev/null 2>&1 && [ "$("$c" -dumpversion | cut -d. -f1)" -ge 19 ]; then
     CLANG="$c"
     break
   fi
 done
-if [[ -z "$CLANG" ]]; then
+if [ -z "$CLANG" ]; then
   echo "error: mlibc needs clang 19 or later (C++23); none found" >&2
   exit 1
 fi
-CLANGXX="${CLANG/clang/clang++}"
+CLANGXX="clang++${CLANG#clang}"
 
-build_one() {
-  local arch="$1"
-  local elf="${arch}-unknown-none"
-  local build="$ROOT/target/mlibc-build-${arch}"
-  local prefix="$ROOT/target/mlibc-${arch}"
-  local cpu="$arch"
-  local arch_flags=""
+build_one() (
+  arch="$1"
+  elf="${arch}-unknown-none"
+  build="$ROOT/target/mlibc-build-${arch}"
+  prefix="$ROOT/target/mlibc-${arch}"
+  cpu="$arch"
+  arch_flags=""
   case "$arch" in
     x86_64) cpu="x86_64" ;;
     aarch64) cpu="armv8-a" ;;
@@ -64,12 +64,13 @@ build_one() {
   # for a Linux target, straight to ld.lld with that arch's emulation and
   # nothing of a libc of its own (-nostdlib): for the bare target clang
   # hands a link to the host's gcc, which links for the host.
-  local link_args="'--target=${arch}-unknown-linux-gnu', '-fuse-ld=lld', '-nostdlib'"
+  link_args="'--target=${arch}-unknown-linux-gnu', '-fuse-ld=lld', '-nostdlib'"
 
-  # The cross file's C compiler, as a command.
-  CROSS_CC=("$CLANG" "--target=$elf")
-  [[ -n "$arch_flags" ]] && CROSS_CC+=($(printf '%s' "$arch_flags" | tr -d "',"))
-  CROSS_CC+=(-ffreestanding -fPIC)
+  # The cross file's C compiler, as a command (split at its spaces where
+  # build_builtins runs it).
+  CROSS_CC="$CLANG --target=$elf"
+  [ -n "$arch_flags" ] && CROSS_CC="$CROSS_CC $(printf '%s' "$arch_flags" | tr -d "',")"
+  CROSS_CC="$CROSS_CC -ffreestanding -fPIC"
 
   echo "==> mlibc ($elf)"
   rm -rf "$build" "$prefix"
@@ -102,14 +103,15 @@ cpu = '$cpu'
 endian = 'little'
 EOC
   # The headers first: the builtins are compiled against them, and
-  # libc.so links the builtins (the cross file's myos_builtins).
-  local common=(--cross-file "$build/cross.txt" --prefix "$prefix" --libdir lib --includedir include
-    --buildtype release -Dlibgcc_dependency=false -Duse_freestnd_hdrs=enabled -Dbuild_tests=false)
-  meson setup "$build/headers" "$SRC" "${common[@]}" -Dheaders_only=true \
+  # libc.so links the builtins (the cross file's myos_builtins). What both
+  # setups take is this function's argument list.
+  set -- --cross-file "$build/cross.txt" --prefix "$prefix" --libdir lib --includedir include \
+    --buildtype release -Dlibgcc_dependency=false -Duse_freestnd_hdrs=enabled -Dbuild_tests=false
+  meson setup "$build/headers" "$SRC" "$@" -Dheaders_only=true \
     >"$build/headers.log" 2>&1 || { tail -40 "$build/headers.log" >&2; exit 1; }
   ninja -C "$build/headers" install >>"$build/headers.log" 2>&1 || { tail -40 "$build/headers.log" >&2; exit 1; }
   build_builtins "$arch" "$prefix"
-  meson setup "$build/libc" "$SRC" "${common[@]}" -Ddefault_library=both \
+  meson setup "$build/libc" "$SRC" "$@" -Ddefault_library=both \
     >"$build/setup.log" 2>&1 || { tail -40 "$build/setup.log" >&2; exit 1; }
   ninja -C "$build/libc" >"$build/ninja.log" 2>&1 || { tail -60 "$build/ninja.log" >&2; exit 1; }
   ninja -C "$build/libc" install >"$build/install.log" 2>&1 || { tail -40 "$build/install.log" >&2; exit 1; }
@@ -118,7 +120,7 @@ EOC
   mkdir -p "$prefix/shared"
   mv "$prefix"/lib/*.so "$prefix/shared/"
   echo "mlibc -> $prefix"
-}
+)
 
 # lib/libbuiltins.a: the compiler-rt builtins (fetch.sh) a link against
 # this libc.a needs, every one the compiler may call beside them: the IEEE
@@ -127,18 +129,18 @@ EOC
 # and conversions to and from floating point (`__int128` arithmetic:
 # CPython's libmpdec, JavaScriptCore's Temporal) on every arch. Linked
 # after libc.a (-lbuiltins).
-build_builtins() {
-  local arch="$1" prefix="$2"
-  local obj="$ROOT/target/mlibc-build-$arch/builtins"
-  local files=(muldc3.c mulsc3.c udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
+build_builtins() (
+  arch="$1" prefix="$2"
+  obj="$ROOT/target/mlibc-build-$arch/builtins"
+  files="muldc3.c mulsc3.c udivmodti4.c udivti3.c umodti3.c divti3.c modti3.c divmodti4.c
     fixdfti.c fixsfti.c fixunsdfti.c fixunssfti.c floattidf.c floattisf.c floatuntidf.c
-    floatuntisf.c clzti2.c)
+    floatuntisf.c clzti2.c"
   case "$arch" in
     aarch64|riscv64)
-      files+=(addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c
+      files="$files addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c
         extenddftf2.c extendsftf2.c trunctfdf2.c trunctfsf2.c
         fixtfdi.c fixtfsi.c fixunstfdi.c fixunstfsi.c
-        floatditf.c floatsitf.c floatunditf.c floatunsitf.c multc3.c fe_stubs.c) ;;
+        floatditf.c floatsitf.c floatunditf.c floatunsitf.c multc3.c fe_stubs.c" ;;
   esac
   rm -rf "$obj"
   mkdir -p "$obj" "$prefix/lib"
@@ -148,11 +150,11 @@ build_builtins() {
 int __fe_getround(void) { return 0; }
 int __fe_raise_inexact(void) { return 0; }
 C
-  local f src
-  for f in "${files[@]}"; do
+  for f in $files; do
     src="$CRT/$f"
-    [[ "$f" == fe_stubs.c ]] && src="$obj/$f"
-    "${CROSS_CC[@]}" -O2 -nostdinc -isystem "$prefix/include" \
+    [ "$f" = fe_stubs.c ] && src="$obj/$f"
+    # shellcheck disable=SC2086
+    $CROSS_CC -O2 -nostdinc -isystem "$prefix/include" \
       -isystem "$("$CLANG" -print-resource-dir)/include" -I"$CRT" \
       -c "$src" -o "$obj/${f%.c}.o"
   done
@@ -163,13 +165,14 @@ C
   # Not in the installed archive: the ports over mlibc key on its symbols
   # (docs/ports.md "Cache keys").
   cp "$prefix/lib/libbuiltins.a" "$ROOT/target/mlibc-build-$arch/libbuiltins-so.a"
-  if [[ "$arch" == x86_64 ]]; then
-    "${CROSS_CC[@]}" -O2 -nostdinc -isystem "$prefix/include" \
+  if [ "$arch" = x86_64 ]; then
+    # shellcheck disable=SC2086
+    $CROSS_CC -O2 -nostdinc -isystem "$prefix/include" \
       -isystem "$("$CLANG" -print-resource-dir)/include" -I"$CRT" \
       -c "$CRT/mulxc3.c" -o "$obj/so-mulxc3.o"
     "$AR_BIN" rs "$ROOT/target/mlibc-build-$arch/libbuiltins-so.a" "$obj/so-mulxc3.o" 2>/dev/null
   fi
-}
+)
 
 build_one x86_64
 build_one aarch64

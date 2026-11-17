@@ -1,12 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build get-alpine for the three arches with newlib + myos libgloss,
 # the zlib port (Alpine's packages and indexes are gzip tars) and the
 # download/tar/gzip code it shares with get-myos (user/get-myos/pkgtools.c).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 "$ROOT/toolchain/newlib/build.sh"
 "$ROOT/ports/zlib/build.sh"

@@ -1,13 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build nginx (poll events, PCRE2, zlib, SSL over LibreSSL) for the
 # three arches, without its configure (ngx_auto_config.h is hand-written).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/nginx/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_nginx_is_current; then
   echo "nginx ELFs up to date"
@@ -30,7 +30,7 @@ done
 
 # The modules, in the order configure lists them (auto/modules): the
 # filters' order is their order in the output chain.
-MODULES=(
+MODULES="
   ngx_core_module ngx_errlog_module ngx_conf_module
   ngx_openssl_module ngx_openssl_cache_module ngx_regex_module
   ngx_events_module ngx_event_core_module ngx_poll_module
@@ -54,11 +54,11 @@ MODULES=(
   ngx_http_userid_filter_module ngx_http_headers_filter_module
   ngx_http_copy_filter_module ngx_http_range_body_filter_module
   ngx_http_not_modified_filter_module
-)
+"
 
 # auto/sources: the core, the events (poll, SSL), the generic POSIX unix
 # layer, HTTP and its modules.
-SRCS=(
+SRCS="
   core/nginx.c core/ngx_log.c core/ngx_palloc.c core/ngx_array.c
   core/ngx_list.c core/ngx_hash.c core/ngx_buf.c core/ngx_queue.c
   core/ngx_output_chain.c core/ngx_string.c core/ngx_parse.c
@@ -117,76 +117,76 @@ SRCS=(
   http/modules/ngx_http_userid_filter_module.c
   http/modules/ngx_http_headers_filter_module.c
   http/modules/ngx_http_not_modified_filter_module.c
-)
+"
 
 # objs/: what configure writes, the config headers ours, ngx_modules.c as
 # auto/modules makes it.
 mkdir -p "$WORK/objs"
 cp "$HERE/ngx_auto_config.h" "$HERE/ngx_auto_headers.h" "$WORK/objs/"
+# shellcheck disable=SC2086
 {
   printf '#include <ngx_config.h>\n#include <ngx_core.h>\n\n'
-  printf 'extern ngx_module_t  %s;\n' "${MODULES[@]}"
+  printf 'extern ngx_module_t  %s;\n' $MODULES
   printf '\nngx_module_t *ngx_modules[] = {\n'
-  printf '    &%s,\n' "${MODULES[@]}"
+  printf '    &%s,\n' $MODULES
   printf '    NULL\n};\n\nchar *ngx_module_names[] = {\n'
-  printf '    "%s",\n' "${MODULES[@]}"
+  printf '    "%s",\n' $MODULES
   printf '    NULL\n};\n\nchar *ngx_module_order[] = {\n    NULL\n};\n'
 } >"$WORK/objs/ngx_modules.c"
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local cc="${triple}-cc"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local lib="$prefix/${triple}/lib"
-  local obj="$ROOT/target/nginx-obj-${arch}"
-  local out="$ROOT/target/nginx-${arch}-unknown-none"
-  local cflags=(
-    -ffreestanding -fPIC -O2 -g0 -std=gnu99
-    -ffunction-sections -fdata-sections
-    -Wno-unused-parameter -Wno-deprecated-declarations
-    -nostdinc -isystem "$(clang -print-resource-dir)/include"
-    -isystem "$prefix/${triple}/include"
-    -I"$WORK/src/core" -I"$WORK/src/event" -I"$WORK/src/event/modules"
-    -I"$WORK/src/os/unix" -I"$WORK/objs" -I"$WORK/src/http"
-    -I"$WORK/src/http/modules"
-    -I"$ROOT/target/zlib-${arch}/include"
-    -I"$ROOT/target/pcre2-${arch}/include" -DPCRE2_STATIC
-    -I"$ROOT/target/libressl-${arch}/include"
-    -I"$HERE" -include myos_compat.h
-  )
-  local f o objs=()
+build_arch() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  cc="${triple}-cc"
+  prefix="$ROOT/target/newlib-${arch}"
+  lib="$prefix/${triple}/lib"
+  obj="$ROOT/target/nginx-obj-${arch}"
+  out="$ROOT/target/nginx-${arch}-unknown-none"
+  clang_res="$(clang -print-resource-dir)/include"
+  set --
 
   echo "==> nginx ($triple)"
   rm -rf "$obj"
   mkdir -p "$obj"
-  for f in "${SRCS[@]}" ../objs/ngx_modules.c "$HERE/myos_stubs.c"; do
-    [[ "$f" == /* ]] || f="$WORK/src/$f"
+  for f in $SRCS ../objs/ngx_modules.c "$HERE/myos_stubs.c"; do
+    case "$f" in /*) ;; *) f="$WORK/src/$f" ;; esac
     o="$obj/$(basename "$f" .c).o"
-    if ! "$cc" "${cflags[@]}" -c "$f" -o "$o" 2>"$o.err"; then
+    if ! "$cc" \
+      -ffreestanding -fPIC -O2 -g0 -std=gnu99 \
+      -ffunction-sections -fdata-sections \
+      -Wno-unused-parameter -Wno-deprecated-declarations \
+      -nostdinc -isystem "$clang_res" \
+      -isystem "$prefix/${triple}/include" \
+      -I"$WORK/src/core" -I"$WORK/src/event" -I"$WORK/src/event/modules" \
+      -I"$WORK/src/os/unix" -I"$WORK/objs" -I"$WORK/src/http" \
+      -I"$WORK/src/http/modules" \
+      -I"$ROOT/target/zlib-${arch}/include" \
+      -I"$ROOT/target/pcre2-${arch}/include" -DPCRE2_STATIC \
+      -I"$ROOT/target/libressl-${arch}/include" \
+      -I"$HERE" -include myos_compat.h \
+      -c "$f" -o "$o" 2>"$o.err"; then
       echo "FAIL $f" >&2
       head -30 "$o.err" >&2
       return 1
     fi
-    objs+=("$o")
+    set -- "$@" "$o"
   done
 
-  local extra=()
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$prefix/${triple}/include" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$obj/trunctfdf2.o"
-    extra+=("$obj/trunctfdf2.o")
+    set -- "$@" "$obj/trunctfdf2.o"
   fi
 
   "${triple}-ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]}" "${extra[@]+"${extra[@]}"}" \
+    "$lib/crt0.o" "$@" \
     -L"$lib" -L"$ROOT/target/zlib-${arch}/lib" -L"$ROOT/target/pcre2-${arch}/lib" \
     -L"$ROOT/target/libressl-${arch}/lib" \
     --start-group -lpcre2-8 -lz -lssl -lcrypto -lc -lm -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || true
   ls -lh "$out"
-}
+)
 
 for arch in ${MYOS_NGINX_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

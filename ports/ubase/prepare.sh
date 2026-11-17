@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from fetched upstream ubase (patches, config.h).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$ROOT/ports/ubase/fetch.sh"
 
@@ -21,8 +21,7 @@ rsync -a \
 cp "$MYOS/config.h" "$WORK/config.h"
 
 patch_copy() {
-  local base="$1"
-  patch -d "$WORK" -p0 --forward --batch < "$MYOS/${base}.myos.patch"
+  patch -d "$WORK" -p0 --forward --batch < "$MYOS/$1.myos.patch"
 }
 
 patch_copy getty

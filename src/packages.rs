@@ -248,7 +248,7 @@ fn ensure_built(manifest_dir: &Path, port: &ports::Port, arch: &str) {
         return;
     };
     eprintln!("==> packages: {ready} missing; running {script}");
-    let status = Command::new("bash")
+    let status = Command::new("sh")
         .arg(manifest_dir.join(script))
         .current_dir(manifest_dir)
         .status()

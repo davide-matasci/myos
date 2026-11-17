@@ -20,7 +20,8 @@ env:
 
 defaults:
   run:
-    shell: bash
+    # The CI image's sh (POSIX.1-2024: pipefail), as the scripts' own.
+    shell: sh -e -o pipefail {0}
 
 jobs:
   # Which boot tests the change needs (docs/testing.md, "In CI"): every
@@ -31,6 +32,10 @@ jobs:
   # minutes in parallel, not one of thirty.
   plan:
     runs-on: ubuntu-latest
+    # On the runner itself, whose sh (dash 0.5.12) has no pipefail.
+    defaults:
+      run:
+        shell: sh
     timeout-minutes: 5
     outputs:
       boots: ${{ steps.plan.outputs.boots }}
@@ -44,16 +49,16 @@ jobs:
       - name: Select the boot tests
         id: plan
         run: |
-          args=(--event "${{ github.event_name }}")
-          if [[ "${{ inputs.full_boot }}" == true ]]; then args+=(--all); fi
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}" == true ]]; then args+=(--full-label); fi
-          if [[ -n "${{ github.event.pull_request.base.sha }}" ]]; then
-            args+=(--base "${{ github.event.pull_request.base.sha }}" --head HEAD)
-          elif [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.full_boot }}" != true ]]; then
+          set -- --event "${{ github.event_name }}"
+          if [ "${{ inputs.full_boot }}" = true ]; then set -- "$@" --all; fi
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}" = true ]; then set -- "$@" --full-label; fi
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            set -- "$@" --base "${{ github.event.pull_request.base.sha }}" --head HEAD
+          elif [ "${{ github.event_name }}" = workflow_dispatch ] && [ "${{ inputs.full_boot }}" != true ]; then
             # A dispatch on a branch without full_boot: what the branch changes.
-            args+=(--base origin/master --head HEAD)
+            set -- "$@" --base origin/master --head HEAD
           fi
-          python3 scripts/ci-select.py "${args[@]}"
+          python3 scripts/ci-select.py "$@"
       # The release this run publishes once its boots pass (docs/packages.md,
       # "Publishing"): `rolling` from master; `pr-N` from a pull request
       # labelled `ci:prerelease`, a mirror to try it on hardware before the
@@ -66,9 +71,9 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           tag=
-          if [[ "$GITHUB_EVENT_NAME" == push || "$GITHUB_EVENT_NAME" == schedule ]] && [[ "$GITHUB_REF" == refs/heads/master ]]; then
+          if { [ "$GITHUB_EVENT_NAME" = push ] || [ "$GITHUB_EVENT_NAME" = schedule ]; } && [ "$GITHUB_REF" = refs/heads/master ]; then
             tag=rolling
-          elif [[ "$PRERELEASE" == true ]]; then
+          elif [ "$PRERELEASE" = true ]; then
             tag="pr-$PR"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -149,7 +154,7 @@ jobs:
           # The cross compiler and U-Boot's host tools' headers are in the
           # Dockerfile; an image built before them (it is rebuilt from
           # master) installs them here, when U-Boot is not cached.
-          if [[ ! -f target/rpi3/u-boot.bin ]] && ! command -v aarch64-linux-gnu-gcc > /dev/null; then
+          if [ ! -f target/rpi3/u-boot.bin ] && ! command -v aarch64-linux-gnu-gcc > /dev/null; then
             apt-get update -q && apt-get install -y -q --no-install-recommends \
               gcc-aarch64-linux-gnu libssl-dev libgnutls28-dev
           fi
@@ -226,7 +231,7 @@ jobs:
       - name: Extract and assert CI artifacts
         run: |
           chmod +x scripts/*.sh
-          if [[ ! -f ci-build.tar.zst ]]; then
+          if [ ! -f ci-build.tar.zst ]; then
             echo "::error::ci-build.tar.zst missing after download; build job must upload it"
             exit 1
           fi
@@ -350,6 +355,10 @@ jobs:
   publish:
     name: publish packages
     runs-on: ubuntu-latest
+    # On the runner itself, whose sh (dash 0.5.12) has no pipefail.
+    defaults:
+      run:
+        shell: sh
     timeout-minutes: 15
     needs: [plan, build, boot, iso]
     if: >-
@@ -382,20 +391,27 @@ jobs:
           TAG: ${{ needs.plan.outputs.release }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          set -euo pipefail
+          set -eu
           tag="$TAG"
           title="myos (rolling)"
           notes="Built from ${GITHUB_SHA} (the tag points at it). myos-x86_64.iso boots on BIOS and UEFI machines (and from a USB stick). The <arch>-*.tar.gz files are the packages: install one on a running myos with \`get-myos NAME\`, see docs/packages.md. Third-party licenses: THIRD_PARTY_NOTICES.md at that commit; the copyleft ports' sources are the pinned upstreams plus the patches in the repository."
-          if [[ -n "$PR" ]]; then
+          if [ -n "$PR" ]; then
             # The label or the pull request may have gone while the boots
             # ran: the cleanup has deleted the release, so do not bring it
             # back.
             state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state,labels \
               --jq '.state + " " + ([.labels[].name] | join(","))')
-            if [[ "$state" != "OPEN "* || ",${state#* }," != *",ci:prerelease,"* ]]; then
-              echo "pull request #$PR is no longer open with ci:prerelease ($state): not publishing"
-              exit 0
-            fi
+            case "$state" in
+              "OPEN "*) labels=",${state#* }," ;;
+              *) labels= ;;
+            esac
+            case "$labels" in
+              *",ci:prerelease,"*) ;;
+              *)
+                echo "pull request #$PR is no longer open with ci:prerelease ($state): not publishing"
+                exit 0
+                ;;
+            esac
             title="myos (pull request #$PR)"
             notes="Pull request #$PR, built from ${GITHUB_SHA} (its merge into the base branch; the tag points at it), after the boot tests the pull request selects. Deleted when the pull request closes. Try it on a running myos: \`get-myos -m https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag --upgrade\` (docs/packages.md, \"Publishing\"). ${notes#*(the tag points at it). }"
           fi
@@ -415,21 +431,21 @@ jobs:
           # in state uploaded: a failed asset is tried again without the
           # rest being replaced again.
           since=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
-          files=(target/packages/* target/myos-x86_64.iso)
           for try in 1 2 3 4 5 6; do
             up=$(gh release view "$tag" --json assets \
               --jq ".assets[] | select(.state == \"uploaded\" and .createdAt >= \"$since\") | .name")
-            pending=()
-            for f in "${files[@]}"; do
-              grep -qxF "${f##*/}" <<< "$up" || pending+=("$f")
+            # The pending files are this loop's argument list.
+            set --
+            for f in target/packages/* target/myos-x86_64.iso; do
+              printf '%s\n' "$up" | grep -qxF "${f##*/}" || set -- "$@" "$f"
             done
-            [[ ${#pending[@]} -gt 0 ]] || break
-            gh release upload "$tag" "${pending[@]}" --clobber && continue
-            if [[ $try -eq 6 ]]; then
-              echo "::error::${#pending[@]} asset(s) not uploaded after $try tries"
+            [ $# -gt 0 ] || break
+            gh release upload "$tag" "$@" --clobber && continue
+            if [ "$try" -eq 6 ]; then
+              echo "::error::$# asset(s) not uploaded after $try tries"
               exit 1
             fi
-            echo "upload failed (try $try, ${#pending[@]} to go): again in 20 s"
+            echo "upload failed (try $try, $# to go): again in 20 s"
             sleep 20
           done
           ls -l target/packages | tail -n +2 | wc -l

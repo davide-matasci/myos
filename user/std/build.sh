@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build the std demo programs (user/std/*: small smoke binaries for /bin/std).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 "$ROOT/toolchain/std/fetch-sysroot.sh"
 mkdir -p "$ROOT/target"
 
@@ -13,15 +13,15 @@ if myos_std_hello_is_current; then
   exit 0
 fi
 
-build_example() {
-  local name="$1" manifest="$2" bin="$3" triple="$4"
-  local target_dir="$ROOT/target/std-${name}-build-${triple}"
+build_example() (
+  name="$1" manifest="$2" bin="$3" triple="$4"
+  target_dir="$ROOT/target/std-${name}-build-${triple}"
   echo "==> std-${name} ($triple)"
   myos_cargo_build_app "$triple" release "$target_dir" "$manifest" "$bin"
   cp "$target_dir/${triple}/release/${bin}" "$ROOT/target/std-${name}-${triple}"
   echo "std-${name} -> $ROOT/target/std-${name}-${triple}"
-}
-for triple in "${MYOS_USER_TRIPLES[@]+"${MYOS_USER_TRIPLES[@]}"}"; do
+)
+for triple in $MYOS_USER_TRIPLES; do
   build_example hello "$HERE/hello/Cargo.toml" std-hello "$triple"
   build_example cat "$HERE/cat/Cargo.toml" std-cat "$triple"
   build_example echo "$HERE/echo/Cargo.toml" std-echo "$triple"

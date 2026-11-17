@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build the client-side font stack for the three arches: expat,
 # FreeType, fontconfig and libXft (libXrender is x11-libs'), static, each
 # with its own autoconf configure in cross mode, on top of a copy of
@@ -9,12 +9,12 @@
 # the x11-fonts package; the cache in /tmp). Then fc-match, fc-list and the
 # boot test xft_smoke.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/x11-xft/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_x11_xft_is_current; then
   echo "x11-xft up to date"
@@ -36,18 +36,17 @@ build_triple="$(sh "$SRC/libXft-$LIBXFT_VERSION/config.guess")"
 
 # build_one ARCH NAME-VERSION CONFIGURE-ARGS...: configure in a copy of the
 # source (FreeType builds in its tree), make, install into the arch's stage.
-build_one() {
-  local arch="$1" pkg="$2"
+build_one() (
+  arch="$1" pkg="$2"
   shift 2
-  local dir="$WORK/$libc-$arch/$pkg"
+  dir="$WORK/$libc-$arch/$pkg"
   echo "==> $pkg ($arch, $libc)"
   rm -rf "$dir"
   mkdir -p "$WORK/$libc-$arch"
   cp -a "$SRC/$pkg" "$dir"
   # This package's patches for it: <name>-*.myos.patch.
-  local p
   for p in "$HERE/${pkg%-*}"-*.myos.patch; do
-    [[ -f "$p" ]] && patch -d "$dir" -p1 --forward --batch -s < "$p"
+    [ -f "$p" ] && patch -d "$dir" -p1 --forward --batch -s < "$p"
   done
   (
     cd "$dir"
@@ -59,17 +58,18 @@ build_one() {
   )
   # libtool archives name the install paths, not the stage.
   find "$STAGE" -name '*.la' -delete
-}
+)
 
 # build_arch ARCH LIBC: the stage of LIBC, newlib or mlibc.
-build_arch() {
-  local arch="$1" libc="$2" x11="$ROOT/target/x11-libs-${arch}"
+build_arch() (
+  arch="$1" libc="$2"
+  x11="$ROOT/target/x11-libs-${arch}"
   STAGE="$ROOT/target/x11-xft-${arch}"
-  if [[ "$libc" == mlibc ]]; then
+  if [ "$libc" = mlibc ]; then
     STAGE="$ROOT/target/x11-xft-mlibc-${arch}" x11="$ROOT/target/x11-libs-mlibc-${arch}"
   fi
-  local work="$WORK/$libc-$arch"
-  local cc="$work-cc"
+  work="$WORK/$libc-$arch"
+  cc="$work-cc"
   rm -rf "$STAGE" "$work"
   mkdir -p "$work"
   cp -a "$x11" "$STAGE"
@@ -87,33 +87,38 @@ build_arch() {
   unset PKG_CONFIG_PATH
 
   # Hash salts from /dev/urandom (myos has no getrandom/arc4random).
-  CPPFLAGS="$CPPFLAGS -DXML_DEV_URANDOM" build_one "$arch" "expat-$EXPAT_VERSION" \
-    --without-docbook --without-xmlwf \
-    --without-examples --without-tests
+  (
+    CPPFLAGS="$CPPFLAGS -DXML_DEV_URANDOM"
+    build_one "$arch" "expat-$EXPAT_VERSION" \
+      --without-docbook --without-xmlwf \
+      --without-examples --without-tests
+  )
   # TrueType and OpenType only: no compressed fonts, PNG glyphs or shaping.
   build_one "$arch" "freetype-$FREETYPE_VERSION" --with-zlib=no --with-bzip2=no \
     --with-png=no --with-harfbuzz=no --with-brotli=no
   # gperf replaced (gperf-lite.py); newlib declares mkostemp for _GNU_SOURCE;
   # newlib's random() has no initstate/setstate, so fontconfig takes rand_r.
-  GPERF="python3 $HERE/gperf-lite.py" CPPFLAGS="$CPPFLAGS -D_GNU_SOURCE" ac_cv_func_random=no \
+  (
+    export GPERF="python3 $HERE/gperf-lite.py" CPPFLAGS="$CPPFLAGS -D_GNU_SOURCE" ac_cv_func_random=no
     build_one "$arch" "fontconfig-$FONTCONFIG_VERSION" \
-    --disable-docs --disable-nls --disable-cache-build \
-    --sysconfdir="$PREFIX/etc" --localstatedir=/tmp \
-    --with-default-fonts=/lib/fonts --with-cache-dir=/tmp/fontconfig
+      --disable-docs --disable-nls --disable-cache-build \
+      --sysconfdir="$PREFIX/etc" --localstatedir=/tmp \
+      --with-default-fonts=/lib/fonts --with-cache-dir=/tmp/fontconfig
+  )
   build_one "$arch" "libXft-$LIBXFT_VERSION"
-  if [[ "$libc" == mlibc ]]; then
+  if [ "$libc" = mlibc ]; then
     echo "font stack (mlibc) -> $STAGE"
     return
   fi
 
-  local fcdir="$work/fontconfig-$FONTCONFIG_VERSION"
+  fcdir="$work/fontconfig-$FONTCONFIG_VERSION"
   cp "$fcdir/fc-match/fc-match" "$ROOT/target/fc-match-${arch}-unknown-none"
   cp "$fcdir/fc-list/fc-list" "$ROOT/target/fc-list-${arch}-unknown-none"
   "$cc" -O2 -Wall -Wextra -I"$STAGE$PREFIX/include" -I"$STAGE$PREFIX/include/freetype2" \
     "$HERE/xft_smoke.c" -o "$ROOT/target/xft-smoke-${arch}-unknown-none" \
     -L"$STAGE$PREFIX/lib" -lXft -lXrender -lfontconfig -lexpat -lfreetype -lX11 -lxcb -lXau -lm
   echo "font stack -> $STAGE"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch" newlib

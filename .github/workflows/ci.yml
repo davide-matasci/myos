@@ -37,7 +37,7 @@ env:
 
 defaults:
   run:
-    shell: bash
+    shell: sh
 
 jobs:
   # The ports workflow also checks wire-myos.py against the pinned nightly.

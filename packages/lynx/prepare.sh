@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from fetched upstream Lynx.
 #
 # Config: hand-written packages/lynx/lynx_cfg.h (not host ./configure).
 # SSL: lynx's own OpenSSL path, over LibreSSL (USE_OPENSSL_INCL).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$HERE/fetch.sh"
 
@@ -31,23 +31,22 @@ cp "$MYOS/myos_stubs.c" "$WORK/src/myos_stubs.c"
 
 # Host-build makeuctb + charset tables (needed by UCdomap.c).
 CHR="$WORK/src/chrtrans"
-if [[ ! -f "$CHR/iso01_uni.h" ]]; then
+if [ ! -f "$CHR/iso01_uni.h" ]; then
   echo "==> host makeuctb + unicode tables"
   HOSTCC="${HOSTCC:-gcc}"
   "$HOSTCC" -O2 -I"$WORK" -I"$WORK/src" -I"$WORK/src/chrtrans" \
     -I"$WORK/WWW/Library/Implementation" \
     -o "$CHR/makeuctb" "$CHR/makeuctb.c"
-  shopt -s nullglob
   for tbl in "$CHR"/*_uni.tbl "$CHR"/*_suni.tbl; do
-    [[ -f "$tbl" ]] || continue
+    [ -f "$tbl" ] || continue
     base="$(basename "$tbl" .tbl)"
     "$CHR/makeuctb" "$tbl" >"$CHR/${base}.h"
   done
 fi
 
 # Apply ordered myos patches when present.
-shopt -s nullglob
 for p in "$MYOS"/*.myos.patch; do
+  [ -e "$p" ] || continue
   echo "apply $(basename "$p")"
   patch -d "$WORK" -p1 --forward --batch <"$p"
 done

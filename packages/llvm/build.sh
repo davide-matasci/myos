@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build LLVM's compiler for myos against mlibc and libc++ (static),
 # for the arches MYOS_LLVM_ARCHES lists (all three by default), into
 # target/llvm-<arch>:
@@ -24,12 +24,12 @@
 # build. The build tree is kept until the build succeeds, so a failed run
 # goes on where it stopped.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/llvm/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 
 if myos_llvm_is_current; then
   echo "llvm up to date"
@@ -56,7 +56,7 @@ SRC="$T/llvm-src"
 # The myos patches, on the pristine checkout; once per set of patches, so
 # that a second run does not touch the sources (and rebuild everything).
 patches="$(cat "$HERE"/*.myos.patch | sha256sum | cut -d' ' -f1)"
-if [[ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$patches" ]]; then
+if [ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$patches" ]; then
   git -C "$SRC" checkout -q -- .
   git -C "$SRC" clean -q -fd -- llvm clang lld
   for p in "$HERE"/*.myos.patch; do
@@ -65,28 +65,28 @@ if [[ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$patches" ]]; then
   printf '%s' "$patches" >"$SRC/.myos-patched"
 fi
 
-build_arch() {
+build_arch() (
   # The build tree is one level down: clang's headers are written to its
   # resource directory as the compiler will look for it, two levels above
   # its bin/ (CLANG_RESOURCE_DIR), which is then $work/lib/clang/19.
-  local arch="$1" out="$T/llvm-$1" work="$T/llvm-build-$1" build="$T/llvm-build-$1/build" t off=()
+  arch="$1" out="$T/llvm-$1" work="$T/llvm-build-$1" build="$T/llvm-build-$1/build" off=""
   mkdir -p "$build/tc"
   myos_write_cross_cc "$arch" "$build/tc/cc"
   myos_write_cross_cxx "$arch" "$build/tc/c++"
   # The links' response files (@file), spelled out for the cross driver,
   # which takes flags only on its command line.
   cat >"$build/tc/link" <<'EOL'
-#!/usr/bin/env bash
-args=()
+#!/bin/sh
+n=$#
+set -f
 for a in "$@"; do
-  if [[ "$a" == @* ]]; then
-    read -d "" -ra words <"${a#@}" || true
-    args+=("${words[@]}")
-  else
-    args+=("$a")
-  fi
+  case "$a" in
+    @*) set -- "$@" $(cat "${a#@}") ;;
+    *) set -- "$@" "$a" ;;
+  esac
 done
-exec "${args[@]}"
+shift "$n"
+exec "$@"
 EOL
   chmod +x "$build/tc/link"
   # "Linux" for CMake: a Unix with ELF. The compiler says what the system
@@ -111,22 +111,23 @@ EOT
   # WebAssembly ones, the profile and debug-info servers.
   for t in SANCOV LLVM_RC LLVM_PROFDATA LLVM_MT LLVM_ML LLVM_LIPO LLVM_LIBTOOL_DARWIN LLVM_IFS \
     LLVM_GSYMUTIL LLVM_DWP LLVM_DEBUGINFOD DSYMUTIL; do
-    off+=("-DLLVM_TOOL_${t}_BUILD=OFF")
+    off="$off -DLLVM_TOOL_${t}_BUILD=OFF"
   done
   # __myos__, which this cross compiler (the build machine's clang, for a
   # bare target) does not define and the compiler being built does; and
   # <endian.h> first, for BYTE_ORDER, which LLVM looks for in a BSD's
   # <machine/endian.h> on a system it does not know.
-  local flags="-D__myos__ -include endian.h"
+  flags="-D__myos__ -include endian.h"
   # Built for size: the program is one static binary of every tool.
   # No sigaltstack on myos: LLVM's crash handlers run on the thread's stack.
   # clang's resource directory is /lib/clang/19 for /bin/custom/clang.
+  # shellcheck disable=SC2086
   cmake -G Ninja -S "$SRC/llvm" -B "$build" \
     -DCMAKE_TOOLCHAIN_FILE="$build/tc/toolchain.cmake" -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" \
     -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="X86;AArch64;RISCV" \
     -DLLVM_HOST_TRIPLE="$arch-unknown-myos" -DLLVM_DEFAULT_TARGET_TRIPLE="$arch-unknown-myos" \
-    -DLLVM_TOOL_LLVM_DRIVER_BUILD=ON "${off[@]}" -DCLANG_TOOL_CLANG_SCAN_DEPS_BUILD=OFF \
+    -DLLVM_TOOL_LLVM_DRIVER_BUILD=ON $off -DCLANG_TOOL_CLANG_SCAN_DEPS_BUILD=OFF \
     -DCLANG_RESOURCE_DIR="../../lib/clang/19" \
     -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF \
     -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF -DLLVM_ENABLE_PLUGINS=OFF -DLLVM_ENABLE_BACKTRACES=OFF \
@@ -152,13 +153,13 @@ EOT
   cp "$T/mlibc-$arch/lib/"*.o "$T/mlibc-$arch/lib/"*.a "$out/lib/mlibc/lib/"
   cp "$T/libcxx-$arch/lib/libc++.a" "$T/libcxx-$arch/lib/libunwind.a" "$out/lib/mlibc/lib/"
   rm -rf "$work"
-}
+)
 
 # The arches MYOS_LLVM_ARCHES lists, a stamp each: CI builds one per job
 # (PORT_ARCH_JOBS).
 hash="$(myos_llvm_version_hash)"
 for arch in ${MYOS_LLVM_ARCHES:-x86_64 aarch64 riscv64}; do
-  if MYOS_LLVM_ARCHES="$arch" myos_llvm_is_current; then
+  if (MYOS_LLVM_ARCHES="$arch" && myos_llvm_is_current); then
     echo "llvm ($arch) up to date"
     continue
   fi

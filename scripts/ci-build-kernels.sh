@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Hash-gated kernel + Limine BIOS/UEFI image build for CI.
 #
 # Same content-hash philosophy as ports/sysroot: if inputs are unchanged and
@@ -12,7 +12,7 @@
 # the same CI job (GHCR miss on re-run → full kernel recompile).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Build (idempotently: every script early-exits when its stamp is current)
@@ -23,12 +23,18 @@ cd "$ROOT"
 # the boot jobs pack and serve them. The ports come in build order
 # (scripts/ports.sh --build-list all: newlib and the sysroot first, then
 # dependencies before dependents).
-if [[ "${1:-}" != "--print-hash" && "${1:-}" != "--is-current" && "${1:-}" != "--print-members" ]]; then
-  while read -r name script; do
-    echo "==> ensure port $name ($script)"
-    "./$script"
-  done < <(./scripts/ports.sh --build-list all)
-fi
+case "${1:-}" in
+  --print-hash|--is-current|--print-members) ;;
+  *)
+    while read -r name script; do
+      [ -n "$name" ] || continue
+      echo "==> ensure port $name ($script)"
+      "./$script"
+    done <<EOF
+$(./scripts/ports.sh --build-list all)
+EOF
+    ;;
+esac
 
 STAMP="target/.myos-ci-kernel-version"
 
@@ -37,35 +43,27 @@ STAMP="target/.myos-ci-kernel-version"
 # its musl test binaries in every image). The kernels, the `linux` module and
 # the Linux layer's userspace are built either way; only the images differ.
 CI_FEATURES="${MYOS_CI_FEATURES:-}"
-FEATURE_ARGS=()
-if [[ -n "$CI_FEATURES" ]]; then
-  FEATURE_ARGS=(--features "$CI_FEATURES")
-fi
 
 # The Linux layer's musl files (linux-compat/build.sh, registry port
 # `linux-compat`): in ci-build.tar always, so the ISO job and a full boot
 # build their images from the same tar; the `linux` launcher is in
 # HELLO_OK_ELFS (every image).
-linux_compat_members() {
-  local arch
+linux_compat_members() (
   for arch in x86_64 aarch64 riscv64; do
     echo "target/linux-smoke-${arch}-linux-musl"
     echo "target/linux-compat/${arch}"
   done
-}
+)
 
 # The version stamps of every image port, the toolchains included
 # (scripts/ports.sh --stamps): they encode the userspace content myos
 # build.rs packs into the initramfs / Limine images.
-PORT_STAMPS=()
-while read -r stamp; do
-  PORT_STAMPS+=("$stamp")
-done < <(./scripts/ports.sh --stamps)
+PORT_STAMPS="$(./scripts/ports.sh --stamps)"
 
 # Source-controlled curl/LibreSSL inputs (NOT target/.myos-{curl,libressl}-version).
 # Those stamps are rewritten by ports/*/build.sh during this same job, which
 # made kernel_inputs_hash drift after build. Hash pins + config/patches instead.
-CURL_TLS_INPUTS=(
+CURL_TLS_INPUTS="
   ports/libressl/versions.env
   ports/libressl/port.env
   ports/libressl/build.sh
@@ -76,15 +74,14 @@ CURL_TLS_INPUTS=(
   ports/curl/build.sh
   ports/curl/fetch.sh
   ports/curl/tool_cfgable.h.myos.patch
-)
+"
 
 hash_tree() {
   # Checkout-stable: relative paths, sorted, no abs paths, no target/ junk.
-  local dir="$1"
-  if [[ ! -d "$dir" ]]; then
+  if [ ! -d "$1" ]; then
     return 0
   fi
-  find "$dir" \
+  find "$1" \
     \( -name target -o -path '*/target/*' \) -prune -o \
     -type f \( \
       -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o \
@@ -95,8 +92,7 @@ hash_tree() {
     | sort -z | xargs -0 -r sha256sum
 }
 
-kernel_inputs_hash() {
-  local h
+kernel_inputs_hash() (
   h="$(
     (
       cd "$ROOT"
@@ -118,12 +114,12 @@ kernel_inputs_hash() {
         # The port descriptors: which ports are in the image and what they ship.
         sha256sum scripts/ports.sh
         for f in ports/*/port.env user/*/port.env toolchain/*/port.env packages/*/port.env; do
-          [[ -f "$f" ]] && sha256sum "$f"
+          [ -f "$f" ] && sha256sum "$f"
         done
         # The boot tests ride in the images and the packages: the ports'
         # test scripts (PORT_TEST) and the runner under user/tests.
         for f in $(./scripts/ports.sh --tests all) user/tests/*.sh; do
-          [[ -f "$f" ]] && sha256sum "$f"
+          [ -f "$f" ] && sha256sum "$f"
         done
         # Whole host-bin crate (src/): target/debug/myos is the CI harness
         # (wait_ci) and the pack list ships it in ci-build.tar, so ANY src
@@ -131,7 +127,7 @@ kernel_inputs_hash() {
         # Existence-only artifacts_ready() made a rust-cache-restored binary
         # from an older commit pass freshness and boot stale harness needles.
         hash_tree src
-        if [[ -f .cargo/config.toml ]]; then
+        if [ -f .cargo/config.toml ]; then
           sha256sum .cargo/config.toml
         fi
         printf 'features:%s\n' "$CI_FEATURES"
@@ -141,8 +137,9 @@ kernel_inputs_hash() {
         # Port registry stamps encode userspace content identity (source-hash
         # philosophy). Do not hash target/ ELFs or manifests: those change or
         # appear after cargo clean/build and would make pull-tag ≠ push-tag.
-        for stamp in "${PORT_STAMPS[@]+"${PORT_STAMPS[@]}"}"; do
-          if [[ -f "$stamp" ]]; then
+        # shellcheck disable=SC2086
+        for stamp in $PORT_STAMPS; do
+          if [ -f "$stamp" ]; then
             # Label + contents: relative path in the stream.
             printf 'stamp:%s:' "$stamp"
             cat "$stamp"
@@ -152,8 +149,9 @@ kernel_inputs_hash() {
           fi
         done
         # curl/LibreSSL: digest checkout-stable sources only (see CURL_TLS_INPUTS).
-        for f in "${CURL_TLS_INPUTS[@]+"${CURL_TLS_INPUTS[@]}"}"; do
-          if [[ -f "$f" ]]; then
+        # shellcheck disable=SC2086
+        for f in $CURL_TLS_INPUTS; do
+          if [ -f "$f" ]; then
             sha256sum "$f"
           else
             printf 'input-missing:%s\n' "$f"
@@ -167,7 +165,7 @@ kernel_inputs_hash() {
         # fails with 'libtcc1.a not found'). Produced before this hash snapshot
         # and never touched by cargo builds, so it cannot drift.
         for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
-          if [[ -f "target/libtcc1-${triple}.a" ]]; then
+          if [ -f "target/libtcc1-${triple}.a" ]; then
             printf 'libtcc1:%s:' "$triple"
             sha256sum "target/libtcc1-${triple}.a" | awk '{print $1}'
             printf '\n'
@@ -179,7 +177,7 @@ kernel_inputs_hash() {
     )
   )"
   printf '%s' "$h"
-}
+)
 
 # Diagnostics: one "<hash> <tag>" line per hashed contribution so a
 # kernel_inputs_hash drift can be pinned to the exact input that changed.
@@ -189,9 +187,8 @@ kernel_inputs_diag() {
   (
     cd "$ROOT"
     tree_diag() {
-      local dir="$1"
-      if [[ ! -d "$dir" ]]; then echo "MISSING-DIR $dir"; return 0; fi
-      find "$dir" \
+      if [ ! -d "$1" ]; then echo "MISSING-DIR $1"; return 0; fi
+      find "$1" \
         \( -name target -o -path '*/target/*' \) -prune -o \
         -type f \( \
           -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o \
@@ -209,26 +206,28 @@ kernel_inputs_diag() {
       sha256sum src/limine_image.rs src/limine_gpt.rs src/limine_fat.rs src/limine_disk.rs \
         src/limine_dir.rs src/initramfs.rs 2>/dev/null || true
     } | sha256sum | awk -v d='group:root-src' '{print $1" "d}'
-    if [[ -f .cargo/config.toml ]]; then
+    if [ -f .cargo/config.toml ]; then
       sha256sum .cargo/config.toml | awk -v d='file:.cargo/config.toml' '{print $1" "d}'
     fi
-    for stamp in "${PORT_STAMPS[@]+"${PORT_STAMPS[@]}"}"; do
-      if [[ -f "$stamp" ]]; then
+    # shellcheck disable=SC2086
+    for stamp in $PORT_STAMPS; do
+      if [ -f "$stamp" ]; then
         { printf 'stamp:%s:' "$stamp"; cat "$stamp"; printf '\n'; } \
           | sha256sum | awk -v s="$stamp" '{print $1" "s}'
       else
         printf 'MISSING %s\n' "$stamp"
       fi
     done
-    for f in "${CURL_TLS_INPUTS[@]+"${CURL_TLS_INPUTS[@]}"}"; do
-      if [[ -f "$f" ]]; then
+    # shellcheck disable=SC2086
+    for f in $CURL_TLS_INPUTS; do
+      if [ -f "$f" ]; then
         sha256sum "$f" | awk -v p="$f" '{print $1" "p}'
       else
         printf 'MISSING %s\n' "$f"
       fi
     done
     for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
-      if [[ -f "target/libtcc1-${triple}.a" ]]; then
+      if [ -f "target/libtcc1-${triple}.a" ]; then
         sha256sum "target/libtcc1-${triple}.a" \
           | awk -v t="$triple" '{print $1" libtcc1:"t}'
       else
@@ -251,7 +250,7 @@ kernel_inputs_diag() {
 # build script, scripts/ports.sh --kernel-files) are members too, since no
 # registry port carries them. A bundle without them failed artifacts_ready
 # on every pull, and every CI run rebuilt the kernels.
-HELLO_OK_ELFS=(
+HELLO_OK_ELFS="
   target/console-x86_64-unknown-none
   target/console-aarch64-unknown-none-softfloat
   target/console-riscv64imac-unknown-none-elf
@@ -345,7 +344,7 @@ HELLO_OK_ELFS=(
   target/linux-launcher-x86_64-unknown-none
   target/linux-launcher-aarch64-unknown-none
   target/linux-launcher-riscv64-unknown-none
-)
+"
 
 # Everything the images are packed from: the kernels, the modules and every
 # file the ports ship (scripts/ports.sh --all-files all: a boot job re-packs
@@ -354,24 +353,27 @@ HELLO_OK_ELFS=(
 # Every file a boot job and the ISO job need. Names what is missing: a
 # pulled bundle that lacks one rebuilds the kernels in every run until the
 # member list and this check agree.
-artifacts_ready() {
-  local f
+artifacts_ready() (
+  # shellcheck disable=SC2086
   for f in target/debug/myos target/bios.img target/uefi.img target/boot-kernel-x86_64 \
     target/myos-release \
     target/aarch64-unknown-none-softfloat/debug/kernel \
     target/riscv64imac-unknown-none-elf/debug/kernel \
-    "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
-    [[ -f "$f" ]] || { echo "kernel artifacts: missing $f" >&2; return 1; }
+    $HELLO_OK_ELFS; do
+    [ -f "$f" ] || { echo "kernel artifacts: missing $f" >&2; return 1; }
   done
-  [[ -x target/debug/myos ]] || { echo "kernel artifacts: target/debug/myos not executable" >&2; return 1; }
+  [ -x target/debug/myos ] || { echo "kernel artifacts: target/debug/myos not executable" >&2; return 1; }
   while read -r f; do
-    [[ -e "$f" ]] || { echo "kernel artifacts: missing $f (ports.sh --all-files all)" >&2; return 1; }
-  done < <(./scripts/ports.sh --all-files all)
+    [ -n "$f" ] || continue
+    [ -e "$f" ] || { echo "kernel artifacts: missing $f (ports.sh --all-files all)" >&2; return 1; }
+  done <<EOF
+$(./scripts/ports.sh --all-files all)
+EOF
   for f in $(linux_compat_members); do
-    [[ -e "$f" ]] || { echo "kernel artifacts: missing $f (linux-compat)" >&2; return 1; }
+    [ -e "$f" ] || { echo "kernel artifacts: missing $f (linux-compat)" >&2; return 1; }
   done
   return 0
-}
+)
 
 do_clean_and_build() {
   echo "==> kernel inputs changed or artifacts missing; clean + build"
@@ -386,7 +388,7 @@ do_clean_and_build() {
   # musl pieces come from the registry (`linux-compat`) or are built here.
   "$ROOT/linux-compat/build-launcher.sh"
   "$ROOT/linux-compat/build.sh"
-  cargo build "${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"}"
+  cargo build ${CI_FEATURES:+--features "$CI_FEATURES"}
   # One cargo run for both: it builds the two targets side by side. The
   # port scripts their nested builds call (ports/libressl/build.sh, every
   # arch at once) already ran for the x86_64 build above: up to date here.
@@ -414,7 +416,8 @@ case "${1:-}" in
     echo target/fat.img
     echo target/aarch64-unknown-none-softfloat/debug/kernel
     echo target/riscv64imac-unknown-none-elf/debug/kernel
-    for f in "${HELLO_OK_ELFS[@]+"${HELLO_OK_ELFS[@]}"}"; do
+    # shellcheck disable=SC2086
+    for f in $HELLO_OK_ELFS; do
       echo "$f"
     done
     ./scripts/ports.sh --kernel-files
@@ -423,7 +426,7 @@ case "${1:-}" in
     ;;
   --is-current)
     want="$(kernel_inputs_hash)"
-    if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$want" ]] && artifacts_ready; then
+    if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$want" ] && artifacts_ready; then
       exit 0
     fi
     exit 1
@@ -434,16 +437,16 @@ want="$(kernel_inputs_hash)"
 diag_before="$(kernel_inputs_diag)"
 
 # GHCR pull (same content-hash philosophy as ports). Ignore pull failures.
-if [[ -x "$ROOT/scripts/ci-registry.sh" ]]; then
+if [ -x "$ROOT/scripts/ci-registry.sh" ]; then
   "$ROOT/scripts/ci-registry.sh" pull kernels || true
 fi
 
 have=""
-if [[ -f "$STAMP" ]]; then
+if [ -f "$STAMP" ]; then
   have="$(cat "$STAMP")"
 fi
 
-if [[ -n "$have" && "$have" == "$want" ]] && artifacts_ready; then
+if [ -n "$have" ] && [ "$have" = "$want" ] && artifacts_ready; then
   echo "kernels up to date ($want)"
   ls -lh target/debug/myos target/bios.img target/uefi.img \
     target/aarch64-unknown-none-softfloat/debug/kernel \
@@ -451,9 +454,9 @@ if [[ -n "$have" && "$have" == "$want" ]] && artifacts_ready; then
   exit 0
 fi
 
-if [[ -n "$have" && "$have" != "$want" ]]; then
-  echo "==> kernel input hash mismatch (was ${have:0:12}…, now ${want:0:12}…)"
-elif [[ -z "$have" ]]; then
+if [ -n "$have" ] && [ "$have" != "$want" ]; then
+  echo "==> kernel input hash mismatch (was $(printf '%.12s' "$have")…, now $(printf '%.12s' "$want")…)"
+elif [ -z "$have" ]; then
   echo "==> no kernel version stamp; building"
 else
   echo "==> kernel artifacts incomplete; building"
@@ -465,11 +468,15 @@ do_clean_and_build
 # (ci-registry.sh). Never recompute after build — ELF appearance under target/
 # must not change the hash.
 after="$(kernel_inputs_hash)"
-if [[ "$after" != "$want" ]]; then
-  echo "error: kernel_inputs_hash drifted after build (before ${want:0:12}…, after ${after:0:12}…)" >&2
+if [ "$after" != "$want" ]; then
+  echo "error: kernel_inputs_hash drifted after build (before $(printf '%.12s' "$want")…, after $(printf '%.12s' "$after")…)" >&2
   echo "error: hashing must be inputs-only (sources + port stamps); refusing to stamp" >&2
   echo "error: changed input members (hash <tag>):" >&2
-  diff <(printf '%s\n' "$diag_before") <(printf '%s\n' "$(kernel_inputs_diag)") >&2 || true
+  diag="$(mktemp -d "${TMPDIR:-/tmp}/myos-ci-kernel-diag.XXXXXX")"
+  printf '%s\n' "$diag_before" >"$diag/before"
+  printf '%s\n' "$(kernel_inputs_diag)" >"$diag/after"
+  diff "$diag/before" "$diag/after" >&2 || true
+  rm -rf "$diag"
   exit 1
 fi
 printf '%s\n' "$want" >"$STAMP"
@@ -489,6 +496,6 @@ od -An -tx1 -N 16 target/bios.img
 # Persist stamp+artifacts to GHCR so the next CI re-run is a true no-op
 # (rust-cache does not re-save on an exact key hit). The CI build job pushes
 # them itself, in the background (MYOS_CI_KERNELS_PUSH=0).
-if [[ "${MYOS_CI_KERNELS_PUSH:-1}" != 0 && -x "$ROOT/scripts/ci-registry.sh" ]]; then
+if [ "${MYOS_CI_KERNELS_PUSH:-1}" != 0 ] && [ -x "$ROOT/scripts/ci-registry.sh" ]; then
   "$ROOT/scripts/ci-registry.sh" push kernels || true
 fi

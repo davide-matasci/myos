@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # smoltcp with myos's patches (*.myos.patch here) for netd: the pinned crate
 # (versions.env) from crates.io, checked against its SHA-256, unpacked and
 # patched into target/smoltcp-myos, which user/netd/Cargo.toml's
@@ -6,10 +6,10 @@
 # (PORT_PREPARE); nothing to do when target/ already has this version with
 # these patches.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 # shellcheck source=user/net/smoltcp/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 DEST="$ROOT/target/smoltcp-myos"
 STAMP="$ROOT/target/.smoltcp-myos-version"
@@ -19,7 +19,7 @@ sha256() {
 }
 
 want="$(cat "$HERE/versions.env" "$HERE"/*.myos.patch | sha256 | cut -d' ' -f1)"
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$want" && -f "$DEST/Cargo.toml" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$want" ] && [ -f "$DEST/Cargo.toml" ]; then
   exit 0
 fi
 
@@ -30,7 +30,7 @@ crate="$tmp/smoltcp-$SMOLTCP_VERSION.crate"
 curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$crate" \
   "https://static.crates.io/crates/smoltcp/smoltcp-$SMOLTCP_VERSION.crate"
 got="$(sha256 "$crate" | cut -d' ' -f1)"
-if [[ "$got" != "$SMOLTCP_SHA256" ]]; then
+if [ "$got" != "$SMOLTCP_SHA256" ]; then
   echo "error: smoltcp $SMOLTCP_VERSION sha256 $got != pin $SMOLTCP_SHA256" >&2
   exit 1
 fi

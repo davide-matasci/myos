@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Link the network libraries' smoke (smoke.c) for the three arches against
 # mlibc and packages/libsoup's archives: libsoup, libxml2 and libpsl, and
 # GIO's TLS backend over LibreSSL, which the program registers. A package
@@ -6,14 +6,14 @@
 # libraries never compile against (the libc's C, the TLS backend, LibreSSL)
 # relinks it and rebuilds no library (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/libsoup-smoke/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=ports/libressl/versions.env
-source "$ROOT/ports/libressl/versions.env"
+. "$ROOT/ports/libressl/versions.env"
 
 if myos_libsoup_smoke_is_current; then
   echo "libsoup-smoke up to date"

@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build portable OpenBSD ksh (oksh) with newlib + myos libgloss.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_oksh_is_current; then
   echo "oksh ELFs up to date"
@@ -23,42 +23,42 @@ MYOS="$ROOT/ports/oksh"
 # editor drives a raw-mode console tty (raw edit, arrows navigate history /
 # cursor). confstr.c is oksh's portable fallback (HAVE_CONFSTR off).
 # c_ulimit.c is the myos stub.
-OKSH_SRCS=(
+OKSH_SRCS="
   alloc.c asprintf.c c_ksh.c c_sh.c c_test.c c_ulimit.c edit.c emacs.c
   eval.c exec.c expr.c history.c io.c jobs.c lex.c mail.c
   main.c misc.c path.c shf.c syn.c table.c trap.c tree.c tty.c var.c
   version.c reallocarray.c siglist.c signame.c confstr.c
   strlcat.c strlcpy.c strtonum.c unvis.c vis.c issetugid.c
-)
+"
 
-CPPFLAGS=(
-  -D_DEFAULT_SOURCE
-  -D_GNU_SOURCE
-  -D_BSD_SOURCE
-  -DEMACS
-  -D_PATH_DEFPATH=\"/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc\"
-  -D_PATH_BSHELL=\"/bin/custom/sh\"
-  -D_PATH_STDPATH=\"/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc\"
-  -D_PW_NAME_LEN=32
-  -I"$WORK"
-  -I"$MYOS"
-  -I"$ROOT/toolchain/newlib/libgloss/myos"
+# CPPFLAGS: the positional parameters, which build_arch is given (a string
+# split where it is used could not hold the quotes of the paths).
+set -- \
+  -D_DEFAULT_SOURCE \
+  -D_GNU_SOURCE \
+  -D_BSD_SOURCE \
+  -DEMACS \
+  -D_PATH_DEFPATH=\"/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc\" \
+  -D_PATH_BSHELL=\"/bin/custom/sh\" \
+  -D_PATH_STDPATH=\"/bin/sbase:/bin/coreutils:/bin/ubase:/bin/custom:/bin/tcc:/bin/std:/bin/etc\" \
+  -D_PW_NAME_LEN=32 \
+  -I"$WORK" \
+  -I"$MYOS" \
+  -I"$ROOT/toolchain/newlib/libgloss/myos" \
   -include myos_compat.h
-)
 
-link_prog() {
-  local arch="$1"
+link_prog() (
+  arch="$1"
   shift
-  local objs=(${@+"$@"})
-  local triple="${arch}-unknown-myos"
-  local out="$ROOT/target/oksh-${arch}-unknown-none"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local lib="$prefix/${triple}/lib"
-  local ld="${triple}-ld"
+  triple="${arch}-unknown-myos"
+  out="$ROOT/target/oksh-${arch}-unknown-none"
+  prefix="$ROOT/target/newlib-${arch}"
+  lib="$prefix/${triple}/lib"
+  ld="${triple}-ld"
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${objs[@]+"${objs[@]}"}" -L"$lib" \
+    "$lib/crt0.o" "$@" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "oksh -> $out"
@@ -67,44 +67,46 @@ link_prog() {
   elif command -v size >/dev/null 2>&1; then
     size "$out" || true
   fi
-}
+)
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local cc="${triple}-cc"
-  local objdir="$ROOT/target/oksh-obj-${arch}"
-  local extra=()
-  local src base obj
-  local objs=()
+# build_arch ARCH CPPFLAGS...
+build_arch() (
+  arch="$1"
+  shift
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  cc="${triple}-cc"
+  objdir="$ROOT/target/oksh-obj-${arch}"
+  extra=""
+  objs=""
 
   rm -rf "$objdir"
   mkdir -p "$objdir"
 
   echo "==> oksh ($triple)"
-  for src in "${OKSH_SRCS[@]+"${OKSH_SRCS[@]}"}"; do
+  for src in $OKSH_SRCS; do
     base="$(basename "$src" .c)"
     obj="$objdir/${base}.o"
     "$cc" -ffreestanding -fPIC -O2 -std=gnu99 \
       -ffunction-sections -fdata-sections \
-      -isystem "$inc" "${CPPFLAGS[@]+"${CPPFLAGS[@]}"}" \
+      -isystem "$inc" "$@" \
       -c "$WORK/$src" -o "$obj"
-    objs+=("$obj")
+    objs="$objs $obj"
   done
 
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
-    extra+=("$objdir/trunctfdf2.o")
+    extra="$objdir/trunctfdf2.o"
   fi
 
-  link_prog "$arch" "${objs[@]+"${objs[@]}"}" "${extra[@]+"${extra[@]}"}"
-}
+  # shellcheck disable=SC2086
+  link_prog "$arch" $objs ${extra:+"$extra"}
+)
 
 for arch in x86_64 aarch64 riscv64; do
-  build_arch "$arch"
+  build_arch "$arch" "$@"
 done
 
 echo "$(myos_oksh_version_hash)" >"$MYOS_OKSH_VERSION"

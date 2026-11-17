@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 f="$ROOT/user/uutils-coreutils/src/uu/ln/src/ln.rs"
-[[ -f "$f" ]] || exit 0
+[ -f "$f" ] || exit 0
 stamp="$(dirname "$f")/.myos-ln-patch-done"
-[[ -f "$stamp" ]] && exit 0
+[ -f "$stamp" ] && exit 0
 # Portable in-place edit (GNU and BSD sed disagree about -i syntax).
 python3 - "$f" <<'PYLN'
 from pathlib import Path

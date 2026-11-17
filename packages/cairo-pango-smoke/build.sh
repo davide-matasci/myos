@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Link the text and drawing libraries' smoke (smoke.c) for the three arches
 # against mlibc and packages/cairo-pango's archives (over GLib, the image
 # libraries and the X libraries and font stack); C, linked as C++
@@ -6,12 +6,12 @@
 # to what it links and the libraries never compile against (the libc's C
 # first) relinks it and rebuilds no library (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/cairo-pango-smoke/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 
 if myos_cairo_pango_smoke_is_current; then
   echo "cairo-pango-smoke up to date"

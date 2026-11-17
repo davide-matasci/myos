@@ -19,7 +19,7 @@ fn main() {
     let path = env::var("PATH").unwrap_or_default();
     let path = format!("{}:{}", newlib_bin.display(), path);
 
-    let output = Command::new("bash")
+    let output = Command::new("sh")
         .arg(&build_sh)
         .current_dir(&root)
         .env("PATH", &path)
@@ -51,8 +51,8 @@ fn main() {
     let cc = format!("{arch}-unknown-myos-cc");
     let mut cmd = Command::new(&cc);
     cmd.env("PATH", &path);
-    if Command::new("bash")
-        .args(["-lc", &format!("command -v {cc}")])
+    if Command::new("sh")
+        .args(["-c", &format!("command -v {cc}")])
         .env("PATH", &path)
         .status()
         .map(|s| !s.success())

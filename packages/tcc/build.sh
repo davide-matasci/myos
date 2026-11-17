@@ -1,48 +1,45 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build TinyCC for all *-unknown-myos triples (target codegen, not host-only).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/tcc/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
-is_elf() {
-  local f="$1"
-  local mag
-  [[ -f "$f" && -s "$f" ]] || return 1
+is_elf() (
+  f="$1"
+  { [ -f "$f" ] && [ -s "$f" ]; } || return 1
   mag="$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d ' \n')"
-  [[ "$mag" == "7f454c46" ]]
-}
+  [ "$mag" = "7f454c46" ]
+)
 
-require_elf() {
-  local arch="$1"
-  local out="$ROOT/target/tcc-${arch}-unknown-myos"
+require_elf() (
+  arch="$1"
+  out="$ROOT/target/tcc-${arch}-unknown-myos"
   if ! is_elf "$out"; then
     echo "error: tcc ELF missing for ${arch} at ${out}" >&2
     return 1
   fi
-}
+)
 
 libtcc1_out() {
   echo "$ROOT/target/libtcc1-${1}-unknown-myos.a"
 }
 
-require_libtcc1() {
-  local arch="$1"
-  local f
+require_libtcc1() (
+  arch="$1"
   f="$(libtcc1_out "$arch")"
-  if [[ ! -f "$f" || ! -s "$f" ]]; then
+  if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo "error: libtcc1.a missing for ${arch} at ${f}" >&2
     return 1
   fi
-}
+)
 
-install_libtcc1() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local src dest alias
+install_libtcc1() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
   src="$(libtcc1_out "$arch")"
   dest="$ROOT/target/newlib-${arch}/${triple}/lib/libtcc1.a"
   # Also stage under target/tcc-* so ci-build.tar's tcc-* glob packs it
@@ -51,10 +48,9 @@ install_libtcc1() {
   mkdir -p "$(dirname "$dest")"
   cp "$src" "$dest"
   cp "$src" "$alias"
-}
+)
 
-pack_aliases() {
-  local arch triple out alias
+pack_aliases() (
   for arch in x86_64 aarch64 riscv64; do
     require_elf "$arch" || exit 1
     triple="${arch}-unknown-myos"
@@ -64,22 +60,20 @@ pack_aliases() {
     require_libtcc1 "$arch" || exit 1
     install_libtcc1 "$arch"
   done
-}
+)
 
-all_elfs_ok() {
-  local arch
+all_elfs_ok() (
   for arch in x86_64 aarch64 riscv64; do
     is_elf "$ROOT/target/tcc-${arch}-unknown-myos" || return 1
   done
-}
+)
 
-all_libtcc1_ok() {
-  local arch f
+all_libtcc1_ok() (
   for arch in x86_64 aarch64 riscv64; do
     f="$(libtcc1_out "$arch")"
-    [[ -f "$f" && -s "$f" ]] || return 1
+    { [ -f "$f" ] && [ -s "$f" ]; } || return 1
   done
-}
+)
 
 if myos_tcc_is_current && all_elfs_ok && all_libtcc1_ok; then
   echo "tcc ELFs + libtcc1.a up to date"
@@ -110,19 +104,19 @@ tcc_target_def() {
   esac
 }
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local lib="$prefix/${triple}/lib"
-  local cc="${triple}-cc"
-  local ld="${triple}-ld"
-  local objdir="$ROOT/target/tcc-obj-${arch}"
-  local out="$ROOT/target/tcc-${triple}"
-  local extra=()
-  local target_def
-  local libarm="$WORK/lib/lib-arm64.c"
+build_arch() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  lib="$prefix/${triple}/lib"
+  cc="${triple}-cc"
+  ld="${triple}-ld"
+  objdir="$ROOT/target/tcc-obj-${arch}"
+  out="$ROOT/target/tcc-${triple}"
+  # The extra objects of the link are the positional parameters.
+  set --
+  libarm="$WORK/lib/lib-arm64.c"
 
   target_def="$(tcc_target_def "$arch")"
   rm -rf "$objdir"
@@ -151,24 +145,24 @@ build_arch() {
   # No -lm: tcc only needs ldexp/strtold for constant folding.
   "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
     -c "$MYOS/host_math.c" -o "$objdir/host_math.o"
-  extra+=("$objdir/host_math.o")
+  set -- "$@" "$objdir/host_math.o"
 
   # clang --target=*-unknown-none uses IEEE-128 long double and emits
   # compiler-rt __*tf* helpers. TinyCC's lib/lib-arm64.c is the canonical
   # software implementation (also used for riscv64 libtcc1 upstream).
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
-    if [[ ! -f "$libarm" ]]; then
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
+    if [ ! -f "$libarm" ]; then
       echo "error: TinyCC IEEE-128 helpers missing at ${libarm}" >&2
       exit 1
     fi
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$libarm" -o "$objdir/lib-arm64.o"
-    extra+=("$objdir/lib-arm64.o")
+    set -- "$@" "$objdir/lib-arm64.o"
   fi
 
   "$ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "$objdir/tcc.o" "${extra[@]+"${extra[@]}"}" -L"$lib" \
+    "$lib/crt0.o" "$objdir/tcc.o" "$@" -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
 
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
@@ -179,37 +173,37 @@ build_arch() {
   fi
   echo "tcc -> $out ($(du -h "$out" | awk '{print $1}'))"
   build_libtcc1 "$arch"
-}
+)
 
 # Guest compiler runtime (TinyCC lib/), not libc. Matches tcc's lib/Makefile
 # unix/cross set with CONFIG_bcheck=0 CONFIG_backtrace=0. Compiled with the
 # myos cross cc like the rest of the port (upstream default is tcc itself).
-build_libtcc1() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local cc="${triple}-cc"
-  local src="$WORK/lib"
-  local odir="$ROOT/target/tcc-libtcc1-obj-${arch}"
-  local out
+build_libtcc1() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  cc="${triple}-cc"
+  src="$WORK/lib"
+  odir="$ROOT/target/tcc-libtcc1-obj-${arch}"
   out="$(libtcc1_out "$arch")"
-  local srcs=()
-  local extra_src=()
-  local f obj objs=()
+  srcs=""
+  extra_src=""
+  # The objects are the positional parameters.
+  set --
 
   rm -rf "$odir"
   mkdir -p "$odir"
   rm -f "$out"
 
-  srcs+=(stdatomic.c atomic.S builtin.c dsohandle.c)
+  srcs="$srcs stdatomic.c atomic.S builtin.c dsohandle.c"
   case "$arch" in
     x86_64)
-      srcs+=(libtcc1.c alloca.S va_list.c)
+      srcs="$srcs libtcc1.c alloca.S va_list.c"
       ;;
     aarch64|riscv64)
-      srcs+=(lib-arm64.c)
-      extra_src+=("$MYOS/clear_cache.c")
+      srcs="$srcs lib-arm64.c"
+      extra_src="$extra_src $MYOS/clear_cache.c"
       ;;
     *)
       echo "error: unknown arch $arch" >&2
@@ -218,25 +212,25 @@ build_libtcc1() {
   esac
 
   echo "==> libtcc1.a ($triple)"
-  for f in "${srcs[@]+"${srcs[@]}"}"; do
-    if [[ ! -f "$src/$f" ]]; then
+  for f in $srcs; do
+    if [ ! -f "$src/$f" ]; then
       echo "error: TinyCC lib/$f missing at ${src}/${f}" >&2
       return 1
     fi
     obj="$odir/${f%.*}.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -I"$src"       -c "$src/$f" -o "$obj"
-    objs+=("$obj")
+    set -- "$@" "$obj"
   done
-  for f in "${extra_src[@]+"${extra_src[@]}"}"; do
+  for f in $extra_src; do
     obj="$odir/$(basename "${f%.*}").o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -I"$WORK" -c "$f" -o "$obj"
-    objs+=("$obj")
+    set -- "$@" "$obj"
   done
   AR_BIN="$(command -v llvm-ar 2>/dev/null || echo ar)"
-  "$AR_BIN" rcs "$out" "${objs[@]+"${objs[@]}"}"
+  "$AR_BIN" rcs "$out" "$@"
   install_libtcc1 "$arch"
   echo "libtcc1.a -> $out ($(du -h "$out" | awk '{print $1}'))"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"
@@ -248,7 +242,7 @@ for arch in x86_64 aarch64 riscv64; do
     missing=1
   fi
 done
-if ((missing != 0)); then
+if [ "$missing" -ne 0 ]; then
   exit 1
 fi
 

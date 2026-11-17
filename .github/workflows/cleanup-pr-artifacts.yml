@@ -8,6 +8,10 @@ permissions:
   actions: write
   contents: write
 
+defaults:
+  run:
+    shell: sh
+
 jobs:
   cleanup:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true

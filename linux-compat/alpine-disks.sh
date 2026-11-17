@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # alpine-disks.sh ARCH | --hash
 #
 # The boot tests' Alpine disk for ARCH, target/alpine-ARCH.img
@@ -15,11 +15,12 @@
 # target/.myos-alpine-disks-ARCH-version holds the hash of the disk there;
 # a stale one is made again.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 FIXTURE=1
 
-hash() {
+# (not `hash`: the Korn shells have an alias of that name)
+disks_hash() {
   {
     echo "$FIXTURE"
     sha256sum "$HERE/alpine-disks.sh" "$HERE/alpine-disk.sh" \
@@ -28,7 +29,7 @@ hash() {
 }
 
 case "${1:-}" in
-  --hash) hash; exit 0 ;;
+  --hash) disks_hash; exit 0 ;;
   x86_64 | aarch64 | riscv64) arch="$1" ;;
   *)
     echo "usage: $0 x86_64|aarch64|riscv64 | --hash" >&2
@@ -37,9 +38,9 @@ case "${1:-}" in
 esac
 out="$ROOT/target/alpine-$arch.img"
 stamp="$ROOT/target/.myos-alpine-disks-$arch-version"
-if [[ -f "$out" && -f "$stamp" && "$(cat "$stamp")" == "$(hash)" ]]; then
+if [ -f "$out" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$(disks_hash)" ]; then
   exit 0
 fi
 rm -f "$out" "$stamp"
 "$HERE/alpine-disk.sh" "$arch" "$out" rust=rust python=python3,coreutils,bash,diffutils x11=xdpyinfo
-hash > "$stamp"
+disks_hash > "$stamp"

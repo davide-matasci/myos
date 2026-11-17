@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Package the prebuilt myos sysroot for local reuse or CI workflow artifacts.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 
 "$ROOT/toolchain/std/build-sysroot.sh"
 
@@ -17,19 +17,19 @@ else
   out="$ROOT/target/myos-sysroot-${version}.tar.gz"
 fi
 
-if [[ -f "$out" ]]; then
+if [ -f "$out" ]; then
   echo "packaged sysroot already present -> $out"
   exit 0
 fi
 
-if [[ "${MYOS_SYSROOT_SLIM:-}" == "1" ]]; then
+if [ "${MYOS_SYSROOT_SLIM:-}" = "1" ]; then
   # CI artifact: precompiled rlibs + target specs only (~tens of MB). Skip the
   # patched rust library/ tree (~1.5 GiB) that makes zstd -19 take minutes.
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/myos-sysroot-slim.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   mkdir -p "$tmp/myos-sysroot/lib/rustlib"
   cp "$MYOS_SYSROOT/myos-manifest.toml" "$MYOS_SYSROOT/.myos-sysroot-version" "$tmp/myos-sysroot/"
-  for triple in "${MYOS_SYSROOT_TRIPLES[@]}"; do
+  for triple in $MYOS_SYSROOT_TRIPLES; do
     cp -a "$MYOS_SYSROOT/lib/rustlib/${triple}" "$tmp/myos-sysroot/lib/rustlib/"
     cp "$MYOS_SYSROOT/lib/rustlib/${triple}.json" "$tmp/myos-sysroot/lib/rustlib/"
   done

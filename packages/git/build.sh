@@ -1,19 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build Git (Phase-1 local porcelain) with newlib + libgloss + zlib.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=ports/git/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
-is_elf() {
-  local f="$1" mag
-  [[ -f "$f" && -s "$f" ]] || return 1
+is_elf() (
+  f="$1"
+  [ -f "$f" ] && [ -s "$f" ] || return 1
   mag="$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d ' \n')"
-  [[ "$mag" == "7f454c46" ]]
-}
+  [ "$mag" = "7f454c46" ]
+)
 
 if myos_git_is_current; then
   echo "git ELFs up to date"
@@ -28,17 +28,17 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 WORK="$ROOT/target/git-myos-build"
 MYOS="$HERE"
 
-build_arch() {
-  local arch="$1"
-  local triple="${arch}-unknown-myos"
-  local out="$ROOT/target/git-${arch}-unknown-none"
-  local objdir="$ROOT/target/git-obj-${arch}"
-  local stub_obj="$objdir/myos_stubs.o"
-  local cc="$MYOS/myos-git-cc.sh"
-  local prefix="$ROOT/target/newlib-${arch}"
-  local inc="$prefix/${triple}/include"
-  local extra_obj=()
-  local make_jobs="${MYOS_GIT_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+build_arch() (
+  arch="$1"
+  triple="${arch}-unknown-myos"
+  out="$ROOT/target/git-${arch}-unknown-none"
+  objdir="$ROOT/target/git-obj-${arch}"
+  stub_obj="$objdir/myos_stubs.o"
+  cc="$MYOS/myos-git-cc.sh"
+  prefix="$ROOT/target/newlib-${arch}"
+  inc="$prefix/${triple}/include"
+  extra_obj=""
+  make_jobs="${MYOS_GIT_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
   echo "==> git ($triple)"
   rm -rf "$objdir"
@@ -46,15 +46,15 @@ build_arch() {
   rm -f "$out"
 
   # Long-double helpers for aarch64/riscv64 (same as vim/oksh).
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
-    extra_obj+=("$objdir/trunctfdf2.o")
+    extra_obj="$objdir/trunctfdf2.o"
   fi
 
   MYOS_GIT_ARCH="$arch" MYOS_GIT_ROOT="$ROOT" \
     "$cc" -c "$MYOS/myos_stubs.c" -o "$stub_obj"
-  extra_obj+=("$stub_obj")
+  extra_obj="${extra_obj:+$extra_obj }$stub_obj"
 
   # Clean prior arch objects inside the shared work tree.
   make -C "$WORK" clean >/dev/null 2>&1 || true
@@ -64,7 +64,7 @@ build_arch() {
 
   export MYOS_GIT_ARCH="$arch"
   export MYOS_GIT_ROOT="$ROOT"
-  export MYOS_GIT_EXTRA_OBJ="${extra_obj[*]}"
+  export MYOS_GIT_EXTRA_OBJ="$extra_obj"
 
   # Build only the main multi-call binary (no dashed builtins / scripts).
   # git's config.mak.uname probes the HOST uname; on macOS (Darwin) it sets
@@ -74,8 +74,8 @@ build_arch() {
   make -C "$WORK" -j"$make_jobs" \
     uname_S=Linux \
     PROFILE= \
-    SHELL=/bin/bash \
-    SHELL_PATH=/bin/bash \
+    SHELL=/bin/sh \
+    SHELL_PATH=/bin/sh \
     CC="$cc" \
     AR=ar \
     RANLIB=ranlib \
@@ -85,7 +85,7 @@ build_arch() {
     prefix=/bin/custom \
     git
 
-  if [[ ! -f "$WORK/git" ]]; then
+  if [ ! -f "$WORK/git" ]; then
     echo "error: git binary missing after make ($arch)" >&2
     exit 1
   fi
@@ -102,7 +102,7 @@ build_arch() {
   elif command -v size >/dev/null 2>&1; then
     size "$out" || true
   fi
-}
+)
 
 # Default: all arches (CI). MYOS_GIT_ARCHES=x86_64 for a faster local smoke.
 ARCHES="${MYOS_GIT_ARCHES:-x86_64 aarch64 riscv64}"

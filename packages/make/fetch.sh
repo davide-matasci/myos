@@ -1,16 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the pinned official GNU make tarball for the myos port.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=ports/make/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 TARBALL="$ROOT/target/make-${MAKE_VERSION}.tar.gz"
 
 # The tarball from the first of MAKE_URLS that answers.
-fetch() {
-  local url
+fetch() (
   mkdir -p "$ROOT/target"
   for url in $MAKE_URLS; do
     echo "==> fetch make $MAKE_VERSION ($url)"
@@ -22,11 +21,11 @@ fetch() {
   done
   echo "error: cannot fetch make $MAKE_VERSION" >&2
   exit 1
-}
+)
 
-if [[ -f "$TARBALL" ]]; then
+if [ -f "$TARBALL" ]; then
   got="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
-  if [[ "$got" != "$MAKE_SHA256" ]]; then
+  if [ "$got" != "$MAKE_SHA256" ]; then
     echo "make tarball checksum mismatch; refetching" >&2
     rm -f "$TARBALL"
     fetch
@@ -36,7 +35,7 @@ else
 fi
 
 got="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
-if [[ "$got" != "$MAKE_SHA256" ]]; then
+if [ "$got" != "$MAKE_SHA256" ]; then
   echo "make tarball sha256 mismatch: $got != $MAKE_SHA256" >&2
   exit 1
 fi

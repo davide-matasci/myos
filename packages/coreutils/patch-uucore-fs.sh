@@ -1,13 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # uucore fs.rs: treat myos like unix for FileInformation (rustix stat backend).
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 fs="$ROOT/user/uutils-coreutils/src/uucore/src/lib/features/fs.rs"
 fsext="$ROOT/user/uutils-coreutils/src/uucore/src/lib/features/fsext.rs"
 
-[[ -f "$fs" ]] || exit 0
+[ -f "$fs" ] || exit 0
 
 # Portable in-place edits: GNU and BSD sed disagree about -i syntax, so use
 # python3 (same convention as prepare.sh and toolchain/newlib/patch.sh).
@@ -22,7 +22,7 @@ fsext="$ROOT/user/uutils-coreutils/src/uucore/src/lib/features/fsext.rs"
 #      occurrence that is not already followed by a myos arm — matching
 #      what the original GNU sed pass produced (the insert stays inside
 #      the cfg list whether the attribute is single- or multi-line).
-if [[ -f "$fsext" ]]; then
+if [ -f "$fsext" ]; then
   python3 - "$fsext" <<'PYFSEXT'
 from pathlib import Path
 import sys
@@ -96,7 +96,7 @@ else:
 PYFSNLINK
 
 stamp="$(dirname "$fs")/.myos-fs-patch-done"
-[[ -f "$stamp" ]] && exit 0
+[ -f "$stamp" ] && exit 0
 
 python3 - "$fs" <<'PYFS'
 from pathlib import Path
