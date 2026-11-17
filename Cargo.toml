@@ -24,6 +24,11 @@ fatvol = { path = "modules/fat/fatvol" }
 ext2fs = { path = "modules/ext2/ext2fs" }
 # The simulated access points' WPA2 (src/wifi_sim.rs): the daemon's crate.
 wpa = { path = "user/wifi/wpa" }
+# Not used here: held back for ovmf-prebuilt's tar. filetime 0.2.30 calls
+# std's fs::set_times on any rustc that says 1.99, and the pinned nightly
+# says so from before that call was stable. Goes with the next nightly
+# (scripts/bump-nightly.sh); there is no Cargo.lock to hold it.
+filetime = "=0.2.29"
 
 # What the image carries is not a feature set: every port whose directory is
 # under ports/ (and the user/ programs) is built and packed; a directory under
