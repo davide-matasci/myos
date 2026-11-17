@@ -104,7 +104,8 @@ up to 128 MiB per file (issue #338; a write or truncate past that fails
 with `EFBIG`, a write the heap has no room for with `ENOSPC`). A file's
 data takes a block of the heap's size classes (`kernel/src/heap.rs`): up to
 256 KiB its size rounded up, to a power of two below a page and to a whole
-page above it; larger files take their exact size. Its paths
+page above it; larger files take their exact size, and while one grows
+by writes, room for an eighth more at most (8 MiB at most). Its paths
 and symlink targets go up to `PATH_MAX`. devfs at `/dev` holds the device
 nodes.
 
