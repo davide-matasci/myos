@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the pinned SQLite amalgamation into target/sqlite-src.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 SRC="$ROOT/target/sqlite-src"
 STAMP="$ROOT/target/.sqlite-src-version"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$SQLITE_VERSION" && -f "$SRC/sqlite3.c" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$SQLITE_VERSION" ] && [ -f "$SRC/sqlite3.c" ]; then
   echo "sqlite sources up to date ($SQLITE_VERSION)"
   exit 0
 fi

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build st for the three arches against the X and font libraries of
 # packages/x11-xft (x11-libs included): upstream st with one myos patch
 # (st.c.myos.patch: TERMCAP stays set) and a compat header for what newlib's
@@ -6,12 +6,12 @@
 # stock config.def.h with the font in points (below). Then the boot test
 # st_smoke, which watches the framebuffer.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/st/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_st_is_current; then
   echo "st up to date"

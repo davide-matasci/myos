@@ -1379,17 +1379,23 @@ idle_stats() {
 	while read key sep n; do [ "$key" = idle_halts ] && echo $n; done < /proc/cpuinfo
 	while read c what ms; do [ "$what" = idle ] && echo $ms; done < /proc/cpu
 }
+# The Nth (from 0) of the words after it.
+nth() {
+	shift $(($1 + 1))
+	echo "$1"
+}
 idle_tickless() {
-	set -A s0 $(idle_stats)
-	n=$((${#s0[*]} / 2))
+	s0=$(echo $(idle_stats))
+	set -- $s0
+	n=$(($# / 2))
 	[ $n -gt 1 ] || return 0
 	sleep 2
-	set -A s1 $(idle_stats)
-	echo "halts per CPU, then idle ms: ${s0[*]} -> ${s1[*]}"
+	s1=$(echo $(idle_stats))
+	echo "halts per CPU, then idle ms: $s0 -> $s1"
 	c=1
 	while [ $c -lt $n ]; do
-		halts=$((s1[c] - s0[c]))
-		idle=$((s1[n + c] - s0[n + c]))
+		halts=$(($(nth $c $s1) - $(nth $c $s0)))
+		idle=$(($(nth $((n + c)) $s1) - $(nth $((n + c)) $s0)))
 		[ $idle -ge 1000 ] && [ $((halts * 20)) -lt $idle ] && return 0
 		c=$((c + 1))
 	done
@@ -1409,12 +1415,13 @@ console_irqs() {
 }
 t -t sched,console console_irqs console_irqs
 idle_cpu0() {
-	set -A s0 $(idle_stats)
-	n=$((${#s0[*]} / 2))
+	s0=$(echo $(idle_stats))
+	set -- $s0
+	n=$(($# / 2))
 	sleep 2
-	set -A s1 $(idle_stats)
-	halts=$((s1[0] - s0[0]))
-	idle=$((s1[n] - s0[n]))
+	s1=$(echo $(idle_stats))
+	halts=$(($(nth 0 $s1) - $(nth 0 $s0)))
+	idle=$(($(nth $n $s1) - $(nth $n $s0)))
 	echo "CPU 0: $halts halts, $idle ms idle"
 	[ $idle -ge 1000 ] && [ $((halts * 20)) -lt $idle ]
 }

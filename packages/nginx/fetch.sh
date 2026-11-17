@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch pinned nginx sources into target/nginx-src.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 SRC="$ROOT/target/nginx-src"
 STAMP="$ROOT/target/.nginx-src-version"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$NGINX_VERSION" && -f "$SRC/src/core/nginx.c" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NGINX_VERSION" ] && [ -f "$SRC/src/core/nginx.c" ]; then
   echo "nginx sources up to date ($NGINX_VERSION)"
   exit 0
 fi

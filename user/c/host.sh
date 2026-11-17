@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The host's side of the C smokes' tests (docs/testing.md): the launcher runs
 # `host.sh <what> <args>` for a `HOST c-smokes <what> <args>` line from the
 # guest, in the background; the guest test decides from what it sees.
@@ -54,44 +54,69 @@ stop_flag() {
   echo "${MYOS_QEMU_MONITOR:-${TMPDIR:-/tmp}/myos-monitor}.tcp-ping-stop-$1-$2"
 }
 
-tcp_ping() {
-  local stop rc
+tcp_ping() (
   stop="$(stop_flag "$1" "${2:-0}")"
   : > "$stop.peer"
   tcp_ping_run "$@"
   rc=$?
   rm -f "$stop.peer" "$stop"
   return $rc
-}
+)
 
-tcp_ping_stop() {
-  local stop
+tcp_ping_stop() (
   stop="$(stop_flag "$1" "${2:-0}")"
   : > "$stop"
-  [[ -e "$stop.peer" ]] || rm -f "$stop"
+  [ -e "$stop.peer" ] || rm -f "$stop"
+)
+
+# Connect to the guest's listener at port $1, send "ping" and leave what
+# comes back until the smoke's close (or for 120 s) in the file $2. Fails
+# when the connect does, quietly.
+tcp_ping_once() {
+  python3 - "$1" "$2" <<'PY' 2>/dev/null
+import socket, sys, time
+s = socket.socket()
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+with open(sys.argv[2], "wb") as got:
+    deadline = time.monotonic() + 120
+    try:
+        s.sendall(b"ping")
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            s.settimeout(left)
+            data = s.recv(65536)
+            if not data:
+                break
+            got.write(data)
+    except OSError:
+        pass
+s.close()
+PY
 }
 
-tcp_ping_run() {
-  local port="$1" stop got verdict deadline=$((SECONDS + 180))
+tcp_ping_run() (
+  port="$1" deadline=$(($(date +%s) + 180))
   stop="$(stop_flag "$port" "${2:-0}")"
   got="$(mktemp)"
-  while (( SECONDS < deadline )); do
-    if [[ -e "$stop" ]]; then
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ -e "$stop" ]; then
       rm -f "$got"
       echo "boot test: tcp-ping $port: the smoke is gone, not retrying" >&2
       return 1
     fi
-    # The group keeps the connect error quiet without redirecting the
-    # script's stderr for good, as `exec ... 2>/dev/null` would.
-    if { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
-      printf ping >&3
-      # Everything up to the smoke's close: "pong\n", then the lines.
-      timeout 120 cat <&3 > "$got" 2>/dev/null || true
-      exec 3>&-
-      if [[ "$(head -c 5 "$got")" == pong ]]; then
-        local diff
-        diff="$(tail -c +6 "$got" | cmp - <(seq -f %06g 0 $((BULK_LINES - 1))) 2>&1)"
-        if [[ -z "$diff" ]]; then
+    # Everything up to the smoke's close: "pong\n", then the lines.
+    if tcp_ping_once "$port" "$got"; then
+      if [ "$(head -c 5 "$got")" = pong ]; then
+        want="$(mktemp)"
+        awk -v n="$BULK_LINES" 'BEGIN { for (i = 0; i < n; i++) printf "%06d\n", i }' > "$want"
+        diff="$(tail -c +6 "$got" | cmp - "$want" 2>&1)"
+        rm -f "$want"
+        if [ -z "$diff" ]; then
           verdict=good
         else
           # The byte count and where the stream first goes wrong.
@@ -108,7 +133,7 @@ tcp_ping_run() {
   rm -f "$got"
   echo "boot test: tcp-ping $port: no pong within the bound" >&2
   return 1
-}
+)
 
 # The verdict, on a connection of its own, then (for "good") the mute
 # connections (see the header), 0.3 s apart so the smoke's accept keeps up
@@ -230,8 +255,7 @@ PY
   echo "boot test: mouse ${1:-usb}" >&2
 }
 
-usb_kbd() {
-  local cmd
+usb_kbd() (
   case "$1" in
     plug) cmd="device_add usb-kbd,bus=${MYOS_USB_BUS:-xhci.0},port=${MYOS_USB_PORT:-}4,id=usbkbd" ;;
     unplug) cmd="device_del usbkbd" ;;
@@ -254,12 +278,12 @@ except Exception:
 s.close()
 PY
   echo "boot test: usb-kbd $1" >&2
-}
+)
 
 case "${1:-}" in
   tcp-ping) tcp_ping "${2:?port}" "${3:-0}" ;;
   tcp-ping-stop) tcp_ping_stop "${2:?port}" "${3:-0}" ;;
-  sendkey) shift; sendkey "${1:?keys}" "${@:2}" ;;
+  sendkey) shift; : "${1:?keys}"; sendkey "$@" ;;
   keyburst) keyburst "${2:?count}" "${3:?key}" ;;
   mouse) mouse "${2:-usb}" ;;
   usb-kbd) usb_kbd "${2:?plug|unplug}" ;;

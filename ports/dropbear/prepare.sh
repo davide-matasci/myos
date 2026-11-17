@@ -1,44 +1,42 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare the dropbear source tree for myos builds.
 # Extracts the verified tarball into target/dropbear-myos-build, applies the
 # *.myos.patch files and installs myos overlays (config.h, localoptions.h).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 TARBALL="$ROOT/target/dropbear-${MYOS_DROPBEAR_VERSION}.tar.bz2"
 WORK="$ROOT/target/dropbear-myos-build"
 
-[[ -f "$TARBALL" ]] || "$HERE/fetch.sh"
+[ -f "$TARBALL" ] || "$HERE/fetch.sh"
 
-extract_dropbear() {
+extract_dropbear() (
   # Always decompress with python3 bz2 (CI image may lack bzip2(1)), then
   # let host tar(1) unpack. Avoids incomplete streaming-tarfile rewrites.
-  local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/dropbear-XXXXXX.tar")"
   python3 -c 'import bz2,sys; open(sys.argv[2],"wb").write(bz2.open(sys.argv[1],"rb").read())' \
     "$TARBALL" "$tmp"
   tar -xf "$tmp" -C "$WORK" --strip-components=1
   rm -f "$tmp"
-}
+)
 
 # A fresh tree whenever the patches change: they apply to pristine sources.
-PATCHES=("$HERE"/*.myos.patch)
-PATCH_STAMP="$(cat "${PATCHES[@]}" | sha256sum | awk '{print $1}')"
-if [[ ! -f "$WORK/src/default_options.h" ]] \
-  || [[ "$(cat "$WORK/.myos-patches" 2>/dev/null)" != "$PATCH_STAMP" ]]; then
+PATCH_STAMP="$(cat "$HERE"/*.myos.patch | sha256sum | awk '{print $1}')"
+if [ ! -f "$WORK/src/default_options.h" ] \
+  || [ "$(cat "$WORK/.myos-patches" 2>/dev/null)" != "$PATCH_STAMP" ]; then
   rm -rf "$WORK"
   mkdir -p "$WORK"
   extract_dropbear
-  if [[ ! -f "$WORK/src/default_options.h" ]]; then
+  if [ ! -f "$WORK/src/default_options.h" ]; then
     echo "error: dropbear extract missing src/default_options.h" >&2
     ls -la "$WORK" >&2 || true
     ls -la "$WORK/src" >&2 || true
     exit 1
   fi
-  for p in "${PATCHES[@]}"; do
+  for p in "$HERE"/*.myos.patch; do
     patch -d "$WORK" -p0 --forward --batch < "$p"
   done
   printf '%s' "$PATCH_STAMP" > "$WORK/.myos-patches"

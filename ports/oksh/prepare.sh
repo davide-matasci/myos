@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from fetched upstream oksh (pconfig.h + patches).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$ROOT/ports/oksh/fetch.sh"
 
@@ -30,8 +30,7 @@ cp "$MYOS/c_ulimit.c" "$WORK/c_ulimit.c"
 # tty_fd at FDBASE) works unchanged — no replacement shim needed.
 
 patch_copy() {
-  local base="$1"
-  patch -d "$WORK" -p0 --forward --batch < "$MYOS/${base}.myos.patch"
+  patch -d "$WORK" -p0 --forward --batch < "$MYOS/$1.myos.patch"
 }
 
 patch_copy main

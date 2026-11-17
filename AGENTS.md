@@ -124,6 +124,7 @@ sudo apt install qemu-system-x86 qemu-system-arm qemu-system-riscv \
   qemu-efi-aarch64 qemu-efi-riscv64 clang lld make meson ninja-build cmake git \
   libc6-dev rsync patch curl zstd e2fsprogs dosfstools mtools openssh-client python3
 export GITHUB_REPOSITORY=davide-matasci/myos
+sh -c 'set -o pipefail' || sudo ln -sf bash /bin/sh   # the scripts' sh has pipefail (dash 0.5.13+; README.md)
 ./scripts/ci-registry.sh pull all            # every port CI built for these sources
 # 24.04's QEMU 8.2 boots riscv64 without its IOMMU (QEMU 9.2 and later have
 # the device; the launcher says so once).
@@ -233,6 +234,17 @@ for i in $(seq 10); do cargo run -q -- uefi test-mini > /tmp/boot$i.log 2>&1 \
 
 ## Rules and conventions
 
+- **Shell scripts are POSIX sh** (POSIX.1-2024: `set -o pipefail` is in,
+  `local`, arrays, `[[ ]]`, `<<<`, `<( )`, `${x//a/b}` and `source` are
+  not), `#!/bin/sh`, so that myos's own shell (oksh) can run them:
+  `scripts/check-posix-sh.sh` checks every one (shellcheck, and a syntax
+  check by yash and the other POSIX shells on the host). Without `local`,
+  a function that only prints, writes files or answers has a subshell for
+  a body (`name() ( ... )`); one that sets something for its caller names
+  its own variables `_<initials>_<name>`. A list is the positional
+  parameters (`set --`), or a string split on purpose when no element can
+  hold a space. A sourced file cannot find itself: its sourcer sets `ROOT`
+  to the checkout first.
 - **No ABI workarounds**: the kernel, the modules, libc and every port and
   package are rebuilt from this tree together, so an ABI (the native
   syscalls, the module `KernelApi` and its `#[repr(C)]` types in

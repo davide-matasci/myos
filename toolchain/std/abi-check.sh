@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Check the libc crate's myos module (patches/libc-myos.patch) against
 # mlibc's headers, for the three arches: every constant, type size and
 # field offset the crate declares and the headers have (abi-check.py).
@@ -6,10 +6,10 @@
 # (toolchain/mlibc/sysdeps/myos/include/abi-bits) or a bump of either.
 # Needs the sysroot (its patched library tree) and mlibc's headers.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 "$ROOT/toolchain/std/fetch-sysroot.sh"
 "$ROOT/toolchain/mlibc/build.sh"

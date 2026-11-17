@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build get-myos (the package installer) for the three arches with
 # newlib + myos libgloss and the zlib port (packages are gzip tars).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 "$ROOT/toolchain/newlib/build.sh"
 "$ROOT/ports/zlib/build.sh"
@@ -23,18 +23,19 @@ for arch in x86_64 aarch64 riscv64; do
   nl="$ROOT/target/newlib-${arch}/${triple}"
   zl="$ROOT/target/zlib-${arch}"
   cc="${triple}-cc"
-  objs=()
+  # The objects of the link: the script's arguments from here on.
+  set --
   echo "==> get-myos ($triple)"
   for src in get-myos pkgtools boot; do
     obj="$ROOT/target/get-myos-${src}-${arch}.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$nl/include" -I"$zl/include" \
       -c "$HERE/$src.c" -o "$obj"
-    objs+=("$obj")
+    set -- "$@" "$obj"
   done
   # No printf (fputs only), so no long-double helpers, like get-alpine.
   ld.lld -pie --no-dynamic-linker -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$nl/lib/crt0.o" "${objs[@]}" "$zl/lib/libz.a" -L"$nl/lib" \
+    "$nl/lib/crt0.o" "$@" "$zl/lib/libz.a" -L"$nl/lib" \
     --start-group -lc -lgloss -lg --end-group
   echo "get-myos -> $out"
 done

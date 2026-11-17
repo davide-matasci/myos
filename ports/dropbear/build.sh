@@ -1,44 +1,33 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build dropbear 2026.94 (sshd + dbclient) for myos: x86_64 aarch64 riscv64.
 # No configure: hand-written config.h/localoptions.h + direct compiles
 # (same pattern as ports/curl). Static bundled libtomcrypt/libtommath.
 set -euo pipefail
 
-# macOS ships bash 3.2, which has no mapfile: `mapfile -t NAME` is all we use.
-if ! type mapfile >/dev/null 2>&1; then
-  mapfile() {
-    local line
-    eval "$2=()"
-    while IFS= read -r line; do
-      eval "$2+=(\"\$line\")"
-    done
-  }
-fi
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 STAMP="$MYOS_DROPBEAR_VERSION"
 
-pack_dropbear_aliases() {
+pack_dropbear_aliases() (
   # CI packs coreutils-* globs for C ports (ci.yml lacks workflow-scope edits for
   # new globs); keep aliases in sync for dropbear + dbclient + dropbearkey.
-  local arch bin src alias
   for arch in x86_64 aarch64 riscv64; do
     for bin in dropbear dbclient dropbearkey; do
       src="$ROOT/target/${bin}-${arch}-unknown-none"
       alias="$ROOT/target/coreutils-${bin}-${arch}-unknown-none"
-      if [[ -f "$src" ]]; then
+      if [ -f "$src" ]; then
         cp "$src" "$alias"
-      elif [[ -f "$alias" ]]; then
+      elif [ -f "$alias" ]; then
         cp "$alias" "$src"
       fi
     done
   done
-}
+)
 
 if myos_dropbear_is_current; then
   echo "dropbear ELFs up to date"
@@ -55,57 +44,58 @@ myos_ensure_llvm_bin
 WORK="$ROOT/target/dropbear-myos-build"
 LTC="$WORK/libtomcrypt"
 LTM="$WORK/libtommath"
-OUT_COMMON=("-ldbm" -Dbmain -Dbmain)
+OUT_COMMON="-ldbm -Dbmain -Dbmain"
 
 rm -f "$ROOT/target/.myos-dropbear-version"
 
 # ---- libtomcrypt.a per arch (plain C; exclude test/primitives dirs) ----
-build_ltc() {
-  local arch="$1" triple="$2"
-  local inc="$ROOT/target/newlib-${arch}/${triple}/include"
-  local lib="$ROOT/target/newlib-${arch}/${triple}/lib"
-  local out="$ROOT/target/dropbear-ltc-${arch}.a"
-  local cc="${triple}-cc"
-  local objs=()
-  local f base
-  while IFS= read -r f; do
+build_ltc() (
+  arch="$1" triple="$2"
+  inc="$ROOT/target/newlib-${arch}/${triple}/include"
+  lib="$ROOT/target/newlib-${arch}/${triple}/lib"
+  out="$ROOT/target/dropbear-ltc-${arch}.a"
+  cc="${triple}-cc"
+  # The objects are the positional parameters.
+  set --
+  for f in $(cd "$LTC" && find src -name '*.c' ! -path 'src/primitives/*' | sort); do
     base="ltc_${arch}_$(echo "$f" | sed 's|^src/||; s|/|_|g; s|\.c$||')"
-    local o="$ROOT/target/${base}.o"
-    if [[ ! -f "$o" ]]; then
+    o="$ROOT/target/${base}.o"
+    if [ ! -f "$o" ]; then
       # sober128tab.c is a bare table file (no includes) — feed it the typedef header.
-      local extra=()
-      [[ "$f" == *sober128tab.c ]] && extra=("-include" "tomcrypt_cfg.h")
+      extra=""
+      case "$f" in *sober128tab.c) extra="-include tomcrypt_cfg.h" ;; esac
+      # shellcheck disable=SC2086
       "$cc" -ffreestanding -fPIC -O2 -DLTC_SOURCE -I"$LTC/src/headers" -I"$LTM" -I"$WORK/src" \
         -include "$HERE/myos_compat.h" -isystem "$inc" \
-        "${extra[@]+"${extra[@]}"}" -c "$LTC/$f" -o "$o"
+        $extra -c "$LTC/$f" -o "$o"
     fi
-    objs+=("$o")
-  done < <(cd "$LTC" && find src -name '*.c' ! -path 'src/primitives/*' | sort)
+    set -- "$@" "$o"
+  done
   rm -f "$out"
-  "${triple}-ar" crs "$out" "${objs[@]}"
+  "${triple}-ar" crs "$out" "$@"
   echo "$out"
-}
+)
 
 # ---- libtommath.a per arch ----
-build_ltm() {
-  local arch="$1" triple="$2"
-  local inc="$ROOT/target/newlib-${arch}/${triple}/include"
-  local out="$ROOT/target/dropbear-ltm-${arch}.a"
-  local cc="${triple}-cc"
-  local objs=()
-  local f base
-  while IFS= read -r f; do
+build_ltm() (
+  arch="$1" triple="$2"
+  inc="$ROOT/target/newlib-${arch}/${triple}/include"
+  out="$ROOT/target/dropbear-ltm-${arch}.a"
+  cc="${triple}-cc"
+  # The objects are the positional parameters.
+  set --
+  for f in $(cd "$LTM" && find . -maxdepth 1 -name '*.c' | sort); do
     base="ltm_${arch}_$(echo "$f" | sed 's|^|L|; s|/|_|g; s|\.c$||')"
-    local o="$ROOT/target/${base}.o"
-    if [[ ! -f "$o" ]]; then
+    o="$ROOT/target/${base}.o"
+    if [ ! -f "$o" ]; then
       "$cc" -ffreestanding -fPIC -O2 -I"$LTM" -I"$WORK/src" -isystem "$inc" -c "$LTM/$f" -o "$o"
     fi
-    objs+=("$o")
-  done < <(cd "$LTM" && find . -maxdepth 1 -name '*.c' | sort)
+    set -- "$@" "$o"
+  done
   rm -f "$out"
-  "${triple}-ar" crs "$out" "${objs[@]}"
+  "${triple}-ar" crs "$out" "$@"
   echo "$out"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   triple="${arch}-unknown-myos"
@@ -119,9 +109,10 @@ for arch in x86_64 aarch64 riscv64; do
   # -nostdinc: never leak host glibc headers into the guest build
   # (newlib + clang resource + port stubs only).
   clang_res="$(clang -print-resource-dir)/include"
-  dbflags=(-ffreestanding -fPIC -O2 -nostdinc -DDEBUG_TRACE=4
-    -Wno-incompatible-function-pointer-types
-    -isystem "$clang_res" -isystem "$inc" -I"$HERE/include" -I"$LTM")
+  # The flags are the positional parameters.
+  set -- -ffreestanding -fPIC -O2 -nostdinc -DDEBUG_TRACE=4 \
+    -Wno-incompatible-function-pointer-types \
+    -isystem "$clang_res" -isystem "$inc" -I"$HERE/include" -I"$LTM"
 
   # The libraries' objects afresh: the script runs when an input changed,
   # the compiler's flags included.
@@ -131,9 +122,9 @@ for arch in x86_64 aarch64 riscv64; do
 
   # The long-double conversions newlib's printf wants (trunctfdf2.c), on
   # aarch64 and riscv64 (same as the tcp-listen smoke).
-  extra_objs=()
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
-    extra_objs+=("$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o")
+  extra_objs=""
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
+    extra_objs="$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$ROOT/target/tcp-listen-smoke-${arch}-trunctfdf2.o"
   fi
@@ -141,28 +132,28 @@ for arch in x86_64 aarch64 riscv64; do
   # dropbear objects, compiled afresh: a rebuild means the sources (or the
   # patches) changed, and reused objects would keep the old code.
   rm -f "$ROOT/target/db_${arch}_"*.o
-  objs=()
-  while IFS= read -r f; do
+  objs=""
+  for f in $(cd "$WORK" && ls src/*.c | sort); do
     base="db_${arch}_$(basename "$f" .c)"
     local_o="$ROOT/target/${base}.o"
-    if [[ ! -f "$local_o" ]]; then
-      "$cc" "${dbflags[@]}" \
+    if [ ! -f "$local_o" ]; then
+      "$cc" "$@" \
         -I"$WORK/src" -I"$LTC/src/headers" \
         -DHAVE_CONFIG_H -D_GNU_SOURCE \
         -include "$HERE/myos_compat.h" \
         -c "$WORK/$f" -o "$local_o"
     fi
-    objs+=("$local_o")
-  done < <(cd "$WORK" && ls src/*.c | sort)
+    objs="$objs $local_o"
+  done
   # port shims
   shim_o="$ROOT/target/db_${arch}_myos_shims.o"
-  "$cc" "${dbflags[@]}" -I"$WORK/src" -include "$HERE/myos_compat.h" -c "$HERE/myos_shims.c" -o "$shim_o"
+  "$cc" "$@" -I"$WORK/src" -include "$HERE/myos_compat.h" -c "$HERE/myos_shims.c" -o "$shim_o"
   builtins_o="$ROOT/target/dropbear-builtins-${arch}.o"
-  "$cc" "${dbflags[@]}" -c "$HERE/myos_builtins.c" -o "$builtins_o"
+  "$cc" "$@" -c "$HERE/myos_builtins.c" -o "$builtins_o"
 
   # link sshd (dropbear) and dbclient via dropbearmulti-style split ELFs
   # SVR = common + clisvr + svr; CLI = common + clisvr + cli
-  mapfile -t SVR < <(cd "$WORK" && ls src/dbutil.c src/buffer.c src/dbhelpers.c src/dss.c src/bignum.c \
+  SVR="$(cd "$WORK" && ls src/dbutil.c src/buffer.c src/dbhelpers.c src/dss.c src/bignum.c \
     src/signkey.c src/rsa.c src/dbrandom.c src/queue.c src/atomicio.c src/compat.c \
     src/fake-rfc2553.c src/ltc_prng.c src/ecc.c src/ecdsa.c src/sk-ecdsa.c src/crypto_desc.c \
     src/curve25519.c src/ed25519.c src/sk-ed25519.c src/dbmalloc.c src/dbctype.c \
@@ -176,8 +167,8 @@ for arch in x86_64 aarch64 riscv64; do
     src/svr-kex.c src/svr-auth.c src/sshpty.c src/svr-authpubkey.c \
     src/svr-authpubkeyoptions.c src/svr-session.c src/svr-service.c \
     src/svr-chansession.c src/svr-runopts.c src/svr-main.c src/svr-tcpfwd.c \
-    src/svr-streamfwd.c src/svr-forward.c 2>/dev/null | sort -u)
-  mapfile -t CLI < <(cd "$WORK" && ls src/dbutil.c src/buffer.c src/dbhelpers.c src/dss.c src/bignum.c \
+    src/svr-streamfwd.c src/svr-forward.c 2>/dev/null | sort -u || true)"
+  CLI="$(cd "$WORK" && ls src/dbutil.c src/buffer.c src/dbhelpers.c src/dss.c src/bignum.c \
     src/signkey.c src/rsa.c src/dbrandom.c src/queue.c src/atomicio.c src/compat.c \
     src/fake-rfc2553.c src/ltc_prng.c src/ecc.c src/ecdsa.c src/sk-ecdsa.c src/crypto_desc.c \
     src/curve25519.c src/ed25519.c src/sk-ed25519.c src/dbmalloc.c src/dbctype.c \
@@ -191,37 +182,40 @@ for arch in x86_64 aarch64 riscv64; do
     src/cli-main.c src/cli-auth.c src/cli-authpasswd.c src/cli-kex.c \
     src/cli-session.c src/cli-runopts.c src/cli-chansession.c \
     src/cli-authpubkey.c src/cli-tcpfwd.c src/cli-channel.c src/cli-readconf.c \
-    2>/dev/null | sort -u)
+    2>/dev/null | sort -u || true)"
 
   o_of() {
     echo "$ROOT/target/db_${arch}_$(basename "$1" .c).o"
   }
 
-  svr_objs=()
-  for f in "${SVR[@]}"; do svr_objs+=("$(o_of "$f")"); done
-  cli_objs=()
-  for f in "${CLI[@]}"; do cli_objs+=("$(o_of "$f")"); done
+  svr_objs=""
+  for f in $SVR; do svr_objs="$svr_objs $(o_of "$f")"; done
+  cli_objs=""
+  for f in $CLI; do cli_objs="$cli_objs $(o_of "$f")"; done
 
+  # shellcheck disable=SC2086
   ld.lld -pie --no-dynamic-linker -o "$ROOT/target/dropbear-${none_triple}" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${svr_objs[@]}" "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" "${extra_objs[@]+"${extra_objs[@]}"}" \
+    "$lib/crt0.o" $svr_objs "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" ${extra_objs:+"$extra_objs"} \
     -L"$lib" --start-group -lc -lgloss -lg --end-group || { echo "sshd link failed ($arch)"; exit 1; }
 
+  # shellcheck disable=SC2086
   ld.lld -pie --no-dynamic-linker -o "$ROOT/target/dbclient-${none_triple}" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${cli_objs[@]}" "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" "${extra_objs[@]+"${extra_objs[@]}"}" \
+    "$lib/crt0.o" $cli_objs "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" ${extra_objs:+"$extra_objs"} \
     -L"$lib" --start-group -lc -lgloss -lg --end-group || { echo "dbclient link failed ($arch)"; exit 1; }
 
   # dropbearkey: host-key generation in-guest (pre-generate instead of -R delay)
-  key_objs=()
+  key_objs=""
   for f in $(cd "$WORK" && ls src/dropbearkey.c); do
-    key_objs+=("$(o_of "$f")")
+    key_objs="$key_objs $(o_of "$f")"
   done
+  # shellcheck disable=SC2086,SC2046
   ld.lld -pie --no-dynamic-linker -o "$ROOT/target/dropbearkey-${none_triple}" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "${key_objs[@]}" "${svr_objs[@]:0:0}" \
+    "$lib/crt0.o" $key_objs \
     $(for f in src/dbutil.c src/buffer.c src/dbhelpers.c src/dss.c src/bignum.c src/signkey.c src/rsa.c src/dbrandom.c src/queue.c src/atomicio.c src/compat.c src/fake-rfc2553.c src/ltc_prng.c src/ecc.c src/ecdsa.c src/sk-ecdsa.c src/crypto_desc.c src/curve25519.c src/ed25519.c src/sk-ed25519.c src/dbmalloc.c src/dbctype.c src/gensignkey.c src/gendss.c src/genrsa.c src/gened25519.c; do echo "$(o_of "$f")"; done) \
-    "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" "${extra_objs[@]+"${extra_objs[@]}"}" \
+    "$shim_o" "$builtins_o" "$LTC_A" "$LTM_A" ${extra_objs:+"$extra_objs"} \
     -L"$lib" --start-group -lc -lgloss -lg --end-group || { echo "dropbearkey link failed ($arch)"; exit 1; }
 
   for bin in dropbear dbclient dropbearkey; do

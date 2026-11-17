@@ -1,9 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # CI sysroot job body (build/package + optional GHCR). Not used by boot.
 set -euo pipefail
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true
 ./scripts/ci-registry.sh pull sysroot || true
-source ./toolchain/std/lib.sh
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. ./toolchain/std/lib.sh
 if myos_sysroot_is_current; then
   echo "sysroot up to date"
 else

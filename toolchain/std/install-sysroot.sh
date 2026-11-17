@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Install a packaged myos sysroot tarball into target/myos-sysroot.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 
 TARBALL="${1:?usage: install-sysroot.sh <myos-sysroot-*.tar.zst|*.tar.gz>}"
 
-if [[ ! -f "$TARBALL" ]]; then
+if [ ! -f "$TARBALL" ]; then
   echo "error: tarball not found: $TARBALL" >&2
   exit 1
 fi
@@ -37,13 +37,13 @@ case "$TARBALL" in
     ;;
 esac
 
-if [[ ! -d "$tmpdir/myos-sysroot" ]]; then
+if [ ! -d "$tmpdir/myos-sysroot" ]; then
   echo "error: tarball missing top-level myos-sysroot/ directory" >&2
   exit 1
 fi
 mv "$tmpdir/myos-sysroot" "$MYOS_SYSROOT"
 
-if [[ ! -f "$MYOS_SYSROOT/myos-manifest.toml" ]]; then
+if [ ! -f "$MYOS_SYSROOT/myos-manifest.toml" ]; then
   echo "error: extracted tree missing myos-manifest.toml" >&2
   exit 1
 fi

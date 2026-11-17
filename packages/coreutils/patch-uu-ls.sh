@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Harden uu_ls TextOutput::new against SystemTime underflow on myos.
 # myos SystemTime::now() may be near UNIX_EPOCH; `now - 6 months` panicked (exit 101).
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LS="$ROOT/user/uutils-coreutils/src/uu/ls/src/ls.rs"
-[[ -f "$LS" ]] || exit 0
+[ -f "$LS" ] || exit 0
 if grep -q 'checked_sub(Duration::new(31_556_952 / 2, 0))' "$LS"; then
   exit 0
 fi

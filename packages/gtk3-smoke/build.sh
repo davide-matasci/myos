@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Link GTK 3's smoke (smoke.c) for the three arches against mlibc and
 # packages/gtk3's archives (over the text, image and X libraries and
 # GLib); C, linked as C++ (HarfBuzz is). A package of its own, not gtk3's,
@@ -6,12 +6,12 @@
 # libc's C first) relinks it and rebuilds no library (docs/ports.md "Cache
 # keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/gtk3-smoke/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 
 if myos_gtk3_smoke_is_current; then
   echo "gtk3-smoke up to date"

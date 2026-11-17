@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a patched Rust library tree with myos std support.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 
 RUST_SRC="${RUST_SRC:-$(rustc +"$MYOS_NIGHTLY" --print sysroot)/lib/rustlib/src/rust/library}"
 PATCH_DIR="${PATCH_DIR:-$ROOT/target/rust-std-patch/library}"
@@ -21,7 +21,7 @@ cp -a "$TOOLCHAIN" "$MYOS_SYSROOT"
 cp -a "$PATCH_DIR/." "$MYOS_SYSROOT/lib/rustlib/src/rust/library/"
 chmod +x "$ROOT/scripts/myos-rustc.sh"
 
-for triple in "${MYOS_SYSROOT_TRIPLES[@]}"; do
+for triple in $MYOS_SYSROOT_TRIPLES; do
   myos_install_target_spec "$triple"
 done
 

@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build a versioned myos sysroot with precompiled std for x86_64 and AArch64.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 
 if myos_sysroot_is_current; then
   echo "myos sysroot up to date at $MYOS_SYSROOT"
@@ -15,7 +15,7 @@ fi
 echo "Building myos sysroot (toolchain $MYOS_NIGHTLY)..."
 "$ROOT/toolchain/std/prepare.sh"
 
-for triple in "${MYOS_SYSROOT_TRIPLES[@]}"; do
+for triple in $MYOS_SYSROOT_TRIPLES; do
   echo "==> prebuilding std for $triple"
   myos_cargo_build_std "$triple" release
 done

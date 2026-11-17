@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Assert that ci-build.tar.zst (already extracted) has everything boot / boot-mini
 # need to run QEMU. NO compile / rebuild / registry / toolchain install.
 #
@@ -7,11 +7,11 @@
 # fail the build job's pack (scripts/ci-pack-build-artifacts.sh).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 require() {
-  if [[ -e "$1" ]]; then
+  if [ -e "$1" ]; then
     return 0
   fi
   echo "::error::required CI artifact missing: $1"
@@ -41,15 +41,18 @@ done
 # --all-files all): the ELFs, manifests, data files and trees the initramfs
 # (image ports) and the packages (a full boot serves them) are packed from.
 while read -r f; do
+  [ -n "$f" ] || continue
   require "$f" || missing=1
-done < <(./scripts/ports.sh --all-files all)
+done <<EOF
+$(./scripts/ports.sh --all-files all)
+EOF
 
 # The Raspberry Pi 3's boot files (the rpi3 boot; boot/rpi3/build.sh).
 for f in armstub8-myos.bin armstub8.sha256 u-boot.bin u-boot.version bcm2710-rpi-3-b.dtb; do
   require "target/rpi3/$f" || missing=1
 done
 
-if [[ "$missing" -ne 0 ]]; then
+if [ "$missing" -ne 0 ]; then
   echo "::error::ci-build.tar.zst is incomplete for boot/boot-mini."
   echo "::error::The build job must pack these via scripts/ci-pack-build-artifacts.sh"
   echo "::error::(kernels --print-members + ports.sh --all-files all). Boot jobs do not rebuild."

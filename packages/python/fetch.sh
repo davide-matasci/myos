@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the pinned official CPython tarball for the myos package.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=packages/python/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 TARBALL="$ROOT/target/Python-${PYTHON_VERSION}.tar.xz"
 
@@ -18,9 +18,9 @@ fetch() {
   fi
 }
 
-if [[ -f "$TARBALL" ]]; then
+if [ -f "$TARBALL" ]; then
   got="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
-  if [[ "$got" != "$PYTHON_SHA256" ]]; then
+  if [ "$got" != "$PYTHON_SHA256" ]; then
     echo "python tarball checksum mismatch; refetching" >&2
     rm -f "$TARBALL"
     fetch
@@ -30,7 +30,7 @@ else
 fi
 
 got="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
-if [[ "$got" != "$PYTHON_SHA256" ]]; then
+if [ "$got" != "$PYTHON_SHA256" ]; then
   echo "python tarball sha256 mismatch: $got != $PYTHON_SHA256" >&2
   exit 1
 fi

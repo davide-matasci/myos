@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build GLib (GLib, GObject, GIO, GModule, GThread) as static
 # libraries against mlibc for the three arches, with what it links that
 # mlibc lacks: libffi, GNU libiconv and proxy-libintl (gettext returning
@@ -13,14 +13,14 @@
 # smoke, are the glib-tools package's to link (packages/glib-tools): a
 # library port ships none (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/glib/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/glib/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_glib_is_current; then
   echo "glib libs up to date"
@@ -48,12 +48,12 @@ T="$ROOT/target"
 
 # configure_make NAME SRC DIR [ARG...]: an autoconf build of SRC in DIR
 # with the arch's cross cc, installed into $out.
-configure_make() {
-  local name="$1" src="$2" dir="$3" guess
+configure_make() (
+  name="$1" src="$2" dir="$3"
   shift 3
   guess="$src/config.guess"
-  [[ -f "$guess" ]] || guess="$src/build-aux/config.guess"
-  (cd "$dir" && CC="${cc[0]}" AR="$AR_BIN" RANLIB="$RANLIB_BIN" \
+  [ -f "$guess" ] || guess="$src/build-aux/config.guess"
+  (cd "$dir" && CC="$cc" AR="$AR_BIN" RANLIB="$RANLIB_BIN" \
     "$src/configure" --host="${arch}-unknown-none" --build="$(sh "$guess")" \
       --prefix="$out" --enable-static --disable-shared "$@" >configure.log 2>&1) \
     || { tail -30 "$dir/configure.log" >&2; exit 1; }
@@ -61,7 +61,7 @@ configure_make() {
     || { grep -n "error:" "$dir/make.log" | head -20 >&2; tail -20 "$dir/make.log" >&2; exit 1; }
   make -C "$dir" install >"$dir/install.log" 2>&1 || { tail -20 "$dir/install.log" >&2; exit 1; }
   echo "$name ($arch) -> $out"
-}
+)
 
 # pc NAME VERSION LIBS: a pkg-config file for a library of $out.
 pc() {
@@ -78,17 +78,16 @@ Cflags: -I\${includedir}
 EOF
 }
 
-build_arch() {
-  local arch="$1"
-  local build="$T/glib-build-$arch"
-  local out="$T/glib-mlibc-${arch}"
-  local AR_BIN="${arch}-unknown-myos-ar" RANLIB_BIN="${arch}-unknown-myos-ranlib"
-  local f
+build_arch() (
+  arch="$1"
+  build="$T/glib-build-$arch"
+  out="$T/glib-mlibc-${arch}"
+  AR_BIN="${arch}-unknown-myos-ar" RANLIB_BIN="${arch}-unknown-myos-ranlib"
   echo "==> glib ($arch, mlibc)"
   rm -rf "$build" "$out"
-  mkdir -p "$build"/{libffi,libiconv,intl} "$out/lib/pkgconfig" "$out/include"
+  mkdir -p "$build/libffi" "$build/libiconv" "$build/intl" "$out/lib/pkgconfig" "$out/include"
   myos_write_cross_cc "$arch" "$build/cc" -O2
-  local cc=("$build/cc")
+  cc="$build/cc"
 
   # zlib (ports/zlib's mlibc build).
   cp "$T/zlib-mlibc-$arch/lib/libz.a" "$out/lib/"
@@ -102,7 +101,7 @@ build_arch() {
   sed -i 's|^Cflags:.*|& -DPCRE2_STATIC|' "$out/lib/pkgconfig/libpcre2-8.pc"
 
   # proxy-libintl, without its dlopen of a real libintl (STUB_ONLY).
-  "${cc[@]}" -DSTUB_ONLY -DG_INTL_STATIC_COMPILATION -c "$T/proxy-libintl-src/libintl.c" \
+  "$cc" -DSTUB_ONLY -DG_INTL_STATIC_COMPILATION -c "$T/proxy-libintl-src/libintl.c" \
     -o "$build/intl/libintl.o"
   "$AR_BIN" rcs "$out/lib/libintl.a" "$build/intl/libintl.o"
   cp "$T/proxy-libintl-src/libintl.h" "$out/include/"
@@ -120,11 +119,11 @@ build_arch() {
   # does). needs_exe_wrapper: meson runs nothing it builds; GLib's run
   # checks take their defaults (its own printf, gnulib's, for the C99 and
   # positional ones).
-  local cpu="$arch"
+  cpu="$arch"
   case "$arch" in aarch64) cpu=armv8-a ;; riscv64) cpu=rv64gc ;; esac
   cat >"$build/cross.txt" <<EOC
 [binaries]
-c = '${cc[0]}'
+c = '$cc'
 ar = '$AR_BIN'
 strip = '${arch}-unknown-myos-strip'
 pkg-config = 'pkg-config'
@@ -163,18 +162,18 @@ EOC
   cp "$build/glib/gio/gio.p/"*.o "$out/lib/gio-tool/"
   rm -rf "$build"
   echo "glib ($arch) -> $out"
-}
+)
 
 # GLib for the build host, with the host's compiler, over host builds of
 # libffi, PCRE2 and zlib from the same pins: its glib-compile-resources
 # and glib-compile-schemas into target/glib-host/bin (the cross build's
 # run on myos only), with its Python generators, glib-mkenums,
 # glib-genmarshal and gdbus-codegen, configured for the host.
-build_host() {
-  local build="$T/glib-host-build" out="$T/glib-host"
+build_host() (
+  build="$T/glib-host-build" out="$T/glib-host"
   echo "==> glib (build host)"
   rm -rf "$build" "$out"
-  mkdir -p "$build"/{libffi,pcre2,zlib} "$out/bin"
+  mkdir -p "$build/libffi" "$build/pcre2" "$build/zlib" "$out/bin"
   (cd "$build/libffi" && "$T/libffi-src/configure" --prefix="$build/prefix" --disable-shared \
       --disable-docs --disable-multi-os-directory >configure.log 2>&1 && make -j"$(nproc)" install \
       >make.log 2>&1) || { tail -20 "$build/libffi/make.log" "$build/libffi/configure.log" >&2; exit 1; }
@@ -201,7 +200,7 @@ build_host() {
     "$out/share/glib-2.0/codegen/"
   rm -rf "$build"
   echo "glib (build host) -> $out/bin"
-}
+)
 
 build_host
 for arch in ${MYOS_GLIB_ARCHES:-x86_64 aarch64 riscv64}; do

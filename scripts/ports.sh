@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The port descriptors: every directory with a `port.env` under ports/,
 # user/ and toolchain/ (in the image) or packages/ (built and published,
 # not in the image) is a port. This library reads them for the build, the
 # registry and CI, so a port moves between the two roles by moving its
 # directory. See docs/ports.md for the keys.
 #
-#   source scripts/ports.sh; myos_port_load vim; echo "$PORT_FILES"
+#   ROOT=...; . "$ROOT/scripts/ports.sh"; myos_port_load vim; echo "$PORT_FILES"
 #   scripts/ports.sh --list [image|package|all]   names, one per line
 #   scripts/ports.sh --outputs NAME               cached outputs (target/...)
 #   scripts/ports.sh --image-files NAME [ARCH]    files the image (or the package) needs (target/...)
@@ -19,19 +19,28 @@
 #   scripts/ports.sh --deps NAME                  the ports NAME builds against, transitively, in build order
 #   scripts/ports.sh --matrix                     ci-ports.yml ports matrix (JSON)
 
-MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-MYOS_ARCHES=(x86_64 aarch64 riscv64)
+# A sourced file cannot tell where it is: the script that sources this one
+# says where the checkout is (MYOS_PORTS_ROOT, MYOS_ROOT or ROOT).
+if [ "${0##*/}" = ports.sh ]; then
+  MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+else
+  MYOS_PORTS_ROOT="${MYOS_PORTS_ROOT:-${ROOT:-${MYOS_ROOT:?set ROOT to the checkout before sourcing scripts/ports.sh}}}"
+fi
+MYOS_ARCHES="x86_64 aarch64 riscv64"
+
+# There is no `local` in POSIX sh: a function's own variables are named
+# `_<function's initials>_<name>`, so that none overwrites a caller's.
 
 # `<role> <name> <dir>` per port, image ports first. The name is the
 # directory's unless the descriptor sets PORT_NAME.
 myos_port_scan() {
-  local role base d name
+  # The loop is one side of a pipe, a subshell: its variables stay in it.
   for role in image package; do
-    local bases="ports user toolchain"
-    [[ "$role" == package ]] && bases="packages"
+    bases="ports user toolchain"
+    [ "$role" = package ] && bases="packages"
     for base in $bases; do
       for d in "$MYOS_PORTS_ROOT/$base"/*/; do
-        [[ -f "$d/port.env" ]] || continue
+        [ -f "$d/port.env" ] || continue
         d="${d%/}"
         name="$(sed -n 's/^PORT_NAME=//p' "$d/port.env" | head -1)"
         echo "$role ${name:-${d##*/}} $d"
@@ -47,57 +56,85 @@ myos_port_scan() {
 MYOS_PORT_DIRS="$(myos_port_scan)"
 
 myos_port_names() {
-  local want="${1:-all}" role name dir
-  while read -r role name dir; do
-    if [[ "$want" == all || "$want" == "$role" ]]; then
-      echo "$name"
+  _pn_want="${1:-all}"
+  while read -r _pn_role _pn_name _pn_dir; do
+    if [ "$_pn_want" = all ] || [ "$_pn_want" = "$_pn_role" ]; then
+      echo "$_pn_name"
     fi
-  done <<<"$MYOS_PORT_DIRS"
+  done <<EOF
+$MYOS_PORT_DIRS
+EOF
 }
 
 # Load NAME's descriptor into PORT_* (PORT_NAME, PORT_DIR, PORT_ROLE added).
 myos_port_load() {
-  local want="$1" role name dir
   PORT_KIND=port PORT_CORE=0 PORT_DEPS="" PORT_RDEPS="" PORT_BUILD="" PORT_STAMP="" PORT_OUTPUTS="" PORT_FILES="" PORT_TEST_FILES=""
   PORT_READY="" PORT_BIN="" PORT_WATCH="" PORT_PREPARE="" PORT_TEST="" PORT_HOST=""
   PORT_ARCH_JOBS=0 PORT_TIMEOUT=45 PORT_LINK_OUTPUTS="" PORT_LIBRARY=0
-  while read -r role name dir; do
-    if [[ "$name" == "$want" ]]; then
-      PORT_NAME="$name" PORT_DIR="$dir" PORT_ROLE="$role"
+  while read -r _pl_role _pl_name _pl_dir; do
+    if [ "$_pl_name" = "$1" ]; then
+      PORT_NAME="$_pl_name" PORT_DIR="$_pl_dir" PORT_ROLE="$_pl_role"
       # shellcheck disable=SC1091
-      source "$dir/port.env"
+      . "$_pl_dir/port.env"
       return 0
     fi
-  done <<<"$MYOS_PORT_DIRS"
-  echo "error: no port named $want (ports/*/port.env, packages/*/port.env)" >&2
+  done <<EOF
+$MYOS_PORT_DIRS
+EOF
+  echo "error: no port named $1 (ports/*/port.env, packages/*/port.env)" >&2
   return 1
 }
 
 # Expand {arch} {none} {myos} {kernel} in a path for one arch.
 myos_port_expand() {
-  local s="$1" arch="$2" kernel
-  case "$arch" in
-    x86_64) kernel="x86_64-unknown-none" ;;
-    aarch64) kernel="aarch64-unknown-none-softfloat" ;;
-    riscv64) kernel="riscv64imac-unknown-none-elf" ;;
-    *) kernel="$arch-unknown-none" ;;
+  case "$2" in
+    x86_64) _pe_kernel="x86_64-unknown-none" ;;
+    aarch64) _pe_kernel="aarch64-unknown-none-softfloat" ;;
+    riscv64) _pe_kernel="riscv64imac-unknown-none-elf" ;;
+    *) _pe_kernel="$2-unknown-none" ;;
   esac
-  s="${s//\{arch\}/$arch}"
-  s="${s//\{none\}/$arch-unknown-none}"
-  s="${s//\{myos\}/$arch-unknown-myos}"
-  s="${s//\{kernel\}/$kernel}"
-  echo "$s"
+  myos_port_replace "$1" "{arch}" "$2"
+  myos_port_replace "$_pr_out" "{none}" "$2-unknown-none"
+  myos_port_replace "$_pr_out" "{myos}" "$2-unknown-myos"
+  myos_port_replace "$_pr_out" "{kernel}" "$_pe_kernel"
+  echo "$_pr_out"
+}
+
+# _pr_out = $1 with every $2 replaced by $3 (plain strings, no patterns),
+# without a `sed` per path: the expansions run by the hundred.
+myos_port_replace() {
+  _pr_out="" _pr_rest="$1"
+  while :; do
+    case "$_pr_rest" in
+      *"$2"*)
+        _pr_out="$_pr_out${_pr_rest%%"$2"*}$3"
+        _pr_rest="${_pr_rest#*"$2"}"
+        ;;
+      *) _pr_out="$_pr_out$_pr_rest"; return 0 ;;
+    esac
+  done
+}
+
+# Split a PORT_FILES entry (`kind:a:b`) into _ps_kind, _ps_a and _ps_b.
+myos_port_spec() {
+  _ps_ifs="$IFS"
+  IFS=:
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  set +f
+  IFS="$_ps_ifs"
+  _ps_kind="${1:-}" _ps_a="${2:-}" _ps_b="${3:-}"
 }
 
 # The build script of the loaded port, repo-relative ("" = nothing to
 # build): PORT_BUILD with a `/` is repo-relative, otherwise in the port dir.
 myos_port_build_script() {
-  [[ -n "$PORT_BUILD" ]] || return 0
-  if [[ "$PORT_BUILD" == */* ]]; then
-    echo "$PORT_BUILD"
-  else
-    echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$PORT_BUILD"
-  fi
+  [ -n "$PORT_BUILD" ] || return 0
+  case "$PORT_BUILD" in
+    */*) echo "$PORT_BUILD" ;;
+    *) echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$PORT_BUILD" ;;
+  esac
 }
 
 # The version stamp of the loaded port (target/...): what its build script
@@ -105,10 +142,12 @@ myos_port_build_script() {
 # one per arch for a port built an arch at a time (PORT_ARCH_JOBS,
 # `.myos-<name>-{arch}-version`), for the ARCHes given (default: all).
 myos_port_stamp() {
-  local stamp="${PORT_STAMP:-.myos-$PORT_NAME-version}" arch
-  [[ "$PORT_ARCH_JOBS" == 1 && -z "$PORT_STAMP" ]] && stamp=".myos-$PORT_NAME-{arch}-version"
-  for arch in "${@:-${MYOS_ARCHES[@]}}"; do
-    echo "target/$(myos_port_expand "$stamp" "$arch")"
+  _st_stamp="${PORT_STAMP:-.myos-$PORT_NAME-version}"
+  [ "$PORT_ARCH_JOBS" = 1 ] && [ -z "$PORT_STAMP" ] && _st_stamp=".myos-$PORT_NAME-{arch}-version"
+  # shellcheck disable=SC2086
+  [ $# -gt 0 ] || set -- $MYOS_ARCHES
+  for _st_arch in "$@"; do
+    echo "target/$(myos_port_expand "$_st_stamp" "$_st_arch")"
   done | sort -u
 }
 
@@ -117,10 +156,11 @@ myos_port_stamp() {
 # (`.myos-<name>-<arch>-outputs`) for a port built an arch at a time, for
 # the ARCHes given (default: all).
 myos_port_outputs_stamp() {
-  local arch
-  if [[ "$PORT_ARCH_JOBS" == 1 ]]; then
-    for arch in "${@:-${MYOS_ARCHES[@]}}"; do
-      echo "target/.myos-$PORT_NAME-$arch-outputs"
+  if [ "$PORT_ARCH_JOBS" = 1 ]; then
+    # shellcheck disable=SC2086
+    [ $# -gt 0 ] || set -- $MYOS_ARCHES
+    for _os_arch in "$@"; do
+      echo "target/.myos-$PORT_NAME-$_os_arch-outputs"
     done
   else
     echo "target/.myos-$PORT_NAME-outputs"
@@ -132,11 +172,10 @@ myos_port_outputs_stamp() {
 # alone: what its compile flavour leaves out (docs/ports.md "Cache keys").
 myos_port_link_outputs() {
   myos_port_load "$1" || return 1
-  local arches=("${MYOS_ARCHES[@]}") o arch
-  [[ -n "${2:-}" ]] && arches=("$2")
-  for o in $PORT_LINK_OUTPUTS; do
-    for arch in "${arches[@]}"; do
-      echo "target/$(myos_port_expand "$o" "$arch")"
+  _lo_arches="${2:-$MYOS_ARCHES}"
+  for _lo_o in $PORT_LINK_OUTPUTS; do
+    for _lo_arch in $_lo_arches; do
+      echo "target/$(myos_port_expand "$_lo_o" "$_lo_arch")"
     done
   done | sort -u
 }
@@ -145,20 +184,25 @@ myos_port_link_outputs() {
 # every arch, or for ARCH alone (files or directories under target/).
 myos_port_outputs() {
   myos_port_load "$1" || return 1
-  [[ -n "$PORT_BUILD" ]] || return 0
-  local arches=("${MYOS_ARCHES[@]}") o arch path
-  [[ -n "${2:-}" ]] && arches=("$2")
-  myos_port_stamp "${arches[@]}"
-  myos_port_outputs_stamp "${arches[@]}"
-  for o in $PORT_OUTPUTS; do
-    for arch in "${arches[@]}"; do
-      path="target/$(myos_port_expand "$o" "$arch")"
-      if [[ "$path" == *\** ]]; then
-        # A glob (sbase-*-{none}): only what exists, never a `-src` tree.
-        compgen -G "$MYOS_PORTS_ROOT/$path" | sed "s|^$MYOS_PORTS_ROOT/||" | grep -v -- '-src$\|-build$' || true
-      else
-        echo "$path"
-      fi
+  [ -n "$PORT_BUILD" ] || return 0
+  _po_arches="${2:-$MYOS_ARCHES}"
+  # shellcheck disable=SC2086
+  myos_port_stamp $_po_arches
+  # shellcheck disable=SC2086
+  myos_port_outputs_stamp $_po_arches
+  for _po_o in $PORT_OUTPUTS; do
+    for _po_arch in $_po_arches; do
+      _po_path="target/$(myos_port_expand "$_po_o" "$_po_arch")"
+      case "$_po_path" in
+        *\**)
+          # A glob (sbase-*-{none}): only what exists, never a `-src` tree.
+          for _po_f in "$MYOS_PORTS_ROOT"/$_po_path; do
+            [ -e "$_po_f" ] || continue
+            echo "${_po_f#"$MYOS_PORTS_ROOT"/}"
+          done | grep -v -- '-src$\|-build$' || true
+          ;;
+        *) echo "$_po_path" ;;
+      esac
     done | sort -u
   done
 }
@@ -168,28 +212,28 @@ myos_port_outputs() {
 # (PORT_TEST_FILES) too.
 myos_port_image_files() {
   myos_port_load "$1" || return 1
-  local only="${2:-}" spec kind a b c arch
-  for spec in $PORT_FILES $PORT_TEST_FILES; do
-    IFS=: read -r kind a b c <<<"$spec"
-    for arch in "${MYOS_ARCHES[@]}"; do
-      [[ -z "$only" || "$only" == "$arch" ]] || continue
-      case "$kind" in
-        bin|data|tree) echo "target/$(myos_port_expand "$a" "$arch")" ;;
+  _if_only="${2:-}"
+  for _if_spec in $PORT_FILES $PORT_TEST_FILES; do
+    myos_port_spec "$_if_spec"
+    for _if_arch in $MYOS_ARCHES; do
+      [ -z "$_if_only" ] || [ "$_if_only" = "$_if_arch" ] || continue
+      case "$_ps_kind" in
+        bin|data|tree) echo "target/$(myos_port_expand "$_ps_a" "$_if_arch")" ;;
         manifest)
           # The manifest and every ELF it names (`name:/path/to/elf` lines;
           # the registry pull rewrites the paths to this checkout).
-          echo "target/$(myos_port_expand "$a" "$arch")"
-          if [[ -f "$MYOS_PORTS_ROOT/target/$(myos_port_expand "$a" "$arch")" ]]; then
-            sed -n 's/^[^:]*://p' "$MYOS_PORTS_ROOT/target/$(myos_port_expand "$a" "$arch")" \
+          echo "target/$(myos_port_expand "$_ps_a" "$_if_arch")"
+          if [ -f "$MYOS_PORTS_ROOT/target/$(myos_port_expand "$_ps_a" "$_if_arch")" ]; then
+            sed -n 's/^[^:]*://p' "$MYOS_PORTS_ROOT/target/$(myos_port_expand "$_ps_a" "$_if_arch")" \
               | sed 's|.*/target/|target/|'
           fi
           ;;
         multicall)
-          echo "target/$(myos_port_expand "$a" "$arch")"
-          echo "target/$(myos_port_expand "$b" "$arch")"
+          echo "target/$(myos_port_expand "$_ps_a" "$_if_arch")"
+          echo "target/$(myos_port_expand "$_ps_b" "$_if_arch")"
           ;;
         file) ;;
-        *) echo "error: $PORT_NAME: unknown PORT_FILES kind '$kind'" >&2; return 1 ;;
+        *) echo "error: $PORT_NAME: unknown PORT_FILES kind '$_ps_kind'" >&2; return 1 ;;
       esac
     done
   done | sort -u
@@ -199,10 +243,9 @@ myos_port_image_files() {
 # repo-relative: the image packs them under /lib/myos-tests/ports/ and the
 # kernel-inputs hash of the CI build covers them.
 myos_port_tests() {
-  local role="${1:-image}" name
-  for name in $(myos_port_names "$role"); do
-    myos_port_load "$name"
-    [[ -n "$PORT_TEST" ]] || continue
+  for _pt_name in $(myos_port_names "${1:-image}"); do
+    myos_port_load "$_pt_name"
+    [ -n "$PORT_TEST" ] || continue
     echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$PORT_TEST"
   done
 }
@@ -211,34 +254,35 @@ myos_port_tests() {
 # the toolchains first (newlib, the sysroot), then every port once the
 # ports it names in PORT_DEPS are out.
 myos_port_build_order() {
-  local role="${1:-image}" name done="" todo="" progress
-  for name in $(myos_port_names "$role"); do
-    myos_port_load "$name"
-    [[ -n "$PORT_BUILD" ]] || continue
-    if [[ "$PORT_KIND" == toolchain ]]; then
-      echo "$name"
-      done="$done $name"
+  _bo_todo=""
+  for _bo_name in $(myos_port_names "${1:-image}"); do
+    myos_port_load "$_bo_name"
+    [ -n "$PORT_BUILD" ] || continue
+    if [ "$PORT_KIND" = toolchain ]; then
+      echo "$_bo_name"
     else
-      todo="$todo $name"
+      _bo_todo="$_bo_todo $_bo_name"
     fi
   done
-  while [[ -n "$todo" ]]; do
-    progress=0
-    for name in $todo; do
-      myos_port_load "$name"
-      local dep ready=1
-      for dep in $PORT_DEPS; do
+  while [ -n "$_bo_todo" ]; do
+    _bo_progress=0
+    for _bo_name in $_bo_todo; do
+      myos_port_load "$_bo_name"
+      _bo_ready=1
+      for _bo_dep in $PORT_DEPS; do
         # A dependency outside ROLE (or a toolchain) is built by other means.
-        if [[ " $todo " == *" $dep "* ]]; then ready=0; fi
+        case " $_bo_todo " in *" $_bo_dep "*) _bo_ready=0 ;; esac
       done
-      [[ $ready -eq 1 ]] || continue
-      echo "$name"
-      done="$done $name"
-      todo="${todo/ $name/}"
-      progress=1
+      [ $_bo_ready -eq 1 ] || continue
+      echo "$_bo_name"
+      # Out of the list: its first ` name`, as `${todo/ $name/}` took it.
+      case "$_bo_todo" in
+        *" $_bo_name"*) _bo_todo="${_bo_todo%%" $_bo_name"*}${_bo_todo#*" $_bo_name"}" ;;
+      esac
+      _bo_progress=1
     done
-    if [[ $progress -eq 0 ]]; then
-      echo "error: dependency cycle among ports:$todo" >&2
+    if [ $_bo_progress -eq 0 ]; then
+      echo "error: dependency cycle among ports:$_bo_todo" >&2
       return 1
     fi
   done
@@ -250,20 +294,24 @@ myos_port_build_order() {
 # next, so that every one is keyed on the registry's outputs of the ones
 # before it (scripts/ci-build-port.sh, docs/ports.md "Cache keys").
 myos_port_deps_closure() {
-  local todo=("$1") closure=() name dep
-  while [[ ${#todo[@]} -gt 0 ]]; do
-    name="${todo[0]}"
-    todo=("${todo[@]:1}")
-    myos_port_load "$name" || return 1
-    for dep in $PORT_DEPS; do
-      case "$dep" in sysroot|newlib) continue ;; esac
-      [[ " ${closure[*]-} " == *" $dep "* ]] && continue
-      closure+=("$dep")
-      todo+=("$dep")
+  _dc_todo="$1" _dc_closure=""
+  while [ -n "$_dc_todo" ]; do
+    # The first of the list, and the list without it.
+    _dc_name="${_dc_todo%% *}"
+    case "$_dc_todo" in
+      *" "*) _dc_todo="${_dc_todo#* }" ;;
+      *) _dc_todo="" ;;
+    esac
+    myos_port_load "$_dc_name" || return 1
+    for _dc_dep in $PORT_DEPS; do
+      case "$_dc_dep" in sysroot|newlib) continue ;; esac
+      case " $_dc_closure " in *" $_dc_dep "*) continue ;; esac
+      _dc_closure="$_dc_closure $_dc_dep"
+      _dc_todo="${_dc_todo:+$_dc_todo }$_dc_dep"
     done
   done
-  for name in $(myos_port_build_order all); do
-    [[ " ${closure[*]-} " == *" $name "* ]] && echo "$name"
+  for _dc_name in $(myos_port_build_order all); do
+    case " $_dc_closure " in *" $_dc_name "*) echo "$_dc_name" ;; esac
   done
   return 0
 }
@@ -272,11 +320,10 @@ myos_port_deps_closure() {
 # arch for a port built an arch at a time (PORT_ARCH_JOBS=1: its build
 # script builds the arches MYOS_<NAME>_ARCHES lists).
 myos_port_jobs() {
-  local arch
   myos_port_load "$1" || return 1
-  if [[ "$PORT_ARCH_JOBS" == 1 ]]; then
-    for arch in "${MYOS_ARCHES[@]}"; do
-      echo "$1:$arch"
+  if [ "$PORT_ARCH_JOBS" = 1 ]; then
+    for _pj_arch in $MYOS_ARCHES; do
+      echo "$1:$_pj_arch"
     done
   else
     echo "$1"
@@ -294,28 +341,27 @@ myos_port_jobs() {
 # `<name>:<arch>` (the registry caches each arch apart); `timeout` is the
 # job's limit in minutes (PORT_TIMEOUT).
 myos_ports_matrix() {
-  local name dep deps needs_sysroot job
   printf '['
-  for name in $(myos_port_build_order all); do
-    myos_port_load "$name"
-    [[ "$PORT_KIND" != toolchain ]] || continue
-    deps="" needs_sysroot=0
-    for dep in $PORT_DEPS; do
-      case "$dep" in
-        sysroot) needs_sysroot=1 ;;
+  for _pm_name in $(myos_port_build_order all); do
+    myos_port_load "$_pm_name"
+    [ "$PORT_KIND" != toolchain ] || continue
+    _pm_deps="" _pm_needs_sysroot=0
+    for _pm_dep in $PORT_DEPS; do
+      case "$_pm_dep" in
+        sysroot) _pm_needs_sysroot=1 ;;
         newlib) ;;
-        *) deps="${deps:+$deps }$dep" ;;
+        *) _pm_deps="${_pm_deps:+$_pm_deps }$_pm_dep" ;;
       esac
     done
-    for job in $(myos_port_jobs "$name"); do
+    for _pm_job in $(myos_port_jobs "$_pm_name"); do
       printf '{"port":"%s","script":"./%s","needs_sysroot":"%s","deps":"%s","timeout":%s},' \
-        "$job" "$(myos_port_build_script)" "$needs_sysroot" "$deps" "$PORT_TIMEOUT"
+        "$_pm_job" "$(myos_port_build_script)" "$_pm_needs_sysroot" "$_pm_deps" "$PORT_TIMEOUT"
     done
   done
   printf '{"port":"linux-compat","script":"./linux-compat/build.sh","needs_sysroot":"0","deps":"","timeout":45}]\n'
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [ "${0##*/}" = ports.sh ]; then
   case "${1:-}" in
     --list) myos_port_names "${2:-all}" ;;
     --outputs) myos_port_outputs "$2" ;;
@@ -334,8 +380,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       for n in $(myos_port_names "${2:-image}"); do
         myos_port_load "$n"
         for spec in $PORT_FILES $PORT_TEST_FILES; do
-          IFS=: read -r kind a _ <<<"$spec"
-          [[ "$kind" != file ]] || echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$a"
+          myos_port_spec "$spec"
+          [ "$_ps_kind" != file ] || echo "${PORT_DIR#"$MYOS_PORTS_ROOT"/}/$_ps_a"
         done
       done | sort -u
       ;;
@@ -346,7 +392,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       # (scripts/ci-build-kernels.sh --print-members).
       for n in $(myos_port_names all); do
         myos_port_load "$n"
-        [[ -z "$PORT_BUILD" ]] || continue
+        [ -z "$PORT_BUILD" ] || continue
         myos_port_image_files "$n"
       done | sort -u
       ;;
@@ -361,7 +407,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     --stamps)
       for n in $(myos_port_names image); do
         myos_port_load "$n"
-        [[ -n "$PORT_BUILD" ]] && myos_port_stamp
+        [ -z "$PORT_BUILD" ] || myos_port_stamp
       done
       ;;
     --matrix) myos_ports_matrix ;;

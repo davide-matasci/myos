@@ -1,12 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build full ripgrep (with PCRE2) for myos userspace → target/rg-*-unknown-myos.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=ports/ripgrep/versions.env
-source "$ROOT/ports/ripgrep/versions.env"
+. "$ROOT/ports/ripgrep/versions.env"
 
 NIGHTLY="${MYOS_NIGHTLY:-nightly-2026-07-26}"
 # Ensure rust-lld is on PATH (dtolnay toolchain layout).
@@ -18,14 +18,14 @@ if myos_ripgrep_is_current; then
   for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
     src="$ROOT/target/rg-${triple}"
     alias="$ROOT/target/coreutils-rg-${triple}"
-    if [[ -f "$src" && ! -f "$alias" ]]; then
+    if [ -f "$src" ] && [ ! -f "$alias" ]; then
       cp "$src" "$alias"
     fi
   done
   exit 0
 fi
 
-if [[ ! -d "$ROOT/target/myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib" ]]; then
+if [ ! -d "$ROOT/target/myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib" ]; then
   echo "Building myos sysroot first..."
   "$ROOT/toolchain/std/build-sysroot.sh"
 fi
@@ -38,13 +38,13 @@ fi
 RG="$ROOT/target/ripgrep-src"
 TARGET_JSON_DIR="$ROOT/targets"
 
-build_one() {
-  local triple="$1"
-  local arch="${triple%%-*}"
-  local target_json="$TARGET_JSON_DIR/${triple}.json"
-  local target_dir="$ROOT/target/ripgrep-build-${triple}"
-  local out="$ROOT/target/rg-${triple}"
-  local pcre2="$ROOT/target/pcre2-${arch}"
+build_one() (
+  triple="$1"
+  arch="${triple%%-*}"
+  target_json="$TARGET_JSON_DIR/${triple}.json"
+  target_dir="$ROOT/target/ripgrep-build-${triple}"
+  out="$ROOT/target/rg-${triple}"
+  pcre2="$ROOT/target/pcre2-${arch}"
 
   # Started over when the sysroot, newlib or target spec changed.
   myos_cargo_target_dir "$triple" "$target_dir"
@@ -65,12 +65,12 @@ build_one() {
       --bin rg \
       --target-dir "$target_dir"
   )
-  local bin="$target_dir/${triple}/release-myos/rg"
-  if [[ ! -f "$bin" ]]; then
+  bin="$target_dir/${triple}/release-myos/rg"
+  if [ ! -f "$bin" ]; then
     # cargo may place profile dir as release-myos or under release with rename
     bin="$target_dir/${triple}/release/rg"
   fi
-  if [[ ! -f "$bin" ]]; then
+  if [ ! -f "$bin" ]; then
     echo "error: rg binary missing under $target_dir/${triple}" >&2
     find "$target_dir/${triple}" -name rg -type f 2>/dev/null | head
     exit 1
@@ -80,7 +80,7 @@ build_one() {
   # need `workflow` OAuth scope; boot matrix rebuilds aarch64/riscv kernels).
   cp "$bin" "$ROOT/target/coreutils-rg-${triple}"
   echo "rg -> $out ($(du -h "$out" | awk '{print $1}'))"
-}
+)
 
 for triple in x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos; do
   build_one "$triple"

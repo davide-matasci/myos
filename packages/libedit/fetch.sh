@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the pinned libedit sources into target/libedit-src.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 SRC="$ROOT/target/libedit-src"
 STAMP="$ROOT/target/.libedit-src-version"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$LIBEDIT_VERSION" && -f "$SRC/src/el.c" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$LIBEDIT_VERSION" ] && [ -f "$SRC/src/el.c" ]; then
   echo "libedit sources up to date ($LIBEDIT_VERSION)"
   exit 0
 fi

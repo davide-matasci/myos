@@ -83,7 +83,25 @@ RUN apt-get update \
         ca-certificates \
         python3 \
         xz-utils \
+        shellcheck yash \
     && rm -rf /var/lib/apt/lists/*
+
+# /bin/sh: the repository's scripts are POSIX.1-2024 sh and set pipefail,
+# which 26.04's dash (0.5.12) does not have: dash 0.5.13, built from its
+# source, takes its place (Ubuntu ships it from 26.10 on). shellcheck and
+# yash above are scripts/check-posix-sh.sh's.
+ARG DASH_VERSION=0.5.13.5
+ARG DASH_SHA256=40090101a2a491f13e901d3d48e90414f26634628b9bfff35ff540363c227a7d
+RUN curl -fsSL -o /tmp/dash.tar.gz "http://gondor.apana.org.au/~herbert/dash/files/dash-${DASH_VERSION}.tar.gz" \
+    && echo "${DASH_SHA256}  /tmp/dash.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/dash.tar.gz -C /tmp \
+    && cd "/tmp/dash-${DASH_VERSION}" \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" \
+    && make install \
+    && cd / && rm -rf /tmp/dash.tar.gz "/tmp/dash-${DASH_VERSION}" \
+    && /usr/local/bin/dash -c 'set -o pipefail' \
+    && ln -sf /usr/local/bin/dash /usr/bin/sh
 
 # Non-root CI user with passwordless sudo (available for interactive debugging).
 # We intentionally do NOT `USER ciuser`: GitHub runs container jobs as root and

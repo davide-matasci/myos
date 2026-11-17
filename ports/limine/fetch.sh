@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch the pinned Limine binary release (it has limine.c, the tool's
 # source, and limine-bios-hdd.h, the BIOS stage it embeds).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=ports/limine/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 SRC="$ROOT/target/limine-src"
 STAMP="$SRC/.version"
 
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$LIMINE_VERSION" && -f "$SRC/limine.c" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$LIMINE_VERSION" ] && [ -f "$SRC/limine.c" ]; then
   echo "limine $LIMINE_VERSION already present at $SRC"
   exit 0
 fi

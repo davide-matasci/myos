@@ -1,12 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Export a unified diff of libstd wiring + PAL overlays vs vanilla rust-src.
 # Use when preparing a rust-lang/rust PR for target_os = "myos".
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 
 RUST_SRC="${RUST_SRC:-$(rustc +"$MYOS_NIGHTLY" --print sysroot)/lib/rustlib/src/rust/library}"
 VANILLA_DIR="${VANILLA_DIR:-$ROOT/target/upstream-export/vanilla/library}"

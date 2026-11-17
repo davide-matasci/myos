@@ -1,14 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Stage packages/x11-libs' newlib build for tcc on myos, per arch, in
 # target/x11-dev-<arch>/lib/x11: its headers, and its static libraries with
 # libxcb and libXau merged into libX11.a. A static libX11 needs both, and a
 # Makefile written for a shared one passes only -lX11 (dwmblocks). The
 # separate libxcb.a and libXau.a stay too, for programs that name them.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_x11_dev_is_current; then
   echo "x11-dev up to date"
