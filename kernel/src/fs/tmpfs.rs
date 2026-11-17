@@ -37,10 +37,117 @@ const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
 const S_IFIFO: u32 = 0o010000;
 
+/// The size of a file's blocks ([`Data`]): the largest the kernel heap
+/// keeps a size class for (`heap::CLASS_MAX`), so that taking one and
+/// giving it back does not walk the heap's holes.
+const EXTENT: usize = 256 * 1024;
+
+/// A file's bytes, in blocks of [`EXTENT`] with the last one as long as the
+/// file's end needs. A file grows by taking another block, without a copy
+/// of what it holds, and has less than a block unused past its end (an
+/// eighth of itself while it is under eight blocks).
+///
+/// It was one `Vec`, grown with `try_reserve`: that takes twice the
+/// capacity whenever it has to grow, so a file kept up to its own size
+/// unused, by how its first writes happened to be cut (the same packages
+/// left 251 to 342 MiB of the heap free, CI #2671), each growth copied the
+/// whole file, and needed the room for both blocks while it did.
+#[derive(Clone)]
+struct Data {
+    len: usize,
+    /// Every block but the last holds [`EXTENT`] bytes; the last one at
+    /// least one.
+    extents: Vec<Vec<u8>>,
+}
+
+impl Data {
+    const fn new() -> Data {
+        Data { len: 0, extents: Vec::new() }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The file's length becomes `len`: zeros where it grows, its blocks
+    /// past the end given back where it shrinks. `Err` when the heap has
+    /// no room for the growth, with the file as it was.
+    fn resize(&mut self, len: usize) -> Result<(), ()> {
+        let old = self.len;
+        while self.len < len {
+            let Some(last) = self.extents.last_mut().filter(|e| e.len() < EXTENT) else {
+                if self.extents.try_reserve(1).is_err() {
+                    self.shrink(old);
+                    return Err(());
+                }
+                self.extents.push(Vec::new());
+                continue;
+            };
+            let room = EXTENT - last.len();
+            let take = (len - self.len).min(room);
+            if last.capacity() - last.len() < take {
+                // Sequential writes grow the file a little at a time:
+                // room for an eighth of it more, so that a small file is
+                // not copied at every write, and a large one takes each
+                // of its blocks whole.
+                let ahead = (self.len / 8).max(take).min(room);
+                if last.try_reserve_exact(ahead).is_err() && last.try_reserve_exact(take).is_err() {
+                    self.shrink(old);
+                    return Err(());
+                }
+            }
+            last.resize(last.len() + take, 0);
+            self.len += take;
+        }
+        self.shrink(len);
+        Ok(())
+    }
+
+    /// Drop what is past `len` (at most the length), a block taken for a
+    /// growth that then found no room included.
+    fn shrink(&mut self, len: usize) {
+        if len > self.len {
+            return;
+        }
+        let keep = len.div_ceil(EXTENT);
+        self.extents.truncate(keep);
+        if let Some(last) = self.extents.last_mut() {
+            last.truncate(len - (keep - 1) * EXTENT);
+        }
+        self.len = len;
+    }
+
+    /// The bytes from `pos` into `out`: how many there were.
+    fn read(&self, pos: usize, out: &mut [u8]) -> usize {
+        let n = out.len().min(self.len.saturating_sub(pos));
+        let mut done = 0;
+        while done < n {
+            let at = pos + done;
+            let block = &self.extents[at / EXTENT][at % EXTENT..];
+            let take = block.len().min(n - done);
+            out[done..done + take].copy_from_slice(&block[..take]);
+            done += take;
+        }
+        n
+    }
+
+    /// `buf` at `pos`, all of it within the file's length.
+    fn write(&mut self, pos: usize, buf: &[u8]) {
+        let mut done = 0;
+        while done < buf.len() {
+            let at = pos + done;
+            let block = &mut self.extents[at / EXTENT][at % EXTENT..];
+            let take = block.len().min(buf.len() - done);
+            block[..take].copy_from_slice(&buf[done..done + take]);
+            done += take;
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Kind {
     Dir,
-    File(Vec<u8>),
+    File(Data),
     Symlink(String),
     /// Named pipe (`mkfifo`): the kernel pipe slot it owns (see `pipe`).
     Fifo(usize),
@@ -219,7 +326,7 @@ pub fn create_kept() -> Option<u64> {
     if entries.len() >= MAX_ENTRIES {
         return None;
     }
-    let entry = Entry::new(Kind::File(Vec::new()), now);
+    let entry = Entry::new(Kind::File(Data::new()), now);
     let id = entry.id;
     entries.insert(alloc::format!("\0{id}"), entry);
     Some(id)
@@ -337,7 +444,7 @@ pub fn create(name: &str) -> bool {
     if entries.len() >= MAX_ENTRIES {
         return false;
     }
-    entries.insert(String::from(name), Entry::new(Kind::File(Vec::new()), now));
+    entries.insert(String::from(name), Entry::new(Kind::File(Data::new()), now));
     touch_dir(&mut entries, parent_of(name), now);
     true
 }
@@ -353,7 +460,7 @@ pub fn truncate(name: &str) -> bool {
     };
     match &mut entry.kind {
         Kind::File(data) => {
-            data.clear();
+            *data = Data::new();
             entry.mtime = now;
             true
         }
@@ -378,12 +485,8 @@ fn set_size_at(at: At, size: usize) -> Result<(), WriteError> {
     let Kind::File(data) = &mut entry.kind else {
         return Err(WriteError::Failed);
     };
-    if size > data.len() && data.try_reserve_exact(size - data.len()).is_err() {
+    if data.resize(size).is_err() {
         return Err(WriteError::NoSpace);
-    }
-    data.resize(size, 0);
-    if size < data.capacity() / 2 {
-        data.shrink_to_fit();
     }
     entry.mtime = now;
     Ok(())
@@ -401,11 +504,7 @@ fn read_at(at: At, pos: usize, out: &mut [u8]) -> usize {
     let Kind::File(data) = &entry.kind else {
         return 0;
     };
-    let n = out.len().min(data.len().saturating_sub(pos));
-    if n != 0 {
-        out[..n].copy_from_slice(&data[pos..pos + n]);
-    }
-    n
+    data.read(pos, out)
 }
 
 pub fn write(name: &str, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
@@ -426,17 +525,10 @@ fn write_at(at: At, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
     if end > FILE_CAP {
         return Err(WriteError::TooBig);
     }
-    if end > data.len() {
-        // Sequential writes grow the file a block at a time: reserve ahead,
-        // but by at most 1 MiB so a large file does not double the heap use.
-        let extra = end - data.len();
-        let ahead = data.len().min(1 << 20).max(extra);
-        if data.try_reserve(ahead.min(FILE_CAP - data.len())).is_err() && data.try_reserve_exact(extra).is_err() {
-            return Err(WriteError::NoSpace);
-        }
-        data.resize(end, 0);
+    if end > data.len() && data.resize(end).is_err() {
+        return Err(WriteError::NoSpace);
     }
-    data[pos..end].copy_from_slice(buf);
+    data.write(pos, buf);
     entry.mtime = now;
     Ok(buf.len())
 }

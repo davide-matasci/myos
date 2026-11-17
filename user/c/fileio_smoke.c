@@ -4,7 +4,9 @@
  * a symlink there counts as taken; ftruncate cuts a file and grows it with
  * zeros, the position staying; pread and pwrite leave the position alone, a
  * write past the end leaves zeros in the gap, and both are ESPIPE on a pipe;
- * pwrite on an O_APPEND fd appends (as on Linux);
+ * pwrite on an O_APPEND fd appends (as on Linux); a file longer than the
+ * blocks its filesystem keeps it in reads back as written, across their
+ * edges too, and is cut and grown in the middle of one;
  * close-on-exec: O_CLOEXEC, F_SETFD, F_DUPFD_CLOEXEC and pipe2 fds are gone
  * in a program the process execs, dup2's copy and the others are not;
  * O_NOFOLLOW refuses a symlink (ELOOP) and O_DIRECTORY anything but a
@@ -154,6 +156,72 @@ static void too_big(void) {
     errno = 0;
     check(ftruncate(fd, cap + 1) == -1 && errno == EFBIG, "ftruncate past the cap: EFBIG");
     check(fstat(fd, &st) == 0 && st.st_size == 0, "the file stayed empty");
+    close(fd);
+    unlink(f);
+}
+
+/* A file longer than the blocks a filesystem keeps it in (tmpfs: 256 KiB
+ * each, kernel/src/fs/tmpfs.rs): written in pieces that end in the middle
+ * of one and read back in others, written and read across an edge, cut in
+ * the middle of a block and grown again with zeros. */
+#define BLOCK (256 * 1024)
+#define BLOCKS_LEN (5 * BLOCK + 12345)
+
+static unsigned char block_byte(size_t i) {
+    return (unsigned char)(i * 31 + (i >> 8) * 7 + (i >> 16));
+}
+
+static void blocks(void) {
+    static unsigned char out[100003], in[70001];
+    const char *f = in_dir("blocks");
+    struct stat st;
+    size_t at = 0, i;
+    int ok = 1;
+    int fd = open(f, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "open blocks");
+    while (ok && at < BLOCKS_LEN) {
+        size_t n = BLOCKS_LEN - at < sizeof out ? BLOCKS_LEN - at : sizeof out;
+        for (i = 0; i < n; i++) {
+            out[i] = block_byte(at + i);
+        }
+        ok = write(fd, out, n) == (ssize_t)n;
+        at += n;
+    }
+    check(ok, "write a file of several blocks");
+    ok = lseek(fd, 0, SEEK_SET) == 0;
+    for (at = 0; ok && at < BLOCKS_LEN;) {
+        ssize_t n = read(fd, in, sizeof in);
+        ok = n > 0;
+        for (i = 0; ok && i < (size_t)n; i++) {
+            ok = in[i] == block_byte(at + i);
+        }
+        at += ok ? (size_t)n : 0;
+    }
+    check(ok && at == BLOCKS_LEN && read(fd, in, 1) == 0, "the blocks read back as written");
+
+    memset(out, 'X', 1000);
+    check(pwrite(fd, out, 1000, 2 * BLOCK - 500) == 1000, "pwrite across two blocks");
+    check(pread(fd, in, 1002, 2 * BLOCK - 501) == 1002, "pread across two blocks");
+    ok = in[0] == block_byte(2 * BLOCK - 501) && in[1001] == block_byte(2 * BLOCK + 500);
+    for (i = 1; i <= 1000; i++) {
+        ok = ok && in[i] == 'X';
+    }
+    check(ok, "a write across two blocks is there, and nothing beside it");
+
+    check(ftruncate(fd, BLOCK + 777) == 0 && ftruncate(fd, 3 * BLOCK + 99) == 0, "ftruncate inside a block, then past two more");
+    check(fstat(fd, &st) == 0 && st.st_size == 3 * BLOCK + 99, "the size after both");
+    check(pread(fd, in, 1000, BLOCK + 277) == 1000, "pread around the cut");
+    ok = 1;
+    for (i = 0; i < 1000; i++) {
+        ok = ok && in[i] == (i < 500 ? block_byte(BLOCK + 277 + i) : 0);
+    }
+    check(ok, "the file's bytes up to the cut, zeros after it");
+    check(pread(fd, in, 1000, 3 * BLOCK - 901) == 1000, "pread at the grown end");
+    ok = 1;
+    for (i = 0; i < 1000; i++) {
+        ok = ok && in[i] == 0;
+    }
+    check(ok && pread(fd, in, 1, 3 * BLOCK + 99) == 0, "zeros to the grown end, nothing past it");
     close(fd);
     unlink(f);
 }
@@ -757,6 +825,7 @@ int main(int argc, char **argv) {
     snprintf(dir, sizeof dir, "%s", argc > 1 ? argv[1] : "/tmp");
     excl();
     positional();
+    blocks();
     if (argc == 1) {
         too_big();
     }
