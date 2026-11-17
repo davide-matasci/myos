@@ -683,6 +683,7 @@ pub fn die() -> ! {
             let files = core::mem::take(&mut p.mapped_files);
             p.cwd_node = None;
             p.exe = alloc::string::String::new();
+            p.exe_name = alloc::string::String::new();
             p.user_base = 0;
             p.image_span = 0;
             p.stack_off = 0;

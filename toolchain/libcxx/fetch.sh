@@ -17,7 +17,9 @@ echo "==> fetch llvm-project runtimes ($LLVM_TAG)"
 rm -rf "$SRC"
 "$ROOT/scripts/git-retry.sh" clone --depth 1 --branch "$LLVM_TAG" --filter=blob:none --sparse \
   https://github.com/llvm/llvm-project.git "$SRC"
-git -C "$SRC" sparse-checkout set runtimes libcxx libcxxabi libunwind cmake llvm/cmake llvm/utils/llvm-lit
+# libc: libc++ parses floating point with LLVM libc's code (its `shared/`
+# headers, compiled into libc++; nothing of that libc is built).
+git -C "$SRC" sparse-checkout set runtimes libcxx libcxxabi libunwind libc cmake llvm/cmake llvm/utils/llvm-lit
 got="$(git -C "$SRC" rev-parse HEAD)"
 if [ "$got" != "$LLVM_REV" ]; then
   echo "error: llvm-project $LLVM_TAG is $got, want $LLVM_REV" >&2

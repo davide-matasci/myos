@@ -1256,6 +1256,24 @@ mem_heap_classes() {
 }
 t -t mm mem_heap_classes mem_heap_classes
 
+# A tmpfs file takes the heap its size, however it was written: in writes
+# of any size it holds at most an eighth over (a growing file's reserve).
+# It used to hold up to twice its size, by where the writes happened to
+# fall: the apps of a package boot (/tmp/apps) took 86 MiB more of the
+# heap in one boot than in the next.
+mem_tmpfs_growth() {
+	for tg_bs in 3000 65536 1000000; do
+		tg_before=$(heap_free)
+		dd if=/dev/zero of=/tmp/grow bs=$tg_bs count=$((36000000 / tg_bs)) 2> /dev/null || return 1
+		tg_used=$((tg_before - $(heap_free)))
+		tg_size=$(($(wc -c < /tmp/grow) / 1024))
+		rm /tmp/grow
+		echo "tmpfs: $tg_size KiB in writes of $tg_bs: $tg_used KiB of the heap"
+		[ $tg_used -le $((tg_size + tg_size / 8 + 1024)) ] || return 1
+	done
+}
+t -t mm,tmpfs mem_tmpfs_growth mem_tmpfs_growth
+
 # A producer that never checks its writes ends with its consumer: `head`
 # exits, the next write of `yes` has no reader, and SIGPIPE's default
 # action ends `yes` (docs/signals.md). Without it `yes` spun forever.
@@ -1768,6 +1786,7 @@ sec_power() {
 # lists only what is bound. An open fd it is handed is a deliberate grant.
 # With the whole tree bound, a file bound into a directory of it is listed
 # with the directory's own files (run-myos's apps, docs/packages.md).
+# Of several names bound to one program, /proc/self/exe is the one run.
 sec_ns() {
 	ns="$SEC ns /bin:read,exec /tmp/sec/a=/tmp/sec/disk-a:read --"
 	[ "$($ns /bin/sbase/cat /tmp/sec/a)" = disk-a ] || return 1
@@ -1779,7 +1798,12 @@ sec_ns() {
 	[ "$($ns /bin/sbase/cat < /tmp/sec/disk-b)" = disk-b ] || return 1
 	out=$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/ls /bin/sbase)
 	echo "$out" | grep -qx nsbound && echo "$out" | grep -qx cat || { echo "ls /bin/sbase: $out"; return 1; }
-	[ "$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/cat /bin/sbase/nsbound)" = disk-a ]
+	[ "$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/cat /bin/sbase/nsbound)" = disk-a ] || return 1
+	rl=/bin/sbase/readlink:read,exec
+	for d in x y z; do
+		exe=$($SEC ns /proc:read /x/readlink=$rl /y/readlink=$rl /z/readlink=$rl -- /$d/readlink /proc/self/exe)
+		[ "$exe" = /$d/readlink ] || { echo "/$d/readlink: /proc/self/exe is $exe"; return 1; }
+	done
 }
 # A directory fd is a capability: a program handed one its namespace
 # cannot name works beneath it with the rights it was opened with (all of

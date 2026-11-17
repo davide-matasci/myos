@@ -16,7 +16,10 @@
 # takes its own ctype table (_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE, in
 # __config_site for every program) and pthreads for its threads
 # (LIBCXX_HAS_PTHREAD_API). No time zone database (no tzdata in the
-# image).
+# image). One change to the source (libcxx-myos.myos.patch): libc++abi's
+# __cxa_thread_atexit, the destructors of thread_local objects, is there
+# for the systems it lists, and myos is one (mlibc has the
+# __cxa_thread_atexit_impl it calls).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -35,6 +38,15 @@ fi
 myos_ensure_llvm_bin
 
 SRC="$ROOT/target/libcxx-src"
+# The myos patch, on the pristine checkout, once.
+patches="$(cat "$HERE"/*.myos.patch | sha256sum | cut -d' ' -f1)"
+if [ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$patches" ]; then
+  git -C "$SRC" checkout -q -- .
+  for p in "$HERE"/*.myos.patch; do
+    patch -d "$SRC" -p1 -s <"$p"
+  done
+  printf '%s' "$patches" >"$SRC/.myos-patched"
+fi
 # Absolute paths: CMake takes a bare tool name as relative to the build.
 # llvm-ar from clang's own directory when it is not on PATH (Ubuntu's
 # versioned LLVM, CI's image), for objects of every arch.
@@ -46,12 +58,21 @@ llvm_tool() (
 AR_BIN="$(llvm_tool llvm-ar ar)"
 RANLIB_BIN="$(llvm_tool llvm-ranlib ranlib)"
 CLANGXX="$(command -v clang++)"
+# libc++ takes the two releases of clang before its own (its headers say
+# so in every compile of an older one's).
+if [ "$("$CLANGXX" -dumpversion | cut -d. -f1)" -lt 20 ]; then
+  echo "error: libc++ ${LLVM_TAG#llvmorg-} needs clang 20 or later (README.md)" >&2
+  exit 1
+fi
 
 build_arch() (
   arch="$1"
   build="$ROOT/target/libcxx-build-${arch}"
   prefix="$ROOT/target/libcxx-${arch}"
-  flags="$(myos_mlibc_hosted_cflags "$arch") -D_GNU_SOURCE"
+  # __myos__, which this compiler (the build machine's clang, for a bare
+  # target) does not define and clang on myos does: libcxx-myos.myos.patch
+  # asks for it.
+  flags="$(myos_mlibc_hosted_cflags "$arch") -D_GNU_SOURCE -D__myos__"
 
   echo "==> libc++ ($arch, mlibc)"
   rm -rf "$build" "$prefix"

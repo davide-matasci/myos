@@ -21,14 +21,15 @@
 #             Rust's CI built for this commit, downloaded too
 #   std       for <arch>-unknown-myos-mlibc, by stage 1
 #   stage 2   the compiler and cargo for myos, by stage 1, linked against
-#             that std and the LLVM built here
+#             that std and the llvm package's LLVM
 #
-# LLVM for myos is the one the source carries (LLVM 22, Rust's fork; the
-# llvm package is LLVM 19, older than this compiler takes): its
-# libraries alone, static, against mlibc and libc++
-# (target/rustc-llvm-<arch>), with a llvm-config for the build machine
-# (files/llvm-config). cargo's TLS is the mlibc build of LibreSSL; curl,
-# libgit2, libssh2 and zlib are the copies their crates carry.
+# LLVM for myos is the llvm package's (packages/llvm: upstream LLVM of
+# the major this compiler is written for, not the fork its source
+# carries): the libraries that port keeps beside its program, static,
+# against mlibc and libc++ (target/llvm-<arch>/dev), with their
+# llvm-config for the build machine. cargo's TLS is the mlibc build of
+# LibreSSL; curl, libgit2, libssh2 and zlib are the copies their crates
+# carry.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -48,11 +49,12 @@ fi
 "$ROOT/toolchain/mlibc/build.sh"
 "$ROOT/toolchain/libcxx/build.sh"
 "$ROOT/ports/libressl/build.sh"
+MYOS_LLVM_ARCHES="${MYOS_RUSTC_ARCHES:-x86_64 aarch64 riscv64}" "$ROOT/packages/llvm/build.sh"
 myos_ensure_llvm_bin
 # The binutils: newlib's tool wrappers, <triple>-ar and -strip, over
 # LLVM's (as packages/llvm).
 export PATH="$ROOT/target/newlib-bin:$PATH"
-for tool in cmake ninja python3 patch curl; do
+for tool in python3 patch curl; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "error: $tool not found (README.md)" >&2
     exit 1
@@ -155,100 +157,13 @@ else
   exec "$RUST_LLD" -flavor gnu "\$@" --no-dynamic-linker -L"\$mlibc/lib" -L"\$cxx/lib"
 fi
 EOF
-  # CMake's links: their response files (@file), spelled out for the
-  # cross driver, which takes flags only on its command line.
-  cat >"$tc/link" <<'EOF'
-#!/bin/sh
-# The command is added after the given arguments, which are then dropped.
-n=$#
-for a in "$@"; do
-  case "$a" in
-    @*)
-      set -f
-      set -- "$@" $(cat "${a#@}")
-      set +f ;;
-    *) set -- "$@" "$a" ;;
-  esac
-done
-shift "$n"
-exec "$@"
-EOF
-  chmod +x "$tc/ld" "$tc/link"
-  # "Linux" for CMake: a Unix with ELF. The compiler says what the system
-  # is (__myos__), not __linux__.
-  cat >"$tc/toolchain.cmake" <<EOF
-set(CMAKE_SYSTEM_NAME Linux)
-set(CMAKE_SYSTEM_PROCESSOR $arch)
-set(CMAKE_C_COMPILER $tc/cc)
-set(CMAKE_CXX_COMPILER $tc/c++)
-set(CMAKE_AR $(command -v "${arch}-unknown-myos-ar"))
-set(CMAKE_RANLIB $(command -v "${arch}-unknown-myos-ranlib"))
-set(CMAKE_FIND_ROOT_PATH $T/mlibc-$arch)
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
-set(CMAKE_C_LINKER_LAUNCHER $tc/link)
-set(CMAKE_CXX_LINKER_LAUNCHER $tc/link)
-EOF
-)
-
-# build_llvm ARCH TC PREFIX: LLVM's libraries for myos, and the
-# llvm-config that describes them to rustc's build.
-build_llvm() (
-  arch="$1" tc="$2" prefix="$3" build="$T/rustc-llvm-build-$1"
-  stamp="$({ printf '%s\n' "$RUST_SRC_SHA256"; cat "$HERE/rust-myos.myos.patch" "$HERE/files/llvm-config"; myos_dep_hash mlibc; myos_dep_hash libcxx; } | sha256sum | cut -d' ' -f1)"
-  if [ "$(cat "$prefix/.myos-version" 2>/dev/null)" = "$stamp" ]; then
-    return
-  fi
-  echo "==> rustc: LLVM's libraries ($arch-unknown-myos)"
-  # A bare target for LLVM, as the Rust targets name theirs: myos is not
-  # one of its systems.
-  case "$arch" in
-    riscv64) bare=riscv64-unknown-none-elf ;;
-    *) bare="$arch-unknown-none" ;;
-  esac
-  rm -rf "$prefix"
-  mkdir -p "$build"
-  # __myos__, which this cross compiler does not define, and <endian.h>
-  # first (packages/llvm/build.sh). No sigaltstack on myos. Not the
-  # shared LTO and remarks plugins: nothing here loads them.
-  flags="-D__myos__ -include endian.h"
-  cmake -G Ninja -S "$SRC/src/llvm-project/llvm" -B "$build" \
-    -DCMAKE_TOOLCHAIN_FILE="$tc/toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_C_FLAGS="$flags" -DCMAKE_CXX_FLAGS="$flags" \
-    -DLLVM_TARGETS_TO_BUILD="X86;AArch64;RISCV" \
-    -DLLVM_HOST_TRIPLE="$bare" -DLLVM_DEFAULT_TARGET_TRIPLE="$bare" \
-    -DLLVM_VERSION_SUFFIX="-rust-$(cut -d' ' -f1 "$SRC/version")" \
-    -DLLVM_BUILD_TOOLS=OFF -DLLVM_INCLUDE_TOOLS=ON -DLLVM_BUILD_UTILS=OFF \
-    -DLLVM_TOOL_LTO_BUILD=OFF -DLLVM_TOOL_REMARKS_SHLIB_BUILD=OFF \
-    -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF \
-    -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF -DLLVM_ENABLE_PLUGINS=OFF -DLLVM_ENABLE_BACKTRACES=OFF \
-    -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF -DBUILD_SHARED_LIBS=OFF \
-    -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_DOCS=OFF \
-    -DLLVM_INCLUDE_UTILS=OFF -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_ENABLE_OCAMLDOC=OFF \
-    -DLLVM_ENABLE_PIC=ON -DLLVM_ENABLE_THREADS=ON -DHAVE_SIGALTSTACK=OFF \
-    >"$build/cmake.log" 2>&1 || { tail -40 "$build/cmake.log" >&2; exit 1; }
-  ninja -C "$build" -j"$(nproc)" install >"$build/ninja.log" 2>&1 \
-    || { grep -n "error" "$build/ninja.log" | head -30 >&2 || true; tail -20 "$build/ninja.log" >&2; exit 1; }
-  # The tables LLVM's own llvm-config is compiled from, for files/llvm-config.
-  mkdir -p "$prefix/bin" "$prefix/share/llvm-config"
-  cp "$build/tools/llvm-config/LibraryDependencies.inc" "$build/tools/llvm-config/BuildVariables.inc" \
-    "$prefix/share/llvm-config/"
-  sed -n 's/^#define LLVM_VERSION_STRING "\(.*\)"/\1/p' "$build/include/llvm/Config/llvm-config.h" \
-    >"$prefix/share/llvm-config/version"
-  cp "$HERE/files/llvm-config" "$prefix/bin/llvm-config"
-  chmod +x "$prefix/bin/llvm-config"
-  rm -rf "$build"
-  printf '%s' "$stamp" >"$prefix/.myos-version"
+  chmod +x "$tc/ld"
 )
 
 build_arch() (
-  arch="$1" triple="$1-unknown-myos-mlibc" out="$T/rustc-$1" tc="$T/rustc-tc-$1" llvm="$T/rustc-llvm-$1"
+  arch="$1" triple="$1-unknown-myos-mlibc" out="$T/rustc-$1" tc="$T/rustc-tc-$1" llvm="$T/llvm-$1/dev"
   host="$(rustc "+$MYOS_NIGHTLY" -vV | sed -n 's/^host: //p')"
   write_toolchain "$arch" "$tc"
-  build_llvm "$arch" "$tc" "$llvm"
 
   mkdir -p "$BUILD"
   cat >"$BUILD/bootstrap-$arch.toml" <<EOF

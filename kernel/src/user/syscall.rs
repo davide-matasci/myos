@@ -1217,7 +1217,7 @@ fn exec_path_depth(
     // the child has exec'd) may run on another CPU at once, and must find
     // the child exec'd (`setpgid`: EACCES from here on).
     task::mark_execd();
-    task::set_exe(&path);
+    task::set_exe(&path, virt);
     // POSIX timers do not survive exec (`ITIMER_REAL` does).
     task::ptimer_clear_all();
     // What the new image may not inherit (`FD_CLOEXEC`).

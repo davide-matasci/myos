@@ -2141,14 +2141,15 @@ myos_llvm_is_current() (
 # nightly (its source is that nightly's tarball), the port's pin, patches
 # and scripts, the std's sources (its wiring is applied to the compiler's
 # library/ and its libc patch to the vendored crate), and the whole of
-# what the programs link: mlibc, libc++ and LibreSSL; the cross compilers
-# its build writes.
+# what the programs link: mlibc, libc++, LibreSSL and the llvm port's
+# LLVM libraries; the cross compilers its build writes.
 myos_rustc_version_hash() (
   h="$(
     {
       myos_dep_hash mlibc
       myos_dep_hash libcxx
       myos_dep_hash libressl mlibc
+      myos_dep_hash llvm
       myos_sysroot_version_hash
       sha256sum "$MYOS_ROOT/rust-toolchain.toml"
       # Not its tests nor its notes: neither is in what is built, and

@@ -124,6 +124,16 @@ impl Namespace {
         })
     }
 
+    /// `virt` (canonical, absolute) is a name of the file stored at `real`,
+    /// with no symbolic link on the way.
+    pub fn names(&self, virt: &str, real: &str) -> bool {
+        let Some(Mapped::Real(path)) = self.map(virt) else {
+            return false;
+        };
+        let stored = crate::fs::vfs::canonical(&path);
+        stored.is_some() && stored == crate::fs::vfs::canonical(real)
+    }
+
     /// `real` as the binding holding it names it, the longest one first.
     fn through_bindings(&self, real: &str) -> Option<String> {
         let (b, _, rest) = self

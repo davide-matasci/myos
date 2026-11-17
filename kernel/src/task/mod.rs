@@ -514,15 +514,32 @@ pub fn set_current_name(name: &[u8]) {
 }
 
 /// The program the current process runs from now on (`/proc/self/exe`):
-/// the real path of the file exec loaded.
-pub fn set_exe(path: &str) {
-    with_process_mut(|t| t.exe = alloc::string::String::from(path));
+/// the real path of the file exec loaded, and the name it was given in
+/// the process's view.
+pub fn set_exe(path: &str, name: &str) {
+    with_process_mut(|t| {
+        t.exe = alloc::string::String::from(path);
+        t.exe_name = alloc::string::String::from(name);
+    });
 }
 
 /// The real path of the program the current process runs (`None` before
 /// an exec, and for a kernel thread).
 pub fn exe_path() -> Option<alloc::string::String> {
     with_process_opt(|p| p.map(|p| p.exe.clone()).filter(|e| !e.is_empty()))
+}
+
+/// The program the current process runs as its namespace names it. Of the
+/// bindings that lead to the file, the one its exec named when that is
+/// still a name of the file itself (an app binds each of the links to its
+/// one program: `/bin/custom/clang`, not the `/bin/custom/llvm-strip`
+/// beside it); else any name of it, as for another file.
+pub fn exe_in(ns: &ns::Namespace) -> Option<alloc::string::String> {
+    let (real, name) = with_process_opt(|p| p.map(|p| (p.exe.clone(), p.exe_name.clone())))?;
+    if real.is_empty() {
+        return None;
+    }
+    if ns.names(&name, &real) { Some(name) } else { ns.to_virtual(&real) }
 }
 
 /// The main thread's stack, `(lowest address, end)`: the process's, whichever

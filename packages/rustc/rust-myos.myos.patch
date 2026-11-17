@@ -1,9 +1,8 @@
 myos in the Rust compiler's source (the nightly rust-toolchain.toml pins,
 its source tarball): the targets <arch>-unknown-myos-mlibc as built-in
-ones, with myos as a host; what the compiler's build needs to make one
-for them; and the host side of the LLVM it carries. The library and the
-vendored crates are changed by scripts (toolchain/std/patches/wire-myos.py,
-port-crates.py), not here.
+ones, with myos as a host; and what the compiler's build needs to make
+one for them. The library and the vendored crates are changed by scripts
+(toolchain/std/patches/wire-myos.py, port-crates.py), not here.
 
 - compiler/rustc_target: the three targets and their base (a unix on
   mlibc: static PIEs linked by lld, or dynamic over mlibc's shared
@@ -14,12 +13,8 @@ port-crates.py), not here.
   nix, which does not know myos).
 - Cargo.lock, src/tools/cargo/Cargo.lock: the libc crate at 0.2.189, the
   version libc-myos.patch is for (the compiler and cargo lock older ones).
-- src/llvm-project (LLVM 22, Rust's fork): the program finds itself by
-  argv[0], every file system is local, and struct winsize is
-  <termios.h>'s, as in packages/llvm's patch for LLVM 19.
 
-MIT OR Apache-2.0 as the compiler; the LLVM part Apache-2.0 WITH
-LLVM-exception as LLVM (THIRD_PARTY_NOTICES.md).
+MIT OR Apache-2.0 as the compiler (THIRD_PARTY_NOTICES.md).
 
 --- a/Cargo.lock
 +++ b/Cargo.lock
@@ -248,54 +243,6 @@ LLVM-exception as LLVM (THIRD_PARTY_NOTICES.md).
  ];
  
  /// Minimum version threshold for libstdc++ required when using prebuilt LLVM
---- a/src/llvm-project/llvm/lib/Support/Unix/Path.inc
-+++ b/src/llvm-project/llvm/lib/Support/Unix/Path.inc
-@@ -130,7 +130,7 @@
-     defined(__CYGWIN__) || defined(__DragonFly__) || defined(_AIX) ||          \
-     defined(__GNU__) ||                                                        \
-     (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__)) ||           \
--    defined(__managarm__)
-+    defined(__managarm__) || defined(__myos__)
- static int test_dir(char ret[PATH_MAX], const char *dir, const char *bin) {
-   struct stat sb;
-   char fullpath[PATH_MAX];
-@@ -287,7 +287,10 @@
-   // Fall back to the classical detection.
-   if (getprogpath(exe_path, argv0))
-     return exe_path;
--#elif defined(__OpenBSD__) || defined(__HAIKU__)
-+// myos: the name the program was run under. /proc/self/exe names the
-+// file, and the tools of the multicall program are links to one file: an
-+// app's view may give the file under any of their names.
-+#elif defined(__OpenBSD__) || defined(__HAIKU__) || defined(__myos__)
-   char exe_path[PATH_MAX];
-   // argv[0] only
-   if (getprogpath(exe_path, argv0) != NULL)
-@@ -564,6 +567,10 @@
-   // The file system can have an arbitrary structure on z/OS; must go with the
-   // conservative answer.
-   return false;
-+#elif defined(__myos__)
-+  // myos: every file system is the machine's own (there is no network one,
-+  // and statvfs has no flags that would tell).
-+  return true;
- #else
-   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
- #endif
---- a/src/llvm-project/llvm/lib/Support/Unix/Process.inc
-+++ b/src/llvm-project/llvm/lib/Support/Unix/Process.inc
-@@ -36,6 +36,11 @@
- #endif
- #ifdef HAVE_SYS_IOCTL_H
- #include <sys/ioctl.h>
-+#if defined(__myos__)
-+// myos: struct winsize is <termios.h>'s (mlibc gives it to <sys/ioctl.h>
-+// with its Linux option alone).
-+#include <termios.h>
-+#endif
- #endif
- 
- //===----------------------------------------------------------------------===//
 --- a/src/tools/cargo/Cargo.lock
 +++ b/src/tools/cargo/Cargo.lock
 @@ -3004,9 +3004,9 @@

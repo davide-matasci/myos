@@ -578,9 +578,7 @@ static int check_big_malloc(void) {
 
 /* readdir says what an entry is, not what a link points to: a link to a
  * directory is DT_LNK with the link's own inode (a walk that trusted
- * DT_DIR would follow it out of the tree), and so is one to nothing.
- * On mlibc: newlib's readdir still follows the link (issue #798). */
-#ifdef __MLIBC_POSIX_OPTION
+ * DT_DIR would follow it out of the tree), and so is one to nothing. */
 static int check_readdir(void) {
     const char *dir = "/tmp/libc-smoke-dir";
     char path[64];
@@ -606,7 +604,7 @@ static int check_readdir(void) {
     for (struct dirent *e; (e = readdir(d)) != NULL;) {
         if (strncmp(e->d_name, "to-", 3) == 0) {
             snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-            if (e->d_type != DT_LNK || lstat(path, &st) != 0 || st.st_ino != e->d_ino) {
+            if (e->d_type != DT_LNK || fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW) != 0 || st.st_ino != e->d_ino) {
                 printf("[ FAIL ] libc readdir: %s has d_type %d\n", e->d_name, e->d_type);
                 bad = 1;
             }
@@ -632,11 +630,6 @@ static int check_readdir(void) {
     }
     return 0;
 }
-#else
-static int check_readdir(void) {
-    return 0;
-}
-#endif
 
 int main(void) {
     if (check_getrandom() || check_vfork() || check_daemon() || check_netdb()

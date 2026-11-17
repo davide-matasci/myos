@@ -23,6 +23,19 @@ nginx_stop() {
 	[ ! -f $NGINX_T/nginx.pid ] || { echo "still running"; return 1; }
 }
 
+# nginx_pid FILE: the master's pid, once it has written its pid file.
+# `nginx` returns when its first process has forked the master (the
+# daemon) and left: the master writes the file after that, so a read
+# right behind the start can find none yet.
+nginx_pid() {
+	i=0
+	while ! [ -s $1 ] && [ $i -lt 10 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	cat $1
+}
+
 nginx_conf() {
 	run-myos nginx -t
 }
@@ -196,20 +209,28 @@ nginx_procs() {
 }
 nginx_twice() {
 	run-myos nginx -g 'error_log /tmp/nginx/error.log info;' || { echo "first start"; return 1; }
-	pid=$(cat /tmp/nginx/nginx.pid)
-	ok=0
-	out=$(run-myos nginx -g 'error_log /tmp/nginx/error.log info;' 2>&1) && { echo "second start: $out"; ok=1; }
-	[ "$(cat /tmp/nginx/nginx.pid)" = "$pid" ] || { echo "pid file: $pid, now $(cat /tmp/nginx/nginx.pid)"; ok=1; }
-	curl -fsS --max-time 30 http://127.0.0.1/ | grep -q "Welcome to nginx" || { echo "first one serves"; ok=1; }
-	nginx_stop /lib/nginx/nginx.conf || ok=1
+	pid=$(nginx_pid /tmp/nginx/nginx.pid)
+	# What went wrong, said after the log: the runner shows a failed
+	# test's last lines, and the log is longer than that.
+	why=
+	out=$(run-myos nginx -g 'error_log /tmp/nginx/error.log info;' 2>&1) && why="$why; the second start succeeded"
+	[ "$(cat /tmp/nginx/nginx.pid)" = "$pid" ] || why="$why; pid file: $pid, now $(cat /tmp/nginx/nginx.pid)"
+	curl -fsS --max-time 30 http://127.0.0.1/ > /tmp/nginx/twice.out 2> /tmp/nginx/twice.err
+	rc=$?
+	grep -q "Welcome to nginx" /tmp/nginx/twice.out || why="$why; the first one does not serve (curl: $rc, $(cat /tmp/nginx/twice.err))"
+	stop=$(nginx_stop /lib/nginx/nginx.conf 2>&1) || why="$why; stop: $stop"
 	i=0
 	while [ -n "$(nginx_procs)" ] && [ $i -lt 10 ]; do
 		sleep 1
 		i=$((i + 1))
 	done
-	[ -z "$(nginx_procs)" ] || { echo "left running: $(nginx_procs)"; ok=1; }
-	[ $ok = 0 ] || { echo "second start said: $out"; echo "--- error.log"; cat /tmp/nginx/error.log; }
-	return $ok
+	[ -z "$(nginx_procs)" ] || why="$why; left running: $(nginx_procs)"
+	[ -z "$why" ] && return 0
+	echo "--- error.log"
+	cat /tmp/nginx/error.log
+	echo "second start said: $out"
+	echo "nginx_twice${why}"
+	return 1
 }
 t -t netfs nginx_conf nginx_conf
 t -t netfs nginx_default nginx_default
