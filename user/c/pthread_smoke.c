@@ -26,14 +26,16 @@
  *     condition wait (its cleanup handler finds the mutex locked), of one
  *     with it disabled (it sleeps on, then ends at pthread_testcancel), of
  *     an asynchronous one, of the caller itself;
- *   - fork while two threads keep malloc and stdio busy: each child can
- *     use both.
+ *   - fork while threads keep malloc busy: each child can use it, and can
+ *     exec (which packs its arguments in a block from malloc); the same
+ *     with stdio busy too.
  * Prints [ OK ] pthread.
  */
 #include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -899,45 +901,113 @@ static int cancellation(void) {
 
 static int busy_stop;
 
+/* Sizes of the allocators' small classes (mlibc's has a lock for each) and
+ * one too large for a class (its lock for those). */
+static const size_t busy_sizes[] = {24, 100, 500, 4096};
+#define BUSY_SIZES (sizeof busy_sizes / sizeof busy_sizes[0])
+#define BUSY_LARGE 300000
+/* More threads than CPUs: some are off their CPU at any time, and one of
+ * those may hold a lock all the while. */
+#define BUSY_THREADS 8
+/* A child that has not ended by then waits for a lock nobody holds. */
+#define BUSY_CHILD_SECS 20
+
+struct busy {
+    FILE *f;   /* a stream to write to as well, or NULL */
+    int large; /* BUSY_LARGE blocks, not the small ones */
+};
+
+/* In malloc and free all the time; with a stream, in fprintf too. */
 static void *busy(void *arg) {
-    FILE *f = arg;
+    struct busy *b = arg;
+    unsigned n = 0;
     while (!__atomic_load_n(&busy_stop, __ATOMIC_RELAXED)) {
-        char *p = malloc(100);
-        fprintf(f, "x");
+        char *p = malloc(b->large ? BUSY_LARGE : busy_sizes[n++ % BUSY_SIZES]);
+        if (b->f) {
+            fprintf(b->f, "x");
+        }
         free(p);
     }
     return NULL;
 }
 
-static int fork_busy(void) {
+/* The status `pid` ends with, or -1 when it runs past BUSY_CHILD_SECS (it
+ * is killed then, so that the test fails and does not hang). */
+static int reap(pid_t pid) {
+    struct timespec t0, t;
+    int status = 0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
+            return status;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        if (r < 0 || t.tv_sec - t0.tv_sec >= BUSY_CHILD_SECS) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            return -1;
+        }
+        usleep(1000);
+    }
+}
+
+/* `forks` forks with `threads` threads in the allocator (and in `f`, when
+ * there is one), the first of them on large blocks. A child inherits the
+ * memory as it was at the fork: were a lock of the allocator's held by a
+ * thread of the parent then, it would wait for it forever. One child in
+ * two uses the allocator itself (and `f`), the other execs `self`, as a
+ * program that starts another does. */
+static int fork_busy(char *self, FILE *f, int threads, int forks) {
+    pthread_t t[BUSY_THREADS];
+    struct busy small = {f, 0}, large = {f, 1};
+    int bad = 0, i;
+    __atomic_store_n(&busy_stop, 0, __ATOMIC_RELAXED);
+    for (i = 0; i < threads; i++) {
+        pthread_create(&t[i], NULL, busy, i ? &small : &large);
+    }
+    for (i = 0; i < forks && !bad; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            if (i % 2) {
+                execl(self, self, "exec-ok", (char *)0);
+                _exit(10);
+            }
+            for (size_t n = 0; n <= BUSY_SIZES; n++) {
+                char *p = malloc(n < BUSY_SIZES ? busy_sizes[n] : BUSY_LARGE);
+                if (!p) {
+                    _exit(1);
+                }
+                free(p);
+            }
+            if (f) {
+                fprintf(f, "child");
+                fflush(f);
+            }
+            _exit(0);
+        }
+        int status = pid < 0 ? -1 : reap(pid);
+        if (status != 0) {
+            printf("[ FAIL ] pthread fork %d with threads in malloc%s: the child %s (status 0x%x)\n", i,
+                   f ? " and stdio" : "", i % 2 ? "execs" : "uses them", status);
+            bad = 1;
+        }
+    }
+    __atomic_store_n(&busy_stop, 1, __ATOMIC_RELAXED);
+    for (i = 0; i < threads; i++) {
+        pthread_join(t[i], NULL);
+    }
+    return bad;
+}
+
+static int fork_busy_stdio(char *self) {
     FILE *f = tmpfile();
-    pthread_t t[2];
     if (!f) {
         return fail("tmpfile for fork", errno);
     }
-    for (int i = 0; i < 2; i++) {
-        pthread_create(&t[i], NULL, busy, f);
-    }
-    int bad = 0;
-    for (int i = 0; i < 20 && !bad; i++) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            /* Would wait forever on a lock a thread of the parent held. */
-            char *p = malloc(4096);
-            fprintf(f, "child");
-            fflush(f);
-            _exit(p ? 0 : 1);
-        }
-        int status = 0;
-        bad = pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status)
-            || WEXITSTATUS(status) != 0;
-    }
-    __atomic_store_n(&busy_stop, 1, __ATOMIC_RELAXED);
-    for (int i = 0; i < 2; i++) {
-        pthread_join(t[i], NULL);
-    }
+    int bad = fork_busy(self, f, 2, 20);
     fclose(f);
-    return bad ? fail("fork with busy threads", bad) : 0;
+    return bad;
 }
 
 /* More threads than the old limit of 64 tasks in the whole system, all
@@ -976,11 +1046,14 @@ int main(int argc, char **argv) {
     if (alone() || with_threads() || locks() || cancellation() || exec_threads(argv[0])) {
         return 1;
     }
+    if (fork_busy(argv[0], NULL, BUSY_THREADS, 100)) {
+        return 1;
+    }
 #ifndef __MLIBC_POSIX_OPTION
     /* Not on mlibc (its headers define the __MLIBC_* options): its fork
-     * takes none of its own locks, so a child forked while a thread holds
-     * the allocator's or stdio's waits for it forever (issue #544). */
-    if (fork_busy()) {
+     * holds the allocator's locks and not stdio's, so a child forked while
+     * a thread holds a stream's waits for it forever (issue #544). */
+    if (fork_busy_stdio(argv[0])) {
         return 1;
     }
 #endif

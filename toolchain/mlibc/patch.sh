@@ -418,6 +418,50 @@ if new not in s:
     print("patched meson.build: libc.so links the builtins")
 PY
 
+# The allocator's locks, all of them at once: what a fork holds so that no
+# thread is in the middle of an allocation when the child copies the heap
+# (the sysdeps' Fork; upstream's fork takes none of mlibc's own locks, and
+# a child forked while another thread held a size class's waited for it
+# forever in its first malloc). No path of the pool holds one of them
+# inside another, so the order here is free. Always inlined: libc.a gets
+# no symbol for them.
+python3 - "$SRC/subprojects/frigg/include/frg/slab.hpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "lock_all" not in s:
+    old = "\tsize_t numUsedPages() {\n\t\treturn _usedPages;\n\t}\n"
+    new = old + """
+	// Every lock of the pool (myos: held across a fork).
+	[[gnu::always_inline]] void lock_all() {
+		for(auto &bkt : _bkts)
+			bkt.bucket_mutex.lock();
+		_tree_mutex.lock();
+	}
+
+	[[gnu::always_inline]] void unlock_all() {
+		_tree_mutex.unlock();
+		for(auto &bkt : _bkts)
+			bkt.bucket_mutex.unlock();
+	}
+"""
+    assert s.count(old) == 1, "slab.hpp: slab_pool's numUsedPages not found"
+    s = s.replace(old, new)
+    old = "\tsize_t get_size(void *pointer) {\n\t\treturn pool_->get_size(pointer);\n\t}\n"
+    new = old + """
+	[[gnu::always_inline]] void lock_all() {
+		pool_->lock_all();
+	}
+
+	[[gnu::always_inline]] void unlock_all() {
+		pool_->unlock_all();
+	}
+"""
+    assert s.count(old) == 1, "slab.hpp: slab_allocator's get_size not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched slab.hpp: the pool's locks, all at once")
+PY
+
 # inet_pton's IPv6 with an embedded IPv4 address (::ffff:10.0.2.2) checks
 # each octet's leading zero against the hex group parsed before it, not the
 # octet, so an octet "0" after the first is refused; each checks its own.
