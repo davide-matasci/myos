@@ -303,6 +303,17 @@ pub fn data_to_ds(me: [u8; 6], bssid: [u8; 6], eth: &[u8], qos: bool) -> Option<
     Some(f)
 }
 
+/// Whether `bssid` sent frame `f` (its transmitter address).
+pub fn sent_by(f: &[u8], bssid: [u8; 6]) -> bool {
+    f.get(10..16) == Some(&bssid[..])
+}
+
+/// Whether `f` is a data frame with a body (data or QoS data, not a null
+/// one).
+pub fn carries_data(f: &[u8]) -> bool {
+    f.first().is_some_and(|&fc| fc & 0x4c == 0x08)
+}
+
 /// The Ethernet frame a data frame from access point `bssid` carries, when
 /// it is to station `me` or to a group.
 pub fn data_from_ds(f: &[u8], me: [u8; 6], bssid: [u8; 6]) -> Option<Vec<u8>> {
