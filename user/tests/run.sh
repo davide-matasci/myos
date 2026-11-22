@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
 	case $1 in
 	mini) SKIP=net,pkg,heavy,install ;;
 	full | tests) ;;
-	reboot | installed) MODE=$1 ;;
+	reboot | installed | selfbuilt) MODE=$1 ;;
 	--tags) TAGS=$2; shift ;;
 	--skip) SKIP=$2; shift ;;
 	*) echo "run.sh: bad argument: $1" >&2; exit 2 ;;
@@ -304,6 +304,15 @@ apps_synced() {
 }
 
 FILE_TAGS=
+if [ "$MODE" = selfbuilt ]; then
+	# The kernel that runs is the one self_kernel built on myos and put
+	# in the booted slot (packages/myos-src/test.sh), by its sha256.
+	t booted_self_built sh -c 'sum=$(sha256sum /proc/boot/kernel | cut -d" " -f1)
+		echo "the kernel: $sum; built on myos: $(cat /boot/boot/self-built)"
+		[ -n "$sum" ] && [ "$sum" = "$(cat /boot/boot/self-built)" ]'
+	echo "TESTS DONE $passed/$total"
+	exit 0
+fi
 if [ "$MODE" = reboot ] || [ "$MODE" = installed ]; then
 	if [ "$MODE" = reboot ]; then
 		t booted_slot_b booted_slot b

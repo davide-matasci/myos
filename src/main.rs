@@ -340,8 +340,10 @@ fn write_nvme_blk_image() {
 /// The scratch disk: a second NVMe controller (`/dev/nvme1n1/`), sparse
 /// (only what is written takes space) and recreated every boot with a GPT
 /// for the partition tests (`write_scratch_gpt_image`). Room for a big
-/// filesystem on the whole disk (an Alpine root with a toolchain).
-const SCRATCH_BYTES: u64 = 4 << 30;
+/// filesystem on the whole disk (an Alpine root with a toolchain; the
+/// compilers as apps, the system's source and a build of the kernel,
+/// `packages/myos-src`).
+const SCRATCH_BYTES: u64 = 8 << 30;
 
 fn scratch_img_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/scratch.img")
@@ -988,8 +990,10 @@ fn run_test_aarch64(mode: Mode) {
 /// boots again ([`Mode::Reboot`]), which must come up from that slot, and
 /// then the installed disk ([`Mode::Installed`], kept as
 /// `target/installed-<name>.img`: every boot makes a new scratch disk) as
-/// the boot disk, by BIOS on the bios job and UEFI elsewhere. The copy keeps
-/// the build's image as it was.
+/// the boot disk, by BIOS on the bios job and UEFI elsewhere. When
+/// `self_kernel` ran, the copy boots once more on the kernel that test
+/// built on myos ([`Mode::SelfBuilt`]). The copy keeps the build's image
+/// as it was.
 fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std::process::Child) -> ! {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
     let disk = target.join(format!("boot-test-{name}.img"));
@@ -1019,6 +1023,13 @@ fn test_boots(name: &str, image: &Path, mode: Mode, spawn: impl Fn(&Path) -> std
     if ok && ran("boot_install_local") {
         eprintln!("boot test: the disk get-myos --install made boots");
         ok = boot_test::run(spawn(&installed), Board::Virt, &Mode::Installed, linux, slow).ok;
+    }
+    // `self_kernel` built the kernel on myos and put it in place of the
+    // booted slot's: the disk boots on it. (Not after an upgrade, which
+    // left the other slot as the one to boot.)
+    if ok && ran("self_kernel") && !ran("boot_upgrade") {
+        eprintln!("boot test: the kernel built on myos boots");
+        ok = boot_test::run(spawn(&disk), Board::Virt, &Mode::SelfBuilt, linux, slow).ok;
     }
     exit(if ok { 0 } else { 1 })
 }

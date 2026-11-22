@@ -123,8 +123,10 @@ HEAVY_GROUPS = {
 # the aarch64 Alpine boot takes 9 to 10 minutes, the aarch64 os-test and
 # pkg boots (every package's install first, python's library among them)
 # 8 on a good runner and 14 on a slow one; on riscv64 the light boot takes
-# 6, the os-test and pkg boots 11 and 12.
-BUDGETS = {"light": 15, "smoke": 8, "ostest": 20, "alpine": 15, "rust": 30, "disk": 20, "pkg": 20}
+# 6, the os-test and pkg boots 11 and 12. The disk boot builds the kernel
+# on myos on x86_64 (`self_kernel`, packages/myos-src: an hour and a
+# quarter under TCG, minutes on the runner's CPU).
+BUDGETS = {"light": 15, "smoke": 8, "ostest": 20, "alpine": 15, "rust": 30, "disk": 35, "pkg": 20}
 
 
 def group_of(tags):
