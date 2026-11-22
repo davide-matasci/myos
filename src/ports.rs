@@ -45,8 +45,9 @@ pub enum FileSpec {
     Manifest { src: String, dir: String },
     /// `multicall:<target elf>:<target manifest>:<dir>`: one ELF under every name.
     Multicall { elf: String, manifest: String, dir: String },
-    /// `tree:<target dir>:<dir>`: a directory copied recursively.
-    Tree { src: String, dir: String },
+    /// `tree:<target dir>:<dir>`: a directory copied recursively, without
+    /// its dot files; `source:<target dir>:<dir>` (`all`): with every file.
+    Tree { src: String, dir: String, all: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -174,7 +175,8 @@ fn parse_files(name: &str, spec: &str) -> Vec<FileSpec> {
                 manifest: manifest.to_string(),
                 dir: dir.to_string(),
             },
-            ["tree", src, dir] => FileSpec::Tree { src: src.to_string(), dir: dir.to_string() },
+            ["tree", src, dir] => FileSpec::Tree { src: src.to_string(), dir: dir.to_string(), all: false },
+            ["source", src, dir] => FileSpec::Tree { src: src.to_string(), dir: dir.to_string(), all: true },
             _ => bad(),
         };
         out.push(f);
