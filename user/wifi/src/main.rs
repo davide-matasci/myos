@@ -17,6 +17,8 @@
 //!   digits).
 //! - `wifi status`: `associated BSSID CHANNEL SSID aid N`, or
 //!   `disconnected`.
+//! - `wifi stats`: the link's frame counts (docs/wifi.md), where its
+//!   frames stop when netd gets no answer.
 //! - `wifi disconnect`: leave the network.
 //!
 //! While associated, the link is a virtual NIC of `/dev/tap` for netd
@@ -50,6 +52,8 @@ mod unix;
 mod usb;
 
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use frame::{Bss, Security};
@@ -85,7 +89,7 @@ fn radar(ch: u8) -> bool {
 }
 
 fn usage() -> ! {
-    write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID [PASSPHRASE] | status | disconnect\n");
+    write(b"usage: wifi daemon [NIC] | wifi scan | list | connect SSID [PASSPHRASE] | status | stats | disconnect\n");
     exit_code(2);
 }
 
@@ -93,7 +97,7 @@ fn main() -> ! {
     heap_init();
     match myos_user::args::arg(1) {
         Some(b"daemon") => daemon(myos_user::args::arg(2)),
-        Some(b"scan" | b"list" | b"connect" | b"status" | b"disconnect") => client(),
+        Some(b"scan" | b"list" | b"connect" | b"status" | b"stats" | b"disconnect") => client(),
         _ => usage(),
     }
 }
@@ -262,6 +266,7 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv, term: Option<usize>) ->
                 continue;
             };
             let f = &frame[..rx.len];
+            l.counts.heard += 1;
             if mlme::ends(radio, l, f) {
                 link = None;
                 radio.left();
@@ -275,6 +280,15 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv, term: Option<usize>) ->
                 }
                 continue;
             }
+            let c = &mut l.counts;
+            if !frame::sent_by(f, bssid) {
+                continue;
+            }
+            c.from_ap += 1;
+            if !frame::carries_data(f) {
+                continue;
+            }
+            c.data += 1;
             let clear;
             let f = match l.rsn.as_mut() {
                 Some(r) => match r.open(f) {
@@ -282,14 +296,22 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv, term: Option<usize>) ->
                         clear = c;
                         &clear[..]
                     }
-                    None => continue,
+                    None => {
+                        l.counts.undecrypted += 1;
+                        continue;
+                    }
                 },
                 None => f,
             };
             if let (Some(r), Some(pdu)) = (l.rsn.as_mut(), rsn::eapol_of(f, me, bssid)) {
                 r.eapol(radio, bssid, &pdu);
-            } else if let (Some(eth), Some(t)) = (frame::data_from_ds(f, me, bssid), &tap) {
-                t.send(&eth);
+            } else if let Some(eth) = frame::data_from_ds(f, me, bssid) {
+                if let Some(t) = &tap {
+                    t.send(&eth);
+                    l.counts.delivered += 1;
+                }
+            } else {
+                l.counts.unwanted += 1;
             }
         }
         // What netd sends on the link.
@@ -298,15 +320,14 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv, term: Option<usize>) ->
                 let Some(f) = frame::data_to_ds(radio.mac(), l.bss.bssid, &frame[..n], l.qos) else {
                     continue;
                 };
-                match l.rsn.as_mut() {
-                    Some(r) => {
-                        if let Some(f) = r.seal(&f) {
-                            radio.send(&f);
-                        }
-                    }
-                    None => {
-                        radio.send(&f);
-                    }
+                let f = match l.rsn.as_mut() {
+                    Some(r) => r.seal(&f),
+                    None => Some(f),
+                };
+                if f.is_some_and(|f| radio.send(&f)) {
+                    l.counts.sent += 1;
+                } else {
+                    l.counts.refused += 1;
                 }
             }
         }
@@ -327,6 +348,7 @@ fn daemon_softmac(radio: &mut dyn Radio, listener: Conv, term: Option<usize>) ->
                 b"list" => listing(&seen),
                 b"connect" => connect(radio, &mut seen, &mut link, &arg, &passphrase),
                 b"status" => status(link.as_ref().map(|l| (&l.bss, l.aid))),
+                b"stats" => stats(link.as_ref(), radio.unacked()),
                 b"disconnect" => {
                     if let Some(l) = link.take() {
                         mlme::leave(radio, &l);
@@ -404,6 +426,7 @@ fn daemon_fullmac(radio: &mut dyn FullMac, listener: Conv, term: Option<usize>) 
                 b"connect" => connect_fullmac(radio, &mut seen, &mut link, &arg, &passphrase),
                 // The firmware keeps the association: no aid to show.
                 b"status" => status(link.as_ref().map(|b| (b, 0))),
+                b"stats" => error(b"the radio's firmware carries the frames: no counts"),
                 b"disconnect" => {
                     if link.take().is_some() {
                         radio.leave();
@@ -570,6 +593,22 @@ fn connect_fullmac(
         }
         Err(why) => error(why.as_bytes()),
     }
+}
+
+/// The link's frame counts (`wifi stats`, docs/wifi.md): two lines,
+/// what netd sent and what the radio heard; `disconnected` without a
+/// link. `unacked` is `-` on a radio that does not count it.
+fn stats(link: Option<&Link>, unacked: Option<u32>) -> Vec<u8> {
+    let Some(l) = link else {
+        return Vec::from(b"disconnected\n" as &[u8]);
+    };
+    let c = &l.counts;
+    let unacked = unacked.map_or(String::from("-"), |u| format!("{}", u.wrapping_sub(c.unacked_from)));
+    format!(
+        "sent {} refused {} unacked {unacked}\nheard {} from-ap {} data {} delivered {} undecrypted {} unwanted {}\n",
+        c.sent, c.refused, c.heard, c.from_ap, c.data, c.delivered, c.undecrypted, c.unwanted
+    )
+    .into_bytes()
 }
 
 /// `associated BSSID CHANNEL SSID aid N`, or `disconnected`.

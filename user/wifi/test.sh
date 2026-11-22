@@ -94,7 +94,8 @@ t -t wifi wifi_term wifi_term
 # the default route, and the NIC goes with the link at `disconnect`. On
 # the WPA2 network every data frame is CCMP's, the router's broadcast
 # DHCP answers under the group key, and the access point rekeys the group
-# at the station's first frame (a group key handshake).
+# at the station's first frame (a group key handshake). `wifi stats`
+# counts the frames that crossed.
 wifi_data() {
 	/bin/custom/wifi daemon /dev/net1 &
 	wifi_pid=$!
@@ -116,7 +117,15 @@ wifi_data() {
 			/bin/custom/ping 10.0.8.1 > /tmp/wifi.ping 2>&1 && pinged=1 && break
 		done
 	fi
-	if [ $pinged = 1 ] && ! grep -q 'ip=10\.0\.8\.' /net/ndb &&
+	# `stats` counts the frames that crossed: netd's sent, none refused
+	# (the simulated radio does not count acknowledgements), the access
+	# point's data heard and delivered.
+	/bin/custom/wifi stats > /tmp/wifi.stats 2>&1
+	counted=0
+	grep -q '^sent [1-9][0-9]* refused 0 unacked -$' /tmp/wifi.stats &&
+		grep -q '^heard [1-9][0-9]* from-ap [1-9][0-9]* data [1-9][0-9]* delivered [1-9][0-9]* ' /tmp/wifi.stats &&
+		counted=1
+	if [ $pinged = 1 ] && [ $counted = 1 ] && ! grep -q 'ip=10\.0\.8\.' /net/ndb &&
 		[ "$(/bin/custom/wifi disconnect)" = disconnected ]; then
 		for i in 1 2 3 4 5; do
 			grep -q '^tap' /net/ifaddrs || { wifi_rc=0; break; }
@@ -124,8 +133,8 @@ wifi_data() {
 		done
 	fi
 	if [ $wifi_rc != 0 ]; then
-		echo "leased $leased pinged $pinged"
-		cat /tmp/wifi.err /tmp/wifi.ping /net/ifaddrs /net/ndb 2>/dev/null
+		echo "leased $leased pinged $pinged counted $counted"
+		cat /tmp/wifi.err /tmp/wifi.ping /tmp/wifi.stats /net/ifaddrs /net/ndb 2>/dev/null
 		for c in /dev/tap/*/ctl; do echo "$c:"; cat "$c"; done 2>/dev/null
 		ps 2>/dev/null | grep -e netd -e wifi
 		/bin/custom/wifi status

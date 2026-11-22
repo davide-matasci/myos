@@ -57,6 +57,11 @@ pub trait Radio {
     /// Once a second while associated: a radio's periodic work (choosing
     /// the transmit rate from how the last second's frames went).
     fn tick(&mut self) {}
+    /// How many of the frames sent since the radio came up the receiver
+    /// did not acknowledge, when the radio counts them.
+    fn unacked(&self) -> Option<u32> {
+        None
+    }
     /// The network left, or joining it given up.
     fn left(&mut self) {}
     /// The daemon is ending (`SIGTERM`: a power off or a reboot): the
