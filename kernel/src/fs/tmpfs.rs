@@ -427,12 +427,17 @@ fn write_at(at: At, pos: usize, buf: &[u8]) -> Result<usize, WriteError> {
         return Err(WriteError::TooBig);
     }
     if end > data.len() {
-        // Sequential writes grow the file a block at a time: reserve ahead,
-        // but by at most 1 MiB so a large file does not double the heap use.
-        let extra = end - data.len();
-        let ahead = data.len().min(1 << 20).max(extra);
-        if data.try_reserve(ahead.min(FILE_CAP - data.len())).is_err() && data.try_reserve_exact(extra).is_err() {
-            return Err(WriteError::NoSpace);
+        // Sequential writes grow the file a block at a time: when it has
+        // no room for one, room for an eighth more is taken (8 MiB at
+        // most), exactly. `try_reserve` would take twice the file
+        // instead, so that a file held up to twice its size of the heap,
+        // by where its writes happened to fall.
+        if end > data.capacity() {
+            let extra = end - data.len();
+            let ahead = (data.len() / 8).min(8 << 20).max(extra).min(FILE_CAP - data.len());
+            if data.try_reserve_exact(ahead).is_err() && data.try_reserve_exact(extra).is_err() {
+                return Err(WriteError::NoSpace);
+            }
         }
         data.resize(end, 0);
     }

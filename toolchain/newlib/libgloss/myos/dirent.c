@@ -58,8 +58,10 @@ dir_list(DIR *d)
 }
 
 /*
- * Fill d_ino (and d_type when known) from stat(2) so tools that trust
- * dirent.d_ino see the same inode as lstat of the joined path.
+ * Fill d_ino and d_type from the entry itself, as lstat of the joined
+ * path sees it: a symbolic link is DT_LNK with its own inode, whatever it
+ * points to (a tree walk that trusts DT_DIR must not follow a link out of
+ * the tree).
  */
 static void
 myos_fill_dirent_meta(DIR *d, unsigned long namelen)
@@ -73,7 +75,7 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 	d->ent.d_type = DT_UNKNOWN;
 
 	if (d->fd >= 0) {
-		if (fstatat(d->fd, d->ent.d_name, &st, 0) != 0) {
+		if (fstatat(d->fd, d->ent.d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
 			return;
 		}
 	} else {
@@ -92,7 +94,7 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 		}
 		memcpy(full + plen, d->ent.d_name, namelen);
 		full[plen + namelen] = '\0';
-		found = stat(full, &st) == 0;
+		found = fstatat(AT_FDCWD, full, &st, AT_SYMLINK_NOFOLLOW) == 0;
 		free(full);
 		if (!found) {
 			return;
@@ -103,6 +105,10 @@ myos_fill_dirent_meta(DIR *d, unsigned long namelen)
 		d->ent.d_type = DT_DIR;
 	} else if (S_ISREG(st.st_mode)) {
 		d->ent.d_type = DT_REG;
+	} else if (S_ISLNK(st.st_mode)) {
+		d->ent.d_type = DT_LNK;
+	} else if (S_ISCHR(st.st_mode)) {
+		d->ent.d_type = DT_CHR;
 	} else if (S_ISFIFO(st.st_mode)) {
 		d->ent.d_type = DT_FIFO;
 	}

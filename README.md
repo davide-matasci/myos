@@ -72,7 +72,7 @@ pages under [`docs/`](docs/) explain each part.
 
 | Tool | Used for |
 |------|----------|
-| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23) |
+| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23), 20 or later for libc++ and what is built against it |
 | a `/bin/sh` with `pipefail` | every script of the build is POSIX.1-2024 sh and sets it: dash 0.5.13 or later, or bash, busybox, ksh or yash as `/bin/sh` (below) |
 | `make` | building newlib |
 | `meson`, `ninja-build` | building mlibc (`toolchain/mlibc`, [mlibc](docs/mlibc.md)) |

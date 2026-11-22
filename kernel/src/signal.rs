@@ -163,11 +163,6 @@ pub fn on_user_interrupt(regs: &mut SyscallRegs) {
     }
 }
 
-/// `SIGCHLD` to `parent` from `from`, the child that exited.
-pub fn raise_sigchld(parent: usize, from: u64) {
-    task::signal_send_from(parent, SIGCHLD, from);
-}
-
 /// True if the current task has a pending signal that would terminate it or
 /// run a handler (so a blocking wait should end).
 pub fn current_should_wake() -> bool {

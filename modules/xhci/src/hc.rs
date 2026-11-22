@@ -382,6 +382,16 @@ impl Controller {
     /// contexts that write (the handler, the thread, a transfer) must not
     /// share one.
     pub fn regs(&self) -> Regs {
+        // The two offsets the crate builds its register arrays on: one
+        // that is not aligned is not the controller's, and the crate
+        // panics on it with a line number alone (issue #810: once at a
+        // boot, cause unknown). What was read is said first.
+        // SAFETY: the BAR the kernel mapped for this controller.
+        let cap = |off: usize| unsafe { core::ptr::read_volatile((self.mmio_base + off) as *const u32) };
+        let (dboff, rtsoff) = (cap(0x14), cap(0x18));
+        if dboff & 0x3 != 0 || rtsoff & 0x1F != 0 {
+            crate::report_registers(self.index, [cap(0x00), cap(0x04), dboff, rtsoff], [cap(0x14), cap(0x18)]);
+        }
         // SAFETY: the BAR the kernel mapped for this controller.
         unsafe { Regs::new(self.mmio_base, Ident) }
     }

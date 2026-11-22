@@ -530,10 +530,12 @@ fn generated(name: &str) -> Option<alloc::string::String> {
 /// `readlink` on `self/fd/N`, `self/tty` and `self/exe`: the target as the
 /// caller's namespace names it (the real path without one).
 pub fn readlink(name: &str, buf: &mut [u8]) -> Option<usize> {
-    let real = self_link(&parse_self(name)?)?;
+    let node = parse_self(name)?;
+    let real = self_link(&node)?;
     let target = if real.starts_with('/') {
         crate::task::with_ns(|n| match n {
             None => Some(real.clone()),
+            Some(n) if matches!(node, SelfNode::Exe) => crate::task::exe_in(n),
             Some(n) => n.to_virtual(&real),
         })?
     } else {

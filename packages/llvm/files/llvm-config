@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""llvm-config for the LLVM libraries built for myos, run on the build
-machine: rustc's build asks it which libraries a set of components is and
-how to compile against them. LLVM's own llvm-config of a cross build is a
-myos program; this answers from the tables that one is compiled from
-(share/llvm-config/*.inc, copied from the build by packages/rustc/build.sh,
-with LLVM's version beside them)."""
+"""llvm-config for the LLVM libraries built for myos (target/llvm-<arch>/dev),
+run on the build machine: a build against them (packages/rustc's) asks it
+which libraries a set of components is and how to compile against them.
+LLVM's own llvm-config of a cross build is a myos program; this answers
+from the tables that one is compiled from (share/llvm-config/*.inc, copied
+from the build by packages/llvm/build.sh, with LLVM's version beside them)."""
 import os
 import re
 import sys
