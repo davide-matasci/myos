@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from fetched upstream Git (config.mak + stubs + patches).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$HERE/fetch.sh"
 
@@ -28,16 +28,16 @@ cp "$MYOS/myos_compat.h" "$WORK/myos_compat.h"
 cp "$MYOS/myos_stubs.c" "$WORK/myos_stubs.c"
 
 # Apply ordered myos patches when present.
-shopt -s nullglob
 for p in "$MYOS"/*.myos.patch; do
+  [ -e "$p" ] || continue
   echo "apply $(basename "$p")"
   patch -d "$WORK" -p1 --forward --batch < "$p"
 done
 
 # Ensure generated version file exists for offline builds.
-if [[ ! -f "$WORK/GIT-VERSION-FILE" ]]; then
+if [ ! -f "$WORK/GIT-VERSION-FILE" ]; then
   # shellcheck source=ports/git/versions.env
-  source "$MYOS/versions.env"
+  . "$MYOS/versions.env"
   echo "GIT_VERSION = ${GIT_TAG#v}" >"$WORK/GIT-VERSION-FILE"
 fi
 

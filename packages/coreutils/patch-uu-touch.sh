@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 f="$ROOT/user/uutils-coreutils/src/uu/touch/src/touch.rs"
-[[ -f "$f" ]] || exit 0
+[ -f "$f" ] || exit 0
 stamp="$(dirname "$f")/.myos-touch-patch-done"
-[[ -f "$stamp" ]] && exit 0
+[ -f "$stamp" ] && exit 0
 if grep -q 'target_os = "myos"' "$f"; then
   touch "$stamp"
   exit 0

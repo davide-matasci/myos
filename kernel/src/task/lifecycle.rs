@@ -670,6 +670,16 @@ pub fn die() -> ! {
             user::note_exit();
             let aspace = tasks[id].aspace;
             tasks[id].aspace = 0;
+            // The parent's SIGCHLD with the exit itself, under TASKS: a
+            // parent that finds the child exited has the signal pending
+            // already. Sent once the lock was dropped (after the fds had
+            // gone), a `waitpid` on another CPU could reap the child and
+            // return first, and the handler ran after the call it should
+            // have run in (child_smoke's sender, boot uefi-light).
+            if chld_parent != NO_PARENT {
+                pdeath_kicks |=
+                    super::signals::signal_send_held(&mut tasks, chld_parent, crate::signal::SIGCHLD, from);
+            }
             tasks[id].exited = true;
             lock_owner = Some(crate::fs::lock::Owner::Process(tasks[id].tgid));
             let p = tasks.proc_mut(id);
@@ -683,6 +693,7 @@ pub fn die() -> ! {
             let files = core::mem::take(&mut p.mapped_files);
             p.cwd_node = None;
             p.exe = alloc::string::String::new();
+            p.exe_name = alloc::string::String::new();
             p.user_base = 0;
             p.image_span = 0;
             p.stack_off = 0;
@@ -705,13 +716,11 @@ pub fn die() -> ! {
         crate::pty::session_ended(sid);
     }
     kick_cpus_mask(pdeath_kicks);
-    // Notify the parent now that the TASKS lock is dropped: the exit status
-    // is final, so the parent can reap it while this task still frees its
-    // address space below (that walk is not on the parent's critical path).
-    // SIGCHLD's default action is ignore, so a parent without a handler is
-    // unaffected.
+    // Wake the parent now that the TASKS lock is dropped (its SIGCHLD was
+    // sent under it): the exit status is final, so the parent can reap it
+    // while this task still frees its address space below (that walk is
+    // not on the parent's critical path).
     if chld_parent != usize::MAX {
-        crate::signal::raise_sigchld(chld_parent, from);
         // The parent may be blocked in `wait`; pollers may watch for exits.
         wake(key_child(chld_parent));
         wake_any();

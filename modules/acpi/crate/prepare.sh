@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The acpi crate with myos's patches (*.myos.patch here) for the acpi
 # module: the pinned crate (versions.env) from crates.io, checked against
 # its SHA-256, unpacked and patched into target/acpi-myos, which
@@ -6,10 +6,10 @@
 # it before it builds the module; nothing to do when target/ already has
 # this version with these patches.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 # shellcheck source=modules/acpi/crate/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 DEST="$ROOT/target/acpi-myos"
 STAMP="$ROOT/target/.acpi-myos-version"
@@ -19,7 +19,7 @@ sha256() {
 }
 
 want="$(cat "$HERE/versions.env" "$HERE"/*.myos.patch | sha256 | cut -d' ' -f1)"
-if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$want" && -f "$DEST/Cargo.toml" ]]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$want" ] && [ -f "$DEST/Cargo.toml" ]; then
   exit 0
 fi
 
@@ -30,7 +30,7 @@ crate="$tmp/acpi-$ACPI_VERSION.crate"
 curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$crate" \
   "https://static.crates.io/crates/acpi/acpi-$ACPI_VERSION.crate"
 got="$(sha256 "$crate" | cut -d' ' -f1)"
-if [[ "$got" != "$ACPI_SHA256" ]]; then
+if [ "$got" != "$ACPI_SHA256" ]; then
   echo "error: acpi $ACPI_VERSION sha256 $got != pin $ACPI_SHA256" >&2
   exit 1
 fi

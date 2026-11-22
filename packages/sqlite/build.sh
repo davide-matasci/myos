@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build SQLite's amalgamation (one file, sqlite3.c) as a static
 # libsqlite3.a against mlibc for the three arches: target/sqlite-mlibc-<arch>
 # (lib/libsqlite3.a, include/sqlite3.h, sqlite3ext.h), what python's sqlite3
@@ -6,12 +6,12 @@
 # static program has no dlopen); the unix VFS takes its locks with fcntl,
 # which myos has.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_sqlite_is_current; then
   echo "sqlite libs up to date"
@@ -24,9 +24,9 @@ myos_ensure_llvm_bin
 
 SRC="$ROOT/target/sqlite-src"
 
-build_arch() {
-  local arch="$1"
-  local out="$ROOT/target/sqlite-mlibc-${arch}"
+build_arch() (
+  arch="$1"
+  out="$ROOT/target/sqlite-mlibc-${arch}"
   echo "==> sqlite ($arch, mlibc)"
   rm -rf "$out"
   mkdir -p "$out/lib" "$out/include"
@@ -39,7 +39,7 @@ build_arch() {
   rm -f "$out/sqlite3.o"
   cp "$SRC/sqlite3.h" "$SRC/sqlite3ext.h" "$out/include/"
   echo "sqlite -> $out/lib/libsqlite3.a"
-}
+)
 
 for arch in ${MYOS_SQLITE_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

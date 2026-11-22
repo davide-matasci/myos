@@ -24,13 +24,19 @@ env:
 
 defaults:
   run:
-    shell: bash
+    # The CI image's sh (POSIX.1-2024: pipefail), as the scripts' own.
+    shell: sh -e -o pipefail {0}
 
 jobs:
   # wire-myos.py patches the std sources the sysroot is built from: check it
   # against the pinned nightly before anything is built (beside the plan).
   wire-myos:
     runs-on: ubuntu-latest
+    # In the container for its sh: the runner's own (dash 0.5.12) has no
+    # pipefail, which the scripts set.
+    container:
+      image: ghcr.io/davide-matasci/myos-ci:latest
+      options: -e HOME=/root
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +51,11 @@ jobs:
         run: |
           chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh
           ./toolchain/std/check-wire.sh
+
+      # No bash, ksh or other shell's extension in a script
+      # (AGENTS.md, "Shell scripts are POSIX sh").
+      - name: The scripts are POSIX sh
+        run: ./scripts/check-posix-sh.sh
 
   plan:
     runs-on: ubuntu-latest

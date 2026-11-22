@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # pin.sh YYYY-MM-DD: rewrite versions.env for that nightly from its channel
 # manifest (static.rust-lang.org/dist/DATE/channel-rust-nightly.toml): the
 # sha256s of the musl rustc, cargo and rust-std for each host arch.
 # toolchain/std/bump-nightly.sh --write runs it with the date it pins.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 date="${1:?usage: pin.sh YYYY-MM-DD}"
 manifest="$(mktemp)"
 trap 'rm -f "$manifest"' EXIT

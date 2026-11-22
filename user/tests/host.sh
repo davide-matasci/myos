@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The host's side of the kernel's own tests (docs/testing.md): the launcher
 # runs `host.sh <what>` for a `HOST tests <what>` line from the guest, in
 # the background (cwd = repo root); the guest test decides from what it sees.
@@ -66,14 +66,17 @@ plug() { mon "$DRV" "$ADD"; echo "boot test: monitor: usb plug" >&2; }
 unplug() { mon "$DEL"; echo "boot test: monitor: usb unplug" >&2; }
 
 # Rapid unplug/replug. Each replug re-creates the drive first. Ends plugged.
-cycle() {
-  local n="${1:-20}" seq=() i
-  for ((i = 0; i < n; i++)); do
-    seq+=("$DEL" "$DRV" "$ADD")
+cycle() (
+  n="${1:-20}" i=0
+  # The commands: this subshell's arguments.
+  set --
+  while [ "$i" -lt "$n" ]; do
+    set -- "$@" "$DEL" "$DRV" "$ADD"
+    i=$((i + 1))
   done
-  mon "${seq[@]}"
+  mon "$@"
   echo "boot test: monitor: usb-cycle $n" >&2
-}
+)
 
 hub_unplug() { mon "$HUB_DEL"; echo "boot test: monitor: hub unplug" >&2; }
 hub_plug() { mon "$HUB_ADD"; echo "boot test: monitor: hub plug" >&2; }

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build the optional Linux compatibility layer's userspace pieces, per arch
 # (x86_64, aarch64, riscv64):
 #   target/linux-launcher-<arch>-unknown-none  the `linux` launcher (myos newlib,
@@ -14,13 +14,13 @@
 # per file, like toolchain/mlibc/fetch.sh's). Only needed for
 # `cargo build --features linux_compat`; see docs/linux-compat.md.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 MUSL_VERSION=1.2.5
 MUSL_SHA256=a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
-ARCHES=(x86_64 aarch64 riscv64)
+ARCHES="x86_64 aarch64 riscv64"
 
 # Stamped like a port (scripts/ci-registry.sh caches the outputs under
 # `linux-compat`); the launcher has its own script and is always rebuilt.
@@ -45,28 +45,28 @@ export PATH="$ROOT/target/newlib-bin:$PATH"
 # distribution, and Ubuntu 26.04's targets RVA23, whose vector instructions
 # QEMU's default `rv64` CPU lacks (musl's `_start_c`, zeroing its auxv array
 # with them, then dies of an illegal instruction before `main`).
-RISCV64_ISA=(-march=rv64gc -mabi=lp64d)
+RISCV64_ISA="-march=rv64gc -mabi=lp64d"
 
 # compiler-rt builtins for libc.so on aarch64/riscv64 (128-bit long double).
-CRT_TAG=llvmorg-19.1.7
+CRT_TAG=llvmorg-22.1.8
 CRT_BASE_JSDELIVR="https://cdn.jsdelivr.net/gh/llvm/llvm-project@$CRT_TAG/compiler-rt/lib/builtins"
 CRT_BASE_GITHUB="https://raw.githubusercontent.com/llvm/llvm-project/$CRT_TAG/compiler-rt/lib/builtins"
 CRT_SRC="$ROOT/target/linux-compat/compiler-rt-$CRT_TAG"
-CRT_C=(
+CRT_C="
   addtf3.c subtf3.c multf3.c divtf3.c comparetf2.c
   extenddftf2.c extendsftf2.c trunctfdf2.c trunctfsf2.c
   fixtfdi.c fixtfsi.c fixunstfsi.c floatditf.c floatsitf.c floatunsitf.c
   muldc3.c mulsc3.c multc3.c
-)
-CRT_H=(
+"
+CRT_H="
   int_lib.h int_types.h int_util.h int_endianness.h int_math.h
   fp_lib.h fp_mode.h fp_add_impl.inc fp_div_impl.inc fp_mul_impl.inc
   fp_extend.h fp_extend_impl.inc fp_trunc.h fp_trunc_impl.inc
   fp_fixint_impl.inc fp_fixuint_impl.inc int_to_fp_impl.inc fp_compare_impl.inc
-)
-fetch_crt() {
-  local f="$1" url
-  [[ -f "$CRT_SRC/$f" ]] && return 0
+"
+fetch_crt() (
+  f="$1"
+  [ -f "$CRT_SRC/$f" ] && return 0
   for url in "$CRT_BASE_JSDELIVR/$f" "$CRT_BASE_GITHUB/$f"; do
     if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 -o "$CRT_SRC/$f.partial" "$url"; then
       mv "$CRT_SRC/$f.partial" "$CRT_SRC/$f"
@@ -75,14 +75,14 @@ fetch_crt() {
   done
   echo "compiler-rt fetch failed: $f" >&2
   return 1
-}
+)
 
 # musl's release tarball into $1: from musl.libc.org, else Debian's copy of
 # the same file (`orig.tar.gz`, the pinned sha256 too). musl.libc.org has
 # reset every connection for minutes at a time (PR #737's port job: four
 # tries in 43 s), which no retry rides out.
-fetch_musl() {
-  local out="$1" url
+fetch_musl() (
+  out="$1"
   for url in "https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz" \
     "https://deb.debian.org/debian/pool/main/m/musl/musl_$MUSL_VERSION.orig.tar.gz"; do
     if curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 -o "$out.tmp" "$url" &&
@@ -95,48 +95,56 @@ fetch_musl() {
   rm -f "$out.tmp"
   echo "musl $MUSL_VERSION: no source answered" >&2
   return 1
-}
+)
 
 # libtf.a: the builtins above for one arch, PIC.
-build_libtf() {
-  local arch="$1" prefix="$2" out="$3"
+# shellcheck disable=SC2086
+build_libtf() (
+  arch="$1" prefix="$2" out="$3"
   mkdir -p "$CRT_SRC"
-  for f in "${CRT_C[@]}" "${CRT_H[@]}"; do fetch_crt "$f"; done
+  for f in $CRT_C $CRT_H; do fetch_crt "$f"; done
   cat >"$CRT_SRC/fe_stubs.c" <<'C'
 /* Round to nearest, no exception flags: what musl's soft long double needs. */
 int __fe_getround(void) { return 0; }
 int __fe_raise_inexact(void) { return 0; }
 C
-  local obj="$ROOT/target/linux-compat/crt-obj-$arch"
+  obj="$ROOT/target/linux-compat/crt-obj-$arch"
   rm -rf "$obj"
   mkdir -p "$obj"
-  local cc=(clang --target="$arch-linux-musl")
-  [[ "$arch" == riscv64 ]] && cc+=("${RISCV64_ISA[@]}")
-  for f in "${CRT_C[@]}" fe_stubs.c; do
-    "${cc[@]}" -O2 -fPIC -nostdinc \
+  cc="clang --target=$arch-linux-musl"
+  [ "$arch" = riscv64 ] && cc="$cc $RISCV64_ISA"
+  for f in $CRT_C fe_stubs.c; do
+    $cc -O2 -fPIC -nostdinc \
       -isystem "$(clang -print-resource-dir)/include" -isystem "$prefix/include" \
       -c "$CRT_SRC/$f" -o "$obj/${f%.c}.o"
   done
   "$AR_BIN" rcs "$out" "$obj"/*.o
+)
+
+# The compiler of the dynamically linked tests: $cc and the flags they share.
+dyncc() {
+  # shellcheck disable=SC2086
+  $cc -O2 -nostdinc -nostdlib -fuse-ld=lld \
+    -isystem "$prefix/include" -isystem "$(clang -print-resource-dir)/include" "$@"
 }
 
 tarball="$ROOT/target/linux-compat/musl-$MUSL_VERSION.tar.gz"
-for arch in "${ARCHES[@]}"; do
-  cc=(clang --target="$arch-linux-musl")
-  [[ "$arch" == riscv64 ]] && cc+=("${RISCV64_ISA[@]}")
+for arch in $ARCHES; do
+  cc="clang --target=$arch-linux-musl"
+  [ "$arch" = riscv64 ] && cc="$cc $RISCV64_ISA"
   prefix="$ROOT/target/linux-compat/musl-$MUSL_VERSION-$arch"
 
   # musl (static and shared) for the Linux-side test binaries.
-  if [[ ! -f "$prefix/lib/libc.so" ]]; then
+  if [ ! -f "$prefix/lib/libc.so" ]; then
     mkdir -p "$ROOT/target/linux-compat"
-    if [[ ! -f "$tarball" ]]; then
+    if [ ! -f "$tarball" ]; then
       fetch_musl "$tarball"
     fi
     echo "$MUSL_SHA256  $tarball" | sha256sum -c -
     # The headers the builtins need come from the static install.
-    libcc=()
-    if [[ "$arch" != x86_64 ]]; then
-      if [[ ! -f "$prefix/include/stdint.h" ]]; then
+    libcc=""
+    if [ "$arch" != x86_64 ]; then
+      if [ ! -f "$prefix/include/stdint.h" ]; then
         hdrs="$ROOT/target/linux-compat/hdr-$arch"
         rm -rf "$hdrs"
         mkdir -p "$hdrs"
@@ -145,7 +153,7 @@ for arch in "${ARCHES[@]}"; do
         rm -rf "$hdrs"
       fi
       build_libtf "$arch" "$prefix" "$ROOT/target/linux-compat/libtf-$arch.a"
-      libcc=(LIBCC="$ROOT/target/linux-compat/libtf-$arch.a")
+      libcc="LIBCC=$ROOT/target/linux-compat/libtf-$arch.a"
     fi
     work="$ROOT/target/linux-compat/build-$arch"
     rm -rf "$work"
@@ -153,9 +161,9 @@ for arch in "${ARCHES[@]}"; do
     tar xzf "$tarball" -C "$work"
     (
       cd "$work/musl-$MUSL_VERSION"
-      CC="${cc[*]}" AR="$AR_BIN" RANLIB="$RANLIB_BIN" LDFLAGS="-fuse-ld=lld" \
+      CC="$cc" AR="$AR_BIN" RANLIB="$RANLIB_BIN" LDFLAGS="-fuse-ld=lld" \
         ./configure --target="$arch-linux-musl" --prefix="$prefix" >/dev/null
-      if ! make -j"$(nproc)" "${libcc[@]}" >make.log 2>&1; then
+      if ! make -j"$(nproc)" ${libcc:+"$libcc"} >make.log 2>&1; then
         tail -40 make.log >&2
         exit 1
       fi
@@ -165,7 +173,8 @@ for arch in "${ARCHES[@]}"; do
   fi
 
   echo "==> linux-smoke ($arch Linux, musl static-PIE)"
-  "${cc[@]}" -static-pie -fPIE -O2 -nostdinc -nostdlib -fuse-ld=lld \
+  # shellcheck disable=SC2086
+  $cc -static-pie -fPIE -O2 -nostdinc -nostdlib -fuse-ld=lld \
     -isystem "$prefix/include" -isystem "$(clang -print-resource-dir)/include" \
     -o "$ROOT/target/linux-smoke-$arch-linux-musl" \
     "$prefix/lib/rcrt1.o" "$prefix/lib/crti.o" \
@@ -176,31 +185,31 @@ for arch in "${ARCHES[@]}"; do
   out="$ROOT/target/linux-compat/$arch"
   mkdir -p "$out"
   ldso="ld-musl-$arch.so.1"
-  dyncc=("${cc[@]}" -O2 -nostdinc -nostdlib -fuse-ld=lld
-    -isystem "$prefix/include" -isystem "$(clang -print-resource-dir)/include")
   cp "$prefix/lib/libc.so" "$out/$ldso"
   for lib in libsmoke libsmoke2; do
-    "${dyncc[@]}" -fPIC -shared -Wl,-soname,"$lib.so" -o "$out/$lib.so" \
+    dyncc -fPIC -shared -Wl,-soname,"$lib.so" -o "$out/$lib.so" \
       "$ROOT/linux-compat/tests/$lib.c" -L"$prefix/lib" -lc
   done
-  "${dyncc[@]}" -fPIE -pie -Wl,--dynamic-linker="/lib/$ldso" -o "$out/linux-dyn" \
+  dyncc -fPIE -pie -Wl,--dynamic-linker="/lib/$ldso" -o "$out/linux-dyn" \
     "$prefix/lib/Scrt1.o" "$prefix/lib/crti.o" "$ROOT/linux-compat/tests/linux-dyn.c" \
     "$out/libsmoke.so" -L"$prefix/lib" -lc "$prefix/lib/crtn.o"
 
   # The same two as non-PIE (ET_EXEC) programs, at the address gcc links
   # them at (0x400000; riscv64's 0x10000): the layer loads them there.
   case "$arch" in
-    riscv64) nopie=() ;;
-    *) nopie=(-Wl,--image-base=0x400000) ;;
+    riscv64) nopie="" ;;
+    *) nopie="-Wl,--image-base=0x400000" ;;
   esac
   echo "==> linux-nopie, linux-dyn-nopie ($arch Linux, musl, non-PIE)"
-  "${cc[@]}" -static -no-pie -O2 -nostdinc -nostdlib -fuse-ld=lld "${nopie[@]}" \
+  # shellcheck disable=SC2086
+  $cc -static -no-pie -O2 -nostdinc -nostdlib -fuse-ld=lld $nopie \
     -isystem "$prefix/include" -isystem "$(clang -print-resource-dir)/include" \
     -o "$out/linux-nopie" \
     "$prefix/lib/crt1.o" "$prefix/lib/crti.o" \
     "$ROOT/linux-compat/tests/linux-smoke.c" \
     "$prefix/lib/libc.a" "$prefix/lib/crtn.o"
-  "${dyncc[@]}" -no-pie "${nopie[@]}" -Wl,--dynamic-linker="/lib/$ldso" -o "$out/linux-dyn-nopie" \
+  # shellcheck disable=SC2086
+  dyncc -no-pie $nopie -Wl,--dynamic-linker="/lib/$ldso" -o "$out/linux-dyn-nopie" \
     "$prefix/lib/crt1.o" "$prefix/lib/crti.o" "$ROOT/linux-compat/tests/linux-dyn.c" \
     "$out/libsmoke.so" -L"$prefix/lib" -lc "$prefix/lib/crtn.o"
 

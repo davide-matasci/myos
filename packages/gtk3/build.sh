@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build GTK 3 (its X11 backend) and ATK against mlibc for the three
 # arches, static, with meson, into one prefix per arch,
 # target/gtk3-mlibc-<arch> (lib/ with the archives and their pkg-config
@@ -8,14 +8,14 @@
 # The smoke over all of them is the gtk3-smoke package's: a library port
 # ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/gtk3/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/gtk3/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_gtk3_is_current; then
   echo "gtk3 up to date"
@@ -37,11 +37,11 @@ done
 
 T="$ROOT/target"
 
-build_arch() {
-  local arch="$1"
-  local build="$T/gtk3-build-$arch"
-  local out="$T/gtk3-mlibc-${arch}"
-  local libs="$T/glib-mlibc-$arch/lib/pkgconfig $T/image-libs-mlibc-$arch/lib/pkgconfig"
+build_arch() (
+  arch="$1"
+  build="$T/gtk3-build-$arch"
+  out="$T/gtk3-mlibc-${arch}"
+  libs="$T/glib-mlibc-$arch/lib/pkgconfig $T/image-libs-mlibc-$arch/lib/pkgconfig"
   libs="$libs $T/cairo-pango-mlibc-$arch/lib/pkgconfig"
   echo "==> gtk3 ($arch, mlibc)"
   rm -rf "$build" "$out"
@@ -61,7 +61,7 @@ build_arch() {
     -Dexamples=false -Dtests=false -Dinstalled_tests=false -Dman=false -Dgtk_doc=false
   rm -rf "$build"
   echo "gtk3 ($arch) -> $out"
-}
+)
 
 for arch in ${MYOS_GTK3_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

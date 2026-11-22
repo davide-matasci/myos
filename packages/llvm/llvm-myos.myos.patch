@@ -1,8 +1,8 @@
 diff --git a/clang/lib/Basic/Targets.cpp b/clang/lib/Basic/Targets.cpp
-index 29133f9ee..7ebf7e7e7 100644
+index 26325391..09294d3f 100644
 --- a/clang/lib/Basic/Targets.cpp
 +++ b/clang/lib/Basic/Targets.cpp
-@@ -148,6 +148,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+@@ -151,6 +151,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
      case llvm::Triple::Fuchsia:
        return std::make_unique<FuchsiaTargetInfo<AArch64leTargetInfo>>(Triple,
                                                                        Opts);
@@ -11,7 +11,7 @@ index 29133f9ee..7ebf7e7e7 100644
      case llvm::Triple::Haiku:
        return std::make_unique<HaikuTargetInfo<AArch64leTargetInfo>>(Triple,
                                                                      Opts);
-@@ -451,6 +453,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+@@ -456,6 +458,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
      case llvm::Triple::Fuchsia:
        return std::make_unique<FuchsiaTargetInfo<RISCV64TargetInfo>>(Triple,
                                                                      Opts);
@@ -20,7 +20,7 @@ index 29133f9ee..7ebf7e7e7 100644
      case llvm::Triple::Haiku:
        return std::make_unique<HaikuTargetInfo<RISCV64TargetInfo>>(Triple,
                                                                    Opts);
-@@ -636,6 +640,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
+@@ -649,6 +653,8 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
          return std::make_unique<MicrosoftX86_64TargetInfo>(Triple, Opts);
        }
      }
@@ -28,12 +28,12 @@ index 29133f9ee..7ebf7e7e7 100644
 +      return std::make_unique<MyOSTargetInfo<X86_64TargetInfo>>(Triple, Opts);
      case llvm::Triple::Haiku:
        return std::make_unique<HaikuTargetInfo<X86_64TargetInfo>>(Triple, Opts);
-     case llvm::Triple::NaCl:
+     case llvm::Triple::PS4:
 diff --git a/clang/lib/Basic/Targets/OSTargets.h b/clang/lib/Basic/Targets/OSTargets.h
-index 357c19650..9755167cb 100644
+index 04608649..ba1ad352 100644
 --- a/clang/lib/Basic/Targets/OSTargets.h
 +++ b/clang/lib/Basic/Targets/OSTargets.h
-@@ -287,6 +287,28 @@ public:
+@@ -312,6 +312,28 @@ public:
    }
  };
  
@@ -63,10 +63,10 @@ index 357c19650..9755167cb 100644
  template <typename Target>
  class LLVM_LIBRARY_VISIBILITY HurdTargetInfo : public OSTargetInfo<Target> {
 diff --git a/clang/lib/Driver/CMakeLists.txt b/clang/lib/Driver/CMakeLists.txt
-index 32a4378ab..d17c5102e 100644
+index 0026ba89..14603809 100644
 --- a/clang/lib/Driver/CMakeLists.txt
 +++ b/clang/lib/Driver/CMakeLists.txt
-@@ -58,6 +58,7 @@ add_clang_library(clangDriver
+@@ -59,6 +59,7 @@ add_clang_library(clangDriver
    ToolChains/Fuchsia.cpp
    ToolChains/Gnu.cpp
    ToolChains/Haiku.cpp
@@ -75,18 +75,18 @@ index 32a4378ab..d17c5102e 100644
    ToolChains/HIPAMD.cpp
    ToolChains/HIPSPV.cpp
 diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
-index f9dc8ab24..441ecc528 100644
+index eb3f9cbe..1dc5e2f7 100644
 --- a/clang/lib/Driver/Driver.cpp
 +++ b/clang/lib/Driver/Driver.cpp
-@@ -26,6 +26,7 @@
+@@ -27,6 +27,7 @@
  #include "ToolChains/HIPSPV.h"
  #include "ToolChains/HLSL.h"
  #include "ToolChains/Haiku.h"
 +#include "ToolChains/MyOS.h"
  #include "ToolChains/Hexagon.h"
  #include "ToolChains/Hurd.h"
- #include "ToolChains/Lanai.h"
-@@ -6356,6 +6357,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
+ #include "ToolChains/LFILinux.h"
+@@ -6829,6 +6830,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
      case llvm::Triple::Haiku:
        TC = std::make_unique<toolchains::Haiku>(*this, Target, Args);
        break;
@@ -97,28 +97,28 @@ index f9dc8ab24..441ecc528 100644
      case llvm::Triple::MacOSX:
      case llvm::Triple::IOS:
 diff --git a/clang/lib/Driver/ToolChains/Arch/RISCV.cpp b/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
-index 149a31f58..64394c474 100644
+index 7fda8ea5..03a1c8b8 100644
 --- a/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
 +++ b/clang/lib/Driver/ToolChains/Arch/RISCV.cpp
-@@ -159,8 +159,10 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
-   if (Args.hasArg(options::OPT_ffixed_x31))
-     Features.push_back("+reserve-x31");
+@@ -129,8 +129,10 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
+   RESERVE_REG(x31)
+ #undef RESERVE_REG
  
 -  // -mrelax is default, unless -mno-relax is specified.
--  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, true)) {
+-  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax, true))
 +  // -mrelax is default, unless -mno-relax is specified. Not on myos: its
 +  // programs do not set gp up, and mlibc and its ports are built without.
 +  if (Args.hasFlag(options::OPT_mrelax, options::OPT_mno_relax,
-+                   !Triple.isOSMyOS())) {
++                   !Triple.isOSMyOS()))
      Features.push_back("+relax");
-     // -gsplit-dwarf -mrelax requires DW_AT_high_pc/DW_AT_ranges/... indexing
-     // into .debug_addr, which is currently not implemented.
+   else
+     Features.push_back("-relax");
 diff --git a/clang/lib/Driver/ToolChains/MyOS.cpp b/clang/lib/Driver/ToolChains/MyOS.cpp
 new file mode 100644
-index 000000000..4594b1289
+index 00000000..22515604
 --- /dev/null
 +++ b/clang/lib/Driver/ToolChains/MyOS.cpp
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,154 @@
 +//===--- MyOS.cpp - myos ToolChain Implementations --------------*- C++ -*-===//
 +//
 +// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -128,9 +128,9 @@ index 000000000..4594b1289
 +//===----------------------------------------------------------------------===//
 +
 +#include "MyOS.h"
-+#include "CommonArgs.h"
++#include "clang/Driver/CommonArgs.h"
 +#include "clang/Driver/Compilation.h"
-+#include "clang/Driver/Options.h"
++#include "clang/Options/Options.h"
 +#include "llvm/Support/Path.h"
 +#include "llvm/Support/VirtualFileSystem.h"
 +
@@ -198,15 +198,9 @@ index 000000000..4594b1289
 +  }
 +  ToolChain.AddFilePathLibArgs(Args, CmdArgs);
 +
-+  if (D.isUsingLTO()) {
-+    assert(!Inputs.empty() && "Must have at least one input.");
-+    auto Input = llvm::find_if(
-+        Inputs, [](const InputInfo &II) -> bool { return II.isFilename(); });
-+    if (Input == Inputs.end())
-+      Input = Inputs.begin();
-+    addLTOOptions(ToolChain, Args, CmdArgs, Output, *Input,
++  if (D.isUsingLTO())
++    addLTOOptions(ToolChain, Args, CmdArgs, Output, Inputs,
 +                  D.getLTOMode() == LTOK_Thin);
-+  }
 +
 +  addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
 +  AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
@@ -281,7 +275,7 @@ index 000000000..4594b1289
 +Tool *MyOS::buildLinker() const { return new tools::myos::Linker(*this); }
 diff --git a/clang/lib/Driver/ToolChains/MyOS.h b/clang/lib/Driver/ToolChains/MyOS.h
 new file mode 100644
-index 000000000..9e9a49ecb
+index 00000000..9e9a49ec
 --- /dev/null
 +++ b/clang/lib/Driver/ToolChains/MyOS.h
 @@ -0,0 +1,89 @@
@@ -375,10 +369,10 @@ index 000000000..9e9a49ecb
 +
 +#endif // LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_MYOS_H
 diff --git a/clang/tools/driver/driver.cpp b/clang/tools/driver/driver.cpp
-index 83b5bbb71..b4c7f74ad 100644
+index 49013696..1570d039 100644
 --- a/clang/tools/driver/driver.cpp
 +++ b/clang/tools/driver/driver.cpp
-@@ -342,7 +342,12 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
+@@ -363,7 +363,12 @@ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
    // PrependArg which should be clang-*. Checking just CanonicalPrefixes is
    // safe even in the normal case because PrependArg will be null so
    // setPrependArg will be a no-op.
@@ -393,20 +387,20 @@ index 83b5bbb71..b4c7f74ad 100644
  
    insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
 diff --git a/llvm/include/llvm/TargetParser/Triple.h b/llvm/include/llvm/TargetParser/Triple.h
-index d2126a03d..cc4b5352c 100644
+index 9c83abee..891b61a9 100644
 --- a/llvm/include/llvm/TargetParser/Triple.h
 +++ b/llvm/include/llvm/TargetParser/Triple.h
-@@ -239,7 +239,8 @@ public:
-     LiteOS,
+@@ -252,7 +252,8 @@ public:
      Serenity,
      Vulkan, // Vulkan SPIR-V
--    LastOSType = Vulkan
-+    MyOS,   // myos: its userspace on mlibc
+     CheriotRTOS,
+-    LastOSType = CheriotRTOS
++    MyOS, // myos: its userspace on mlibc
 +    LastOSType = MyOS
    };
    enum EnvironmentType {
      UnknownEnvironment,
-@@ -804,6 +805,9 @@ public:
+@@ -879,6 +880,9 @@ public:
  
    bool isOSLiteOS() const { return getOS() == Triple::LiteOS; }
  
@@ -417,32 +411,30 @@ index d2126a03d..cc4b5352c 100644
    bool isDXIL() const {
      return getArch() == Triple::dxil;
 diff --git a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
-index cf05db546..71b0273e7 100644
+index fc71ca46..37ec63c8 100644
 --- a/llvm/lib/Support/Unix/Path.inc
 +++ b/llvm/lib/Support/Unix/Path.inc
-@@ -129,7 +129,8 @@ const file_t kInvalidFile = -1;
- #if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) ||      \
-     defined(__FreeBSD_kernel__) || defined(__linux__) || defined(__CYGWIN__) || \
-     defined(__DragonFly__) || defined(_AIX) || defined(__GNU__) ||              \
--    (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__))
-+    (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__)) ||           \
-+    defined(__myos__)
+@@ -130,7 +130,7 @@ const file_t kInvalidFile = -1;
+     defined(__CYGWIN__) || defined(__DragonFly__) || defined(_AIX) ||          \
+     defined(__GNU__) ||                                                        \
+     (defined(__sun__) && defined(__svr4__) || defined(__HAIKU__)) ||           \
+-    defined(__managarm__)
++    defined(__managarm__) || defined(__myos__)
  static int test_dir(char ret[PATH_MAX], const char *dir, const char *bin) {
    struct stat sb;
    char fullpath[PATH_MAX];
-@@ -283,7 +284,10 @@ std::string getMainExecutable(const char *argv0, void *MainAddr) {
+@@ -287,7 +287,9 @@ std::string getMainExecutable(const char *argv0, void *MainAddr) {
    // Fall back to the classical detection.
    if (getprogpath(exe_path, argv0))
      return exe_path;
 -#elif defined(__OpenBSD__) || defined(__HAIKU__)
-+// myos: the name the program was run under. /proc/self/exe names the
-+// file, and the tools of the multicall program are links to one file: an
-+// app's view may give the file under any of their names.
++// myos: the name the program was run under, as the multicall program's
++// tools are run by theirs.
 +#elif defined(__OpenBSD__) || defined(__HAIKU__) || defined(__myos__)
    char exe_path[PATH_MAX];
    // argv[0] only
    if (getprogpath(exe_path, argv0) != NULL)
-@@ -555,6 +559,10 @@ static bool is_local_impl(struct STATVFS &Vfs) {
+@@ -564,6 +566,10 @@ static bool is_local_impl(struct STATVFS &Vfs) {
    // The file system can have an arbitrary structure on z/OS; must go with the
    // conservative answer.
    return false;
@@ -453,23 +445,39 @@ index cf05db546..71b0273e7 100644
  #else
    return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
  #endif
+diff --git a/llvm/lib/Support/Unix/Process.inc b/llvm/lib/Support/Unix/Process.inc
+index c6e79af4..65779222 100644
+--- a/llvm/lib/Support/Unix/Process.inc
++++ b/llvm/lib/Support/Unix/Process.inc
+@@ -36,6 +36,11 @@
+ #endif
+ #ifdef HAVE_SYS_IOCTL_H
+ #include <sys/ioctl.h>
++#if defined(__myos__)
++// myos: struct winsize is <termios.h>'s (mlibc gives it to <sys/ioctl.h>
++// with its Linux option alone).
++#include <termios.h>
++#endif
+ #endif
+ 
+ //===----------------------------------------------------------------------===//
 diff --git a/llvm/lib/TargetParser/Triple.cpp b/llvm/lib/TargetParser/Triple.cpp
-index 21d6c74b5..339f51f77 100644
+index a4f9dd42..eaa27d2f 100644
 --- a/llvm/lib/TargetParser/Triple.cpp
 +++ b/llvm/lib/TargetParser/Triple.cpp
-@@ -300,6 +300,7 @@ StringRef Triple::getOSTypeName(OSType Kind) {
+@@ -337,6 +337,7 @@ StringRef Triple::getOSTypeName(OSType Kind) {
    case ZOS: return "zos";
    case ShaderModel: return "shadermodel";
    case LiteOS: return "liteos";
 +  case MyOS: return "myos";
    case XROS: return "xros";
    case Vulkan: return "vulkan";
-   }
-@@ -685,6 +686,7 @@ static Triple::OSType parseOS(StringRef OSName) {
-     .StartsWith("emscripten", Triple::Emscripten)
-     .StartsWith("shadermodel", Triple::ShaderModel)
-     .StartsWith("liteos", Triple::LiteOS)
-+    .StartsWith("myos", Triple::MyOS)
-     .StartsWith("serenity", Triple::Serenity)
-     .StartsWith("vulkan", Triple::Vulkan)
-     .Default(Triple::UnknownOS);
+   case CheriotRTOS:
+@@ -751,6 +752,7 @@ static Triple::OSType parseOS(StringRef OSName) {
+       .StartsWith("emscripten", Triple::Emscripten)
+       .StartsWith("shadermodel", Triple::ShaderModel)
+       .StartsWith("liteos", Triple::LiteOS)
++      .StartsWith("myos", Triple::MyOS)
+       .StartsWith("serenity", Triple::Serenity)
+       .StartsWith("vulkan", Triple::Vulkan)
+       .StartsWith("cheriotrtos", Triple::CheriotRTOS)

@@ -39,6 +39,7 @@
 
 #include <bits/ensure.h>
 #include <mlibc/all-sysdeps.hpp>
+#include <mlibc/allocator.hpp>
 #include <mlibc/debug.hpp>
 
 #include "libmyos.h"
@@ -600,10 +601,24 @@ int Sysdeps<GetCurrentStackInfo>::operator()(void **stack_base, size_t *stack_si
 
 // ---- processes ----------------------------------------------------------
 
+// The allocator's locks are held across the fork, so the child's heap is
+// one no thread was in the middle of changing, and its locks are free. A
+// child forked while another thread held one waited for it forever in its
+// first malloc, exec's own included (it packs the arguments in a block
+// from malloc, libmyos/at.c): cargo's, with its threads, on its way to
+// rustc. The child lets go of them under the tid mlibc still holds for it,
+// the forking thread's, which the locks name as their holder: fork() asks
+// for its own after this. A stream's lock is not held (issue #544).
+// Here and not in libmyos's fork hooks (libgloss's way): lock_all is
+// inlined, so libc.a defines the symbols it did, and the libraries built
+// over it, keyed on them (docs/ports.md "Cache keys"), stay as they are.
 int Sysdeps<Fork>::operator()(pid_t *child) {
+	getAllocator().lock_all();
 	int r = __myos_fork();
+	int e = errno;
+	getAllocator().unlock_all();
 	if (r < 0)
-		return errno;
+		return e;
 	*child = r;
 	return 0;
 }

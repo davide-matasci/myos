@@ -23,7 +23,7 @@ loads.
 |------|------|
 | `/bin/custom/rustc` | the compiler's program, a few KiB over the library below |
 | `/bin/custom/cargo` | cargo, static, with curl, libgit2 and libssh2 in it (TLS by LibreSSL) |
-| `/lib/librustc_driver-*.so` | the compiler, with LLVM 22 (X86, AArch64 and RISC-V) |
+| `/lib/librustc_driver-*.so` | the compiler, with the llvm package's LLVM in it (X86, AArch64 and RISC-V) |
 | `/lib/rustlib/<triple>/lib` | the std of the target: `core`, `alloc`, `std`, `proc_macro`, `test` |
 | `/lib/rustlib/<triple>/bin/rust-lld` | the linker rustc runs: a script over the llvm app's `ld.lld` |
 
@@ -36,7 +36,7 @@ from its program's directory.
 
 ## Where to install it
 
-The compiler's library is about 155 MiB, more than a tmpfs file may be
+The compiler's library is about 145 MiB, more than a tmpfs file may be
 (128 MiB, `docs/fs.md`), so the app goes on a disk: an ext2 partition
 with a few hundred MiB, `get-myos -r /mnt/apps rustc` and
 `run-myos -r /mnt/apps rustc ...`. cargo's `target/` belongs on a disk
@@ -47,12 +47,11 @@ too.
 `build.sh`, an arch a CI job (`PORT_ARCH_JOBS`):
 
 - The source is the tarball of the nightly `rust-toolchain.toml` pins
-  (`versions.env`, `fetch.sh`): the compiler, cargo, the LLVM they are
-  built on and every crate they need (`vendor/`).
+  (`versions.env`, `fetch.sh`): the compiler, cargo and every crate they
+  need (`vendor/`).
 - myos in it:
   - `rust-myos.myos.patch`: the three targets as built-in ones with myos
-    as a host, what the build needs for them, and the host side of the
-    LLVM it carries;
+    as a host, and what the build needs for them;
   - the std's wiring on `library/` (`toolchain/std/patches/wire-myos.py`,
     the same as the sysroot's);
   - `port-crates.py` on the vendored crates: the `libc` crate gets the
@@ -63,10 +62,13 @@ too.
   machine from that source (stage 1, the first one that knows the myos
   targets), the std for myos with it, and the compiler and cargo for
   myos (stage 2) linked against that std.
-- LLVM for myos is the one the source carries (LLVM 22; the `llvm`
-  package is LLVM 19, older than this compiler takes): its libraries
-  alone, static, against mlibc and libc++. `files/llvm-config` describes
-  them to the compiler's build on the build machine.
+- LLVM for myos is the `llvm` package's, the one clang and lld there are
+  made of: upstream LLVM of the major this compiler is written for, not
+  the fork the source carries. That port keeps LLVM's libraries and
+  headers beside its program (`target/llvm-<arch>/dev`, not in its app),
+  with a `llvm-config` that describes them to this build on the build
+  machine. One LLVM in a system with both packages, built once; it is
+  built for size, as clang is.
 - The build downloads two things besides the source, both pinned by the
   source itself: the beta compiler it bootstraps from (`src/stage0`) and
   the LLVM Rust's CI built for this commit, for stage 1. Neither is in

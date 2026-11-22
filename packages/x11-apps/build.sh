@@ -1,16 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build xev and xprop for the three arches: upstream, unpatched,
 # each with its own autoconf configure in cross mode, static, on top of a
 # copy of the font stack's stage (packages/x11-xft: libX11, xcb and
 # libXrender; x11-libs' libXext and libXrandr, which xev asks for RandR
 # events) in target/x11-apps-<arch>.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/x11-apps/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_x11_apps_is_current; then
   echo "x11-apps up to date"
@@ -31,10 +31,10 @@ build_triple="$(sh "$SRC/xev-$XEV_VERSION/config.guess")"
 
 # build_one ARCH NAME-VERSION CONFIGURE-ARGS...: configure in a copy of the
 # source, make, install into the arch's stage.
-build_one() {
-  local arch="$1" pkg="$2"
+build_one() (
+  arch="$1" pkg="$2"
   shift 2
-  local dir="$WORK/$arch/$pkg"
+  dir="$WORK/$arch/$pkg"
   echo "==> $pkg ($arch)"
   rm -rf "$dir"
   mkdir -p "$WORK/$arch"
@@ -49,12 +49,12 @@ build_one() {
   )
   # libtool archives name the install paths, not the stage.
   find "$STAGE" -name '*.la' -delete
-}
+)
 
-build_arch() {
-  local arch="$1"
+build_arch() (
+  arch="$1"
   STAGE="$ROOT/target/x11-apps-${arch}"
-  local cc="$WORK/$arch-cc"
+  cc="$WORK/$arch-cc"
   rm -rf "$STAGE" "$WORK/$arch"
   mkdir -p "$WORK/$arch"
   cp -a "$ROOT/target/x11-xft-${arch}" "$STAGE"
@@ -74,7 +74,7 @@ build_arch() {
   cp "$WORK/$arch/xev-$XEV_VERSION/xev" "$ROOT/target/xev-${arch}-unknown-none"
   build_one "$arch" "xprop-$XPROP_VERSION"
   cp "$WORK/$arch/xprop-$XPROP_VERSION/xprop" "$ROOT/target/xprop-${arch}-unknown-none"
-}
+)
 
 for arch in x86_64 aarch64 riscv64; do
   build_arch "$arch"

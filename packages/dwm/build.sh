@@ -1,16 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build dwm for the three arches against the X and font libraries of
 # packages/x11-xft (x11-libs included): upstream dwm, unpatched, with Xft
 # text (fontconfig's "monospace", the x11-fonts package's DejaVu Sans Mono).
 # Static, like everything; config.h is the stock config.def.h. Then the
 # boot test dwm_smoke, which watches the framebuffer.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/dwm/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_dwm_is_current; then
   echo "dwm up to date"

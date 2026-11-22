@@ -1,19 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch a pinned sbase release for the myos port.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=ports/sbase/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 SBASE_SRC="$ROOT/target/sbase-src"
 SBASE_REV="${SBASE_REV:-c546c3a5724c81cee9a11d816a38ccdf17472129}"
 
-if [[ -d "$SBASE_SRC/.git" && -f "$SBASE_SRC/echo.c" ]]; then
+if [ -d "$SBASE_SRC/.git" ] && [ -f "$SBASE_SRC/echo.c" ]; then
   echo "sbase already present at $SBASE_SRC"
   exit 0
 fi
 
-if [[ -e "$SBASE_SRC" ]]; then
+if [ -e "$SBASE_SRC" ]; then
   echo "removing incomplete sbase tree at $SBASE_SRC" >&2
   rm -rf "$SBASE_SRC"
 fi

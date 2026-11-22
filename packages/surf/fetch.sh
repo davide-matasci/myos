@@ -1,16 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch surf at its pinned commit into target/surf-src (idempotent; not
 # vendored). The myos patch is applied by build.sh, on a fresh copy.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=packages/surf/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 SRC="$ROOT/target/surf-src"
 
-if [[ -d "$SRC/.git" && -f "$SRC/surf.c" ]]; then
+if [ -d "$SRC/.git" ] && [ -f "$SRC/surf.c" ]; then
   got="$(git -C "$SRC" rev-parse HEAD)"
-  if [[ "$got" == "$SURF_REV" ]]; then
+  if [ "$got" = "$SURF_REV" ]; then
     exit 0
   fi
   echo "surf at $got, want $SURF_REV; refetching" >&2

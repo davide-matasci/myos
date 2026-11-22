@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build CPython against mlibc for the three arches (docs/mlibc.md,
 # README.md here): target/python-<arch>/usr/{bin/python3.13,lib/python3.13},
 # what the package carries (port.env). CPython's own build system does it
@@ -7,14 +7,14 @@
 # run (the frozen modules, the library's .pyc files): the host's, or this
 # source built once for the host (target/python-host).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/python/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/python/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_python_is_current; then
   echo "python up to date"
@@ -55,8 +55,8 @@ done
 
 # The build python: one of this minor on the host, else this source built
 # for the host, kept across builds of the same version.
-build_python() {
-  local p out="$ROOT/target/python-host" build="$ROOT/target/python-host-build"
+build_python() (
+  out="$ROOT/target/python-host" build="$ROOT/target/python-host-build"
   for p in "python$MINOR" python3; do
     if command -v "$p" >/dev/null 2>&1 \
       && "$p" -c "import sys; sys.exit(sys.version_info[:2] != tuple(map(int, '$MINOR'.split('.'))))" 2>/dev/null; then
@@ -64,7 +64,7 @@ build_python() {
       return
     fi
   done
-  if [[ ! -x "$out/bin/python$MINOR" || "$(cat "$out/.version" 2>/dev/null)" != "$PYTHON_VERSION" ]]; then
+  if [ ! -x "$out/bin/python$MINOR" ] || [ "$(cat "$out/.version" 2>/dev/null)" != "$PYTHON_VERSION" ]; then
     echo "==> python $PYTHON_VERSION for the host (it has no python $MINOR)" >&2
     rm -rf "$build" "$out"
     mkdir -p "$build"
@@ -74,16 +74,15 @@ build_python() {
     echo "$PYTHON_VERSION" >"$out/.version"
   fi
   echo "$out/bin/python$MINOR"
-}
+)
 BUILD_PYTHON="$(build_python)"
 echo "build python: $BUILD_PYTHON"
 
-build_arch() {
-  local arch="$1"
-  local build="$ROOT/target/python-build-$arch"
-  local out="$ROOT/target/python-$arch"
-  local lib="$out/usr/lib/python$MINOR"
-  local f
+build_arch() (
+  arch="$1"
+  build="$ROOT/target/python-build-$arch"
+  out="$ROOT/target/python-$arch"
+  lib="$out/usr/lib/python$MINOR"
 
   echo "==> python ($arch, mlibc)"
   rm -rf "$build" "$out"
@@ -113,8 +112,8 @@ build_arch() {
   # interpreter: the app has the library at /usr/lib/python3.13 (the search
   # upwards from the executable's directory, /bin/custom, stops short of
   # the root).
-  local ssl="$ROOT/target/libressl-mlibc-$arch" nc="$ROOT/target/ncurses-mlibc-$arch"
-  local sq="$ROOT/target/sqlite-mlibc-$arch" le="$ROOT/target/libedit-mlibc-$arch"
+  ssl="$ROOT/target/libressl-mlibc-$arch" nc="$ROOT/target/ncurses-mlibc-$arch"
+  sq="$ROOT/target/sqlite-mlibc-$arch" le="$ROOT/target/libedit-mlibc-$arch"
   (cd "$build" && CONFIG_SITE="$HERE/config.site" CC="$build/cc" CPP="$build/cc -E" \
     AR="${arch}-unknown-myos-ar" RANLIB="${arch}-unknown-myos-ranlib" READELF="$READELF_BIN" PKG_CONFIG=false \
     ZLIB_CFLAGS="-I$build/zlib" ZLIB_LIBS="-L$build/zlib -lz" MODULE_BUILDTYPE=static \
@@ -149,7 +148,6 @@ build_arch() {
   find "$lib" -name __pycache__ -type d -prune -exec rm -rf {} +
   # The modules that must be there: configure leaves out one whose library
   # it did not find, and the build only says so in its log.
-  local m
   for m in _ssl _hashlib _sqlite3 _curses _curses_panel readline; do
     grep -q "^$m " "$build/Modules/Setup.stdlib" || { echo "error: python $arch: no $m module" >&2; exit 1; }
   done
@@ -160,7 +158,7 @@ build_arch() {
   find "$out/usr/bin" -mindepth 1 ! -name "python$MINOR" -delete
   "${arch}-unknown-myos-strip" -s "$out/usr/bin/python$MINOR"
   echo "python -> $out/usr/bin/python$MINOR ($(du -h "$out/usr/bin/python$MINOR" | cut -f1)), library $(du -sh "$lib" | cut -f1)"
-}
+)
 
 # Default: all arches (CI). MYOS_PYTHON_ARCHES=x86_64 for a faster local build.
 ARCHES="${MYOS_PYTHON_ARCHES:-x86_64 aarch64 riscv64}"

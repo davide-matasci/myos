@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # A local boot test (docs/testing.md) with the settings a loaded host needs:
 # 1. OOM: some sandboxes set oom_score_adj=1000 on children, so a TCG QEMU
 #    with a few GiB gets SIGKILLed under memory pressure. Lower our own
@@ -20,8 +20,8 @@ LIST="${2:-mini}"
 shift $(( $# > 0 ? 1 : 0 ))
 shift $(( $# > 0 ? 1 : 0 ))
 case $LIST in
-mini | full) TEST=(test-$LIST) ;;
-*) TEST=(test "$LIST" "$@"); LIST=selected ;;
+mini | full) set -- "test-$LIST" ;;
+*) set -- test "$LIST" "$@"; LIST=selected ;;
 esac
 
 if [ -w /proc/self/oom_score_adj ]; then
@@ -42,7 +42,7 @@ export MYOS_TCG_SINGLE="${MYOS_TCG_SINGLE:-1}"
 
 LOG="${TMPDIR:-/tmp}/localci-$ARCH-$LIST-$(date +%s).log"
 STATUS=0
-nice -n 5 cargo run --quiet -- "$ARCH" "${TEST[@]}" >"$LOG" 2>&1 || STATUS=$?
+nice -n 5 cargo run --quiet -- "$ARCH" "$@" >"$LOG" 2>&1 || STATUS=$?
 tail -5 "$LOG"
 echo "log: $LOG"
 exit $STATUS

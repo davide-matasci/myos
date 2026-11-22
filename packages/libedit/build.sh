@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build libedit as a static libedit.a against mlibc for the three
 # arches, with its own configure (the target the compiler's triple: its
 # config.sub does not know myos, and a cross build runs nothing it links),
@@ -6,14 +6,14 @@
 # capabilities: target/libedit-mlibc-<arch> (lib/libedit.a, include/
 # histedit.h and editline/readline.h), what python's readline module links.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/libedit/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/libedit/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_libedit_is_current; then
   echo "libedit libs up to date"
@@ -29,11 +29,11 @@ RANLIB_BIN="$(command -v llvm-ranlib 2>/dev/null || echo ranlib)"
 
 SRC="$ROOT/target/libedit-src"
 
-build_arch() {
-  local arch="$1"
-  local build="$ROOT/target/libedit-build-$arch"
-  local out="$ROOT/target/libedit-mlibc-${arch}"
-  local nc="$ROOT/target/ncurses-mlibc-${arch}"
+build_arch() (
+  arch="$1"
+  build="$ROOT/target/libedit-build-$arch"
+  out="$ROOT/target/libedit-mlibc-${arch}"
+  nc="$ROOT/target/ncurses-mlibc-${arch}"
   echo "==> libedit ($arch, mlibc)"
   rm -rf "$build" "$out"
   mkdir -p "$build"
@@ -57,7 +57,7 @@ build_arch() {
   cp "$SRC/src/editline/readline.h" "$out/include/editline/"
   rm -rf "$build"
   echo "libedit -> $out/lib/libedit.a"
-}
+)
 
 for arch in ${MYOS_LIBEDIT_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

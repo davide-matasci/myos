@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Fetch errno + libc + rustix from crates.io and apply myos patches into target/patched-crates/.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=packages/coreutils/versions.env
-source "$ROOT/packages/coreutils/versions.env"
+. "$ROOT/packages/coreutils/versions.env"
 
 CRATES="$HERE/crates"
 LIBC="$ROOT/ports/crates/libc"
@@ -34,31 +34,28 @@ patch_version_hash() {
   } | sha256sum | awk '{print $1}'
 }
 
-find_registry_crate() {
-  local name_ver="$1"
-  local -a roots=(
-    "${CARGO_HOME:-$HOME/.cargo}/registry/src"
-    "/usr/local/cargo/registry/src"
-  )
-  local root dir
-  for root in "${roots[@]}"; do
+find_registry_crate() (
+  name_ver="$1"
+  for root in \
+    "${CARGO_HOME:-$HOME/.cargo}/registry/src" \
+    "/usr/local/cargo/registry/src"; do
     for dir in "$root"/index.crates.io-*; do
-      [[ -d "$dir/$name_ver" ]] || continue
+      [ -d "$dir/$name_ver" ] || continue
       printf '%s\n' "$dir/$name_ver"
       return 0
     done
   done
   echo "error: could not find $name_ver in cargo registry (run cargo fetch)" >&2
   return 1
-}
+)
 
 # In-place registry patching must be deterministic: restore the crate from
 # the cargo download cache first so a crate dir corrupted by an earlier
 # buggy patch pass (or double-patched by overlapping hunks) always heals.
-reset_registry_crate() {
-  local name_ver="$1" dir="$2" cache
+reset_registry_crate() (
+  name_ver="$1" dir="$2"
   cache="$(dirname "$dir")/../../cache/$(basename "$(dirname "$dir")")/$name_ver.crate"
-  if [[ -f "$cache" ]]; then
+  if [ -f "$cache" ]; then
     rm -rf "$dir"
     tar -xzf "$cache" -C "$(dirname "$dir")"
     # Restore cargo's extraction marker — without it cargo silently
@@ -66,7 +63,7 @@ reset_registry_crate() {
     # in-place patches we just applied.
     printf '{"v":1}' >"$dir/.cargo-ok"
   fi
-}
+)
 
 GETRANDOM_04_SRC="$(find_registry_crate "getrandom-$GETRANDOM_04_VERSION" 2>/dev/null || true)"
 HOSTNAME_SRC="$(find_registry_crate "hostname-$HOSTNAME_VERSION" 2>/dev/null || true)"
@@ -74,23 +71,23 @@ CONSOLE_SRC="$(find_registry_crate "console-$CONSOLE_VERSION" 2>/dev/null || tru
 FILETIME_SRC="$(find_registry_crate "filetime-$FILETIME_VERSION" 2>/dev/null || true)"
 CTRLC_SRC="$(find_registry_crate "ctrlc-$CTRLC_VERSION" 2>/dev/null || true)"
 
-if [[ -f "$STAMP" ]] && [[ "$(cat "$STAMP")" == "$(patch_version_hash)" ]] \
-  && [[ -f "$DEST/errno-$ERRNO_VERSION/Cargo.toml" ]] \
-  && [[ -f "$DEST/libc-$LIBC_VERSION/Cargo.toml" ]] \
-  && [[ -f "$DEST/rustix-$RUSTIX_VERSION/Cargo.toml" ]] \
-  && [[ -f "$DEST/getrandom-$GETRANDOM_02_VERSION/Cargo.toml" ]] \
-  && [[ -n "$GETRANDOM_04_SRC" ]] \
-  && [[ -f "$GETRANDOM_04_SRC/src/backends/myos.rs" ]] \
-  && [[ -n "$HOSTNAME_SRC" ]] \
-  && [[ -f "$HOSTNAME_SRC/src/myos.rs" ]] \
-  && [[ -n "$CONSOLE_SRC" ]] \
-  && [[ -f "$CONSOLE_SRC/src/myos_term.rs" ]] \
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$(patch_version_hash)" ] \
+  && [ -f "$DEST/errno-$ERRNO_VERSION/Cargo.toml" ] \
+  && [ -f "$DEST/libc-$LIBC_VERSION/Cargo.toml" ] \
+  && [ -f "$DEST/rustix-$RUSTIX_VERSION/Cargo.toml" ] \
+  && [ -f "$DEST/getrandom-$GETRANDOM_02_VERSION/Cargo.toml" ] \
+  && [ -n "$GETRANDOM_04_SRC" ] \
+  && [ -f "$GETRANDOM_04_SRC/src/backends/myos.rs" ] \
+  && [ -n "$HOSTNAME_SRC" ] \
+  && [ -f "$HOSTNAME_SRC/src/myos.rs" ] \
+  && [ -n "$CONSOLE_SRC" ] \
+  && [ -f "$CONSOLE_SRC/src/myos_term.rs" ] \
   && grep -A40 'pub fn family' "$CONSOLE_SRC/src/term.rs" | grep -q 'target_os = "myos"' \
-  && [[ -n "$FILETIME_SRC" ]] \
-  && [[ -f "$FILETIME_SRC/src/myos.rs" ]] \
+  && [ -n "$FILETIME_SRC" ] \
+  && [ -f "$FILETIME_SRC/src/myos.rs" ] \
   && grep -q 'target_os = "myos"' "$FILETIME_SRC/src/lib.rs" \
-  && [[ -n "$CTRLC_SRC" ]] \
-  && [[ -f "$CTRLC_SRC/src/platform/myos.rs" ]]; then
+  && [ -n "$CTRLC_SRC" ] \
+  && [ -f "$CTRLC_SRC/src/platform/myos.rs" ]; then
   echo "coreutils patched crates up to date at $DEST"
   exit 0
 fi
@@ -132,47 +129,47 @@ RUSTIX_SRC="$(find_registry_crate "rustix-$RUSTIX_VERSION")"
 rm -rf "$DEST"
 mkdir -p "$DEST"
 
-apply_patches() {
-  local crate_src="$1"
-  local crate_name="$2"
-  local patch_dir="$3"
-  local out="$DEST/$crate_name"
+apply_patches() (
+  crate_src="$1"
+  crate_name="$2"
+  patch_dir="$3"
+  out="$DEST/$crate_name"
 
   echo "==> patching $crate_name"
   cp -a "$crate_src" "$out"
-  if [[ -f "$patch_dir/myos.rs" ]] \
-    && [[ "$crate_name" != "getrandom-$GETRANDOM_04_VERSION" ]]; then
+  if [ -f "$patch_dir/myos.rs" ] \
+    && [ "$crate_name" != "getrandom-$GETRANDOM_04_VERSION" ]; then
     cp "$patch_dir/myos.rs" "$out/src/myos.rs"
   fi
-  if [[ -f "$patch_dir/myos-0.4.rs" ]] \
-    && [[ "$crate_name" == "getrandom-$GETRANDOM_04_VERSION" ]]; then
+  if [ -f "$patch_dir/myos-0.4.rs" ] \
+    && [ "$crate_name" = "getrandom-$GETRANDOM_04_VERSION" ]; then
     cp "$patch_dir/myos-0.4.rs" "$out/src/backends/myos.rs"
   fi
-  if [[ -f "$patch_dir/rustix_compat.rs" ]]; then
+  if [ -f "$patch_dir/rustix_compat.rs" ]; then
     cp "$patch_dir/rustix_compat.rs" "$out/src/rustix_compat.rs"
   fi
   for patch in "$patch_dir"/*.patch; do
-    [[ -f "$patch" ]] || continue
+    [ -f "$patch" ] || continue
     case "$(basename "$patch")" in
       lib-rs.patch|sys-rs.patch|lib-rs-0.2.patch|backends-rs-0.4.patch) continue ;;
     esac
     patch -d "$out" -p1 --forward <"$patch"
   done
-  if [[ -f "$patch_dir/lib-rs.patch" ]]; then
+  if [ -f "$patch_dir/lib-rs.patch" ]; then
     patch -d "$out" -p1 --forward <"$patch_dir/lib-rs.patch"
   fi
-  if [[ -f "$patch_dir/lib-rs-0.2.patch" ]] \
-    && [[ "$crate_name" == "getrandom-$GETRANDOM_02_VERSION" ]]; then
+  if [ -f "$patch_dir/lib-rs-0.2.patch" ] \
+    && [ "$crate_name" = "getrandom-$GETRANDOM_02_VERSION" ]; then
     patch -d "$out" -p1 --forward <"$patch_dir/lib-rs-0.2.patch"
   fi
-  if [[ -f "$patch_dir/backends-rs-0.4.patch" ]] \
-    && [[ "$crate_name" == "getrandom-$GETRANDOM_04_VERSION" ]]; then
+  if [ -f "$patch_dir/backends-rs-0.4.patch" ] \
+    && [ "$crate_name" = "getrandom-$GETRANDOM_04_VERSION" ]; then
     patch -d "$out" -p1 --forward <"$patch_dir/backends-rs-0.4.patch"
   fi
-  if [[ -f "$patch_dir/sys-rs.patch" ]]; then
+  if [ -f "$patch_dir/sys-rs.patch" ]; then
     patch -d "$out" -p1 --forward <"$patch_dir/sys-rs.patch"
   fi
-}
+)
 
 GETRANDOM_02_SRC="$(find_registry_crate "getrandom-$GETRANDOM_02_VERSION")"
 GETRANDOM_04_SRC="$(find_registry_crate "getrandom-$GETRANDOM_04_VERSION")"
@@ -196,7 +193,7 @@ for f in \
   "$RUSTIX_OUT/src/backend/libc/io/syscalls.rs" \
   "$RUSTIX_OUT/src/backend/libc/fs/syscalls.rs" \
   "$RUSTIX_OUT/src/backend/libc/process/syscalls.rs"; do
-  [[ -f "$f" ]] || continue
+  [ -f "$f" ] || continue
   # Portable in-place edit (BSD sed -i differs from GNU).
   python3 - "$f" <<'PYRUSTIX'
 from pathlib import Path
@@ -228,8 +225,7 @@ p.write_text(text)
 PYRUSTIX
 done
 
-patch_registry_hostile_crates() {
-  local hostname_src console_src
+patch_registry_hostile_crates() (
   hostname_src="$(find_registry_crate "hostname-$HOSTNAME_VERSION")"
   console_src="$(find_registry_crate "console-$CONSOLE_VERSION")"
   reset_registry_crate "hostname-$HOSTNAME_VERSION" "$hostname_src"
@@ -434,7 +430,7 @@ p.write_text(text.replace(old, new, 1))
 print("blake3 myos pure path applied")
 PYB3
   fi
-}
+)
 
 patch_registry_hostile_crates
 

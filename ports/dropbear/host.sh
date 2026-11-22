@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The host's side of dropbear's test (test.sh, docs/testing.md): the
 # launcher runs `host.sh PORT` for the guest's `HOST dropbear PORT` line.
 # Two SSH sessions at once (pubkey auth with the test key) through QEMU's
@@ -11,7 +11,7 @@
 # session writes /tmp/ssh-done: everything passed.
 set -u
 port="${1:?port}"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"
 
 if ! command -v ssh >/dev/null 2>&1; then
   echo "boot test: ssh $port: no ssh client on the host (openssh-client)" >&2
@@ -28,43 +28,45 @@ cp "$here/testkey" "$key" && chmod 600 "$key"
 # bound (ConnectTimeout covers the TCP connect only). The KEX is pinned to
 # curve25519: OpenSSH 10 negotiates post-quantum KEX first, which hits a
 # dropbear interop bug on aarch64.
-ssh_opts=(-4 -i "$key" -p "$port"
+# A string, split where it is used, after the key and the port.
+ssh_opts="
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
   -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes
   -o PreferredAuthentications=publickey -o KexAlgorithms=curve25519-sha256
-  -o ConnectTimeout=8 -o ConnectionAttempts=1)
+  -o ConnectTimeout=8 -o ConnectionAttempts=1"
 
-one() {
-  local tag="$1" out
-  out="$(timeout 20 ssh "${ssh_opts[@]}" \
+one() (
+  tag="$1"
+  # shellcheck disable=SC2086
+  out="$(timeout 20 ssh -4 -i "$key" -p "$port" $ssh_opts \
     "root@127.0.0.1" "echo $tag; echo \"\$PATH\" > /tmp/ssh-ok-$tag" 2>&1)" \
-    && [[ "$out" == *"$tag"* ]] && return 0
+    && case "$out" in *"$tag"*) return 0 ;; esac
   echo "$out" > "$dir/err-$tag"
   return 1
-}
+)
 
 # A login on a pty. Its commands are typed after a pause, once the shell
 # is up; `exit` ends it.
-tty_login() {
-  local out
+tty_login() (
+  # shellcheck disable=SC2086
   out="$( { sleep 3
       echo 'readlink /proc/self/tty > /tmp/ssh-tty.tmp; echo x > /dev/tty && echo tty-ok >> /tmp/ssh-tty.tmp; mv /tmp/ssh-tty.tmp /tmp/ssh-tty'
-      sleep 3; echo exit; sleep 2; } | timeout 30 ssh -tt "${ssh_opts[@]}" \
+      sleep 3; echo exit; sleep 2; } | timeout 30 ssh -tt -4 -i "$key" -p "$port" $ssh_opts \
     "root@127.0.0.1" 2>&1)" && return 0
   echo "$out" > "$dir/err-tty"
   return 1
-}
+)
 
 # A one-shot command on a pty, its input at EOF at once: the client's EOF
 # and the shell's exit both came before dropbear read the output, which it
 # then lost (issue #304).
-tty_command() {
-  local out
-  out="$(timeout 20 ssh -tt "${ssh_opts[@]}" "root@127.0.0.1" 'echo pty-cmd' \
-    < /dev/null 2>&1)" && [[ "$out" == *pty-cmd* ]] && return 0
+tty_command() (
+  # shellcheck disable=SC2086
+  out="$(timeout 20 ssh -tt -4 -i "$key" -p "$port" $ssh_opts "root@127.0.0.1" 'echo pty-cmd' \
+    < /dev/null 2>&1)" && case "$out" in *pty-cmd*) return 0 ;; esac
   echo "$out" > "$dir/err-tty-cmd"
   return 1
-}
+)
 
 # The host's last word, once every check above passed: the guest test
 # waits for /tmp/ssh-done before it takes the test key away. It used to
@@ -72,21 +74,21 @@ tty_command() {
 # command's session was still to come, which then failed every time
 # ("Permission denied (publickey)") and the script retried it for its
 # five minutes.
-done_mark() {
-  local out
-  out="$(timeout 20 ssh "${ssh_opts[@]}" "root@127.0.0.1" ': > /tmp/ssh-done' 2>&1)" \
+done_mark() (
+  # shellcheck disable=SC2086
+  out="$(timeout 20 ssh -4 -i "$key" -p "$port" $ssh_opts "root@127.0.0.1" ': > /tmp/ssh-done' 2>&1)" \
     && return 0
   echo "$out" > "$dir/err-done"
   return 1
-}
+)
 
 # Early SYNs before dropbear has armed accept leave half-open sessions on
 # slow arches: give it time, and never probe the port. B starts a second
 # after A so both are live together while the second SYN usually meets a
 # re-armed listener.
 sleep 12
-deadline=$((SECONDS + 300))
-while (( SECONDS < deadline )); do
+deadline=$(($(date +%s) + 300))
+while [ "$(date +%s)" -lt "$deadline" ]; do
   one a & pa=$!
   sleep 1
   one b & pb=$!

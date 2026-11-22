@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The plan jobs of ci-ports.yml: ask the registry (manifests only, no
 # download) which pieces it lacks at their current input hash, in build
 # order (ci-registry.sh plan: a port's hash covers its dependencies' output
@@ -12,8 +12,9 @@
 #   ports=<JSON>     the ports matrix (scripts/ports.sh --matrix) reduced to
 #                    the ports the registry lacks under a key it can
 #                    compute, and the arches of a port built an arch at a
-#                    time (PORT_ARCH_JOBS) whatever their key: `[]` skips
-#                    the ports job
+#                    time (PORT_ARCH_JOBS) whatever their key, unless it
+#                    is built against another such port the registry
+#                    lacks: `[]` skips the ports job
 #   replan=          true when other ports wait for the second stage
 #   sysroot=, newlib=  true when that toolchain job has to run
 # The second:
@@ -24,23 +25,27 @@
 # port over one that stage builds gets a job in it too. Not one built an
 # arch at a time, though, whose dependents (surf) could not build it in
 # their job: its arches are all in the first stage, where each builds a
-# missing dependency itself. The build job pulls every port either way.
+# missing dependency itself. One built against another (rustc against
+# llvm's libraries) could not build that one in its job either: its arches
+# wait for the second stage, when the first has pushed the other's. The
+# build job pulls every port either way.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 chmod +x scripts/*.sh ports/*/*.sh toolchain/*/*.sh 2>/dev/null || true
 
 stage="${1:-first}"
 matrix="$(./scripts/ports.sh --matrix)"
-mapfile -t ports < <(python3 -c 'import json, sys
-for e in json.load(sys.stdin): print(e["port"])' <<<"$matrix")
+ports="$(printf '%s\n' "$matrix" | python3 -c 'import json, sys
+for e in json.load(sys.stdin): print(e["port"])')"
 
 ./scripts/ci-registry.sh login || true
 # `<port> missing|undefined` per line.
-misses="$(./scripts/ci-registry.sh plan sysroot newlib "${ports[@]}")"
+# shellcheck disable=SC2086
+misses="$(./scripts/ci-registry.sh plan sysroot newlib $ports)"
 
 out="${GITHUB_OUTPUT:-/dev/stdout}"
-python3 -c 'import json, sys
+printf '%s\n' "$matrix" | python3 -c 'import json, sys
 out, stage, plan = sys.argv[1:4]
 state = dict(line.split() for line in plan.splitlines() if line.strip())
 lacking = [e for e in json.load(sys.stdin) if e["port"] in state]
@@ -49,11 +54,16 @@ with open(out, "a") as f:
         f.write("ports_after=" + json.dumps(lacking, separators=(",", ":")) + "\n")
         sys.exit(0)
     # Now: a key the registry has nothing under, or an arch of a port
-    # built an arch at a time ("name:arch").
-    now = [e for e in lacking if state[e["port"]] == "missing" or ":" in e["port"]]
+    # built an arch at a time ("name:arch") that is not built against
+    # another such port in this plan.
+    arched = {p.split(":")[0] for p in state if ":" in p}
+    def waits(e):
+        return bool(arched & set(e["deps"].split()))
+    now = [e for e in lacking
+           if state[e["port"]] == "missing" or (":" in e["port"] and not waits(e))]
     f.write("ports=" + json.dumps(now, separators=(",", ":")) + "\n")
     f.write("replan=" + ("true" if len(now) < len(lacking) else "false") + "\n")
     for t in ("sysroot", "newlib"):
         f.write(t + "=" + ("true" if t in state else "false") + "\n")' \
-  "$out" "$stage" "$misses" <<<"$matrix"
-echo "registry lacks: $(tr '\n' ' ' <<<"$misses" | sed 's/ $//;s/^$/nothing/')"
+  "$out" "$stage" "$misses"
+echo "registry lacks: $(printf '%s\n' "$misses" | tr '\n' ' ' | sed 's/ $//;s/^$/nothing/')"

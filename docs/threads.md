@@ -170,7 +170,10 @@ pointer point. mlibc has its own (`docs/mlibc.md`).
   count the cancellation points the thread is in, and its handler ends
   the thread only inside one (`toolchain/mlibc/sysdeps/myos/generic/thread.cpp`).
 - `fork` runs the `pthread_atfork` handlers and holds newlib's own locks
-  across the fork, so the child finds malloc and stdio free.
+  across the fork, so the child finds malloc and stdio free. mlibc's holds
+  its allocator's (the child finds malloc free: `exec` itself allocates,
+  the block it packs the arguments in), not a stream's (`docs/mlibc.md`
+  "Limits").
 - `_POSIX_THREAD_SAFE_FUNCTIONS`: newlib's `_r` functions, libgloss's
   `getpw*_r`, `getgr*_r`, `readdir_r`, `ttyname_r`, and `flockfile` on
   the stream's own lock. libX11 is built with its locks

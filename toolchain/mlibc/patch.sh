@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Install the myos sysdeps into the fetched mlibc tree (as libgloss/myos is
 # installed into newlib's), with the C both libcs share beside them, and
 # make mlibc's build know the system: every edit of an upstream file is a
 # python replacement here, applied once (patch.sh's way in toolchain/newlib).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 SRC="${MLIBC_SRC:-$ROOT/target/mlibc-src}"
 PORT="$SRC/sysdeps/myos"
 
-if [[ ! -f "$SRC/meson.build" ]]; then
+if [ ! -f "$SRC/meson.build" ]; then
   echo "mlibc source missing at $SRC (run toolchain/mlibc/fetch.sh)" >&2
   exit 1
 fi
@@ -30,7 +30,7 @@ done
 # (the signal numbers and flags, the termios flags, checked in here).
 for h in "$SRC"/abis/linux/*.h; do
   name="$(basename "$h")"
-  [[ -e "$PORT/include/abi-bits/$name" ]] || ln -s "../../../../abis/linux/$name" "$PORT/include/abi-bits/$name"
+  [ -e "$PORT/include/abi-bits/$name" ] || ln -s "../../../../abis/linux/$name" "$PORT/include/abi-bits/$name"
 done
 
 # Without a feature macro mlibc's headers show POSIX 1990 and what
@@ -416,6 +416,50 @@ if new not in s:
     assert s.count(old) == 1, "meson.build: libc.so's link arguments not found"
     open(path, "w").write(s.replace(old, new))
     print("patched meson.build: libc.so links the builtins")
+PY
+
+# The allocator's locks, all of them at once: what a fork holds so that no
+# thread is in the middle of an allocation when the child copies the heap
+# (the sysdeps' Fork; upstream's fork takes none of mlibc's own locks, and
+# a child forked while another thread held a size class's waited for it
+# forever in its first malloc). No path of the pool holds one of them
+# inside another, so the order here is free. Always inlined: libc.a gets
+# no symbol for them.
+python3 - "$SRC/subprojects/frigg/include/frg/slab.hpp" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+if "lock_all" not in s:
+    old = "\tsize_t numUsedPages() {\n\t\treturn _usedPages;\n\t}\n"
+    new = old + """
+	// Every lock of the pool (myos: held across a fork).
+	[[gnu::always_inline]] void lock_all() {
+		for(auto &bkt : _bkts)
+			bkt.bucket_mutex.lock();
+		_tree_mutex.lock();
+	}
+
+	[[gnu::always_inline]] void unlock_all() {
+		_tree_mutex.unlock();
+		for(auto &bkt : _bkts)
+			bkt.bucket_mutex.unlock();
+	}
+"""
+    assert s.count(old) == 1, "slab.hpp: slab_pool's numUsedPages not found"
+    s = s.replace(old, new)
+    old = "\tsize_t get_size(void *pointer) {\n\t\treturn pool_->get_size(pointer);\n\t}\n"
+    new = old + """
+	[[gnu::always_inline]] void lock_all() {
+		pool_->lock_all();
+	}
+
+	[[gnu::always_inline]] void unlock_all() {
+		pool_->unlock_all();
+	}
+"""
+    assert s.count(old) == 1, "slab.hpp: slab_allocator's get_size not found"
+    open(path, "w").write(s.replace(old, new))
+    print("patched slab.hpp: the pool's locks, all at once")
 PY
 
 # inet_pton's IPv6 with an embedded IPv4 address (::ffff:10.0.2.2) checks

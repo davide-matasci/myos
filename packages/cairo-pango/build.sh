@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build the text and drawing libraries of GTK 3's stack (issue #616)
 # against mlibc for the three arches: fribidi, harfbuzz (C++, over libc++),
 # cairo (image, xlib and RENDER, PNG, FreeType and fontconfig; no xcb),
@@ -11,14 +11,14 @@
 # over all of them is the cairo-pango-smoke package's: a library port
 # ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/cairo-pango/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/cairo-pango/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_cairo_pango_is_current; then
   echo "cairo-pango up to date"
@@ -47,16 +47,16 @@ SRC="$T/cairo-pango-src"
 
 # meson_build NAME [OPTION...]: target/cairo-pango-src/NAME, cross
 # (myos_mlibc_meson_build), into $out.
-meson_build() {
-  local name="$1"
+meson_build() (
+  name="$1"
   shift
   myos_mlibc_meson_build "$build" "$SRC/$name" "$out" "$@" || exit 1
-}
+)
 
-build_arch() {
-  local arch="$1"
-  local build="$T/cairo-pango-build-$arch"
-  local out="$T/cairo-pango-mlibc-${arch}"
+build_arch() (
+  arch="$1"
+  build="$T/cairo-pango-build-$arch"
+  out="$T/cairo-pango-mlibc-${arch}"
   echo "==> cairo-pango ($arch, mlibc)"
   rm -rf "$build" "$out"
   mkdir -p "$out/lib/pkgconfig" "$out/include"
@@ -100,7 +100,7 @@ build_arch() {
     -Dc_args="-D_GNU_SOURCE -DEGL_NO_PLATFORM_SPECIFIC_TYPES -I$out/include"
   rm -rf "$build"
   echo "cairo-pango ($arch) -> $out"
-}
+)
 
 for arch in ${MYOS_CAIRO_PANGO_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Minimal uucore myos patches (io only; avoid broad cfg(unix) rewrites).
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 io="$ROOT/user/uutils-coreutils/src/uucore/src/lib/mods/io.rs"
 
-[[ -f "$io" ]] || exit 0
+[ -f "$io" ] || exit 0
 
 stamp="$(dirname "$io")/.myos-io-patch-done"
-[[ -f "$stamp" ]] && exit 0
+[ -f "$stamp" ] && exit 0
 
 # Match WASI: convert OwnedFd -> File -> Stdio on myos.
 # Portable in-place edit (GNU and BSD sed disagree about -i syntax).

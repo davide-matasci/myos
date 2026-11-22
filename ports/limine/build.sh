@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build Limine's tool (limine.c of the pinned release) for the three
 # arches with newlib + myos libgloss.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_limine_is_current; then
   echo "limine ELFs up to date"
@@ -32,15 +32,15 @@ for arch in x86_64 aarch64 riscv64; do
     -c "$SRC/limine.c" -o "$objdir/limine.o"
   # printf of the tool's messages: the long-double helpers newlib's printf
   # wants on aarch64 and riscv64, as for oksh.
-  extra=()
-  if [[ "$arch" == "aarch64" || "$arch" == "riscv64" ]]; then
+  extra=""
+  if [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; then
     "${triple}-cc" -ffreestanding -fPIC -O2 -isystem "$inc" \
       -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$objdir/trunctfdf2.o"
-    extra+=("$objdir/trunctfdf2.o")
+    extra="$objdir/trunctfdf2.o"
   fi
   "${triple}-ld" -pie --no-dynamic-linker --gc-sections -o "$out" \
     --entry=_start -z max-page-size=4096 \
-    "$lib/crt0.o" "$objdir/limine.o" "${extra[@]+"${extra[@]}"}" -L"$lib" \
+    "$lib/crt0.o" "$objdir/limine.o" ${extra:+"$extra"} -L"$lib" \
     --start-group -lc -lgloss -lg --end-group
   "${triple}-strip" -s "$out" 2>/dev/null || strip -s "$out" 2>/dev/null || true
   echo "limine -> $out"

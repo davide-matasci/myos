@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build LLVM's C++ runtimes against mlibc for the three arches, with
 # LLVM's runtimes CMake: target/libcxx-<arch> holds include/c++/v1 (the
 # headers, with this build's __config_site), lib/libc++.a (libc++abi
@@ -16,14 +16,17 @@
 # takes its own ctype table (_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE, in
 # __config_site for every program) and pthreads for its threads
 # (LIBCXX_HAS_PTHREAD_API). No time zone database (no tzdata in the
-# image).
+# image). One change to the source (libcxx-myos.myos.patch): libc++abi's
+# __cxa_thread_atexit, the destructors of thread_local objects, is there
+# for the systems it lists, and myos is one (mlibc has the
+# __cxa_thread_atexit_impl it calls).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/libcxx/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_libcxx_is_current; then
   echo "libc++ up to date"
@@ -35,25 +38,41 @@ fi
 myos_ensure_llvm_bin
 
 SRC="$ROOT/target/libcxx-src"
+# The myos patch, on the pristine checkout, once.
+patches="$(cat "$HERE"/*.myos.patch | sha256sum | cut -d' ' -f1)"
+if [ "$(cat "$SRC/.myos-patched" 2>/dev/null)" != "$patches" ]; then
+  git -C "$SRC" checkout -q -- .
+  for p in "$HERE"/*.myos.patch; do
+    patch -d "$SRC" -p1 -s <"$p"
+  done
+  printf '%s' "$patches" >"$SRC/.myos-patched"
+fi
 # Absolute paths: CMake takes a bare tool name as relative to the build.
 # llvm-ar from clang's own directory when it is not on PATH (Ubuntu's
 # versioned LLVM, CI's image), for objects of every arch.
-llvm_tool() {
+llvm_tool() (
   command -v "$1" 2>/dev/null && return
-  local d
   d="$(dirname "$(readlink -f "$(command -v clang)")")"
-  if [[ -x "$d/$1" ]]; then echo "$d/$1"; else command -v "$2"; fi
-}
+  if [ -x "$d/$1" ]; then echo "$d/$1"; else command -v "$2"; fi
+)
 AR_BIN="$(llvm_tool llvm-ar ar)"
 RANLIB_BIN="$(llvm_tool llvm-ranlib ranlib)"
 CLANGXX="$(command -v clang++)"
+# libc++ takes the two releases of clang before its own (its headers say
+# so in every compile of an older one's).
+if [ "$("$CLANGXX" -dumpversion | cut -d. -f1)" -lt 20 ]; then
+  echo "error: libc++ ${LLVM_TAG#llvmorg-} needs clang 20 or later (README.md)" >&2
+  exit 1
+fi
 
-build_arch() {
-  local arch="$1"
-  local build="$ROOT/target/libcxx-build-${arch}"
-  local prefix="$ROOT/target/libcxx-${arch}"
-  local flags
-  flags="$(myos_mlibc_hosted_cflags "$arch") -D_GNU_SOURCE"
+build_arch() (
+  arch="$1"
+  build="$ROOT/target/libcxx-build-${arch}"
+  prefix="$ROOT/target/libcxx-${arch}"
+  # __myos__, which this compiler (the build machine's clang, for a bare
+  # target) does not define and clang on myos does: libcxx-myos.myos.patch
+  # asks for it.
+  flags="$(myos_mlibc_hosted_cflags "$arch") -D_GNU_SOURCE -D__myos__"
 
   echo "==> libc++ ($arch, mlibc)"
   rm -rf "$build" "$prefix"
@@ -108,7 +127,7 @@ build_arch() {
   ninja -C "$build" install-unwind install-cxxabi install-cxx \
     >"$build/ninja.log" 2>&1 || { grep -m1 -B2 -A20 "error:" "$build/ninja.log" >&2 || tail -40 "$build/ninja.log" >&2; exit 1; }
   echo "libc++ -> $prefix"
-}
+)
 
 for arch in ${MYOS_LIBCXX_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

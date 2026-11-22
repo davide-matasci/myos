@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Makes the test certificate authority and the launcher's server
 # certificate (ca.pem, server.pem, server.key here; committed, like
 # dropbear's test key): the launcher's HTTPS server (src/test_www.rs)
@@ -8,7 +8,7 @@
 # (/lib/myos-tests/test-ca.pem), never the image's bundle. The guest
 # reaches the host as 10.0.2.2. Valid for a century: nothing renews them.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "$0")"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/ca.key"

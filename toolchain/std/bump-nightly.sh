@@ -1,12 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Try the next nightly against wire-myos.py and report whether a bump is safe.
 # Does not modify rust-toolchain.toml unless --write is passed.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=toolchain/std/lib.sh
-source "$ROOT/toolchain/std/lib.sh"
+. "$ROOT/toolchain/std/lib.sh"
 
 WRITE=0
 PROBE="${MYOS_PROBE_NIGHTLY:-nightly}"
@@ -36,7 +36,7 @@ MYOS_NIGHTLY="$PROBE" "$ROOT/toolchain/std/check-wire.sh"
 echo ""
 echo "wire-myos.py applies cleanly on $PROBE."
 
-if [[ "$WRITE" -eq 0 ]]; then
+if [ "$WRITE" -eq 0 ]; then
   echo "Re-run with --write to set rust-toolchain.toml channel = \"$PROBE\" and invalidate the sysroot."
   exit 0
 fi
@@ -54,10 +54,13 @@ echo "Updated $file"
 # (packages/rustc/versions.env) and patches follow by hand.
 echo "note: packages/rustc/versions.env pins the nightly's source tarball: update RUST_NIGHTLY and RUST_SRC_SHA256, and rebase its patches" >&2
 # The rust package's toolchain is the same nightly (its std is this sysroot).
-if [[ "$PROBE" =~ ^nightly-([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
-  "$ROOT/packages/rust/pin.sh" "${BASH_REMATCH[1]}"
-else
-  echo "warning: $PROBE has no date: pin packages/rust/versions.env with packages/rust/pin.sh YYYY-MM-DD" >&2
-fi
+case "$PROBE" in
+  nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+    "$ROOT/packages/rust/pin.sh" "${PROBE#nightly-}"
+    ;;
+  *)
+    echo "warning: $PROBE has no date: pin packages/rust/versions.env with packages/rust/pin.sh YYYY-MM-DD" >&2
+    ;;
+esac
 rm -f "$MYOS_SYSROOT/.myos-sysroot-version"
 echo "Removed sysroot version stamp — run ./toolchain/std/build-sysroot.sh next."

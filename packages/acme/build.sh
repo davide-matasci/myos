@@ -1,16 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Stage the acme app, target/acme-app: acme.sh is a POSIX shell script, the
 # same on every arch, so there is nothing to compile. /lib/acme holds the
 # script (with the myos patch: `#!/bin/sh`, the image has no /usr/bin/env
 # to run) and its dnsapi/, deploy/ and notify/ hooks, which it finds next
 # to itself; /bin/custom/acme is the launcher (this directory's `acme`).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/acme/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_acme_is_current; then
   echo "acme up to date"

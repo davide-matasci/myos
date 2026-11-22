@@ -1256,6 +1256,24 @@ mem_heap_classes() {
 }
 t -t mm mem_heap_classes mem_heap_classes
 
+# A tmpfs file takes the heap its size, however it was written: in writes
+# of any size it holds at most an eighth over (a growing file's reserve).
+# It used to hold up to twice its size, by where the writes happened to
+# fall: the apps of a package boot (/tmp/apps) took 86 MiB more of the
+# heap in one boot than in the next.
+mem_tmpfs_growth() {
+	for tg_bs in 3000 65536 1000000; do
+		tg_before=$(heap_free)
+		dd if=/dev/zero of=/tmp/grow bs=$tg_bs count=$((36000000 / tg_bs)) 2> /dev/null || return 1
+		tg_used=$((tg_before - $(heap_free)))
+		tg_size=$(($(wc -c < /tmp/grow) / 1024))
+		rm /tmp/grow
+		echo "tmpfs: $tg_size KiB in writes of $tg_bs: $tg_used KiB of the heap"
+		[ $tg_used -le $((tg_size + tg_size / 8 + 1024)) ] || return 1
+	done
+}
+t -t mm,tmpfs mem_tmpfs_growth mem_tmpfs_growth
+
 # A producer that never checks its writes ends with its consumer: `head`
 # exits, the next write of `yes` has no reader, and SIGPIPE's default
 # action ends `yes` (docs/signals.md). Without it `yes` spun forever.
@@ -1379,17 +1397,23 @@ idle_stats() {
 	while read key sep n; do [ "$key" = idle_halts ] && echo $n; done < /proc/cpuinfo
 	while read c what ms; do [ "$what" = idle ] && echo $ms; done < /proc/cpu
 }
+# The Nth (from 0) of the words after it.
+nth() {
+	shift $(($1 + 1))
+	echo "$1"
+}
 idle_tickless() {
-	set -A s0 $(idle_stats)
-	n=$((${#s0[*]} / 2))
+	s0=$(echo $(idle_stats))
+	set -- $s0
+	n=$(($# / 2))
 	[ $n -gt 1 ] || return 0
 	sleep 2
-	set -A s1 $(idle_stats)
-	echo "halts per CPU, then idle ms: ${s0[*]} -> ${s1[*]}"
+	s1=$(echo $(idle_stats))
+	echo "halts per CPU, then idle ms: $s0 -> $s1"
 	c=1
 	while [ $c -lt $n ]; do
-		halts=$((s1[c] - s0[c]))
-		idle=$((s1[n + c] - s0[n + c]))
+		halts=$(($(nth $c $s1) - $(nth $c $s0)))
+		idle=$(($(nth $((n + c)) $s1) - $(nth $((n + c)) $s0)))
 		[ $idle -ge 1000 ] && [ $((halts * 20)) -lt $idle ] && return 0
 		c=$((c + 1))
 	done
@@ -1409,12 +1433,13 @@ console_irqs() {
 }
 t -t sched,console console_irqs console_irqs
 idle_cpu0() {
-	set -A s0 $(idle_stats)
-	n=$((${#s0[*]} / 2))
+	s0=$(echo $(idle_stats))
+	set -- $s0
+	n=$(($# / 2))
 	sleep 2
-	set -A s1 $(idle_stats)
-	halts=$((s1[0] - s0[0]))
-	idle=$((s1[n] - s0[n]))
+	s1=$(echo $(idle_stats))
+	halts=$(($(nth 0 $s1) - $(nth 0 $s0)))
+	idle=$(($(nth $n $s1) - $(nth $n $s0)))
 	echo "CPU 0: $halts halts, $idle ms idle"
 	[ $idle -ge 1000 ] && [ $((halts * 20)) -lt $idle ]
 }
@@ -1761,6 +1786,7 @@ sec_power() {
 # lists only what is bound. An open fd it is handed is a deliberate grant.
 # With the whole tree bound, a file bound into a directory of it is listed
 # with the directory's own files (run-myos's apps, docs/packages.md).
+# Of several names bound to one program, /proc/self/exe is the one run.
 sec_ns() {
 	ns="$SEC ns /bin:read,exec /tmp/sec/a=/tmp/sec/disk-a:read --"
 	[ "$($ns /bin/sbase/cat /tmp/sec/a)" = disk-a ] || return 1
@@ -1772,7 +1798,12 @@ sec_ns() {
 	[ "$($ns /bin/sbase/cat < /tmp/sec/disk-b)" = disk-b ] || return 1
 	out=$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/ls /bin/sbase)
 	echo "$out" | grep -qx nsbound && echo "$out" | grep -qx cat || { echo "ls /bin/sbase: $out"; return 1; }
-	[ "$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/cat /bin/sbase/nsbound)" = disk-a ]
+	[ "$($SEC ns / /bin/sbase/nsbound=/tmp/sec/disk-a -- /bin/sbase/cat /bin/sbase/nsbound)" = disk-a ] || return 1
+	rl=/bin/sbase/readlink:read,exec
+	for d in x y z; do
+		exe=$($SEC ns /proc:read /x/readlink=$rl /y/readlink=$rl /z/readlink=$rl -- /$d/readlink /proc/self/exe)
+		[ "$exe" = /$d/readlink ] || { echo "/$d/readlink: /proc/self/exe is $exe"; return 1; }
+	done
 }
 # A directory fd is a capability: a program handed one its namespace
 # cannot name works beneath it with the rights it was opened with (all of

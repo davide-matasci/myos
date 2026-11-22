@@ -14,7 +14,7 @@ read-only for now; control files are issue #291. The code is
 /proc/<pid>/statm                   its memory in pages, Linux's line (/proc/self/statm too)
 /proc/<pid>/task/                   its threads (their tids), the leader first
 /proc/<pid>/task/<tid>/status       a thread, one line
-/proc/self/exe                      symlink to the file its exec loaded (a script's interpreter)
+/proc/self/exe                      symlink to the file its exec loaded (a script's interpreter); in a namespace, the name it was run by
 /proc/self/limits                   Linux's table: the main thread's stack and the fd table have a limit, nothing else
 /proc/self/stack                    its main thread's stack, `lo-end` in hex
 /proc/cpu                           the uptime and each CPU's idle time

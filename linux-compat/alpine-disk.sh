@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # alpine-disk.sh ARCH OUT [NAME=]PACKAGE[,PACKAGE...]...
 #
 # An ext2 image OUT whose /alpine is an Alpine Linux root for ARCH with
@@ -14,10 +14,10 @@
 # takes hours, mounting one takes seconds. The image is as big as its
 # content needs. Nothing is redone while OUT exists.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
-if [[ $# -lt 3 ]]; then
+if [ $# -lt 3 ]; then
   echo "usage: $0 x86_64|aarch64|riscv64 OUT [NAME=]PACKAGE[,PACKAGE...]..." >&2
   exit 2
 fi
@@ -31,7 +31,7 @@ case "$arch" in
     exit 2
     ;;
 esac
-if [[ -f "$out" ]]; then
+if [ -f "$out" ]; then
   exit 0
 fi
 
@@ -44,9 +44,9 @@ zsrc="$ROOT/target/zlib-src"
 work="$ROOT/target/alpine-disk-$arch"
 for try in 1 2 3; do
   "$ROOT/ports/zlib/fetch.sh" > /dev/null && break
-  if [[ $try -eq 3 ]]; then
+  if [ "$try" -eq 3 ]; then
     # shellcheck source=../ports/zlib/versions.env
-    source "$ROOT/ports/zlib/versions.env"
+    . "$ROOT/ports/zlib/versions.env"
     echo "alpine-disk: zlib from zlib.net instead" >&2
     rm -rf "$work.zlib" && mkdir -p "$work.zlib"
     curl -fsSL --retry 3 --retry-all-errors -o "$work.zlib/zlib.tgz" \
@@ -63,18 +63,22 @@ rm -rf "$work"
 mkdir -p "$work/root"
 cc -O2 -DALPINE_ARCH="\"$arch\"" -I"$ROOT/user/get-myos" -I"$zsrc" \
   "$ROOT/packages/get-alpine/get-alpine.c" "$ROOT/user/get-myos/pkgtools.c" \
-  "$zsrc"/{inflate,inftrees,inffast,zutil,adler32,crc32}.c \
+  "$zsrc/inflate.c" "$zsrc/inftrees.c" "$zsrc/inffast.c" "$zsrc/zutil.c" \
+  "$zsrc/adler32.c" "$zsrc/crc32.c" \
   -o "$work/get-alpine"
 
 for spec in "$@"; do
   name=alpine
-  if [[ "$spec" == *=* ]]; then
-    name="${spec%%=*}"
-    spec="${spec#*=}"
-  fi
-  echo "==> Alpine $arch root /$name with ${spec//,/ } (for $out)"
+  case "$spec" in
+    *=*)
+      name="${spec%%=*}"
+      spec="${spec#*=}"
+      ;;
+  esac
+  pkgs="$(printf '%s\n' "$spec" | tr , ' ')"
+  echo "==> Alpine $arch root /$name with $pkgs (for $out)"
   # shellcheck disable=SC2086
-  "$work/get-alpine" -n -r "$work/root/$name" ${spec//,/ }
+  "$work/get-alpine" -n -r "$work/root/$name" $pkgs
 done
 # The same ext2 features as mkfs.ext2 (`-d` copies the tree in); room for
 # the content, the metadata and what the tests write (the layer's binds).

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # CI helper for the ports job (not boot): pull a port's dependencies (and
 # build the ones the registry does not have), the optional sysroot, build
 # the port, push it to GHCR.
@@ -42,16 +42,18 @@ for dep in $DEPS; do
   fi
 done
 ./scripts/ci-registry.sh pull "$PORT" || true
-if [[ "$NEEDS_SYSROOT" == "1" ]]; then
-  if compgen -G "target/myos-sysroot-*.tar.zst" > /dev/null; then
+if [ "$NEEDS_SYSROOT" = "1" ]; then
+  if ls -d target/myos-sysroot-*.tar.zst > /dev/null 2>&1; then
     export MYOS_SYSROOT_TARBALL="$(ls target/myos-sysroot-*.tar.zst | head -1)"
   fi
   ./toolchain/std/fetch-sysroot.sh
 fi
-if [[ "$PORT" == *:* ]]; then
-  name="$(printf '%s' "${PORT%%:*}" | tr '[:lower:]-' '[:upper:]_')"
-  export "MYOS_${name}_ARCHES=${PORT#*:}"
-fi
+case "$PORT" in
+  *:*)
+    name="$(printf '%s' "${PORT%%:*}" | tr '[:lower:]-' '[:upper:]_')"
+    export "MYOS_${name}_ARCHES=${PORT#*:}"
+    ;;
+esac
 # matrix.script is a shell command string (path or path+args)
-bash -c "$SCRIPT"
+sh -c "$SCRIPT"
 ./scripts/ci-registry.sh push "$PORT" || true

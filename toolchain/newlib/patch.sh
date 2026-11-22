@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Install the in-tree myos libgloss port into a fetched newlib source tree.
 # NOTE: no `sed -i` here — GNU and BSD sed disagree about -i syntax and
 # multiline a/i commands, which broke macOS builds ("extra characters at the
 # end of d command"). All in-place edits go through patch_edit (python3).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 NEWLIB_SRC="${NEWLIB_SRC:-$ROOT/target/newlib-src}"
 PORT="$ROOT/toolchain/newlib/libgloss/myos"
 
-if [[ ! -d "$NEWLIB_SRC/newlib" ]]; then
+if [ ! -d "$NEWLIB_SRC/newlib" ]; then
   echo "newlib source missing at $NEWLIB_SRC (run toolchain/newlib/fetch.sh)" >&2
   exit 1
 fi
@@ -19,13 +19,13 @@ rm -rf "$NEWLIB_SRC/libgloss/myos"
 mkdir -p "$NEWLIB_SRC/libgloss/myos"
 cp -a "$PORT"/. "$NEWLIB_SRC/libgloss/myos/"
 
-patch_string_h_basename() {
+patch_string_h_basename() (
   # tcc (non-GCC) does not define __GNUC__, so newlib's cdefs.h never defines
   # __ASMNAME. string.h's basename alias then expands to
   # `__asm__(__ASMNAME("__gnu_basename"))` with __ASMNAME unresolved, and tcc's
   # asm-label parser fails with "string constant expected" (seen compiling
   # os-test basic/pwd/setpwent). Guard the alias on __ASMNAME being defined.
-  local f="$NEWLIB_SRC/newlib/libc/include/string.h"
+  f="$NEWLIB_SRC/newlib/libc/include/string.h"
   if grep -q 'basename (const char \*) __asm__(__ASMNAME' "$f" \
      && ! grep -q 'basename-asmname-guard' "$f"; then
     python3 - "$f" <<'EOF'
@@ -51,7 +51,7 @@ open(f, 'w').write(s.replace(old, new, 1))
 EOF
     echo "patched string.h: guard basename asm alias on __ASMNAME"
   fi
-}
+)
 
 patch_edit_all() {
   # Replace EVERY occurrence (>=1 required). Args: file old new
@@ -84,8 +84,8 @@ else:
 PYEDIT
 }
 
-patch_config_sub() {
-  local f="$NEWLIB_SRC/config.sub"
+patch_config_sub() (
+  f="$NEWLIB_SRC/config.sub"
   if grep -q 'midnightbsd\* | amdhsa\* | unleashed\* | emscripten\* | wasi\* \\' "$f" \
      && ! grep -q 'myos\*' "$f"; then
     patch_edit "$f" \
@@ -94,10 +94,10 @@ patch_config_sub() {
 	     | myos* \' 1
     echo "patched config.sub for myos"
   fi
-}
+)
 
-patch_configure_host() {
-  local f="$NEWLIB_SRC/newlib/configure.host"
+patch_configure_host() (
+  f="$NEWLIB_SRC/newlib/configure.host"
   if grep -q '\*-\*-myos\*)' "$f"; then
     if grep -q 'HAVE_FCNTL' "$f" && ! grep -q 'HAVE_RENAME' "$f"; then
       patch_edit "$f" '-DHAVE_FCNTL' '-DHAVE_FCNTL -DHAVE_RENAME' 1
@@ -125,16 +125,16 @@ patch_configure_host() {
 	;;\
   *)'
   echo "patched newlib/configure.host for myos"
-}
+)
 
 # <endian.h> shim: newlib ships <sys/endian.h> (htobe*/le*/bswap* macros +
 # __bswap builtins via <machine/endian.h>) but no top-level <endian.h>, so
 # os-test's endian/*.c fall back to the HOST /usr/include/endian.h and die on
 # glibc's bits/wordsize.h. glibc/musl both expose <endian.h> as the primary
 # header — provide the same (a real wrapper, no re-implementation).
-install_endian_h() {
-  local f="$NEWLIB_SRC/newlib/libc/include/endian.h"
-  if [[ ! -f "$f" ]]; then
+install_endian_h() (
+  f="$NEWLIB_SRC/newlib/libc/include/endian.h"
+  if [ ! -f "$f" ]; then
     cat > "$f" <<'EOH'
 /* myos: <endian.h> is the primary public header (glibc/musl convention).
  * newlib's implementations live in <sys/endian.h>. */
@@ -145,25 +145,25 @@ install_endian_h() {
 EOH
     echo "installed endian.h shim (-> sys/endian.h)"
   fi
-}
+)
 
 # regex.h uses off_t (regoff_t) without pulling in <sys/types.h>; standalone
 # inclusion fails with "unknown type name off_t".
-patch_regex_h() {
-  local f="$NEWLIB_SRC/newlib/libc/include/regex.h"
+patch_regex_h() (
+  f="$NEWLIB_SRC/newlib/libc/include/regex.h"
   if grep -q 'typedef off_t regoff_t' "$f" && ! grep -q 'regex-sys-types' "$f"; then
     patch_edit "$f" 'typedef off_t regoff_t;' \
 '#include <sys/types.h> /* regex-sys-types: regoff_t needs off_t */
 typedef off_t regoff_t;' 1
     echo "patched regex.h: include <sys/types.h>"
   fi
-}
+)
 
 # POSIX sigsetjmp/siglongjmp: newlib gates the sigjmp_buf typedef + macros on
 # (__CYGWIN__ || __rtems__) && __POSIX_VISIBLE. Enable them for myos targets
 # too (kernel implements SYS_SIGPROCMASK; macros are the POSIX implementation).
-patch_setjmp_h() {
-  local f="$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h"
+patch_setjmp_h() (
+  f="$NEWLIB_SRC/newlib/libc/include/machine/setjmp.h"
   if grep -q '#if (defined(__CYGWIN__) || defined(__rtems__)) && __POSIX_VISIBLE' "$f" \
      && ! grep -q 'setjmp-myos-posix' "$f"; then
     patch_edit "$f" \
@@ -207,13 +207,13 @@ typedef	int jmp_buf[_JBLEN+1+(sizeof (__sigset_t)/sizeof (int))];
 #endif' 1
     echo "patched machine/setjmp.h: jmp_buf sized like sigjmp_buf"
   fi
-}
+)
 
 # search.h (newlib) lacks lsearch/lfind/insque/remque + struct qelem that
 # POSIX puts in <search.h>; os-test search/*.c need them. Declare them and
 # implement in libgloss myos search.c.
-patch_signal_h() {
-  local f="$NEWLIB_SRC/newlib/libc/include/sys/signal.h"
+patch_signal_h() (
+  f="$NEWLIB_SRC/newlib/libc/include/sys/signal.h"
   # myos delivers caught signals in the kernel (kernel/src/signal.rs,
   # libgloss signal.c), so give its struct sigaction the POSIX shape:
   # sa_sigaction next to sa_handler, and the SA_* flags the kernel honours
@@ -315,10 +315,10 @@ struct sigaction
   uid_t         si_uid;     /* Its user */' 1
     echo "patched sys/signal.h: si_pid + si_uid"
   fi
-}
+)
 
-patch_search_h() {
-  local f="$NEWLIB_SRC/newlib/libc/include/search.h"
+patch_search_h() (
+  f="$NEWLIB_SRC/newlib/libc/include/search.h"
   if ! grep -q 'search-lsearch-qelem' "$f"; then
     patch_edit "$f" '__END_DECLS' \
 '/* search-lsearch-qelem: POSIX lsearch/lfind/insque/remque (libgloss myos). */
@@ -338,12 +338,12 @@ void	*lsearch(const void *, void *, size_t *, size_t,
 __END_DECLS' 1
     echo "patched search.h: qelem + lsearch/insque declarations"
   fi
-}
+)
 
-patch_stat_h() {
+patch_stat_h() (
   # newlib defines futimens/utimensat's UTIME_NOW and UTIME_OMIT for Cygwin
   # and RTEMS only; myos implements both calls (libgloss posix_stubs.c).
-  local f="$NEWLIB_SRC/newlib/libc/include/sys/stat.h"
+  f="$NEWLIB_SRC/newlib/libc/include/sys/stat.h"
   if ! grep -q 'stat-utime-myos' "$f"; then
     patch_edit "$f" \
 '#if defined(__CYGWIN__) || defined(__rtems__)
@@ -352,7 +352,7 @@ patch_stat_h() {
 /* Special tv_nsec values for futimens(2) and utimensat(2). */' 1
     echo "patched sys/stat.h: UTIME_NOW and UTIME_OMIT"
   fi
-}
+)
 
 patch_config_sub
 patch_configure_host
@@ -371,9 +371,9 @@ echo "myos newlib patches applied"
 # setjmp.S just moves rsi→rax, so longjmp(buf, 0) looks like a first setjmp
 # return — os-test basic/setjmp/longjmp and the savemask=0 half of siglongjmp
 # fail. aarch64 (cinc) and riscv (seqz+add) already handle this.
-patch_x86_longjmp_val0() {
-  local f="$NEWLIB_SRC/newlib/libc/machine/x86_64/setjmp.S"
-  if [[ -f "$f" ]] && ! grep -q 'longjmp-myos-val0' "$f"; then
+patch_x86_longjmp_val0() (
+  f="$NEWLIB_SRC/newlib/libc/machine/x86_64/setjmp.S"
+  if [ -f "$f" ] && ! grep -q 'longjmp-myos-val0' "$f"; then
     python3 - "$f" <<'PYLJ'
 import sys
 f = sys.argv[1]
@@ -396,14 +396,14 @@ open(f, "w").write(s.replace(old, new, 1))
 PYLJ
     echo "patched x86_64 setjmp.S: longjmp(env,0) -> setjmp returns 1"
   fi
-}
+)
 
 # tmpfile (newlib) unlinks immediately; the myos kernel drops tmpfs content
 # with the last name, so later writes on the fd fail (stdio/fflush: EIO).
 # POSIX only requires the file be discarded at program termination: defer the
 # unlink to atexit (myos-tmpfile-defer).
-patch_tmpfile () {
-  local f="$NEWLIB_SRC/newlib/libc/stdio/tmpfile.c"
+patch_tmpfile () (
+  f="$NEWLIB_SRC/newlib/libc/stdio/tmpfile.c"
   if ! grep -q 'myos-tmpfile-defer' "$f"; then
     python3 - "$f" <<'PYTMPFILE'
 import sys
@@ -437,7 +437,7 @@ open(f, "w").write(s)
 PYTMPFILE
     echo "patched tmpfile.c: defer unlink to exit (myos-tmpfile-defer)"
   fi
-}
+)
 
 patch_valist() {
   # tcc does not define __GNUC__, so newlib's stdio.h / wchar.h fall back to
@@ -475,8 +475,8 @@ PYVALIST
 # a 64-bit target. Make it variadic, as <fcntl.h> declares it, and hand the
 # full word to libgloss's _fcntl (posix_stubs.c), which narrows it again for
 # the int commands (myos-fcntl-long).
-patch_fcntl_arg() {
-  local f="$NEWLIB_SRC/newlib/libc/syscalls/sysfcntl.c"
+patch_fcntl_arg() (
+  f="$NEWLIB_SRC/newlib/libc/syscalls/sysfcntl.c"
   if ! grep -q 'myos-fcntl-long' "$f"; then
     python3 - "$f" <<'PYFCNTL'
 import sys
@@ -510,15 +510,15 @@ open(f, "w").write(s.replace(old, new, 1))
 PYFCNTL
     echo "patched sysfcntl.c: fcntl passes a full-width argument (myos-fcntl-long)"
   fi
-}
+)
 
-patch_strtold_binary128() {
+patch_strtold_binary128() (
   # strtold (and strtold_l, wcstold) parse through _strtorx_l, which packs
   # the x87 80-bit format whatever long double is. aarch64's and riscv64's
   # long double is IEEE binary128, where those bytes read as garbage (NaN
   # for "2.5e2"). With a 113-bit mantissa, parse at that precision and pack
   # binary128 instead (myos-strtold-binary128).
-  local f="$NEWLIB_SRC/newlib/libc/stdlib/strtorx.c"
+  f="$NEWLIB_SRC/newlib/libc/stdlib/strtorx.c"
   if ! grep -q 'myos-strtold-binary128' "$f"; then
     python3 - "$f" <<'PYSTRTOLD'
 import sys
@@ -611,18 +611,18 @@ open(f, "w").write(s)
 PYSTRTOLD
     echo "patched strtorx.c: strtold packs binary128 (myos-strtold-binary128)"
   fi
-}
+)
 
 # riscv64's feraiseexcept returned 1 after raising the flags it was asked
 # for (`return (excepts != 0)`); POSIX says 0 when they were raised, which
 # the D extension always does (os-test's basic/fenv/feraiseexcept).
-patch_riscv_feraiseexcept() {
-  local f="$NEWLIB_SRC/newlib/libm/machine/riscv/feraiseexcept.c"
-  if [[ -f "$f" ]] && ! grep -q 'feraiseexcept-myos' "$f"; then
+patch_riscv_feraiseexcept() (
+  f="$NEWLIB_SRC/newlib/libm/machine/riscv/feraiseexcept.c"
+  if [ -f "$f" ] && ! grep -q 'feraiseexcept-myos' "$f"; then
     patch_edit "$f" '  return (excepts != 0);' '  return 0; /* feraiseexcept-myos: raised, as POSIX wants */' 1
     echo "patched riscv feraiseexcept.c: 0 when raised (feraiseexcept-myos)"
   fi
-}
+)
 
 patch_valist
 patch_fcntl_arg

@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Prepare a myos build tree from fetched upstream sbase (patches, generated sources).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 "$ROOT/ports/sbase/fetch.sh"
 
@@ -19,8 +19,7 @@ rsync -a \
   "$SBASE/" "$WORK/"
 
 patch_copy() {
-  local base="$1"
-  patch -d "$WORK" -p0 --forward --batch < "$MYOS/${base}.myos.patch"
+  patch -d "$WORK" -p0 --forward --batch < "$MYOS/$1.myos.patch"
 }
 
 patch_copy touch
@@ -31,11 +30,11 @@ patch_copy date
 # decoded where it stands, so a \x25 is a byte and not a conversion.
 patch_copy printf
 
-if [[ ! -f "$WORK/getconf.h" ]]; then
+if [ ! -f "$WORK/getconf.h" ]; then
   (cd "$WORK" && sh scripts/getconf.sh >getconf.h)
 fi
 
-if [[ ! -f "$WORK/bc.c" ]]; then
+if [ ! -f "$WORK/bc.c" ]; then
   if command -v bison >/dev/null 2>&1; then
     bison -d -o "$WORK/bc.c" "$WORK/bc.y"
   elif command -v yacc >/dev/null 2>&1; then

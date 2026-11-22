@@ -123,7 +123,9 @@ three. A port that depends on it (`surf`) and that the registry lacks
 while it lacks it too waits for those jobs in the plan's second stage
 (`ports-after` in `ci-ports.yml`, "Cache keys" below), instead of
 building it in its own job; so its arches are always in the first stage,
-their key known or not.
+their key known or not. The exception is one built against another
+(`rustc` against `llvm`'s libraries): its arches wait for the second
+stage too, when the registry lacks the other's.
 
 The keys of the two compilers (`myos_llvm_version_hash`,
 `myos_rustc_version_hash`) leave their `test.sh` and `README.md` out:

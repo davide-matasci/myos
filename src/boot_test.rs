@@ -517,7 +517,7 @@ fn handle_host_request(req: &str, ports: &[crate::ports::Port]) {
     };
     let req = req.to_string();
     std::thread::spawn(move || {
-        let status = Command::new("bash")
+        let status = Command::new("sh")
             .arg(&script)
             .args(&args)
             .current_dir(repo_root())

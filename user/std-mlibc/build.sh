@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Build the std-on-mlibc demos (the `<arch>-unknown-myos-mlibc` targets).
 # user/std-mlibc/mix, Rust and C in one program: its C half with clang
 # against mlibc, the program with cargo against the prebuilt std of that
@@ -7,10 +7,10 @@
 # with mlibc's libc.a and LLVM's libunwind (toolchain/libcxx):
 # target/std-mlibc-{mix,unwind,unix}-<triple>.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 if myos_std_mlibc_is_current; then
   echo "std mlibc demo up to date"

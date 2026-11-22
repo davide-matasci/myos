@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cross-build the image libraries against mlibc for the three arches:
 # libpng (over ports/zlib's mlibc build), libjpeg-turbo (no SIMD: its
 # assembly needs nasm on x86), libwebp and pixman, static, into one prefix
@@ -7,14 +7,14 @@
 # link. The smoke over them is the image-libs-smoke package's: a library
 # port ships no program (docs/ports.md "Cache keys").
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=scripts/myos-c-userspace-lib.sh
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 # shellcheck source=packages/image-libs/port.env
-source "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
+. "$HERE/port.env" # PORT_LIBC: the libc myos_write_cross_cc links
 # shellcheck source=packages/image-libs/versions.env
-source "$HERE/versions.env"
+. "$HERE/versions.env"
 
 if myos_image_libs_is_current; then
   echo "image libraries up to date"
@@ -44,8 +44,8 @@ jobs="$(nproc 2>/dev/null || echo 4)"
 
 # configure_make NAME DIR [ARG...]: an autoconf build of target/image-libs-src/
 # NAME in DIR with the arch's cross cc, installed into $out.
-configure_make() {
-  local name="$1" dir="$2"
+configure_make() (
+  name="$1" dir="$2"
   shift 2
   mkdir -p "$dir"
   (cd "$dir" && CC="$cc" AR="$ar" RANLIB="$ranlib" CPPFLAGS="-I$out/include" LDFLAGS="-L$out/lib" \
@@ -56,14 +56,14 @@ configure_make() {
     || { grep -n "error:" "$dir/make.log" | head -20 >&2; tail -20 "$dir/make.log" >&2; exit 1; }
   make -C "$dir" install >"$dir/install.log" 2>&1 || { tail -20 "$dir/install.log" >&2; exit 1; }
   echo "$name ($arch) -> $out"
-}
+)
 
-build_arch() {
-  local arch="$1"
-  local build="$T/image-libs-build-$arch"
-  local out="$T/image-libs-mlibc-${arch}"
-  local cc="$build/cc" ar="${arch}-unknown-myos-ar" ranlib="${arch}-unknown-myos-ranlib"
-  local cpu="$arch"
+build_arch() (
+  arch="$1"
+  build="$T/image-libs-build-$arch"
+  out="$T/image-libs-mlibc-${arch}"
+  cc="$build/cc" ar="${arch}-unknown-myos-ar" ranlib="${arch}-unknown-myos-ranlib"
+  cpu="$arch"
   echo "==> image libraries ($arch, mlibc)"
   rm -rf "$build" "$out"
   mkdir -p "$build" "$out/lib/pkgconfig" "$out/include"
@@ -134,7 +134,7 @@ EOC
   echo "pixman ($arch) -> $out"
   rm -rf "$build"
   echo "image libraries ($arch) -> $out"
-}
+)
 
 for arch in ${MYOS_IMAGE_LIBS_ARCHES:-x86_64 aarch64 riscv64}; do
   build_arch "$arch"

@@ -31,7 +31,7 @@ fn ensure_artifact(manifest: &PathBuf, artifact: &str, script: &str) {
     }
     eprintln!("==> cargo: artifact missing ({artifact}); running {script}");
     // Strip cargo-injected env so the nested cargo probes targets cleanly.
-    let status = std::process::Command::new("bash")
+    let status = std::process::Command::new("sh")
         .arg(manifest.join(script))
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())

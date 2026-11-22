@@ -31,6 +31,11 @@ pub(super) struct Process {
     /// loaded (a script's interpreter): `/proc/self/exe`. Empty before an
     /// exec and for a kernel thread.
     pub exe: alloc::string::String,
+    /// The name that exec was given, in the process's own view of the
+    /// tree: the one `/proc/self/exe` answers with in a namespace where
+    /// several bindings lead to the file (an app's tools that are links
+    /// to one program).
+    pub exe_name: alloc::string::String,
     /// The cwd's directory (`task::cwd`), which it follows wherever it moves;
     /// `None` for one a namespace makes up. Survives exec; shared on fork.
     pub cwd_node: Option<crate::fs::Vnode>,
@@ -121,6 +126,7 @@ static EMPTY_PROC: Process = Process {
     exec_name: [0; 32],
     exec_name_len: 0,
     exe: alloc::string::String::new(),
+    exe_name: alloc::string::String::new(),
     cwd_node: None,
     cwd: alloc::string::String::new(),
     mmap: Vec::new(),
@@ -165,6 +171,7 @@ pub(super) fn fork_process(src: &Process) -> Box<Process> {
         core::ptr::write(&raw mut (*p).mapped_files, src.mapped_files.clone());
         core::ptr::write(&raw mut (*p).cwd_node, src.cwd_node.clone());
         core::ptr::write(&raw mut (*p).exe, src.exe.clone());
+        core::ptr::write(&raw mut (*p).exe_name, src.exe_name.clone());
         core::ptr::write(&raw mut (*p).cwd, src.cwd.clone());
         b.assume_init()
     };

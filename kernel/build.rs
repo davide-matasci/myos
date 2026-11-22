@@ -129,7 +129,7 @@ fn prepare(repo: &Path, script: &str, bin: &str) {
     let path = repo.join(script);
     // The script's directory: its pins and patches too.
     println!("cargo:rerun-if-changed={}", path.parent().unwrap_or(&path).display());
-    let status = Command::new("bash")
+    let status = Command::new("sh")
         .arg(&path)
         .status()
         .unwrap_or_else(|e| panic!("failed to run {script} for {bin}: {e}"));

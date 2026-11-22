@@ -72,7 +72,8 @@ pages under [`docs/`](docs/) explain each part.
 
 | Tool | Used for |
 |------|----------|
-| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23) |
+| `clang`, `lld` | cross-compiling and linking the C userspace on every arch (`ld.lld`); clang 19 or later for mlibc (C++23), 20 or later for libc++ and what is built against it |
+| a `/bin/sh` with `pipefail` | every script of the build is POSIX.1-2024 sh and sets it: dash 0.5.13 or later, or bash, busybox, ksh or yash as `/bin/sh` (below) |
 | `make` | building newlib |
 | `meson`, `ninja-build` | building mlibc (`toolchain/mlibc`, [mlibc](docs/mlibc.md)) |
 | `cmake` | building the C++ runtimes against mlibc: libc++, libc++abi, libunwind (`toolchain/libcxx`, [mlibc](docs/mlibc.md) "C++") |
@@ -87,6 +88,15 @@ pages under [`docs/`](docs/) explain each part.
 | `e2fsprogs` | the boot test checks the scratch disk's ext2 with `e2fsck` |
 | `dosfstools`, `mtools` | `cargo test -p fatvol`, and the boot test's `fsck.fat` of the FAT test disk |
 | `openssh-client`, `python3` | the boot test's host side (`host.sh`): SSH sessions into the guest's dropbear, and the TCP and QEMU-monitor peers |
+
+The scripts (the ports' `fetch.sh` and `build.sh`, `scripts/`, the tests'
+host sides) are POSIX sh, not bash: no arrays, no `local`, no `[[ ]]`
+(`scripts/check-posix-sh.sh` checks it, with shellcheck and the POSIX shells
+it finds), so that myos's own shell can run them. They do set `pipefail`,
+which POSIX has since 2024 and Ubuntu's `/bin/sh` only from 26.10 (dash
+0.5.13): on an older one, `sh -c 'set -o pipefail'` fails, and
+`sudo ln -sf bash /bin/sh` (bash runs as a POSIX shell under that name) or a
+newer dash (CI's image builds 0.5.13 from source, `Dockerfile`) is needed.
 
 On Ubuntu 26.04 (on 24.04, use `qemu-system-misc` instead of
 `qemu-system-riscv`):

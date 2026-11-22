@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # The C smoke programs of the boot tests (user/c, the `c-smokes` port):
 # c-hello and socket_smoke (build-c-hello.sh, the kernel embeds c-hello), and
 # the ones below (MYOS_C_SMOKES), each a static PIE against newlib +
@@ -11,8 +11,8 @@
 # (toolchain/libcxx), which ships no program of its own, and the shared
 # objects' (user/c-mlibc/dl_smoke.c: a dynamic program and two objects).
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/scripts/myos-c-userspace-lib.sh"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/scripts/myos-c-userspace-lib.sh"
 
 libc="${1:-newlib}"
 case "$libc" in
@@ -24,7 +24,7 @@ case "$libc" in
     "$ROOT/scripts/build-c-hello.sh"
     "$ROOT/toolchain/newlib/build.sh"
     export PATH="$ROOT/target/newlib-bin:$PATH"
-    smokes=("${MYOS_C_SMOKES[@]}")
+    smokes="$MYOS_C_SMOKES"
     suffix="" ;;
   mlibc)
     if myos_c_smokes_mlibc_is_current; then
@@ -33,7 +33,7 @@ case "$libc" in
     fi
     "$ROOT/toolchain/mlibc/build.sh"
     "$ROOT/toolchain/libcxx/build.sh"
-    smokes=("c-hello user/c/hello.c" "c-socket_smoke user/c/socket_smoke.c" "${MYOS_C_SMOKES[@]}")
+    smokes="c-hello:user/c/hello.c c-socket_smoke:user/c/socket_smoke.c $MYOS_C_SMOKES"
     suffix="-mlibc" ;;
   *) echo "usage: $0 [newlib|mlibc]" >&2; exit 2 ;;
 esac
@@ -47,23 +47,23 @@ for arch in x86_64 aarch64 riscv64; do
   cc="${triple}-cc"
   # newlib's printf wants the long-double helpers these arches lack in the
   # shim (the sbase port carries them).
-  extra=()
-  if [[ "$libc" == newlib && ( "$arch" == "aarch64" || "$arch" == "riscv64" ) ]]; then
+  extra=""
+  if [ "$libc" = newlib ] && { [ "$arch" = "aarch64" ] || [ "$arch" = "riscv64" ]; }; then
     tf="$ROOT/target/c-smokes-${arch}-trunctfdf2.o"
     "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/ports/sbase/trunctfdf2.c" -o "$tf"
-    extra+=("$tf")
+    extra="$tf"
   fi
-  for entry in "${smokes[@]}"; do
-    name="${entry%% *}"
-    src="${entry#* }"
+  for entry in $smokes; do
+    name="${entry%%:*}"
+    src="${entry#*:}"
     out="$ROOT/target/${name}${suffix}-${arch}-unknown-none"
     obj="$ROOT/target/${name}${suffix}-${arch}.o"
     echo "==> ${name} ($triple / $libc)"
-    if [[ "$libc" == newlib ]]; then
+    if [ "$libc" = newlib ]; then
       "$cc" -ffreestanding -fPIC -O2 -isystem "$inc" -c "$ROOT/$src" -o "$obj"
       ld.lld -pie --no-dynamic-linker -o "$out" \
         --entry=_start -z max-page-size=4096 \
-        "$lib/crt0.o" "$obj" "${extra[@]+"${extra[@]}"}" -L"$lib" \
+        "$lib/crt0.o" "$obj" ${extra:+"$extra"} -L"$lib" \
         --start-group -lc -lgloss -lg --end-group
     else
       # shellcheck disable=SC2046
@@ -71,7 +71,7 @@ for arch in x86_64 aarch64 riscv64; do
       myos_mlibc_link "$arch" "$out" "$obj"
     fi
   done
-  if [[ "$libc" == mlibc ]]; then
+  if [ "$libc" = mlibc ]; then
     echo "==> cxx-smoke ($triple / mlibc, libc++)"
     obj="$ROOT/target/cxx-smoke-mlibc-${arch}.o"
     # shellcheck disable=SC2046
@@ -94,9 +94,10 @@ for arch in x86_64 aarch64 riscv64; do
   fi
 done
 
-if [[ "$libc" == newlib ]]; then
+if [ "$libc" = newlib ]; then
   myos_c_smokes_version_hash > "$MYOS_C_SMOKES_VERSION"
 else
   myos_c_smokes_mlibc_version_hash > "$MYOS_C_SMOKES_MLIBC_VERSION"
 fi
-echo "c smokes ($libc) -> target/{$(printf '%s\n' "${smokes[@]}" | cut -d' ' -f1 | paste -sd, -)}${suffix}-<arch>-unknown-none"
+# shellcheck disable=SC2086
+echo "c smokes ($libc) -> target/{$(printf '%s\n' $smokes | cut -d: -f1 | paste -sd, -)}${suffix}-<arch>-unknown-none"
