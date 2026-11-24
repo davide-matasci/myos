@@ -13,6 +13,7 @@
 //! ```
 
 mod acpi_battery;
+mod boot_modules;
 mod boot_test;
 mod limine_image;
 mod initramfs;

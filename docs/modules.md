@@ -32,7 +32,7 @@ and the initramfs only, and an upgrade replaces two files.
 
 ### Boot order
 
-`BOOT_MODULES` in `src/limine_image.rs` sets the order. `console` comes
+`BOOT_MODULES` in `src/boot_modules.rs` sets the order. `console` comes
 first, since it paints the buffered boot output. Then come the platform
 modules (`pci_enum`, `acpi`, `rpi_firmware`), the block drivers, sound,
 the USB core with its controller and class drivers, the network modules,
@@ -127,7 +127,7 @@ each version changed.
    `opt-level=s`, `myos-abi` and the link flags.
 2. Add it to the module list in `kernel/build.rs`, which builds
    `target/foo-<triple>` for every arch.
-3. Add it to `BOOT_MODULES` in `src/limine_image.rs` at the position it
+3. Add it to `BOOT_MODULES` in `src/boot_modules.rs` at the position it
    must load. That ships it in the initramfs and puts it in
    `/lib/modules/boot.list`.
 4. List the ELFs in `scripts/ci-build-kernels.sh` and

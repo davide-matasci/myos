@@ -73,8 +73,9 @@ capture() {
 	"$@" > "$f" 2>&1
 }
 
-# hung_watch NAME (in the background, beside test NAME): once the test has
-# run HUNG seconds, its system as it is, on the console: a `HUNG` line, then
+# hung_watch NAME [SECONDS] (in the background, beside test NAME): once the
+# test has run HUNG seconds (SECONDS for a test that says how long it may
+# take, `t -w`), its system as it is, on the console: a `HUNG` line, then
 # each thread's /proc line (docs/proc.md: its state and the key it waits
 # on) and each process's command line. A test that hangs is shown before
 # the host's stall watchdog ends the boot (180 s of silence in a quick run,
@@ -96,6 +97,7 @@ capture() {
 hung_watch() {
 	HUNG=300
 	has "$SKIP" heavy && HUNG=120
+	[ -z "${2-}" ] || HUNG=$2
 	sleep $HUNG &
 	hw_sleep=$!
 	echo $hw_sleep > $OUT/hw-$1.pid
@@ -116,7 +118,7 @@ hung_watch() {
 hung_watch_start() {
 	: > $OUT/hw-$1.done
 	: > $OUT/hw-$1.pid
-	hung_watch $1 >&3 2>&1 &
+	hung_watch "$@" >&3 2>&1 &
 }
 
 hung_watch_done() {
@@ -208,7 +210,9 @@ shell_phase() {
 	SHELL_BAD=1
 }
 
-# t [-t TAGS] NAME COMMAND...: run one test, if the selection takes it.
+# t [-t TAGS] [-w SECONDS] NAME COMMAND...: run one test, if the selection
+# takes it. -w: a test that runs longer than hung_watch waits (a build) says
+# for how long it is not hung.
 # FILE_TAGS are the tags of the file being sourced (its port's name, `pkg`
 # for a package's), on every test of it. In the first pass over the files
 # (LISTING set) nothing runs: the selected tests' names and tags are
@@ -217,6 +221,11 @@ t() {
 	t_tags=$FILE_TAGS
 	if [ "$1" = -t ]; then
 		t_tags="$2,$t_tags"
+		shift 2
+	fi
+	t_wait=
+	if [ "$1" = -w ]; then
+		t_wait=$2
 		shift 2
 	fi
 	t_name=$1
@@ -239,7 +248,7 @@ t() {
 		t_pre=1
 		SHELL_BAD=
 	fi
-	hung_watch_start $t_name
+	hung_watch_start $t_name $t_wait
 	t_hung=$!
 	capture $OUT/$t_name.out "$@"
 	t_rc=$?
@@ -292,6 +301,19 @@ booted_slot() {
 	[ -n "$g" ] && grep -q "^PARTUUID=$g /data ext2\$" /boot/fstab
 }
 
+# The boot after self_kernel (packages/myos-src/test.sh): what runs is what
+# that test built on myos and put in the booted slot. /boot/boot/self-built
+# lists it, a sha256 and a path per line: the kernel and the initramfs as
+# Limine loaded them, and files of that initramfs (a module, init).
+booted_self_built() {
+	[ -s /boot/boot/self-built ] || { echo "no /boot/boot/self-built"; return 1; }
+	while read -r bs_sum bs_path; do
+		bs_got=$(sha256sum "$bs_path" | cut -d' ' -f1)
+		echo "$bs_path: $bs_got; built on myos: $bs_sum"
+		[ "$bs_got" = "$bs_sum" ] || return 1
+	done < /boot/boot/self-built
+}
+
 # The --sync /etc/rc started in the background: done within two minutes.
 apps_synced() {
 	log=/tmp/get-myos-sync.log
@@ -305,11 +327,7 @@ apps_synced() {
 
 FILE_TAGS=
 if [ "$MODE" = selfbuilt ]; then
-	# The kernel that runs is the one self_kernel built on myos and put
-	# in the booted slot (packages/myos-src/test.sh), by its sha256.
-	t booted_self_built sh -c 'sum=$(sha256sum /proc/boot/kernel | cut -d" " -f1)
-		echo "the kernel: $sum; built on myos: $(cat /boot/boot/self-built)"
-		[ -n "$sum" ] && [ "$sum" = "$(cat /boot/boot/self-built)" ]'
+	t booted_self_built booted_self_built
 	echo "TESTS DONE $passed/$total"
 	exit 0
 fi

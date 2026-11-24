@@ -36,9 +36,9 @@ self_module() {
 	insmod $st_elf && grep -q "^hello$" /proc/modules
 }
 t -t net,heavy,disk,exec,self self_module self_module
-# The kernel itself, with every module and no_std program
-# (scripts/self-host.sh), on x86_64, where the test machine runs on the
-# host's CPU: under emulation the build is hours.
+# The kernel itself, with every module and no_std program, and the
+# initramfs with them in it (scripts/self-host.sh), on x86_64, where the
+# test machine runs on the host's CPU: under emulation the build is hours.
 self_kernel() {
 	disk_apps myos-src || return 1
 	t0=$(date +%s)
@@ -50,15 +50,26 @@ self_kernel() {
 	for sk_f in console-x86_64-unknown-none xhci-x86_64-unknown-none init-x86_64-unknown-none netd-x86_64-unknown-none; do
 		[ -s $SELF_SRC/target/$sk_f ] || { echo "no target/$sk_f"; return 1; }
 	done
-	# In place of the booted slot's kernel, with its sha256 beside it: the
-	# launcher boots the disk again, and that boot's kernel must be this
-	# one (run.sh selfbuilt).
+	sk_fs=$SELF_SRC/target/initramfs-x86_64.cpio.zst
+	[ -s $sk_fs ] || { echo "no $sk_fs"; return 1; }
+	# In place of the booted slot's kernel and initramfs, with their
+	# sha256 beside them, and those of two files the initramfs now has
+	# from this build: the launcher boots the disk again, and what runs in
+	# that boot must be these (run.sh selfbuilt). init is the first
+	# program of that boot, console its first module.
 	sk_slot=$(sed -n 's/.*slot=\([ab]\).*/\1/p' /proc/cmdline)
 	[ -n "$sk_slot" ] || { echo "no slot in $(cat /proc/cmdline)"; return 1; }
 	cp $sk_elf /boot/boot/$sk_slot/kernel || return 1
-	sha256sum $sk_elf | cut -d' ' -f1 > /boot/boot/self-built
-	[ "$(sha256sum /boot/boot/$sk_slot/kernel | cut -d' ' -f1)" = "$(cat /boot/boot/self-built)" ]
+	cp $sk_fs /boot/boot/$sk_slot/initramfs || return 1
+	{
+		echo "$(sha256sum $sk_elf | cut -d' ' -f1) /proc/boot/kernel"
+		echo "$(sha256sum $sk_fs | cut -d' ' -f1) /proc/boot/initramfs"
+		echo "$(sha256sum $SELF_SRC/target/init-x86_64-unknown-none | cut -d' ' -f1) /bin/custom/init"
+		echo "$(sha256sum $SELF_SRC/target/console-x86_64-unknown-none | cut -d' ' -f1) /lib/modules/console"
+	} > /boot/boot/self-built
+	[ "$(sha256sum /boot/boot/$sk_slot/kernel | cut -d' ' -f1)" = "$(sha256sum $sk_elf | cut -d' ' -f1)" ] \
+		&& [ "$(sha256sum /boot/boot/$sk_slot/initramfs | cut -d' ' -f1)" = "$(sha256sum $sk_fs | cut -d' ' -f1)" ]
 }
 if [ "$(uname -m)" = x86_64 ]; then
-	t -t net,heavy,disk,exec,self self_kernel self_kernel
+	t -t net,heavy,disk,exec,self -w 1800 self_kernel self_kernel
 fi

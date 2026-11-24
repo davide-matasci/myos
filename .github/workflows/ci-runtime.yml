@@ -137,6 +137,8 @@ jobs:
           # when it is there).
           ./user/net/smoltcp/prepare.sh
           cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib
+          # The packer a build on myos ends with (scripts/self-host.sh).
+          cargo test --manifest-path user/mkinitramfs/Cargo.toml
 
       # The Raspberry Pi 3's boot files (boot/rpi3/build.sh, the rpi3 boot):
       # U-Boot, built with the GNU aarch64 cross compiler, cached by what

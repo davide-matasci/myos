@@ -50,15 +50,28 @@ through `kernel/build.rs` every module and every `no_std` program
 - **`RUSTC_BOOTSTRAP=1`**: the tree's cargo settings (an artifact
   dependency, a JSON target) are unstable ones.
 
+Then the initramfs, `target/initramfs-<arch>.cpio.zst`: the running
+system's (`/proc/boot/initramfs`) with every module and program built
+here in place of its own, packed by `user/mkinitramfs`, which the script
+builds first (a program of myos, for the arch it runs on). With the
+kernel it is a boot slot (`docs/install.md`):
+
+```sh
+cp target/x86_64-unknown-none/debug/kernel /boot/boot/a/kernel
+cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
+```
+
 ## Limits
 
 - `http` is not built: its TLS is LibreSSL over newlib, C that is
   cross-built on a build machine. The script takes the running system's
   (`MYOS_PREBUILT`, `kernel/build.rs`).
-- The kernel alone: the C userspace (newlib, mlibc, the ports), the std
-  programs and the image are built on a build machine.
+- The C userspace (newlib, mlibc, the ports) and the std programs are
+  built on a build machine: the new initramfs has the running system's.
+  So is the boot disk (the ESP with Limine).
 - Not the launcher: `vendor/` holds its crates too, but it is a program
   for a Linux or macOS host.
 
 `test.sh` builds a module on every arch and loads it; on x86_64, where
-CI's machine runs on the host's CPU, the whole kernel.
+CI's machine runs on the host's CPU, the kernel and the initramfs, which
+the next boot then runs.

@@ -28,7 +28,7 @@ match the surrounding code's naming, idiom and comment density.
 | `build.rs` | builds the x86_64 kernel and the disk images; checks port artifacts per enabled feature |
 | `kernel/` | the kernel (`arch/`, `task/`, `fs/`, `user/`, `modules/`, `dt.rs` for the device tree) |
 | `modules/` | loadable kernel modules and their `#[repr(C)]` ABI (`modules/abi`); the console module also holds the keymaps and the `ps2-scancode` crate |
-| `user/` | native userspace: Rust (init, netd, the sound server sndd, smokes, `myos_user` lib), C (`user/c`: hello, play/rec and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program |
+| `user/` | native userspace: Rust (init, netd, the sound server sndd, smokes, `myos_user` lib), C (`user/c`: hello, play/rec and the test smokes; `user/c-mlibc`: the same against mlibc) and the boot tests' runner (`user/tests`); one `port.env` per program; `user/mkinitramfs`, the packer a build on myos ends with (`scripts/self-host.sh`) |
 | `toolchain/` | newlib + libgloss/myos, mlibc (`toolchain/mlibc`, the second C library a port opts into with `PORT_LIBC=mlibc`), the C both libcs share (`toolchain/libmyos`), LLVM's C++ runtimes against mlibc (`toolchain/libcxx`: libc++, libc++abi, libunwind), the Rust `std` port (`toolchain/std`); all ports too (`port.env`: newlib and the sysroot of kind `toolchain`, with CI jobs of their own; mlibc a plain one, built and cached as any port) |
 | `ports/<name>/` | one directory per ported program in the image: `port.env` (descriptor, `docs/ports.md`), `versions.env` (pin), `fetch.sh`, `build.sh`, `*.myos.patch`, notes |
 | `packages/<name>/` | the same, for programs CI builds and publishes but the image does not carry (the directory is the list; `get-myos` installs them as apps, `run-myos` runs them, `docs/packages.md`); a port moves between the two by moving its directory |
@@ -90,6 +90,7 @@ cargo run -- packages                      # the package tarballs + indexes (tar
 scripts/local-ci.sh [bios|uefi|aarch64|riscv64] [mini|full]   # the same with OOM/TCG settings for a loaded host
 cargo test -p myos-abi -p ps2-scancode -p ext2fs -p fatvol -p sdio -p iwx -p mtw -p bwfm -p wpa   # host unit tests (ext2fs needs e2fsprogs, fatvol dosfstools and mtools)
 cargo test --manifest-path target/smoltcp-myos/Cargo.toml --lib   # netd's patched smoltcp (user/net/smoltcp/prepare.sh lays it out)
+cargo test --manifest-path user/mkinitramfs/Cargo.toml          # the packer myos runs on itself (scripts/self-host.sh)
 ```
 
 - Test on every arch you could have affected; arch-specific code needs all

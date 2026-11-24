@@ -64,7 +64,9 @@ net,pkg,heavy,install,alpine-disk` and `test`.
   is its load base, `/proc/modules` order, plus the offset into its ELF
   under `target/`), and a PC that moved between the two samples is a loop,
   not a halt.
-- A test still running after 2 minutes (5 when `heavy` is not skipped)
+- A test still running after 2 minutes (5 when `heavy` is not skipped;
+  the seconds of its `t -w SECONDS`, for a test that says it takes
+  longer: a build)
   gets a `HUNG <name>` line on the console. After it, once, come every
   thread's `/proc/<pid>/task/<tid>/status` line and every process's
   command line. The status line shows the thread's state and, in `wait`,
@@ -305,10 +307,12 @@ After a full list that passed, the launcher boots twice more:
    last test, kept as `target/installed-<name>.img`), with `run.sh
    installed`: it must come up from its slot `a`.
 
-After a list in which `self_kernel` passed (x86_64: the kernel built on
-myos, `packages/myos-src`, put in place of the booted slot's) and no
-upgrade ran, it boots the copy once more with `run.sh selfbuilt`: the
-kernel that runs must be the one that test built.
+After a list in which `self_kernel` passed (x86_64: the kernel and the
+initramfs built on myos, `packages/myos-src`, put in place of the booted
+slot's) and no upgrade ran, it boots the copy once more with `run.sh
+selfbuilt`: the kernel and the initramfs that boot came from must be the
+ones that test built, and `init` and the `console` module in it the
+build's (`/boot/boot/self-built` lists their sha256).
 
 ## In CI
 

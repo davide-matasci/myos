@@ -312,7 +312,8 @@ flavour.
 
 ### Building myos on myos
 
-The kernel builds on myos, with that compiler. The **myos-src** package
+The kernel, the modules and the `no_std` programs build on myos, with
+that compiler, and myos boots what it built. The **myos-src** package
 (`packages/myos-src/README.md`) is the source the system was built from,
 with every crate it is built of (`vendor/`), and `scripts/self-host.sh`
 in it runs the build:
@@ -330,9 +331,24 @@ arch it runs on: the kernel, every module and every `no_std` program
 (`kernel/build.rs`, which runs the nested builds and the tree's `sh`
 scripts) and proc macros are myos programs.
 
+The script then packs the initramfs, `target/initramfs-<arch>.cpio.zst`:
+the running system's (`/proc/boot/initramfs`) with every module and
+program built here in place of its own. The packer is `user/mkinitramfs`,
+a program of myos the script builds too; it takes what it writes from the
+launcher's packer (`src/initramfs.rs`) and compresses with the kernel's
+zstd crate, myos having no `zstd` program. The kernel and that archive
+are a boot slot's two files (`docs/install.md`):
+
+```sh
+cd /mnt/apps/myos-src/src/myos
+cp target/x86_64-unknown-none/debug/kernel /boot/boot/a/kernel
+cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
+```
+
 Not built there yet: `http` (its TLS is LibreSSL over newlib; the script
-takes the running system's), the C userspace and the ports, the std
-programs, and the image. `linux-compat/self-host.sh` is the older way to
+takes the running system's), the C userspace and the ports, and the std
+programs: the new initramfs has them as the system runs them. Nor the
+boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
 the same kernel, through Alpine's toolchain under the Linux layer
 (`docs/linux-compat.md`).
 

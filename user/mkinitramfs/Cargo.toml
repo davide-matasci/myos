@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "mkinitramfs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The initramfs of a system that rebuilt part of itself (scripts/self-host.sh)."
+
+[dependencies]
+# The kernel's decoder of the boot archives (kernel/src/fs/zstd.rs), and
+# its encoder: myos has no zstd program.
+ruzstd = "0.9.1"
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

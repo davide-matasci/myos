@@ -503,6 +503,98 @@ pub fn build_boot_archives(
     (archive(image), archive(tests))
 }
 
+/// What a build on myos makes of the tree (`scripts/self-host.sh`): every
+/// module (`lib/modules/<name>`) and every `no_std` program of the image
+/// (the `user` ports' files), from `target/` as [`build_boot_archives`]
+/// takes them. A missing one is an error, as there.
+#[allow(dead_code)]
+pub(crate) fn built_on_myos(manifest_dir: &Path, arch: &str) -> Vec<Entry> {
+    let target = manifest_dir.join("target");
+    let (kernel_triple, _, _) = triples(arch);
+    let mut entries: Vec<Entry> = Vec::new();
+    for port in crate::ports::load_all(manifest_dir) {
+        if port.role == crate::ports::Role::Image && port.kind == crate::ports::Kind::User {
+            install_port(&mut entries, &port, manifest_dir, arch);
+        }
+    }
+    for m in crate::limine_image::all_modules() {
+        add(&mut entries, &format!("lib/modules/{m}"), read(&target.join(format!("{m}-{kernel_triple}"))));
+    }
+    // The tests' scripts are the tests module's, not the initramfs's.
+    entries.retain(|e| !e.name.starts_with("lib/myos-tests/"));
+    entries
+}
+
+/// The archive `base` (newc, as [`write_newc`] leaves one) with `built` in
+/// it: each of its entries in place of the base's of that name, the rest of
+/// the base as it was. The initramfs of a system that rebuilt part of
+/// itself (`user/mkinitramfs`): what it did not build is what it runs.
+/// Returns the archive, raw, and how many entries of the base were
+/// replaced.
+#[allow(dead_code)]
+pub(crate) fn overlay(base: &[u8], built: Vec<Entry>) -> (Vec<u8>, usize) {
+    let mut entries = read_newc(base);
+    // The two number their inodes apart: the base's go after the built's.
+    let shift = built.iter().map(|e| e.ino).max().unwrap_or(0) + 1;
+    for e in &mut entries {
+        e.ino += shift;
+    }
+    let names: std::collections::HashSet<&str> = built.iter().map(|e| e.name.as_str()).collect();
+    let before = entries.len();
+    entries.retain(|e| !names.contains(e.name.as_str()));
+    let replaced = before - entries.len();
+    entries.extend(built);
+    // A hard-link group may have lost names: its count is the names left.
+    let mut links: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+    for e in &entries {
+        *links.entry(e.ino).or_default() += 1;
+    }
+    for e in &mut entries {
+        e.nlink = links[&e.ino];
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    first_link_carries_data(&mut entries);
+    (write_newc(&entries), replaced)
+}
+
+/// The entries of a newc archive, each name of a hard-link group with the
+/// group's bytes (the archive has them once, [`first_link_carries_data`]):
+/// a group stays whole whichever of its names is taken out.
+fn read_newc(data: &[u8]) -> Vec<Entry> {
+    let field = |hdr: &[u8], i: usize| -> usize {
+        let hex = std::str::from_utf8(&hdr[6 + 8 * i..14 + 8 * i]).expect("newc: a header that is not text");
+        usize::from_str_radix(hex, 16).expect("newc: a header field that is not hex")
+    };
+    let pad = |n: usize| (n + 3) & !3;
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut groups: std::collections::HashMap<u64, Vec<u8>> = std::collections::HashMap::new();
+    let mut off = 0;
+    // No archive at all: nothing in it.
+    while !data.is_empty() {
+        let hdr = data.get(off..off + 110).expect("newc: an archive without its trailer");
+        assert!(&hdr[..6] == b"070701", "newc: no entry at offset {off}");
+        let (ino, mode, nlink) = (field(hdr, 0) as u64, field(hdr, 1) as u32, field(hdr, 4) as u32);
+        let (filesize, namesize) = (field(hdr, 6), field(hdr, 11));
+        let name_end = off + 110 + namesize;
+        let name = std::str::from_utf8(&data[off + 110..name_end - 1]).expect("newc: a name that is not UTF-8");
+        if name == "TRAILER!!!" {
+            break;
+        }
+        let start = pad(name_end);
+        let mut bytes = data[start..start + filesize].to_vec();
+        if nlink > 1 {
+            if bytes.is_empty() {
+                bytes = groups.get(&ino).cloned().unwrap_or_default();
+            } else {
+                groups.insert(ino, bytes.clone());
+            }
+        }
+        entries.push(Entry { name: name.to_string(), data: bytes, ino, nlink, mode });
+        off = pad(start + filesize);
+    }
+    entries
+}
+
 /// `entries` as a newc archive, sorted and deduplicated by path (later
 /// duplicates win for the same path), compressed ([`zstd`]).
 fn archive(mut entries: Vec<Entry>) -> Vec<u8> {

@@ -204,7 +204,7 @@ kernel_inputs_diag() {
     {
       sha256sum build.rs Cargo.toml 2>/dev/null || true
       sha256sum src/limine_image.rs src/limine_gpt.rs src/limine_fat.rs src/limine_disk.rs \
-        src/limine_dir.rs src/initramfs.rs 2>/dev/null || true
+        src/limine_dir.rs src/initramfs.rs src/boot_modules.rs 2>/dev/null || true
     } | sha256sum | awk -v d='group:root-src' '{print $1" "d}'
     if [ -f .cargo/config.toml ]; then
       sha256sum .cargo/config.toml | awk -v d='file:.cargo/config.toml' '{print $1" "d}'
@@ -239,7 +239,7 @@ kernel_inputs_diag() {
 
 # Host `myos aarch64/riscv64 --ci` rebuilds the guest disk image and packs
 # these modules into its initramfs (not from the prebuilt kernel ELF). Every
-# kernel module (src/limine_image.rs BOOT_MODULES) is in the list: the kernel
+# kernel module (src/boot_modules.rs BOOT_MODULES) is in the list: the kernel
 # embeds none, the initramfs ships them under lib/modules/. GHCR kernels
 # packages that omit them made master boot jobs panic with "hello ELF missing"
 # after a kernels cache hit (PR builds were fine because they did a full cargo
