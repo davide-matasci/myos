@@ -106,7 +106,8 @@ path in the image:
 | `file:<port dir file>:<path>` | a checked-in file of the port directory (`vimrc:lib/vim/vimrc`) |
 | `manifest:<target file>:<dir>` | every `name:/path/to/elf` line of the manifest as `<dir>/<name>` (ubase) |
 | `multicall:<elf>:<manifest>:<dir>` | the ELF once, every name of the manifest hard-linked to it (sbase, uutils coreutils) |
-| `tree:<target dir>:<dir>` | a directory tree, keeping the host exec bits |
+| `tree:<target dir>:<dir>` | a directory tree, keeping the host exec bits (without its dot files, `.la` and `.txt` files) |
+| `source:<target dir>:<dir>` | a directory tree with every file in it: a source tree (`packages/myos-src`) |
 
 A missing source file fails the build: the packer never silently leaves a
 file out. The kernel embeds no program; every one, `init` included,

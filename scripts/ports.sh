@@ -218,7 +218,7 @@ myos_port_image_files() {
     for _if_arch in $MYOS_ARCHES; do
       [ -z "$_if_only" ] || [ "$_if_only" = "$_if_arch" ] || continue
       case "$_ps_kind" in
-        bin|data|tree) echo "target/$(myos_port_expand "$_ps_a" "$_if_arch")" ;;
+        bin|data|tree|source) echo "target/$(myos_port_expand "$_ps_a" "$_if_arch")" ;;
         manifest)
           # The manifest and every ELF it names (`name:/path/to/elf` lines;
           # the registry pull rewrites the paths to this checkout).

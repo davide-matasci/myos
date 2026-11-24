@@ -266,7 +266,7 @@ fn install_files(
                     .collect();
                 add_hardlink_group(entries, &names, read(&target.join(expand(elf, arch))));
             }
-            FileSpec::Tree { src, dir } => {
+            FileSpec::Tree { src, dir, all } => {
                 let root = target.join(expand(src, arch));
                 if !root.is_dir() {
                     panic!(
@@ -275,15 +275,18 @@ fn install_files(
                         port.name
                     );
                 }
-                collect_tree(&root, dir, entries);
+                collect_tree(&root, dir, *all, entries);
             }
         }
     }
 }
 
 /// Recursively collect a directory tree into `entries` under `rel/…`,
-/// mirroring `kernel/build.rs::collect_dir` (skip dotfiles, `.la`, `.txt`).
-fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
+/// mirroring `kernel/build.rs::collect_dir` (skip dotfiles, `.la`, `.txt`);
+/// `all`: every file, as a source tree needs them (its `.cargo`, a
+/// vendored crate's `.cargo-checksum.json` and its `.txt` files, which
+/// that checksum names).
+fn collect_tree(dir: &Path, rel: &str, all: bool, entries: &mut Vec<Entry>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         eprintln!("initramfs: no sysroot tree at {}", dir.display());
         return;
@@ -293,19 +296,19 @@ fn collect_tree(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
     for ent in names {
         let name = ent.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') {
+        if name.starts_with('.') && !all {
             continue;
         }
         let path = ent.path();
         let child_rel = format!("{rel}/{name}");
         if path.is_dir() {
-            collect_tree(&path, &child_rel, entries);
+            collect_tree(&path, &child_rel, all, entries);
             continue;
         }
         if !path.is_file() {
             continue;
         }
-        if name.ends_with(".la") || name.ends_with(".txt") {
+        if !all && (name.ends_with(".la") || name.ends_with(".txt")) {
             continue;
         }
         if entries.iter().any(|e| e.name == child_rel) {

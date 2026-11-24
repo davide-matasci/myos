@@ -310,6 +310,32 @@ The **rust** package (`packages/rust/README.md`) is the older way: the
 official Linux toolchain under the Linux layer, building for the other
 flavour.
 
+### Building myos on myos
+
+The kernel builds on myos, with that compiler. The **myos-src** package
+(`packages/myos-src/README.md`) is the source the system was built from,
+with every crate it is built of (`vendor/`), and `scripts/self-host.sh`
+in it runs the build:
+
+```sh
+mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
+get-myos -r /mnt/apps myos-src        # with rustc and llvm
+sh /mnt/apps/myos-src/src/myos/scripts/self-host.sh -r /mnt/apps
+```
+
+It is `cargo build -p kernel` for the kernel's bare-metal target on the
+arch it runs on: the kernel, every module and every `no_std` program
+(`init`, `netd`, ...), offline, with no Linux layer. The rustc app has
+`core` and `alloc` for the bare-metal targets; build scripts
+(`kernel/build.rs`, which runs the nested builds and the tree's `sh`
+scripts) and proc macros are myos programs.
+
+Not built there yet: `http` (its TLS is LibreSSL over newlib; the script
+takes the running system's), the C userspace and the ports, the std
+programs, and the image. `linux-compat/self-host.sh` is the older way to
+the same kernel, through Alpine's toolchain under the Linux layer
+(`docs/linux-compat.md`).
+
 ## C userspace (newlib and libgloss)
 
 C programs link against newlib with myos's libgloss

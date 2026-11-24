@@ -41,7 +41,7 @@ net,pkg,heavy,install,alpine-disk` and `test`.
 | `pkg` | need the packages of this build, installed as apps or from the mirror itself. Every package's own test has `pkg` and its package's name |
 | `heavy` | take minutes under TCG: the curated os-test list, the Alpine apk installs, the heavy smoke with the apps |
 | `alpine-disk` | mount the Alpine roots the host prepares: rustc, Python (with GNU coreutils, bash and diffutils), an X client (`linux-compat/alpine-disks.sh`, built once into `target/alpine-<arch>.img`, attached as `/dev/nvme2n1/data`) |
-| `disk` | install their package themselves, on the scratch disk (the runner's `disk_apps`): the compilers, `llvm` and `rustc`. `/tmp/apps` is a tmpfs, so what is installed there is in the kernel heap: 1 GiB at most for every package of the boot together, and 128 MiB a file. The runner's `packages` test leaves them out |
+| `disk` | install their package themselves, on the scratch disk (the runner's `disk_apps`): the compilers, `llvm` and `rustc`, and the system's source built with them, `myos-src`. `/tmp/apps` is a tmpfs, so what is installed there is in the kernel heap: 1 GiB at most for every package of the boot together, and 128 MiB a file. The runner's `packages` test leaves them out |
 | `install` | change the boot disk: `get-myos --upgrade` and `--install` on the scratch disk (`docs/install.md`) |
 | `smoke` | are the quick basics: the shell, exec, the basic programs, the filesystems on the scratch disk, `heap mini`; about two minutes |
 | a module's name (`netfs`, `console`, `linux`, `ext2`, `fat`, `usb`, `blk`, `virtio_net`, ...) or an area's (`sec`, `tty`, `events`, `timers`, `mm`, `sched`, `proc`, `fs`, `exec`, `x11`, `pci`) | cover it: what a change there must run |
@@ -304,6 +304,11 @@ After a full list that passed, the launcher boots twice more:
 2. the scratch disk that `get-myos --install --local` made (the list's
    last test, kept as `target/installed-<name>.img`), with `run.sh
    installed`: it must come up from its slot `a`.
+
+After a list in which `self_kernel` passed (x86_64: the kernel built on
+myos, `packages/myos-src`, put in place of the booted slot's) and no
+upgrade ran, it boots the copy once more with `run.sh selfbuilt`: the
+kernel that runs must be the one that test built.
 
 ## In CI
 

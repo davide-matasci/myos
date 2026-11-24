@@ -16,7 +16,7 @@
  * for, up to its end, in one call (not a 4 KiB chunk: fontconfig took that
  * for a damaged cache); a rename does not wait for a process reading the
  * console (which held the filesystem tree until the next key); lseek and
- * ftello give offsets past 2 GiB whole (the scratch disk's 4 GiB), and a
+ * ftello give offsets past 2 GiB whole (the scratch disk's 8 GiB), and a
  * file on a disk keeps a size past 4 GiB; statvfs and fstatvfs report the
  * space a file takes and gives back, the image read-only and full.
  *
@@ -639,7 +639,7 @@ static void big_file(void) {
 }
 
 /* Offsets past 2 GiB come back whole from lseek and ftello (libgloss's
- * _lseek returned an int: riscv64 sign-extends it, so the 4 GiB scratch
+ * _lseek returned an int: riscv64 sign-extends it, so a 4 GiB scratch
  * disk's end read as 0, issue #366). */
 static void big_offsets(void) {
     const off_t gib = (off_t)1 << 30;
@@ -651,15 +651,15 @@ static void big_offsets(void) {
         return;
     }
     end = lseek(fd, 0, SEEK_END);
-    if (end != 4 * gib) {
+    if (end != 8 * gib) {
         printf("lseek(SEEK_END): %lld\n", (long long)end);
     }
-    check(end == 4 * gib, "lseek to the end of a 4 GiB disk");
+    check(end == 8 * gib, "lseek to the end of the 8 GiB disk");
     check(lseek(fd, 3 * gib, SEEK_SET) == 3 * gib && lseek(fd, 0, SEEK_CUR) == 3 * gib,
           "lseek to 3 GiB");
     f = fdopen(fd, "r");
-    check(f != NULL && fseeko(f, 0, SEEK_END) == 0 && ftello(f) == 4 * gib,
-          "ftello at the end of a 4 GiB disk");
+    check(f != NULL && fseeko(f, 0, SEEK_END) == 0 && ftello(f) == 8 * gib,
+          "ftello at the end of the 8 GiB disk");
     if (f != NULL) {
         fclose(f);
     } else {

@@ -160,6 +160,17 @@ EOF
   chmod +x "$tc/ld"
 )
 
+# bare_targets ARCH: the bare-metal targets of the arch, the kernel's
+# (soft float) and the no_std programs' (hard float, where it differs):
+# rust-toolchain.toml's, kernel/build.rs's `user_target`.
+bare_targets() {
+  case "$1" in
+    x86_64) echo x86_64-unknown-none ;;
+    aarch64) echo aarch64-unknown-none-softfloat aarch64-unknown-none ;;
+    riscv64) echo riscv64imac-unknown-none-elf riscv64gc-unknown-none-elf ;;
+  esac
+}
+
 build_arch() (
   arch="$1" triple="$1-unknown-myos-mlibc" out="$T/rustc-$1" tc="$T/rustc-tc-$1" llvm="$T/llvm-$1/dev"
   host="$(rustc "+$MYOS_NIGHTLY" -vV | sed -n 's/^host: //p')"
@@ -208,6 +219,10 @@ ranlib = "$(command -v "${arch}-unknown-myos-ranlib")"
 linker = "$tc/ld"
 llvm-config = "$llvm/bin/llvm-config"
 EOF
+  # The bare-metal targets of the arch (below): no C in their library.
+  for bare in $(bare_targets "$arch"); do
+    printf '\n[target.%s]\ncc = "%s"\n' "$bare" "$(command -v clang)" >>"$BUILD/bootstrap-$arch.toml"
+  done
   echo "==> rustc ($triple)"
   # cargo's TLS: the mlibc build of LibreSSL (openssl-sys reads
   # <TRIPLE>_OPENSSL_DIR). Not the std port's own cargo settings.
@@ -220,7 +235,18 @@ EOF
       compiler/rustc src/tools/cargo --host "$triple" --target "$triple"
   ) >"$BUILD/build-$arch.log" 2>&1 \
     || { grep -n "^error" -A12 "$BUILD/build-$arch.log" | head -80 >&2 || true; tail -20 "$BUILD/build-$arch.log" >&2; exit 1; }
-
+  # core, alloc and compiler_builtins for the arch's bare-metal targets,
+  # by the same stage 1 compiler: what the kernel, its modules and the
+  # no_std programs are built for (as `rustup target add` gives a host).
+  # With the compiler's own target in the list: the build lays the
+  # stage 1 compiler's libraries out anew for the targets it is given.
+  (
+    cd "$SRC"
+    env -u RUSTC -u RUSTFLAGS -u MYOS_SYSROOT -u RUSTC_BOOTSTRAP \
+      python3 x.py build --config "$BUILD/bootstrap-$arch.toml" --stage 1 library \
+      --target "$triple$(for bare in $(bare_targets "$arch"); do printf ',%s' "$bare"; done)"
+  ) >"$BUILD/build-bare-$arch.log" 2>&1 \
+    || { grep -n "^error" -A12 "$BUILD/build-bare-$arch.log" | head -80 >&2 || true; tail -20 "$BUILD/build-bare-$arch.log" >&2; exit 1; }
   stage2="$BUILD/$triple/stage2"
   std="$BUILD/$host/stage1/lib/rustlib/$triple/lib"
   tools="$BUILD/$host/stage2-tools/$triple/release"
@@ -236,6 +262,11 @@ EOF
     b="$(basename "$f" .rlib)"
     cp "$f" "$out/lib/rustlib/$triple/lib/"
     [ ! -e "$std/$b.rmeta" ] || cp "$std/$b.rmeta" "$out/lib/rustlib/$triple/lib/"
+  done
+  for bare in $(bare_targets "$arch"); do
+    mkdir -p "$out/lib/rustlib/$bare/lib"
+    cp "$BUILD/$host/stage1/lib/rustlib/$bare/lib/"*.rlib "$BUILD/$host/stage1/lib/rustlib/$bare/lib/"*.rmeta \
+      "$out/lib/rustlib/$bare/lib/"
   done
   cp "$HERE/files/rust-lld" "$out/lib/rustlib/$triple/bin/rust-lld"
   chmod +x "$out/lib/rustlib/$triple/bin/rust-lld"

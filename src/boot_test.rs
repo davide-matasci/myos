@@ -145,6 +145,10 @@ pub enum Mode {
     /// The third, of the disk `get-myos --install` made on the scratch
     /// disk: it comes up from slot a (`run.sh installed`).
     Installed,
+    /// A boot of the disk whose kernel `self_kernel` replaced with the one
+    /// it built on myos (`packages/myos-src/test.sh`): the system comes up
+    /// on it (`run.sh selfbuilt`).
+    SelfBuilt,
 }
 
 impl Mode {
@@ -155,6 +159,7 @@ impl Mode {
             Mode::Reboot { app: true } => " reboot".into(),
             Mode::Reboot { app: false } => " reboot --skip app_kept".into(),
             Mode::Installed => " installed".into(),
+            Mode::SelfBuilt => " selfbuilt".into(),
         }
     }
 
@@ -175,7 +180,7 @@ impl Mode {
             Mode::Tests(sel) if sel.budget.is_some() => sel.budget.unwrap(),
             Mode::Tests(sel) if sel.quick() => scale(if linux_compat { 540 } else { 480 }),
             Mode::Tests(_) => Duration::from_secs(3000),
-            Mode::Reboot { .. } | Mode::Installed => scale(300),
+            Mode::Reboot { .. } | Mode::Installed | Mode::SelfBuilt => scale(300),
         }
     }
 
@@ -912,6 +917,7 @@ mod tests {
         assert_eq!(Mode::Tests(sel).args(), " --tags smoke,netfs --skip heavy");
         assert_eq!(Mode::Reboot { app: true }.args(), " reboot");
         assert_eq!(Mode::Reboot { app: false }.args(), " reboot --skip app_kept");
+        assert_eq!(Mode::SelfBuilt.args(), " selfbuilt");
     }
 
     #[test]

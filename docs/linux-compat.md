@@ -138,6 +138,10 @@ attach as a disk.
 
 ## Building myos in myos
 
+The kernel is also built on myos without this layer, by the native
+compiler from the system's own source package (`docs/userspace.md`,
+"Building myos on myos"). What follows is the way through Alpine.
+
 For myos programs (the `*-unknown-myos` targets and their std), the `rust`
 package sets the pinned nightly's own toolchain up in an Alpine root and
 runs cargo there, on every arch (`packages/rust/README.md`).

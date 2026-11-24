@@ -26,6 +26,7 @@ loads.
 | `/lib/librustc_driver-*.so` | the compiler, with the llvm package's LLVM in it (X86, AArch64 and RISC-V) |
 | `/lib/rustlib/<triple>/lib` | the std of the target: `core`, `alloc`, `std`, `proc_macro`, `test` |
 | `/lib/rustlib/<triple>/bin/rust-lld` | the linker rustc runs: a script over the llvm app's `ld.lld` |
+| `/lib/rustlib/<bare target>/lib` | `core`, `alloc` and `compiler_builtins` for the arch's bare-metal targets: the kernel's (`x86_64-unknown-none`, `aarch64-unknown-none-softfloat`, `riscv64imac-unknown-none-elf`) and, where it is another, the `no_std` programs' (`aarch64-unknown-none`, `riscv64gc-unknown-none-elf`) |
 
 The app needs **llvm** (`PORT_RDEPS`): its `ld.lld` links, and its
 `/lib/mlibc/lib` is the C library, libunwind and the compiler builtins a
@@ -81,9 +82,13 @@ object or a program over shared objects.
 
 ## Limits
 
-- One target: `<arch>-unknown-myos-mlibc`. The other flavour of the std
-  (`<arch>-unknown-myos`, the Rust ports of the image) and the other
-  arches are built on Linux, as before.
+- One target with a std: `<arch>-unknown-myos-mlibc`. The other flavour
+  of the std (`<arch>-unknown-myos`, the Rust ports of the image) and the
+  other arches are built on Linux, as before. The bare-metal targets of
+  its own arch have `core` and `alloc`, as `rustup target add` gives a
+  host: the kernel is built with them (`packages/myos-src`). Their links
+  are `ld.lld`'s own (`CARGO_TARGET_<TARGET>_LINKER=ld.lld`): the
+  `rust-lld` here is the link of a myos program.
 - No Ctrl-C handler in the compiler (its crate goes through `nix`, which
   does not know myos): an interrupt ends it by the signal's default.
 - cargo works offline and with path dependencies in the tests; fetching

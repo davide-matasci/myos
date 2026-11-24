@@ -425,6 +425,7 @@ MYOS_X11_XFT_VERSION="$MYOS_ROOT/target/.myos-x11-xft-version"
 MYOS_X11_APPS_VERSION="$MYOS_ROOT/target/.myos-x11-apps-version"
 MYOS_X11_DEV_VERSION="$MYOS_ROOT/target/.myos-x11-dev-version"
 MYOS_X11_FONTS_VERSION="$MYOS_ROOT/target/.myos-x11-fonts-version"
+MYOS_MYOS_SRC_VERSION="$MYOS_ROOT/target/.myos-myos-src-version"
 MYOS_ZLIB_VERSION="$MYOS_ROOT/target/.myos-zlib-version"
 MYOS_LIBRESSL_VERSION="$MYOS_ROOT/target/.myos-libressl-version"
 MYOS_PCRE2_VERSION="$MYOS_ROOT/target/.myos-pcre2-version"
@@ -1549,6 +1550,24 @@ myos_x11_fonts_is_current() {
   [ -f "$MYOS_X11_FONTS_VERSION" ] \
     && [ "$(cat "$MYOS_X11_FONTS_VERSION")" = "$(myos_x11_fonts_version_hash)" ] \
     && [ -f "$MYOS_ROOT/target/x11-fonts/DejaVuSansMono.ttf" ]
+}
+
+# The source of the system as a package (packages/myos-src): every
+# checked-in file is in it, so every one is in its key. (safe.directory:
+# git refuses a checkout another user owns, CI's container.)
+myos_myos_src_version_hash() (
+  h="$(
+    cd "$MYOS_ROOT" && git -c safe.directory="$MYOS_ROOT" ls-files -z \
+      | xargs -0 sha256sum | myos_hash
+  )"
+  printf '%s' "$h"
+)
+
+myos_myos_src_is_current() {
+  [ -f "$MYOS_MYOS_SRC_VERSION" ] \
+    && [ "$(cat "$MYOS_MYOS_SRC_VERSION")" = "$(myos_myos_src_version_hash)" ] \
+    && [ -f "$MYOS_ROOT/target/myos-src/Cargo.toml" ] \
+    && [ -d "$MYOS_ROOT/target/myos-src/vendor" ]
 }
 
 myos_dwm_version_hash() (
