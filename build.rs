@@ -1,3 +1,6 @@
+mod boot_modules {
+    include!("src/boot_modules.rs");
+}
 mod limine_image {
     include!("src/limine_image.rs");
 }
@@ -53,6 +56,7 @@ fn main() {
     // include! pulls these into the build script; cargo does not track them
     // automatically, so image-layout fixes must force a bios.img rebuild.
     println!("cargo:rerun-if-changed=src/limine_image.rs");
+    println!("cargo:rerun-if-changed=src/boot_modules.rs");
     // The security policy is packed as /etc/policy (src/initramfs.rs).
     println!("cargo:rerun-if-changed=etc/policy");
     println!("cargo:rerun-if-changed=src/limine_gpt.rs");

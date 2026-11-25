@@ -45,7 +45,7 @@ and the launcher is needed to run Alpine's packages.
 | Where | What |
 |-------|------|
 | `kernel/build.rs` | builds `modules/linux` for the 3 arches like every module |
-| `src/limine_image.rs` | `OPTIONAL_MODULES`: `linux` is in `/lib/modules/boot.list` only with `linux_compat`, in `/lib/modules` always |
+| `src/boot_modules.rs` | `OPTIONAL_MODULES`: `linux` is in `/lib/modules/boot.list` only with `linux_compat`, in `/lib/modules` always |
 | `Cargo.toml` (root) | feature `linux_compat` (not in `default` or `core`) |
 | `linux-compat/build-launcher.sh` | the `linux` launcher for each arch, in every image |
 | `linux-compat/build.sh` | musl and the Linux test binaries for each arch (run by `build.rs` when the feature is on) |
