@@ -1,0 +1,52 @@
+--- lex.c
++++ lex.c
+@@ -43,6 +43,7 @@
+ 		struct scsparen_info {
+ 			int nparen;	/* count open parenthesis */
+ 			int csstate;	/* XXX remove */
++			int prev;	/* myos: the character before, for # */
+ #define ls_scsparen ls_info.u_scsparen
+ 		} u_scsparen;
+ 
+@@ -370,6 +371,7 @@
+ 						PUSH_STATE(SCSPAREN);
+ 						statep->ls_scsparen.nparen = 1;
+ 						statep->ls_scsparen.csstate = 0;
++						statep->ls_scsparen.prev = '(';
+ 						*wp++ = COMSUB;
+ 					}
+ 				} else if (c == '{') /*}*/ {
+@@ -496,6 +498,17 @@
+ 					statep->ls_scsparen.csstate = 4;
+ 					ignore_backslash_newline++;
+ 					break;
++				case '#':
++					/* myos: a comment, to the end of its
++					 * line, where a word may start: its
++					 * quotes and parentheses are not the
++					 * command's.
++					 */
++					if (strchr(" \t\n;&|(", statep->ls_scsparen.prev)) {
++						statep->ls_scsparen.csstate = 5;
++						ignore_backslash_newline++;
++					}
++					break;
+ 				}
+ 				break;
+ 
+@@ -517,7 +530,15 @@
+ 					ignore_backslash_newline--;
+ 				}
+ 				break;
++
++			case 5: /* myos: a comment */
++				if (c == '\n') {
++					statep->ls_scsparen.csstate = 0;
++					ignore_backslash_newline--;
++				}
++				break;
+ 			}
++			statep->ls_scsparen.prev = c;
+ 			if (statep->ls_scsparen.nparen == 0) {
+ 				POP_STATE();
+ 				*wp++ = 0; /* end of COMSUB */
