@@ -37,8 +37,8 @@ self_module() {
 }
 t -t net,heavy,disk,exec,self self_module self_module
 # The kernel itself, with every module and no_std program (http among
-# them, over the LibreSSL the script builds first), and the
-# initramfs with them in it (scripts/self-host.sh), on x86_64, where the
+# them, over the LibreSSL the script builds first), the std programs over
+# a std built from source, and the initramfs with them in it (scripts/self-host.sh), on x86_64, where the
 # test machine runs on the host's CPU: under emulation the build is hours.
 self_kernel() {
 	disk_apps myos-src || return 1
@@ -49,17 +49,19 @@ self_kernel() {
 	[ "$(dd if=$sk_elf bs=1 skip=1 count=3 2> /dev/null)" = ELF ] || { echo "no ELF at $sk_elf"; return 1; }
 	# Every module and program the build makes, where the image takes them.
 	for sk_f in console-x86_64-unknown-none xhci-x86_64-unknown-none init-x86_64-unknown-none netd-x86_64-unknown-none \
-		http-x86_64-unknown-none libressl-x86_64/lib/libtls.a; do
+		http-x86_64-unknown-none libressl-x86_64/lib/libtls.a \
+		myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib std-thread-x86_64-unknown-myos; do
 		[ -s $SELF_SRC/target/$sk_f ] || { echo "no target/$sk_f"; return 1; }
 	done
 	sk_fs=$SELF_SRC/target/initramfs-x86_64.cpio.zst
 	[ -s $sk_fs ] || { echo "no $sk_fs"; return 1; }
 	# In place of the booted slot's kernel and initramfs, with their
-	# sha256 beside them, and those of three files the initramfs now has
+	# sha256 beside them, and those of four files the initramfs now has
 	# from this build: the launcher boots the disk again, and what runs in
 	# that boot must be these (run.sh selfbuilt). init is the first
 	# program of that boot, console its first module; http is the one
-	# with C in it, which that boot fetches a page with.
+	# with C in it, which that boot fetches a page with; thread is a std
+	# program, which that boot runs.
 	sk_slot=$(sed -n 's/.*slot=\([ab]\).*/\1/p' /proc/cmdline)
 	[ -n "$sk_slot" ] || { echo "no slot in $(cat /proc/cmdline)"; return 1; }
 	cp $sk_elf /boot/boot/$sk_slot/kernel || return 1
@@ -70,6 +72,7 @@ self_kernel() {
 		echo "$(sha256sum $SELF_SRC/target/init-x86_64-unknown-none | cut -d' ' -f1) /bin/custom/init"
 		echo "$(sha256sum $SELF_SRC/target/console-x86_64-unknown-none | cut -d' ' -f1) /lib/modules/console"
 		echo "$(sha256sum $SELF_SRC/target/http-x86_64-unknown-none | cut -d' ' -f1) /bin/custom/http"
+		echo "$(sha256sum $SELF_SRC/target/std-thread-x86_64-unknown-myos | cut -d' ' -f1) /bin/std/thread"
 	} > /boot/boot/self-built
 	[ "$(sha256sum /boot/boot/$sk_slot/kernel | cut -d' ' -f1)" = "$(sha256sum $sk_elf | cut -d' ' -f1)" ] \
 		&& [ "$(sha256sum /boot/boot/$sk_slot/initramfs | cut -d' ' -f1)" = "$(sha256sum $sk_fs | cut -d' ' -f1)" ]

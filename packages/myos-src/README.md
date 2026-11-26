@@ -1,7 +1,7 @@
 # myos-src
 
 The source the system was built from, as an app, with everything a build
-of its kernel reads: myos builds its own kernel from it, with its own
+of its kernel and its Rust programs reads: myos builds them from it, with its own
 compilers and no network.
 
 ```sh
@@ -25,10 +25,11 @@ GiB under the tree's `target/`.
 | `.cargo/config.toml` | the tree's, with crates.io replaced by `vendor/` |
 | `target/acpi-myos`, `target/smoltcp-myos` | the two crates the tree patches, as their prepare scripts leave them, with the stamps that tell those scripts there is nothing to fetch |
 | `target/libressl-src` | LibreSSL's source, which `http` links (`user/tls`), as `ports/libressl/fetch.sh` leaves it: the pinned release with the myos patch, and its stamp |
+| `target/rust-std-patch` | Rust's library with myos in it, which the `std` of the std programs is built from: the pinned nightly's `rust-src` as `toolchain/std/patches/wire-myos.py` patches it, with the crates it vendors |
 
-The crates are fetched from crates.io when the package is built, and
-LibreSSL from its mirror, as in any build of the tree; none is checked
-in. Each keeps its license files (`THIRD_PARTY_NOTICES.md`).
+The crates are fetched from crates.io when the package is built,
+LibreSSL from its mirror and the library from the toolchain rustup
+installed, as in any build of the tree; none is checked in. Each keeps its license files (`THIRD_PARTY_NOTICES.md`).
 
 The descriptor's kind for it is `source:` (`docs/ports.md`): a tree
 packed with every file, where `tree:` leaves the dot files and the
@@ -42,6 +43,13 @@ script (`ports/libressl/build.sh`) with the llvm app's clang, for the
 arch it runs on, against newlib. newlib is the system's, from the tcc
 app (`/lib/newlib`, what tcc compiles against), copied to
 `target/newlib-<arch>`.
+
+Then `std` for `<arch>-unknown-myos`, from `target/rust-std-patch`
+(`toolchain/std/build-sysroot.sh`, `cargo -Z build-std`, with the crates
+the library vendors in place of crates.io), and the std programs over it
+(`user/std/build.sh`: `target/std-<name>-<arch>-unknown-myos`). The
+sysroot they link, `target/myos-sysroot`, has the rustc app's own
+libraries by a symbolic link: what build scripts are compiled against.
 
 Then `cargo build -p kernel` for the kernel's bare-metal target, as the
 launcher does on a build machine: the kernel, and through
@@ -70,8 +78,8 @@ cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 
 ## Limits
 
-- The C libraries (newlib, mlibc), the C programs and ports and the std
-  programs are built on a build machine: the new initramfs has the running system's.
+- The C libraries (newlib, mlibc), the C programs and the ports are
+  built on a build machine: the new initramfs has the running system's.
   So is the boot disk (the ESP with Limine).
 - Not the launcher: `vendor/` holds its crates too, but it is a program
   for a Linux or macOS host.

@@ -8,7 +8,8 @@
 # myos").
 #
 # The tree is the myos-src package's (packages/myos-src: the source the
-# system was built from, with its crates and LibreSSL's source), installed
+# system was built from, with its crates, LibreSSL's source and Rust's
+# library), installed
 # on a disk: the build writes a few GiB under target/.
 #
 #     mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
@@ -18,6 +19,10 @@
 # First LibreSSL (ports/libressl/build.sh, with clang), which `http` links
 # through user/tls: against newlib, which is the system's, as the tcc app
 # has it to compile against (/lib/newlib).
+#
+# Then the std programs (user/std/build.sh: /bin/std), and before them
+# the std they link: Rust's library with myos in it, built from source for
+# <arch>-unknown-myos (toolchain/std, `-Z build-std`).
 #
 # Then `cargo build -p kernel` for the kernel's bare-metal target, as the
 # launcher does on the build machine: the kernel, and through
@@ -34,7 +39,7 @@
 #     cp target/initramfs-<arch>.cpio.zst /boot/boot/a/initramfs
 #
 # What is not built here is in that initramfs as the system runs it: the C
-# programs and libraries, the std programs.
+# programs and libraries, the ports.
 set -euo pipefail
 
 apps=
@@ -76,13 +81,13 @@ if [ ! -f "$newlib/lib/libc.a" ]; then
 fi
 sh toolchain/newlib/tool-wrappers.sh > /dev/null
 
-# Neither build says much while it runs (the C compiles are silent, and
+# The builds say little while they run (the C compiles are silent, and
 # cargo shows the kernel's crates but not the modules and programs, which
 # kernel/build.rs builds): how far each is, a minute at a time.
 t0=$(date +%s)
 (
 	while sleep 60; do
-		echo "self-host: $(($(date +%s) - t0)) s, $(find "target/libressl-$arch/obj" -name '*.o' 2> /dev/null | grep -c .) objects of LibreSSL, $(ls target | grep -c -- "-$target\$") modules and programs built"
+		echo "self-host: $(($(date +%s) - t0)) s, $(find "target/libressl-$arch/obj" -name '*.o' 2> /dev/null | grep -c .) objects of LibreSSL, $(ls target | grep -- "^std-.*-$arch-unknown-myos\$" | grep -vc -- -build-) std programs, $(ls target | grep -c -- "-$target\$") modules and programs built"
 	done
 ) &
 beat=$!
@@ -92,6 +97,16 @@ echo "self-host: building LibreSSL for $arch"
 sh ports/libressl/build.sh
 echo "self-host: LibreSSL built in $(($(date +%s) - t0)) s"
 
+# cargo's settings for every build below. RUSTC_BOOTSTRAP: the tree's
+# unstable ones (.cargo/config.toml: an artifact dependency, a JSON
+# target) are a nightly's, and the package's cargo is not built as one.
+export RUSTC_BOOTSTRAP=1 CARGO_HOME="$SRC/target/cargo-home" CARGO_NET_OFFLINE=true
+
+echo "self-host: building std and the std programs for $arch-unknown-myos"
+t1=$(date +%s)
+sh user/std/build.sh
+echo "self-host: std and the std programs built in $(($(date +%s) - t1)) s"
+
 # The bare-metal links are lld's own: rustc's linker for a myos program
 # (the app's rust-lld) adds the C library to what it links.
 linkers=
@@ -99,13 +114,9 @@ for t in $target $user; do
 	linkers="$linkers CARGO_TARGET_$(echo "$t" | tr 'a-z-' 'A-Z_')_LINKER=ld.lld"
 done
 
-# RUSTC_BOOTSTRAP: the tree's unstable cargo settings (.cargo/config.toml:
-# an artifact dependency, a JSON target) are a nightly's, and the package's
-# cargo is not built as one.
 echo "self-host: building the kernel for $target in $SRC"
 # shellcheck disable=SC2086
-env $linkers RUSTC_BOOTSTRAP=1 CARGO_HOME="$SRC/target/cargo-home" \
-	cargo build --offline -p kernel --target "$target" "$@"
+env $linkers cargo build -p kernel --target "$target" "$@"
 
 profile=debug
 for a in "$@"; do
@@ -114,8 +125,7 @@ done
 echo "self-host: built $SRC/target/$target/$profile/kernel"
 
 # The packer, for the system it runs on, and its archive.
-env RUSTC_BOOTSTRAP=1 CARGO_HOME="$SRC/target/cargo-home" \
-	cargo build --offline --release \
+cargo build --release \
 	--manifest-path user/mkinitramfs/Cargo.toml --target-dir target/mkinitramfs
 target/mkinitramfs/release/mkinitramfs "$SRC" "$arch" /proc/boot/initramfs "target/initramfs-$arch.cpio.zst"
 echo "self-host: built $SRC/target/initramfs-$arch.cpio.zst"

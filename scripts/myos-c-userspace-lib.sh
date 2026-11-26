@@ -48,14 +48,11 @@ $input
 EOF
 )
 
-# A build on myos itself (scripts/self-host.sh sets MYOS_SELF_HOST): a port
-# is current there when its outputs exist, with no cache key, which is of
+# A build on myos itself (myos_self_host, toolchain/std/lib.sh): a port is
+# current there when its outputs exist, with no cache key, which is of
 # the build machine's tools (awk, GNU sort and find); it is built for the
 # arch myos runs on, and newlib is the system's (the tcc app's tree, which
-# the script lays at target/newlib-<arch>).
-myos_self_host() {
-  [ -n "${MYOS_SELF_HOST-}" ]
-}
+# scripts/self-host.sh lays at target/newlib-<arch>).
 
 # How many compilers to run at once.
 myos_nproc() {

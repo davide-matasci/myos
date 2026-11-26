@@ -325,6 +325,12 @@ self_built_https() {
 	contains "User-agent" $OUT/self-http.log && contains "[ OK ] https" $OUT/self-http.log
 }
 
+# And its std programs, over the std built there, do what the system's
+# did (user/std/test.sh): threads, locks and thread-locals; files.
+self_built_std() {
+	/bin/std/thread && /bin/std/fs
+}
+
 # The --sync /etc/rc started in the background: done within two minutes.
 apps_synced() {
 	log=/tmp/get-myos-sync.log
@@ -340,6 +346,7 @@ FILE_TAGS=
 if [ "$MODE" = selfbuilt ]; then
 	t booted_self_built booted_self_built
 	t self_built_https self_built_https
+	t self_built_std self_built_std
 	echo "TESTS DONE $passed/$total"
 	exit 0
 fi
