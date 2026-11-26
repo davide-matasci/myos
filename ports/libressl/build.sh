@@ -8,6 +8,11 @@
 # build against it; mlibc's to target/libressl-mlibc-<arch>/, for the mlibc
 # ports (python): a libc's errno, stdio and struct layouts are its own, so a
 # library serves the programs of the libc it was built against only.
+#
+# MYOS_LIBRESSL_ARCHES and MYOS_LIBRESSL_LIBCS name what to build, all of it
+# by default (scripts/myos-c-userspace-lib.sh). On myos
+# (scripts/self-host.sh) that is the arch it runs on, against newlib: what
+# user/tls links.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -22,8 +27,9 @@ if myos_libressl_is_current; then
 fi
 
 "$HERE/fetch.sh"
-"$ROOT/toolchain/newlib/build.sh"
-"$ROOT/toolchain/mlibc/build.sh"
+for libc in $MYOS_LIBRESSL_LIBCS; do
+  "$ROOT/toolchain/$libc/build.sh"
+done
 export PATH="$ROOT/target/newlib-bin:$PATH"
 SRC="$ROOT/target/libressl-src"
 
@@ -61,7 +67,7 @@ have() {
 sources() (
   dir="$1" var="$2" host="$3"
   # shellcheck disable=SC2086
-  python3 "$HERE/sources.py" "$SRC/$dir/Makefile.am" "$var" $HAVE_CONDS "$host" \
+  sh "$HERE/sources.sh" "$SRC/$dir/Makefile.am" "$var" $HAVE_CONDS "$host" \
     | sed "s|^|$SRC/$dir/|"
 )
 
@@ -98,7 +104,7 @@ compile_all() (
     echo "$obj" >>"$list"
   done
   # xargs appends each pair after the compiler and its flags.
-  xargs -0 -n 2 -P "$(nproc)" sh -c "$COMPILE_ONE" _ "$@" <"$pairs"
+  xargs -0 -n 2 -P "$(myos_nproc)" sh -c "$COMPILE_ONE" _ "$@" <"$pairs"
 )
 
 # build_arch ARCH LIBC
@@ -189,10 +195,11 @@ build_arch() (
   echo "libressl $arch $libc: $(ls "$out/lib")"
 )
 
-for arch in ${MYOS_LIBRESSL_ARCHES:-x86_64 aarch64 riscv64}; do
-  build_arch "$arch" newlib
-  build_arch "$arch" mlibc
+for arch in $MYOS_LIBRESSL_ARCHES; do
+  for libc in $MYOS_LIBRESSL_LIBCS; do
+    build_arch "$arch" "$libc"
+  done
 done
 
-echo "$(myos_libressl_version_hash)" >"$MYOS_LIBRESSL_VERSION"
+myos_self_host || echo "$(myos_libressl_version_hash)" >"$MYOS_LIBRESSL_VERSION"
 echo "libressl build ok ($LIBRESSL_VERSION)"

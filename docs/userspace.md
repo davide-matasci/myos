@@ -320,13 +320,23 @@ in it runs the build:
 
 ```sh
 mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
-get-myos -r /mnt/apps myos-src        # with rustc and llvm
+get-myos -r /mnt/apps myos-src        # with rustc, llvm and tcc
 sh /mnt/apps/myos-src/src/myos/scripts/self-host.sh -r /mnt/apps
 ```
 
 It is `cargo build -p kernel` for the kernel's bare-metal target on the
 arch it runs on: the kernel, every module and every `no_std` program
-(`init`, `netd`, ...), offline, with no Linux layer. The rustc app has
+(`init`, `netd`, `http`, ...), offline, with no Linux layer.
+
+One of them has C in it: `http`, whose TLS is LibreSSL (`user/tls`). The
+script compiles LibreSSL first, with the llvm app's clang and the port's
+own build script (`ports/libressl/build.sh`, for the one arch, from the
+source the package carries), against newlib. newlib itself is the
+system's: the tree the tcc app has to compile against (`/lib/newlib`),
+copied to where a build of the tree looks for it. `MYOS_SELF_HOST` tells
+the tree's scripts they run on myos: a port is current when its outputs
+exist, since the cache keys of a build machine need its tools (awk, GNU
+`sort`). The rustc app has
 `core` and `alloc` for the bare-metal targets; build scripts
 (`kernel/build.rs`, which runs the nested builds and the tree's `sh`
 scripts) and proc macros are myos programs.
@@ -345,9 +355,8 @@ cp target/x86_64-unknown-none/debug/kernel /boot/boot/a/kernel
 cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 ```
 
-Not built there yet: `http` (its TLS is LibreSSL over newlib; the script
-takes the running system's), the C userspace and the ports, and the std
-programs: the new initramfs has them as the system runs them. Nor the
+Not built there yet: the C libraries (newlib, mlibc), the C userspace
+and the ports, and the std programs: the new initramfs has them as the system runs them. Nor the
 boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
 the same kernel, through Alpine's toolchain under the Linux layer
 (`docs/linux-compat.md`).

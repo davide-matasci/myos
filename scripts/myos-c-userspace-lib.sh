@@ -48,6 +48,20 @@ $input
 EOF
 )
 
+# A build on myos itself (scripts/self-host.sh sets MYOS_SELF_HOST): a port
+# is current there when its outputs exist, with no cache key, which is of
+# the build machine's tools (awk, GNU sort and find); it is built for the
+# arch myos runs on, and newlib is the system's (the tcc app's tree, which
+# the script lays at target/newlib-<arch>).
+myos_self_host() {
+  [ -n "${MYOS_SELF_HOST-}" ]
+}
+
+# How many compilers to run at once.
+myos_nproc() {
+  nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1
+}
+
 # The directory of a port: under ports/ (in the image) or packages/ (a
 # package, see docs/ports.md); a port moves between the two by moving it.
 myos_port_dir() {
@@ -516,6 +530,10 @@ myos_newlib_prefix_ok() (
 )
 
 myos_newlib_is_current() {
+  if myos_self_host; then
+    myos_newlib_prefix_ok "$(uname -m)"
+    return
+  fi
   [ -f "$MYOS_NEWLIB_VERSION" ] \
     && [ "$(cat "$MYOS_NEWLIB_VERSION")" = "$(myos_newlib_version_hash)" ] \
     && myos_newlib_prefix_ok x86_64 \
@@ -1745,12 +1763,22 @@ myos_libressl_version_hash() (
   printf '%s' "$h"
 )
 
+# What its build script builds: MYOS_LIBRESSL_ARCHES, for the libcs
+# MYOS_LIBRESSL_LIBCS (all by default; on myos, what user/tls links).
+if myos_self_host; then
+  MYOS_LIBRESSL_ARCHES="$(uname -m)" MYOS_LIBRESSL_LIBCS=newlib
+fi
+: "${MYOS_LIBRESSL_ARCHES:=x86_64 aarch64 riscv64}" "${MYOS_LIBRESSL_LIBCS:=newlib mlibc}"
+
 myos_libressl_is_current() (
-  [ -f "$MYOS_LIBRESSL_VERSION" ] \
-    && [ "$(cat "$MYOS_LIBRESSL_VERSION")" = "$(myos_libressl_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_LIBRESSL_VERSION" ] \
+      && [ "$(cat "$MYOS_LIBRESSL_VERSION")" = "$(myos_libressl_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
-    for dir in "libressl-${arch}" "libressl-mlibc-${arch}"; do
+  for arch in $MYOS_LIBRESSL_ARCHES; do
+    for libc in $MYOS_LIBRESSL_LIBCS; do
+      dir="libressl-${arch}"
+      [ "$libc" = newlib ] || dir="libressl-${libc}-${arch}"
       for lib in crypto ssl tls; do
         [ -f "$MYOS_ROOT/target/${dir}/lib/lib${lib}.a" ] || return 1
       done

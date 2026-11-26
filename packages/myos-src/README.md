@@ -2,15 +2,15 @@
 
 The source the system was built from, as an app, with everything a build
 of its kernel reads: myos builds its own kernel from it, with its own
-compiler and no network.
+compilers and no network.
 
 ```sh
 mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
-get-myos -r /mnt/apps myos-src        # with rustc and llvm (PORT_RDEPS)
+get-myos -r /mnt/apps myos-src        # with rustc, llvm and tcc (PORT_RDEPS)
 sh /mnt/apps/myos-src/src/myos/scripts/self-host.sh -r /mnt/apps
 ```
 
-On a disk: the three apps are about 1 GiB, and the build writes a few
+On a disk: the four apps are about 1 GiB, and the build writes a few
 GiB under the tree's `target/`.
 
 ## What is in the app
@@ -24,10 +24,11 @@ GiB under the tree's `target/`.
 | `Cargo.lock` beside each workspace's manifest | the versions `vendor/` holds (the repository keeps no lock file) |
 | `.cargo/config.toml` | the tree's, with crates.io replaced by `vendor/` |
 | `target/acpi-myos`, `target/smoltcp-myos` | the two crates the tree patches, as their prepare scripts leave them, with the stamps that tell those scripts there is nothing to fetch |
+| `target/libressl-src` | LibreSSL's source, which `http` links (`user/tls`), as `ports/libressl/fetch.sh` leaves it: the pinned release with the myos patch, and its stamp |
 
-The crates are fetched from crates.io when the package is built, as in
-any build of the tree; none is checked in. Each keeps its license files
-(`THIRD_PARTY_NOTICES.md`).
+The crates are fetched from crates.io when the package is built, and
+LibreSSL from its mirror, as in any build of the tree; none is checked
+in. Each keeps its license files (`THIRD_PARTY_NOTICES.md`).
 
 The descriptor's kind for it is `source:` (`docs/ports.md`): a tree
 packed with every file, where `tree:` leaves the dot files and the
@@ -36,10 +37,16 @@ crate's `.cargo-checksum.json` names every file of the crate.
 
 ## What `scripts/self-host.sh` builds
 
-`cargo build -p kernel` for the kernel's bare-metal target on the arch
-it runs on, as the launcher does on a build machine: the kernel, and
-through `kernel/build.rs` every module and every `no_std` program
-(`init`, `netd`, ...), each at `target/<name>-<target>`.
+First LibreSSL's three libraries, which `http` links: the port's build
+script (`ports/libressl/build.sh`) with the llvm app's clang, for the
+arch it runs on, against newlib. newlib is the system's, from the tcc
+app (`/lib/newlib`, what tcc compiles against), copied to
+`target/newlib-<arch>`.
+
+Then `cargo build -p kernel` for the kernel's bare-metal target, as the
+launcher does on a build machine: the kernel, and through
+`kernel/build.rs` every module and every `no_std` program (`init`,
+`netd`, `http`, ...), each at `target/<name>-<target>`.
 
 - **The compiler** is the rustc package's (`packages/rustc`), which has
   `core` and `alloc` for the bare-metal targets of its arch. The build
@@ -63,15 +70,12 @@ cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 
 ## Limits
 
-- `http` is not built: its TLS is LibreSSL over newlib, C that is
-  cross-built on a build machine. The script takes the running system's
-  (`MYOS_PREBUILT`, `kernel/build.rs`).
-- The C userspace (newlib, mlibc, the ports) and the std programs are
-  built on a build machine: the new initramfs has the running system's.
+- The C libraries (newlib, mlibc), the C programs and ports and the std
+  programs are built on a build machine: the new initramfs has the running system's.
   So is the boot disk (the ESP with Limine).
 - Not the launcher: `vendor/` holds its crates too, but it is a program
   for a Linux or macOS host.
 
 `test.sh` builds a module on every arch and loads it; on x86_64, where
 CI's machine runs on the host's CPU, the kernel and the initramfs, which
-the next boot then runs.
+the next boot then runs, fetching a page over TLS with its `http`.

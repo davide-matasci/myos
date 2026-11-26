@@ -311,8 +311,9 @@ After a list in which `self_kernel` passed (x86_64: the kernel and the
 initramfs built on myos, `packages/myos-src`, put in place of the booted
 slot's) and no upgrade ran, it boots the copy once more with `run.sh
 selfbuilt`: the kernel and the initramfs that boot came from must be the
-ones that test built, and `init` and the `console` module in it the
-build's (`/boot/boot/self-built` lists their sha256).
+ones that test built, and `init`, the `console` module and `http` in it
+the build's (`/boot/boot/self-built` lists their sha256); that `http`,
+whose LibreSSL was compiled on myos too, then fetches a page over TLS.
 
 ## In CI
 
