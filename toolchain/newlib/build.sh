@@ -46,6 +46,15 @@ TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROV
 # none of, so it is answered here; the target configure, which make runs,
 # inherits it.
 export newlib_cv_initfinit_array=yes
+# On myos configure's search for a sed and a grep that take long lines
+# ends with none: it compares their output with diff, which myos has not.
+# The ones there are take them.
+if myos_self_host; then
+  ac_cv_path_SED="$(command -v sed)"
+  ac_cv_path_GREP="$(command -v grep)"
+  export ac_cv_path_SED ac_cv_path_GREP
+  export ac_cv_path_EGREP="$ac_cv_path_GREP -E" ac_cv_path_FGREP="$ac_cv_path_GREP -F"
+fi
 
 build_one() (
   arch="$1"
