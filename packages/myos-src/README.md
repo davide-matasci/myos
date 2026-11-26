@@ -6,11 +6,11 @@ compilers and no network.
 
 ```sh
 mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
-get-myos -r /mnt/apps myos-src        # with rustc, llvm and tcc (PORT_RDEPS)
+get-myos -r /mnt/apps myos-src        # with rustc, llvm, make, awk and python (PORT_RDEPS)
 sh /mnt/apps/myos-src/src/myos/scripts/self-host.sh -r /mnt/apps
 ```
 
-On a disk: the four apps are about 1 GiB, and the build writes a few
+On a disk: the apps are about 1 GiB, and the build writes a few
 GiB under the tree's `target/`.
 
 ## What is in the app
@@ -24,11 +24,12 @@ GiB under the tree's `target/`.
 | `Cargo.lock` beside each workspace's manifest | the versions `vendor/` holds (the repository keeps no lock file) |
 | `.cargo/config.toml` | the tree's, with crates.io replaced by `vendor/` |
 | `target/acpi-myos`, `target/smoltcp-myos` | the two crates the tree patches, as their prepare scripts leave them, with the stamps that tell those scripts there is nothing to fetch |
+| `target/newlib-src` | newlib's source, the C library of the C userspace, as `toolchain/newlib/fetch.sh` and `patch.sh` leave it (the pinned release with libgloss/myos in it), without its history |
 | `target/libressl-src` | LibreSSL's source, which `http` links (`user/tls`), as `ports/libressl/fetch.sh` leaves it: the pinned release with the myos patch, and its stamp |
 | `target/rust-std-patch` | Rust's library with myos in it, which the `std` of the std programs is built from: the pinned nightly's `rust-src` as `toolchain/std/patches/wire-myos.py` patches it, with the crates it vendors |
 
 The crates are fetched from crates.io when the package is built,
-LibreSSL from its mirror and the library from the toolchain rustup
+newlib from its repository, LibreSSL from its mirror and the library from the toolchain rustup
 installed, as in any build of the tree; none is checked in. Each keeps its license files (`THIRD_PARTY_NOTICES.md`).
 
 The descriptor's kind for it is `source:` (`docs/ports.md`): a tree
@@ -38,11 +39,13 @@ crate's `.cargo-checksum.json` names every file of the crate.
 
 ## What `scripts/self-host.sh` builds
 
-First LibreSSL's three libraries, which `http` links: the port's build
-script (`ports/libressl/build.sh`) with the llvm app's clang, for the
-arch it runs on, against newlib. newlib is the system's, from the tcc
-app (`/lib/newlib`, what tcc compiles against), copied to
-`target/newlib-<arch>`.
+First newlib and libgloss, for the arch it runs on
+(`toolchain/newlib/build.sh`): newlib's `configure` and `make` with the
+llvm app's clang, then libgloss/myos and the C both libcs share, to
+`target/newlib-<arch>`. The make, awk and python apps are for this step.
+
+Then LibreSSL's three libraries, which `http` links: the port's build
+script (`ports/libressl/build.sh`) with clang, against that newlib.
 
 Then `std` for `<arch>-unknown-myos`, from `target/rust-std-patch`
 (`toolchain/std/build-sysroot.sh`, `cargo -Z build-std`, with the crates
@@ -78,7 +81,7 @@ cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 
 ## Limits
 
-- The C libraries (newlib, mlibc), the C programs and the ports are
+- mlibc, the C programs and the ports are
   built on a build machine: the new initramfs has the running system's.
   So is the boot disk (the ESP with Limine).
 - Not the launcher: `vendor/` holds its crates too, but it is a program

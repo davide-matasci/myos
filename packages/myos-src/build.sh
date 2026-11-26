@@ -47,6 +47,13 @@ echo "==> myos-src: the patched crates"
 sh "$OUT/modules/acpi/crate/prepare.sh"
 sh "$OUT/user/net/smoltcp/prepare.sh"
 
+# newlib as its fetch and patch scripts leave it, without the history.
+echo "==> myos-src: newlib's source"
+"$ROOT/toolchain/newlib/fetch.sh"
+mkdir -p "$OUT/target/newlib-src"
+(cd "$ROOT/target/newlib-src" && tar --exclude=./.git -cf - .) | tar -xf - -C "$OUT/target/newlib-src"
+sh "$OUT/toolchain/newlib/patch.sh" >/dev/null
+
 echo "==> myos-src: LibreSSL's source"
 sh "$OUT/ports/libressl/fetch.sh"
 

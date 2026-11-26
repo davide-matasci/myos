@@ -13,12 +13,13 @@
 # on a disk: the build writes a few GiB under target/.
 #
 #     mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
-#     get-myos -r /mnt/apps myos-src        # with rustc, llvm and tcc
+#     get-myos -r /mnt/apps myos-src        # with rustc, llvm, make, awk and python
 #     sh /mnt/apps/myos-src/src/myos/scripts/self-host.sh -r /mnt/apps
 #
-# First LibreSSL (ports/libressl/build.sh, with clang), which `http` links
-# through user/tls: against newlib, which is the system's, as the tcc app
-# has it to compile against (/lib/newlib).
+# First newlib and libgloss (toolchain/newlib/build.sh: newlib's own
+# configure and make, with clang; the make, awk and python apps are for
+# it), the C library of the C userspace. Then LibreSSL against it
+# (ports/libressl/build.sh), which `http` links through user/tls.
 #
 # Then the std programs (user/std/build.sh: /bin/std), and before them
 # the std they link: Rust's library with myos in it, built from source for
@@ -50,11 +51,11 @@ if [ "${1-}" = -r ]; then
 fi
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 
-# The rest runs in the view of the apps (run-myos): cargo, rustc, clang and
-# lld on PATH, the tcc app's newlib at /lib/newlib. MYOS_SELF_HOST tells
+# The rest runs in the view of the apps (run-myos): cargo, rustc, clang,
+# lld, make, awk and python on PATH. MYOS_SELF_HOST tells
 # the tree's scripts where they run (scripts/myos-c-userspace-lib.sh).
 if [ -z "${MYOS_SELF_HOST-}" ]; then
-	MYOS_SELF_HOST=1 exec run-myos ${apps:+-r "$apps"} tcc,rustc:/bin/sh "$SRC/scripts/self-host.sh" "$@"
+	MYOS_SELF_HOST=1 exec run-myos ${apps:+-r "$apps"} rustc,make,awk,python:/bin/sh "$SRC/scripts/self-host.sh" "$@"
 fi
 
 # The kernel's target (soft float) and the programs' (hard float, where
@@ -72,30 +73,27 @@ esac
 cd "$SRC"
 mkdir -p target
 
-# newlib where the tree's builds look for it, then LibreSSL against it.
-newlib=target/newlib-$arch/$arch-unknown-myos
-if [ ! -f "$newlib/lib/libc.a" ]; then
-	[ -f /lib/newlib/lib/libc.a ] || { echo "self-host: no /lib/newlib (the tcc app's)" >&2; exit 1; }
-	mkdir -p "$newlib"
-	cp -R /lib/newlib/include /lib/newlib/lib "$newlib/"
-fi
-sh toolchain/newlib/tool-wrappers.sh > /dev/null
-
 # The builds say little while they run (the C compiles are silent, and
 # cargo shows the kernel's crates but not the modules and programs, which
 # kernel/build.rs builds): how far each is, a minute at a time.
 t0=$(date +%s)
 (
 	while sleep 60; do
-		echo "self-host: $(($(date +%s) - t0)) s, $(find "target/libressl-$arch/obj" -name '*.o' 2> /dev/null | grep -c .) objects of LibreSSL, $(ls target | grep -- "^std-.*-$arch-unknown-myos\$" | grep -vc -- -build-) std programs, $(ls target | grep -c -- "-$target\$") modules and programs built"
+		echo "self-host: $(($(date +%s) - t0)) s, $(find "target/newlib-build-$arch" -name '*.o' 2> /dev/null | grep -c .) objects of newlib, $(find "target/libressl-$arch/obj" -name '*.o' 2> /dev/null | grep -c .) objects of LibreSSL, $(ls target | grep -- "^std-.*-$arch-unknown-myos\$" | grep -vc -- -build-) std programs, $(ls target | grep -c -- "-$target\$") modules and programs built"
 	done
 ) &
 beat=$!
 trap 'kill $beat 2> /dev/null' EXIT
 
+echo "self-host: building newlib for $arch"
+sh toolchain/newlib/build.sh > target/newlib-build.log 2>&1 \
+	|| { tail -n 40 target/newlib-build.log >&2; exit 1; }
+echo "self-host: newlib built in $(($(date +%s) - t0)) s"
+
 echo "self-host: building LibreSSL for $arch"
+t1=$(date +%s)
 sh ports/libressl/build.sh
-echo "self-host: LibreSSL built in $(($(date +%s) - t0)) s"
+echo "self-host: LibreSSL built in $(($(date +%s) - t1)) s"
 
 # cargo's settings for every build below. RUSTC_BOOTSTRAP: the tree's
 # unstable ones (.cargo/config.toml: an artifact dependency, a JSON

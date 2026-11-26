@@ -37,8 +37,8 @@ self_module() {
 }
 t -t net,heavy,disk,exec,self self_module self_module
 # The kernel itself, with every module and no_std program (http among
-# them, over the LibreSSL the script builds first), the std programs over
-# a std built from source, and the initramfs with them in it (scripts/self-host.sh), on x86_64, where the
+# them, over the LibreSSL and the newlib the script builds first), the std
+# programs over a std built from source, and the initramfs with them in it (scripts/self-host.sh), on x86_64, where the
 # test machine runs on the host's CPU: under emulation the build is hours.
 self_kernel() {
 	disk_apps myos-src || return 1
@@ -50,6 +50,7 @@ self_kernel() {
 	# Every module and program the build makes, where the image takes them.
 	for sk_f in console-x86_64-unknown-none xhci-x86_64-unknown-none init-x86_64-unknown-none netd-x86_64-unknown-none \
 		http-x86_64-unknown-none libressl-x86_64/lib/libtls.a \
+		newlib-build-x86_64/x86_64-unknown-myos/newlib/libc.a \
 		myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib std-thread-x86_64-unknown-myos; do
 		[ -s $SELF_SRC/target/$sk_f ] || { echo "no target/$sk_f"; return 1; }
 	done
