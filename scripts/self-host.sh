@@ -75,8 +75,20 @@ if [ ! -f "$newlib/lib/libc.a" ]; then
 	cp -R /lib/newlib/include /lib/newlib/lib "$newlib/"
 fi
 sh toolchain/newlib/tool-wrappers.sh > /dev/null
-echo "self-host: building LibreSSL for $arch"
+
+# Neither build says much while it runs (the C compiles are silent, and
+# cargo shows the kernel's crates but not the modules and programs, which
+# kernel/build.rs builds): how far each is, a minute at a time.
 t0=$(date +%s)
+(
+	while sleep 60; do
+		echo "self-host: $(($(date +%s) - t0)) s, $(find "target/libressl-$arch/obj" -name '*.o' 2> /dev/null | grep -c .) objects of LibreSSL, $(ls target | grep -c -- "-$target\$") modules and programs built"
+	done
+) &
+beat=$!
+trap 'kill $beat 2> /dev/null' EXIT
+
+echo "self-host: building LibreSSL for $arch"
 sh ports/libressl/build.sh
 echo "self-host: LibreSSL built in $(($(date +%s) - t0)) s"
 
@@ -91,17 +103,6 @@ done
 # an artifact dependency, a JSON target) are a nightly's, and the package's
 # cargo is not built as one.
 echo "self-host: building the kernel for $target in $SRC"
-# cargo shows the kernel's crates; the modules and the programs are built
-# inside kernel/build.rs, which shows nothing: how far that is, a minute
-# at a time.
-t0=$(date +%s)
-(
-	while sleep 60; do
-		echo "self-host: $(($(date +%s) - t0)) s, $(ls target | grep -c -- "-$target\$") modules and programs built"
-	done
-) &
-beat=$!
-trap 'kill $beat 2> /dev/null' EXIT
 # shellcheck disable=SC2086
 env $linkers RUSTC_BOOTSTRAP=1 CARGO_HOME="$SRC/target/cargo-home" \
 	cargo build --offline -p kernel --target "$target" "$@"
