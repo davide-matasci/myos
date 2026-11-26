@@ -188,7 +188,7 @@ build_arch() (
   for lib in crypto ssl tls; do
     xargs "$ar_bin" rcs "$out/lib/lib$lib.a" <"$obj/$lib.objs"
   done
-  cp -a "$SRC/include/openssl" "$out/include/"
+  cp -R "$SRC/include/openssl" "$out/include/"
   rm -f "$out/include/openssl/Makefile.am" "$out/include/openssl/Makefile.in"
   cp "$SRC/include/tls.h" "$out/include/"
   rm -rf "$obj"
