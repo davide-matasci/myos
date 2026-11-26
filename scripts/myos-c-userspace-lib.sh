@@ -445,6 +445,7 @@ MYOS_GIT_VERSION="$MYOS_ROOT/target/.myos-git-version"
 MYOS_LYNX_VERSION="$MYOS_ROOT/target/.myos-lynx-version"
 MYOS_MAKE_VERSION="$MYOS_ROOT/target/.myos-make-version"
 MYOS_LUA_VERSION="$MYOS_ROOT/target/.myos-lua-version"
+MYOS_AWK_VERSION="$MYOS_ROOT/target/.myos-awk-version"
 MYOS_PYTHON_VERSION="$MYOS_ROOT/target/.myos-python-version"
 MYOS_SQLITE_VERSION="$MYOS_ROOT/target/.myos-sqlite-version"
 MYOS_LIBEDIT_VERSION="$MYOS_ROOT/target/.myos-libedit-version"
@@ -1912,6 +1913,27 @@ myos_lua_is_current() (
     || return 1
   for arch in x86_64 aarch64 riscv64; do
     [ -f "$MYOS_ROOT/target/lua-${arch}-unknown-none" ] || return 1
+  done
+)
+
+# awk (packages/awk): its pin and scripts, and newlib.
+myos_awk_version_hash() (
+  h="$(
+    {
+      myos_dep_hash newlib
+      find "$(myos_port_dir awk)" -type f -print0 2>/dev/null \
+        | sort -z | xargs -0 sha256sum
+    } | myos_hash
+  )"
+  printf '%s' "$h"
+)
+
+myos_awk_is_current() (
+  [ -f "$MYOS_AWK_VERSION" ] \
+    && [ "$(cat "$MYOS_AWK_VERSION")" = "$(myos_awk_version_hash)" ] \
+    || return 1
+  for arch in x86_64 aarch64 riscv64; do
+    [ -f "$MYOS_ROOT/target/awk-${arch}-unknown-none" ] || return 1
   done
 )
 
