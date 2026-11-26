@@ -113,7 +113,7 @@ t sbase_printf sbase_printf
 # xargs fills a command line to what an exec takes: sysconf(_SC_ARG_MAX),
 # the kernel's limit (libgloss; with no answer xargs has no room for one
 # argument). 1000 numbers are one echo (an exec takes 1024 arguments,
-# whatever their size); -n and -P run several at once
+# whatever their size: issue #813); -n and -P run several at once
 # (ports/libressl/build.sh compiles with them on myos).
 sbase_xargs() {
 	one=$(seq 1000 | xargs echo | wc -l)
