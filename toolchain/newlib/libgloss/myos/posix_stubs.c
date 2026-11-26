@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syslimits.h> /* ARG_MAX */
 #include <sys/time.h>
 #include <unistd.h>
 #include <utime.h>
@@ -143,6 +144,13 @@ int execvp(const char *file, char *const argv[]) {
 }
 
 long sysconf(int name) {
+#ifdef _SC_ARG_MAX
+    /* The kernel's limit on an exec's strings (MAX_EXEC_STRINGS,
+     * kernel/src/user/mod.rs): what xargs fills a command line to. */
+    if (name == _SC_ARG_MAX) {
+        return ARG_MAX;
+    }
+#endif
 #ifdef _SC_OPEN_MAX
     if (name == _SC_OPEN_MAX) {
         return MYOS_OPEN_MAX;
