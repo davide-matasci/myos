@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "myos_syscalls.h"
@@ -32,15 +33,106 @@ int initgroups(const char *user, gid_t group) {
     return 0;
 }
 
+/* popen and pclose: the command runs under /bin/sh with one end of a pipe
+ * as its standard output ("r") or input ("w"); pclose waits for it. Which
+ * child a stream belongs to is kept in a list (one thread's at a time: the
+ * list has no lock). */
+struct popen_child {
+    struct popen_child *next;
+    FILE *stream;
+    pid_t pid;
+};
+static struct popen_child *popen_children;
+
 FILE *popen(const char *command, const char *type) {
-    (void)command;
-    (void)type;
-    return NULL;
+    struct popen_child *c;
+    int fds[2];
+    int reading;
+    int mine;
+    int theirs;
+
+    if (command == NULL || type == NULL || (type[0] != 'r' && type[0] != 'w')) {
+        errno = EINVAL;
+        return NULL;
+    }
+    reading = type[0] == 'r';
+    c = malloc(sizeof(*c));
+    if (c == NULL) {
+        return NULL;
+    }
+    if (pipe(fds) < 0) {
+        free(c);
+        return NULL;
+    }
+    mine = reading ? fds[0] : fds[1];
+    theirs = reading ? fds[1] : fds[0];
+    c->pid = fork();
+    if (c->pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        free(c);
+        return NULL;
+    }
+    if (c->pid == 0) {
+        int std = reading ? STDOUT_FILENO : STDIN_FILENO;
+        struct popen_child *o;
+
+        /* The command holds no end of an earlier popen's pipe (POSIX): its
+         * reader would never see the end of the data otherwise. */
+        for (o = popen_children; o != NULL; o = o->next) {
+            close(fileno(o->stream));
+        }
+        close(mine);
+        if (theirs != std) {
+            dup2(theirs, std);
+            close(theirs);
+        }
+        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+        _exit(127);
+    }
+    close(theirs);
+    c->stream = fdopen(mine, reading ? "r" : "w");
+    if (c->stream == NULL) {
+        int e = errno;
+        int st;
+
+        close(mine);
+        waitpid(c->pid, &st, 0);
+        free(c);
+        errno = e;
+        return NULL;
+    }
+    c->next = popen_children;
+    popen_children = c;
+    return c->stream;
 }
 
 int pclose(FILE *stream) {
-    (void)stream;
-    return myos_nosys();
+    struct popen_child **link;
+    struct popen_child *c;
+    pid_t pid;
+    int st;
+
+    for (link = &popen_children; *link != NULL; link = &(*link)->next) {
+        if ((*link)->stream == stream) {
+            break;
+        }
+    }
+    c = *link;
+    if (c == NULL) {
+        errno = ECHILD;
+        return -1;
+    }
+    *link = c->next;
+    pid = c->pid;
+    free(c);
+    fclose(stream);
+    while (waitpid(pid, &st, 0) < 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return st;
 }
 
 int execlp(const char *file, const char *arg, ...) {
