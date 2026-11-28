@@ -51,18 +51,20 @@ self_kernel() {
 	for sk_f in console-x86_64-unknown-none xhci-x86_64-unknown-none init-x86_64-unknown-none netd-x86_64-unknown-none \
 		http-x86_64-unknown-none libressl-x86_64/lib/libtls.a \
 		newlib-build-x86_64/x86_64-unknown-myos/newlib/libc.a \
+		sec-x86_64-unknown-none battery-x86_64-unknown-none \
 		myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib std-thread-x86_64-unknown-myos; do
 		[ -s $SELF_SRC/target/$sk_f ] || { echo "no target/$sk_f"; return 1; }
 	done
 	sk_fs=$SELF_SRC/target/initramfs-x86_64.cpio.zst
 	[ -s $sk_fs ] || { echo "no $sk_fs"; return 1; }
 	# In place of the booted slot's kernel and initramfs, with their
-	# sha256 beside them, and those of four files the initramfs now has
+	# sha256 beside them, and those of files the initramfs now has
 	# from this build: the launcher boots the disk again, and what runs in
 	# that boot must be these (run.sh selfbuilt). init is the first
 	# program of that boot, console its first module; http is the one
 	# with C in it, which that boot fetches a page with; thread is a std
-	# program, which that boot runs.
+	# program, which that boot runs; sec is a C program, which runs
+	# /etc/rc in that boot.
 	sk_slot=$(sed -n 's/.*slot=\([ab]\).*/\1/p' /proc/cmdline)
 	[ -n "$sk_slot" ] || { echo "no slot in $(cat /proc/cmdline)"; return 1; }
 	cp $sk_elf /boot/boot/$sk_slot/kernel || return 1
@@ -74,6 +76,7 @@ self_kernel() {
 		echo "$(sha256sum $SELF_SRC/target/console-x86_64-unknown-none | cut -d' ' -f1) /lib/modules/console"
 		echo "$(sha256sum $SELF_SRC/target/http-x86_64-unknown-none | cut -d' ' -f1) /bin/custom/http"
 		echo "$(sha256sum $SELF_SRC/target/std-thread-x86_64-unknown-myos | cut -d' ' -f1) /bin/std/thread"
+		echo "$(sha256sum $SELF_SRC/target/sec-x86_64-unknown-none | cut -d' ' -f1) /bin/etc/sec"
 	} > /boot/boot/self-built
 	[ "$(sha256sum /boot/boot/$sk_slot/kernel | cut -d' ' -f1)" = "$(sha256sum $sk_elf | cut -d' ' -f1)" ] \
 		&& [ "$(sha256sum /boot/boot/$sk_slot/initramfs | cut -d' ' -f1)" = "$(sha256sum $sk_fs | cut -d' ' -f1)" ]

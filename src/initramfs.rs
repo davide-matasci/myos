@@ -505,7 +505,8 @@ pub fn build_boot_archives(
 
 /// What a build on myos makes of the tree (`scripts/self-host.sh`): every
 /// module (`lib/modules/<name>`), every `no_std` program of the image
-/// (the `user` ports' files) and the `std` ones, from `target/` as [`build_boot_archives`]
+/// (the `user` ports' files), the `std` ones and the C ones (`user/c`:
+/// sec, play, battery), from `target/` as [`build_boot_archives`]
 /// takes them. A missing one is an error, as there.
 #[allow(dead_code)]
 pub(crate) fn built_on_myos(manifest_dir: &Path, arch: &str) -> Vec<Entry> {
@@ -514,7 +515,7 @@ pub(crate) fn built_on_myos(manifest_dir: &Path, arch: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
     for port in crate::ports::load_all(manifest_dir) {
         if port.role == crate::ports::Role::Image
-            && matches!(port.kind, crate::ports::Kind::User | crate::ports::Kind::Std)
+            && matches!(port.kind, crate::ports::Kind::User | crate::ports::Kind::Std | crate::ports::Kind::C)
         {
             install_port(&mut entries, &port, manifest_dir, arch);
         }

@@ -597,6 +597,13 @@ myos_libcxx_is_current() (
   return 0
 )
 
+# The arches the C programs (user/c) are built for: the one myos runs on, in a build on
+# myos.
+MYOS_C_ARCHES="x86_64 aarch64 riscv64"
+if myos_self_host; then
+  MYOS_C_ARCHES="$(uname -m)"
+fi
+
 myos_c_hello_version_hash() (
   h="$(
     {
@@ -609,16 +616,17 @@ myos_c_hello_version_hash() (
   printf '%s' "$h"
 )
 
-myos_c_hello_is_current() {
-  [ -f "$MYOS_C_HELLO_VERSION" ] \
-    && [ "$(cat "$MYOS_C_HELLO_VERSION")" = "$(myos_c_hello_version_hash)" ] \
-    && [ -f "$MYOS_ROOT/target/c-hello-x86_64-unknown-none" ] \
-    && [ -f "$MYOS_ROOT/target/c-hello-aarch64-unknown-none" ] \
-    && [ -f "$MYOS_ROOT/target/c-hello-riscv64-unknown-none" ] \
-    && [ -f "$MYOS_ROOT/target/c-socket_smoke-x86_64-unknown-none" ] \
-    && [ -f "$MYOS_ROOT/target/c-socket_smoke-aarch64-unknown-none" ] \
-    && [ -f "$MYOS_ROOT/target/c-socket_smoke-riscv64-unknown-none" ]
-}
+myos_c_hello_is_current() (
+  myos_self_host \
+    || { [ -f "$MYOS_C_HELLO_VERSION" ] \
+      && [ "$(cat "$MYOS_C_HELLO_VERSION")" = "$(myos_c_hello_version_hash)" ]; } \
+    || return 1
+  for arch in $MYOS_C_ARCHES; do
+    [ -f "$MYOS_ROOT/target/c-hello-${arch}-unknown-none" ] \
+      && [ -f "$MYOS_ROOT/target/c-socket_smoke-${arch}-unknown-none" ] || return 1
+  done
+  return 0
+)
 
 # get-myos (user/get-myos): its sources, the shared pkgtools, the build
 # script, and what it links (newlib, zlib).
@@ -727,10 +735,11 @@ myos_c_smokes_version_hash() (
   printf '%s' "$h"
 )
 myos_c_smokes_is_current() (
-  [ -f "$MYOS_C_SMOKES_VERSION" ] \
-    && [ "$(cat "$MYOS_C_SMOKES_VERSION")" = "$(myos_c_smokes_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_C_SMOKES_VERSION" ] \
+      && [ "$(cat "$MYOS_C_SMOKES_VERSION")" = "$(myos_c_smokes_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_C_ARCHES; do
     # shellcheck disable=SC2086
     for bin in c-hello c-socket_smoke $(printf '%s\n' $MYOS_C_SMOKES | cut -d: -f1); do
       [ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ] || return 1
