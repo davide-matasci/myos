@@ -879,7 +879,45 @@ pub unsafe extern "C" fn module_init(api_ptr: *const KernelApi) -> i32 {
         return -4;
     }
     CORE.store(table.cast_mut(), Ordering::Release);
-    if probe(api) == 0 {
+    // TEMP-STRESS ci2710: size the BAR of a function nobody drives yet
+    // (OHCI) again and again, while the usb thread works on xhci.
+    {
+        let n_probed = probe(api);
+        let mut nth = 0u32;
+        loop {
+            let (mut bus, mut slot, mut func) = (0u8, 0u8, 0u8);
+            if api.pci_find_class(CLASS_SERIAL_BUS, SUBCLASS_USB, nth, &mut bus, &mut slot, &mut func) != 0 {
+                break;
+            }
+            nth += 1;
+            let class = api.pci_cfg_read32(bus, slot, func, 0x08);
+            if ((class >> 8) & 0xFF) as u8 != 0x10 {
+                continue;
+            }
+            // Phase 1: the BAR sized (all ones written, then put back).
+            api.write_str("TEMP-STRESS phase 1: sizing another function's BAR\n");
+            let mut i = 0u32;
+            while i < 40000 {
+                let (mut va, mut size) = (0usize, 0u64);
+                api.pci_bar_map(bus, slot, func, 0, &mut va, &mut size);
+                i += 1;
+            }
+            // Phase 2: its memory decoding turned off and on.
+            api.write_str("TEMP-STRESS phase 2: another function's memory decoding off and on\n");
+            let cmd = api.pci_cfg_read32(bus, slot, func, 0x04) & 0xFFFF;
+            let mut i = 0u32;
+            while i < 40000 {
+                api.pci_cfg_write32(bus, slot, func, 0x04, cmd & !0x2);
+                api.pci_cfg_write32(bus, slot, func, 0x04, cmd | 0x2);
+                i += 1;
+            }
+            api.pci_cfg_write32(bus, slot, func, 0x04, cmd);
+            api.write_str("TEMP-STRESS done\n");
+            break;
+        }
+        let _ = n_probed;
+    }
+    if CONTROLLERS.iter().all(|c| c.load(Ordering::Acquire).is_null()) {
         myos_abi::status_info(api, "ehci none");
         return 0;
     }
