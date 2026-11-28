@@ -24,6 +24,7 @@ on the hardware yet.
 | `wifi list` | what the last scan found |
 | `wifi connect SSID [PASSPHRASE]` | join the network `SSID`: an open one, or a WPA2-PSK one with its passphrase |
 | `wifi status` | `associated BSSID CHANNEL SSID aid N`, or `disconnected` |
+| `wifi stats` | the link's frame counts (below): where its frames stop |
 | `wifi disconnect` | leave the network |
 
 - `daemon` takes the first radio it finds: an Intel one in `/dev/pci` (when
@@ -95,6 +96,28 @@ asks the network's DHCP for an address. Ethernet frames go out as 802.11
 data frames to the access point, with an LLC/SNAP header, and come back as
 Ethernet. Leaving the network takes the NIC away, and netd lets go of it
 and its lease.
+
+`wifi stats` counts what crossed the link since it came up, on a radio the
+daemon joins with (a FullMAC one answers with an error):
+
+```
+sent 6 refused 0 unacked 0
+heard 1840 from-ap 412 data 37 delivered 31 undecrypted 0 unwanted 6
+```
+
+- `sent`: netd's frames handed to the radio; `refused`: those it did not
+  take (its queue full). `unacked`: frames the access point did not
+  acknowledge (every frame sent, management ones too), on a radio whose
+  firmware says (Intel's); `-` on the others.
+- `heard`: every frame the radio passed up; `from-ap`: those the access
+  point sent; `data`: its data frames with a body. Of those, `delivered`
+  went to netd, `undecrypted` failed CCMP (a wrong key, a replay) and
+  `unwanted` were to another station or not LLC/SNAP.
+
+When netd gets no lease (`tapN -` in `/net/ifaddrs`): `sent` growing with
+`unacked` close to it means the access point does not take the frames;
+`sent` fine but no `data` means nothing comes back; `data` with nothing
+`delivered` means the daemon drops what comes.
 
 ## Firmware
 
