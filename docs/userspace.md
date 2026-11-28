@@ -348,6 +348,15 @@ The C programs (`user/c`) are compiled against it right after
 `battery` are in the new initramfs, and `sec` runs `/etc/rc` in the boot
 of it.
 
+The ports of the image that are C against newlib follow LibreSSL, each
+by its own build script (`ports/<name>/build.sh`), for the one arch: the
+shell (oksh), sbase, ubase, dropbear, curl, Limine's tool, and `get-myos`
+with the zlib it links. Their sources are the package's, as the fetch and
+prepare scripts left them where the package was built (the patches
+applied: myos has no `patch`), and curl's CA bundle is the system's
+(`/lib/cacert.pem`). The shell that logs in to the boot of the new
+initramfs, and every tool it runs, are these.
+
 `MYOS_SELF_HOST` tells the tree's scripts they run on myos: a port is
 current when its outputs exist, since the cache keys of a build machine
 need its tools (GNU `sort` and `find`). The rustc app has
@@ -380,8 +389,9 @@ cp target/x86_64-unknown-none/debug/kernel /boot/boot/a/kernel
 cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 ```
 
-Not built there yet: mlibc and what links it, and the ports: the new initramfs has them as the system runs them. Nor
-the boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
+Not built there yet: mlibc and what links it, and ripgrep (a `std`
+program with PCRE2 in it): the new initramfs has them as the system runs
+them. Nor the boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
 the same kernel, through Alpine's toolchain under the Linux layer
 (`docs/linux-compat.md`).
 

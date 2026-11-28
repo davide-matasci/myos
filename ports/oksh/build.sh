@@ -11,7 +11,9 @@ if myos_oksh_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/oksh/prepare.sh"
+# On myos (scripts/self-host.sh) the tree is the myos-src package's,
+# prepared where the package was built.
+myos_self_host || "$ROOT/ports/oksh/prepare.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -105,8 +107,8 @@ build_arch() (
   link_prog "$arch" $objs ${extra:+"$extra"}
 )
 
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   build_arch "$arch" "$@"
 done
 
-echo "$(myos_oksh_version_hash)" >"$MYOS_OKSH_VERSION"
+myos_self_host || echo "$(myos_oksh_version_hash)" >"$MYOS_OKSH_VERSION"

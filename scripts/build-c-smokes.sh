@@ -42,7 +42,7 @@ myos_ensure_llvm_bin
 # The newlib programs for the arches of the build (one on myos); the mlibc
 # ones for all three.
 arches="x86_64 aarch64 riscv64"
-[ "$libc" = newlib ] && arches="$MYOS_C_ARCHES"
+[ "$libc" = newlib ] && arches="$MYOS_ARCHES"
 for arch in $arches; do
   triple="${arch}-unknown-myos"
   prefix="$ROOT/target/newlib-${arch}"

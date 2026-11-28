@@ -12,12 +12,13 @@ if myos_limine_is_current; then
   exit 0
 fi
 
-"$HERE/fetch.sh"
+# On myos (scripts/self-host.sh) the source is the myos-src package's.
+myos_self_host || "$HERE/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 SRC="$ROOT/target/limine-src"
 
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   triple="${arch}-unknown-myos"
   prefix="$ROOT/target/newlib-${arch}"
   inc="$prefix/${triple}/include"
@@ -46,4 +47,4 @@ for arch in x86_64 aarch64 riscv64; do
   echo "limine -> $out"
 done
 
-echo "$(myos_limine_version_hash)" >"$MYOS_LIMINE_VERSION"
+myos_self_host || echo "$(myos_limine_version_hash)" >"$MYOS_LIMINE_VERSION"

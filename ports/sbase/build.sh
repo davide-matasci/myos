@@ -13,12 +13,14 @@ if myos_sbase_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/sbase/prepare.sh"
+# On myos (scripts/self-host.sh) the tree is the myos-src package's,
+# prepared where the package was built, as newlib's source is.
+myos_self_host || "$ROOT/ports/sbase/prepare.sh"
 # sbase compiles newlib's regex sources (REGEX_SRCS) directly from the
 # newlib source tree, so the source must be present even when newlib
 # *outputs* are cached (CI pulls them from GHCR and build.sh exits early).
 # fetch.sh is idempotent and cheap when the tree already exists.
-"$ROOT/toolchain/newlib/fetch.sh"
+myos_self_host || "$ROOT/toolchain/newlib/fetch.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -203,8 +205,8 @@ build_arch() (
   fi
 )
 
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   build_arch "$arch"
 done
 
-echo "$(myos_sbase_version_hash)" >"$MYOS_SBASE_VERSION"
+myos_self_host || echo "$(myos_sbase_version_hash)" >"$MYOS_SBASE_VERSION"

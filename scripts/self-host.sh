@@ -8,9 +8,9 @@
 # myos").
 #
 # The tree is the myos-src package's (packages/myos-src: the source the
-# system was built from, with its crates, LibreSSL's source and Rust's
-# library), installed
-# on a disk: the build writes a few GiB under target/.
+# system was built from, with its crates, the sources of LibreSSL and of
+# the ports and Rust's library), installed on a disk: the build writes a
+# few GiB under target/.
 #
 #     mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
 #     get-myos -r /mnt/apps myos-src        # with rustc, llvm, make, awk and python
@@ -21,7 +21,9 @@
 # it), the C library of the C userspace, and the C programs against it
 # (scripts/build-c-smokes.sh: user/c, /bin/etc/sec among them). Then
 # LibreSSL against it (ports/libressl/build.sh), which `http` links
-# through user/tls.
+# through user/tls, and the ports that are C against newlib, each by its
+# own build script: the shell (oksh), sbase, ubase, dropbear, curl,
+# Limine's tool, and get-myos with the zlib it links.
 #
 # Then the std programs (user/std/build.sh: /bin/std), and before them
 # the std they link: Rust's library with myos in it, built from source for
@@ -42,7 +44,7 @@
 #     cp target/initramfs-<arch>.cpio.zst /boot/boot/a/initramfs
 #
 # What is not built here is in that initramfs as the system runs it:
-# mlibc and what links it, the ports.
+# mlibc and what links it, ripgrep.
 set -euo pipefail
 
 apps=
@@ -102,6 +104,17 @@ echo "self-host: building LibreSSL for $arch"
 t1=$(date +%s)
 sh ports/libressl/build.sh
 echo "self-host: LibreSSL built in $(($(date +%s) - t1)) s"
+
+# The ports of the image that are C against newlib (src/initramfs.rs,
+# BUILT_ON_MYOS, has the same names); get-myos's script builds zlib first.
+for port in ports/oksh ports/sbase ports/ubase ports/dropbear ports/curl ports/limine user/get-myos; do
+	name=${port##*/}
+	echo "self-host: building $name for $arch"
+	t1=$(date +%s)
+	sh "$port/build.sh" > "target/$name-build.log" 2>&1 \
+		|| { tail -n 40 "target/$name-build.log" >&2; exit 1; }
+	echo "self-host: $name built in $(($(date +%s) - t1)) s"
+done
 
 # cargo's settings for every build below. RUSTC_BOOTSTRAP: the tree's
 # unstable ones (.cargo/config.toml: an artifact dependency, a JSON

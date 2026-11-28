@@ -597,11 +597,11 @@ myos_libcxx_is_current() (
   return 0
 )
 
-# The arches the C programs (user/c) are built for: the one myos runs on, in a build on
-# myos.
-MYOS_C_ARCHES="x86_64 aarch64 riscv64"
+# The arches the C programs (user/c) and the ports are built for: the one
+# myos runs on, in a build on myos.
+MYOS_ARCHES="x86_64 aarch64 riscv64"
 if myos_self_host; then
-  MYOS_C_ARCHES="$(uname -m)"
+  MYOS_ARCHES="$(uname -m)"
 fi
 
 myos_c_hello_version_hash() (
@@ -621,7 +621,7 @@ myos_c_hello_is_current() (
     || { [ -f "$MYOS_C_HELLO_VERSION" ] \
       && [ "$(cat "$MYOS_C_HELLO_VERSION")" = "$(myos_c_hello_version_hash)" ]; } \
     || return 1
-  for arch in $MYOS_C_ARCHES; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/c-hello-${arch}-unknown-none" ] \
       && [ -f "$MYOS_ROOT/target/c-socket_smoke-${arch}-unknown-none" ] || return 1
   done
@@ -644,10 +644,11 @@ myos_get_myos_version_hash() (
 )
 
 myos_get_myos_is_current() (
-  [ -f "$MYOS_GET_MYOS_VERSION" ] \
-    && [ "$(cat "$MYOS_GET_MYOS_VERSION")" = "$(myos_get_myos_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_GET_MYOS_VERSION" ] \
+      && [ "$(cat "$MYOS_GET_MYOS_VERSION")" = "$(myos_get_myos_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/get-myos-${arch}-unknown-none" ] || return 1
   done
   return 0
@@ -739,7 +740,7 @@ myos_c_smokes_is_current() (
     || { [ -f "$MYOS_C_SMOKES_VERSION" ] \
       && [ "$(cat "$MYOS_C_SMOKES_VERSION")" = "$(myos_c_smokes_version_hash)" ]; } \
     || return 1
-  for arch in $MYOS_C_ARCHES; do
+  for arch in $MYOS_ARCHES; do
     # shellcheck disable=SC2086
     for bin in c-hello c-socket_smoke $(printf '%s\n' $MYOS_C_SMOKES | cut -d: -f1); do
       [ -f "$MYOS_ROOT/target/${bin}-${arch}-unknown-none" ] || return 1
@@ -841,10 +842,11 @@ myos_bins_txt_count() (
 )
 
 myos_sbase_is_current() (
-  [ -f "$MYOS_SBASE_VERSION" ] \
-    && [ "$(cat "$MYOS_SBASE_VERSION")" = "$(myos_sbase_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_SBASE_VERSION" ] \
+      && [ "$(cat "$MYOS_SBASE_VERSION")" = "$(myos_sbase_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     manifest="$MYOS_ROOT/target/sbase-manifest-${arch}.txt"
     count="$(myos_sbase_manifest_count "$manifest")" || return 1
     if [ "$count" -lt "$MYOS_SBASE_MIN_BUILT" ]; then
@@ -869,10 +871,11 @@ myos_oksh_version_hash() (
 )
 
 myos_oksh_is_current() (
-  [ -f "$MYOS_OKSH_VERSION" ] \
-    && [ "$(cat "$MYOS_OKSH_VERSION")" = "$(myos_oksh_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_OKSH_VERSION" ] \
+      && [ "$(cat "$MYOS_OKSH_VERSION")" = "$(myos_oksh_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/oksh-${arch}-unknown-none" ] || return 1
   done
 )
@@ -889,10 +892,11 @@ myos_limine_version_hash() (
 )
 
 myos_limine_is_current() (
-  [ -f "$MYOS_LIMINE_VERSION" ] \
-    && [ "$(cat "$MYOS_LIMINE_VERSION")" = "$(myos_limine_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_LIMINE_VERSION" ] \
+      && [ "$(cat "$MYOS_LIMINE_VERSION")" = "$(myos_limine_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/limine-${arch}-unknown-none" ] || return 1
   done
 )
@@ -913,10 +917,11 @@ myos_ubase_version_hash() (
 )
 
 myos_ubase_is_current() (
-  [ -f "$MYOS_UBASE_VERSION" ] \
-    && [ "$(cat "$MYOS_UBASE_VERSION")" = "$(myos_ubase_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_UBASE_VERSION" ] \
+      && [ "$(cat "$MYOS_UBASE_VERSION")" = "$(myos_ubase_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     manifest="$MYOS_ROOT/target/ubase-manifest-${arch}.txt"
     [ -f "$manifest" ] || return 1
     while IFS= read -r line; do
@@ -1027,10 +1032,11 @@ myos_dropbear_version_hash() {
 }
 
 myos_dropbear_is_current() (
-  [ -f "$MYOS_DROPBEAR_VERSION_STAMP" ] \
-    && [ "$(cat "$MYOS_DROPBEAR_VERSION_STAMP")" = "$(myos_dropbear_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_DROPBEAR_VERSION_STAMP" ] \
+      && [ "$(cat "$MYOS_DROPBEAR_VERSION_STAMP")" = "$(myos_dropbear_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/dropbear-${arch}-unknown-none" ] || return 1
     [ -f "$MYOS_ROOT/target/dbclient-${arch}-unknown-none" ] || return 1
     [ -f "$MYOS_ROOT/target/dropbearkey-${arch}-unknown-none" ] || return 1
@@ -1095,10 +1101,11 @@ myos_curl_version_hash() {
 
 # The stamp and the three ELFs: what a curl build produces.
 myos_curl_elfs_current() (
-  [ -f "$MYOS_CURL_VERSION" ] \
-    && [ "$(cat "$MYOS_CURL_VERSION")" = "$(myos_curl_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_CURL_VERSION" ] \
+      && [ "$(cat "$MYOS_CURL_VERSION")" = "$(myos_curl_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/curl-${arch}-unknown-none" ] || return 1
   done
 )
@@ -1747,12 +1754,14 @@ myos_zlib_version_hash() (
 )
 
 myos_zlib_is_current() (
-  [ -f "$MYOS_ZLIB_VERSION" ] \
-    && [ "$(cat "$MYOS_ZLIB_VERSION")" = "$(myos_zlib_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_ZLIB_VERSION" ] \
+      && [ "$(cat "$MYOS_ZLIB_VERSION")" = "$(myos_zlib_version_hash)" ]; } \
     || return 1
-  for arch in x86_64 aarch64 riscv64; do
+  for arch in $MYOS_ARCHES; do
     [ -f "$MYOS_ROOT/target/zlib-${arch}/lib/libz.a" ] || return 1
-    [ -f "$MYOS_ROOT/target/zlib-mlibc-${arch}/lib/libz.a" ] || return 1
+    # Against newlib alone, in a build on myos (ports/zlib/build.sh).
+    myos_self_host || [ -f "$MYOS_ROOT/target/zlib-mlibc-${arch}/lib/libz.a" ] || return 1
   done
 )
 

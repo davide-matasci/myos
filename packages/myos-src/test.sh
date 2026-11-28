@@ -37,8 +37,10 @@ self_module() {
 }
 t -t net,heavy,disk,exec,self self_module self_module
 # The kernel itself, with every module and no_std program (http among
-# them, over the LibreSSL and the newlib the script builds first), the std
-# programs over a std built from source, and the initramfs with them in it (scripts/self-host.sh), on x86_64, where the
+# them, over the LibreSSL and the newlib the script builds first), the C
+# programs and ports against that newlib, the std programs over a std
+# built from source, and the initramfs with them in it
+# (scripts/self-host.sh), on x86_64, where the
 # test machine runs on the host's CPU: under emulation the build is hours.
 self_kernel() {
 	disk_apps myos-src || return 1
@@ -52,6 +54,9 @@ self_kernel() {
 		http-x86_64-unknown-none libressl-x86_64/lib/libtls.a \
 		newlib-build-x86_64/x86_64-unknown-myos/newlib/libc.a \
 		sec-x86_64-unknown-none battery-x86_64-unknown-none \
+		oksh-x86_64-unknown-none sbase-x86_64-unknown-none ubase-login-x86_64-unknown-none \
+		dropbear-x86_64-unknown-none curl-x86_64-unknown-none limine-x86_64-unknown-none \
+		get-myos-x86_64-unknown-none \
 		myos-sysroot/lib/rustlib/x86_64-unknown-myos/lib std-thread-x86_64-unknown-myos; do
 		[ -s $SELF_SRC/target/$sk_f ] || { echo "no target/$sk_f"; return 1; }
 	done
@@ -64,7 +69,8 @@ self_kernel() {
 	# program of that boot, console its first module; http is the one
 	# with C in it, which that boot fetches a page with; thread is a std
 	# program, which that boot runs; sec is a C program, which runs
-	# /etc/rc in that boot.
+	# /etc/rc in that boot; sh, sbase and login are ports, which the
+	# test's login to that boot and its checks run.
 	sk_slot=$(sed -n 's/.*slot=\([ab]\).*/\1/p' /proc/cmdline)
 	[ -n "$sk_slot" ] || { echo "no slot in $(cat /proc/cmdline)"; return 1; }
 	cp $sk_elf /boot/boot/$sk_slot/kernel || return 1
@@ -77,6 +83,11 @@ self_kernel() {
 		echo "$(sha256sum $SELF_SRC/target/http-x86_64-unknown-none | cut -d' ' -f1) /bin/custom/http"
 		echo "$(sha256sum $SELF_SRC/target/std-thread-x86_64-unknown-myos | cut -d' ' -f1) /bin/std/thread"
 		echo "$(sha256sum $SELF_SRC/target/sec-x86_64-unknown-none | cut -d' ' -f1) /bin/etc/sec"
+		echo "$(sha256sum $SELF_SRC/target/oksh-x86_64-unknown-none | cut -d' ' -f1) /bin/sh"
+		echo "$(sha256sum $SELF_SRC/target/sbase-x86_64-unknown-none | cut -d' ' -f1) /bin/sbase/sha256sum"
+		echo "$(sha256sum $SELF_SRC/target/ubase-login-x86_64-unknown-none | cut -d' ' -f1) /bin/ubase/login"
+		echo "$(sha256sum $SELF_SRC/target/curl-x86_64-unknown-none | cut -d' ' -f1) /bin/custom/curl"
+		echo "$(sha256sum $SELF_SRC/target/get-myos-x86_64-unknown-none | cut -d' ' -f1) /bin/etc/get-myos"
 	} > /boot/boot/self-built
 	[ "$(sha256sum /boot/boot/$sk_slot/kernel | cut -d' ' -f1)" = "$(sha256sum $sk_elf | cut -d' ' -f1)" ] \
 		&& [ "$(sha256sum /boot/boot/$sk_slot/initramfs | cut -d' ' -f1)" = "$(sha256sum $sk_fs | cut -d' ' -f1)" ]
