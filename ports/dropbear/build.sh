@@ -35,8 +35,12 @@ if myos_dropbear_is_current; then
   exit 0
 fi
 
-"$HERE/fetch.sh"
-"$HERE/prepare.sh"
+# On myos (scripts/self-host.sh) the tree is the myos-src package's,
+# prepared where the package was built.
+if ! myos_self_host; then
+  "$HERE/fetch.sh"
+  "$HERE/prepare.sh"
+fi
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 myos_ensure_llvm_bin
@@ -84,7 +88,9 @@ build_ltm() (
   cc="${triple}-cc"
   # The objects are the positional parameters.
   set --
-  for f in $(cd "$LTM" && find . -maxdepth 1 -name '*.c' | sort); do
+  # ls, not find -maxdepth: sbase's find, which a build on myos runs, has
+  # no such operand.
+  for f in $(cd "$LTM" && ls ./*.c | sort); do
     base="ltm_${arch}_$(echo "$f" | sed 's|^|L|; s|/|_|g; s|\.c$||')"
     o="$ROOT/target/${base}.o"
     if [ ! -f "$o" ]; then
@@ -97,7 +103,7 @@ build_ltm() (
   echo "$out"
 )
 
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   triple="${arch}-unknown-myos"
   none_triple="${arch}-unknown-none"
   prefix="$ROOT/target/newlib-${arch}"
@@ -226,6 +232,5 @@ done
 
 pack_dropbear_aliases
 
-hash="$(myos_dropbear_version_hash)"
-printf '%s\n' "$hash" > "$ROOT/target/.myos-dropbear-version"
+myos_self_host || printf '%s\n' "$(myos_dropbear_version_hash)" > "$ROOT/target/.myos-dropbear-version"
 echo "dropbear -> target/dropbear-* + target/dbclient-* (stamp .myos-dropbear-version)"

@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 pack_socket_smoke_aliases() (
   # CI packs via existing `target/coreutils-*` glob (workflow edits need workflow scope).
   # Keep canonical and pack-alias names in sync either way (same as curl aliases).
-  for arch in $MYOS_C_ARCHES; do
+  for arch in $MYOS_ARCHES; do
     src="$ROOT/target/c-socket_smoke-${arch}-unknown-none"
     alias="$ROOT/target/coreutils-c-socket_smoke-${arch}-unknown-none"
     if [ -f "$src" ]; then
@@ -59,7 +59,7 @@ link_prog() (
   echo "c-${name} -> $out"
 )
 
-for arch in $MYOS_C_ARCHES; do
+for arch in $MYOS_ARCHES; do
   link_prog hello "$ROOT/user/c/hello.c" "$arch"
   link_prog socket_smoke "$ROOT/user/c/socket_smoke.c" "$arch"
 done

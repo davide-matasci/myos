@@ -17,9 +17,17 @@ if myos_zlib_is_current; then
   exit 0
 fi
 
-"$HERE/fetch.sh"
-"$ROOT/toolchain/newlib/build.sh"
-"$ROOT/toolchain/mlibc/build.sh"
+# On myos (scripts/self-host.sh) the source is the myos-src package's, and
+# the library is built against newlib alone: what get-myos links.
+libcs="newlib mlibc"
+if myos_self_host; then
+  libcs=newlib
+else
+  "$HERE/fetch.sh"
+fi
+for libc in $libcs; do
+  "$ROOT/toolchain/$libc/build.sh"
+done
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
 SRC="$ROOT/target/zlib-src"
@@ -93,9 +101,10 @@ PC
   echo "zlib $arch ($libc): $nobjs objs -> $lib/libz.a"
 )
 
-for arch in x86_64 aarch64 riscv64; do
-  build_arch "$arch" newlib
-  build_arch "$arch" mlibc
+for arch in $MYOS_ARCHES; do
+  for libc in $libcs; do
+    build_arch "$arch" "$libc"
+  done
 done
-echo "$(myos_zlib_version_hash)" >"$MYOS_ZLIB_VERSION"
+myos_self_host || echo "$(myos_zlib_version_hash)" >"$MYOS_ZLIB_VERSION"
 echo "zlib build ok"

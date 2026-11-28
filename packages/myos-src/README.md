@@ -29,7 +29,7 @@ GiB under the tree's `target/`.
 | `target/rust-std-patch` | Rust's library with myos in it, which the `std` of the std programs is built from: the pinned nightly's `rust-src` as `toolchain/std/patches/wire-myos.py` patches it, with the crates it vendors |
 
 The crates are fetched from crates.io when the package is built,
-newlib from its repository, LibreSSL from its mirror and the library from the toolchain rustup
+newlib from its repository, LibreSSL and the ports from their mirrors and the library from the toolchain rustup
 installed, as in any build of the tree; none is checked in. Each keeps its license files (`THIRD_PARTY_NOTICES.md`).
 
 The descriptor's kind for it is `source:` (`docs/ports.md`): a tree
@@ -49,6 +49,12 @@ Then the C programs against it (`scripts/build-c-smokes.sh`: `user/c`,
 
 Then LibreSSL's three libraries, which `http` links: the port's build
 script (`ports/libressl/build.sh`) with clang, against that newlib.
+
+Then the ports of the image that are C against newlib, each by its build
+script: oksh (`/bin/sh`), sbase, ubase, dropbear, curl, Limine's tool, and
+`get-myos` with zlib. Their sources are in the package
+(`target/<port>-myos-build`, `target/curl-src`, `target/zlib-src`,
+`target/limine-src`), fetched and patched where it was built.
 
 Then `std` for `<arch>-unknown-myos`, from `target/rust-std-patch`
 (`toolchain/std/build-sysroot.sh`, `cargo -Z build-std`, with the crates

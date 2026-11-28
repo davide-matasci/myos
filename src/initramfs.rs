@@ -503,11 +503,18 @@ pub fn build_boot_archives(
     (archive(image), archive(tests))
 }
 
+/// The ports of the image a build on myos makes, by their own build
+/// scripts (`scripts/self-host.sh` has the same names): C against newlib.
+/// Not yet: mlibc with what links it, and ripgrep.
+#[allow(dead_code)]
+const BUILT_ON_MYOS: [&str; 7] = ["oksh", "sbase", "ubase", "dropbear", "curl", "limine", "get-myos"];
+
 /// What a build on myos makes of the tree (`scripts/self-host.sh`): every
 /// module (`lib/modules/<name>`), every `no_std` program of the image
-/// (the `user` ports' files), the `std` ones and the C ones (`user/c`:
-/// sec, play, battery), from `target/` as [`build_boot_archives`]
-/// takes them. A missing one is an error, as there.
+/// (the `user` ports' files), the `std` ones, the C ones (`user/c`:
+/// sec, play, battery) and the files of the ports in [`BUILT_ON_MYOS`],
+/// from `target/` as [`build_boot_archives`] takes them. A missing one is
+/// an error, as there.
 #[allow(dead_code)]
 pub(crate) fn built_on_myos(manifest_dir: &Path, arch: &str) -> Vec<Entry> {
     let target = manifest_dir.join("target");
@@ -515,7 +522,8 @@ pub(crate) fn built_on_myos(manifest_dir: &Path, arch: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
     for port in crate::ports::load_all(manifest_dir) {
         if port.role == crate::ports::Role::Image
-            && matches!(port.kind, crate::ports::Kind::User | crate::ports::Kind::Std | crate::ports::Kind::C)
+            && (matches!(port.kind, crate::ports::Kind::User | crate::ports::Kind::Std | crate::ports::Kind::C)
+                || BUILT_ON_MYOS.contains(&port.name.as_str()))
         {
             install_port(&mut entries, &port, manifest_dir, arch);
         }

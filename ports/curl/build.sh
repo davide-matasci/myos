@@ -32,6 +32,11 @@ pack_curl_aliases() (
 ensure_ca_bundle() (
   ca="$ROOT/target/cacert.pem"
   [ -f "$ca" ] && return 0
+  # On myos (scripts/self-host.sh), the system's.
+  if myos_self_host; then
+    cp /lib/cacert.pem "$ca"
+    return 0
+  fi
   echo "fetch CA bundle"
   curl -fsSL "$CACERT_URL" -o "$ca"
 )
@@ -43,7 +48,12 @@ if myos_curl_elfs_current; then
   exit 0
 fi
 
-"$HERE/fetch.sh"
+# On myos the source is the myos-src package's.
+if myos_self_host; then
+  ensure_ca_bundle
+else
+  "$HERE/fetch.sh"
+fi
 "$ROOT/toolchain/newlib/build.sh"
 "$ROOT/ports/libressl/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
@@ -220,10 +230,10 @@ PY
   ls -lh "$out"
 )
 
-for arch in ${MYOS_CURL_ARCHES:-x86_64 aarch64 riscv64}; do
+for arch in ${MYOS_CURL_ARCHES:-$MYOS_ARCHES}; do
   build_arch "$arch"
 done
 
-echo "$(myos_curl_version_hash)" >"$STAMP"
+myos_self_host || echo "$(myos_curl_version_hash)" >"$STAMP"
 pack_curl_aliases
 echo "curl build ok"

@@ -315,10 +315,12 @@ booted_self_built() {
 }
 # And its http, the one program of them with C in it (LibreSSL, built there
 # too), does what the system's did: a page over TLS (user/http/test.sh).
-# The network of a boot that has only just logged in may not be up yet.
+# The network of a boot that has only just logged in may not be up yet:
+# http says so in what it prints, and exits 0 either way.
 self_built_https() {
 	for i in $(seq 10); do
-		http https://github.com/robots.txt > $OUT/self-http.log 2>&1 && break
+		http https://github.com/robots.txt > $OUT/self-http.log 2>&1
+		contains "[ OK ] https" $OUT/self-http.log && break
 		sleep 3
 	done
 	tail -n 5 $OUT/self-http.log

@@ -7,6 +7,9 @@
 #                   leave them (acpi, smoltcp), and LibreSSL's source, which
 #                   `http` links, as its fetch script leaves it; with the
 #                   stamps that tell the scripts there is nothing to fetch.
+#                   The sources of the ports a build on myos makes (oksh,
+#                   sbase, ubase, dropbear, curl, zlib, Limine's tool), as
+#                   their fetch and prepare scripts leave them.
 #                   And Rust's library with myos in it (rust-std-patch:
 #                   the pinned nightly's rust-src as toolchain/std patches
 #                   it, with the crates it vendors), which the std of the
@@ -17,8 +20,8 @@
 #                   holds (the repository keeps no lock file)
 #   .cargo/config.toml   the tree's, with crates.io replaced by vendor/
 #
-# The crates come from crates.io at build time, LibreSSL from its mirror
-# and the library from the toolchain rustup installed, as in any build of
+# The crates come from crates.io at build time, LibreSSL and the ports from
+# their mirrors and the library from the toolchain rustup installed, as in any build of
 # the tree; nothing of them is checked in.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -30,7 +33,7 @@ if myos_myos_src_is_current; then
   echo "myos-src up to date"
   exit 0
 fi
-for tool in git cargo tar curl patch python3; do
+for tool in git cargo tar curl patch python3 rsync; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "error: $tool not found (README.md)" >&2
     exit 1
@@ -56,6 +59,30 @@ sh "$OUT/toolchain/newlib/patch.sh" >/dev/null
 
 echo "==> myos-src: LibreSSL's source"
 sh "$OUT/ports/libressl/fetch.sh"
+
+# The ports a build on myos makes (scripts/self-host.sh), each as its
+# build script takes it: fetched, and patched where the port has a prepare
+# script, without the history, the tests and the manuals.
+echo "==> myos-src: the ports' sources"
+# port_tree DIR [FILE...]: target/DIR of this checkout into the package's,
+# whole or the files named.
+port_tree() (
+  dir="$1"
+  shift
+  [ $# -gt 0 ] || set -- .
+  mkdir -p "$OUT/target/$dir"
+  (cd "$ROOT/target/$dir" && tar --exclude=./.git -cf - "$@") | tar -xf - -C "$OUT/target/$dir"
+)
+for port in oksh sbase ubase dropbear; do
+  "$ROOT/ports/$port/prepare.sh" >/dev/null
+  port_tree "$port-myos-build"
+done
+"$ROOT/ports/curl/fetch.sh" >/dev/null
+port_tree curl-src COPYING include lib src .myos-curl-version
+"$ROOT/ports/zlib/fetch.sh" >/dev/null
+(cd "$ROOT/target/zlib-src" && port_tree zlib-src LICENSE README ./*.c ./*.h)
+"$ROOT/ports/limine/fetch.sh" >/dev/null
+port_tree limine-src LICENSE limine.c limine-bios-hdd.h .version
 
 echo "==> myos-src: Rust's library"
 python3 "$OUT/toolchain/std/patches/wire-myos.py" "$OUT/target/rust-std-patch/library" \

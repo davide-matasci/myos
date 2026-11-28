@@ -11,7 +11,9 @@ if myos_ubase_is_current; then
   exit 0
 fi
 
-"$ROOT/ports/ubase/prepare.sh"
+# On myos (scripts/self-host.sh) the tree is the myos-src package's,
+# prepared where the package was built.
+myos_self_host || "$ROOT/ports/ubase/prepare.sh"
 "$ROOT/toolchain/newlib/build.sh"
 export PATH="$ROOT/target/newlib-bin:$PATH"
 
@@ -51,8 +53,8 @@ compile() {
 is_elf() (
   f="$1"
   { [ -f "$f" ] && [ -s "$f" ]; } || return 1
-  mag="$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d ' \n')"
-  [ "$mag" = "7f454c46" ]
+  # dd, not od -N: sbase's od, which a build on myos runs, has no -N.
+  [ "$(dd if="$f" bs=1 skip=1 count=3 2>/dev/null)" = ELF ]
 )
 
 link_prog() (
@@ -175,13 +177,13 @@ build_arch() (
   fi
 )
 
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   build_arch "$arch"
 done
 
 # Stamp only after every bins.txt ELF exists on every arch.
 missing=0
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     out="$ROOT/target/ubase-${name}-${arch}-unknown-none"
@@ -195,4 +197,4 @@ if [ "$missing" -ne 0 ]; then
   exit 1
 fi
 
-echo "$(myos_ubase_version_hash)" >"$MYOS_UBASE_VERSION"
+myos_self_host || echo "$(myos_ubase_version_hash)" >"$MYOS_UBASE_VERSION"

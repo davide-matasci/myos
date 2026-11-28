@@ -17,7 +17,7 @@ if myos_get_myos_is_current; then
   exit 0
 fi
 
-for arch in x86_64 aarch64 riscv64; do
+for arch in $MYOS_ARCHES; do
   triple="${arch}-unknown-myos"
   out="$ROOT/target/get-myos-${arch}-unknown-none"
   nl="$ROOT/target/newlib-${arch}/${triple}"
@@ -39,4 +39,4 @@ for arch in x86_64 aarch64 riscv64; do
     --start-group -lc -lgloss -lg --end-group
   echo "get-myos -> $out"
 done
-echo "$(myos_get_myos_version_hash)" >"$MYOS_GET_MYOS_VERSION"
+myos_self_host || echo "$(myos_get_myos_version_hash)" >"$MYOS_GET_MYOS_VERSION"
