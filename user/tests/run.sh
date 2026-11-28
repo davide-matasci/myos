@@ -313,6 +313,23 @@ booted_self_built() {
 		[ "$bs_got" = "$bs_sum" ] || return 1
 	done < /boot/boot/self-built
 }
+# And its http, the one program of them with C in it (LibreSSL, built there
+# too), does what the system's did: a page over TLS (user/http/test.sh).
+# The network of a boot that has only just logged in may not be up yet.
+self_built_https() {
+	for i in $(seq 10); do
+		http https://github.com/robots.txt > $OUT/self-http.log 2>&1 && break
+		sleep 3
+	done
+	tail -n 5 $OUT/self-http.log
+	contains "User-agent" $OUT/self-http.log && contains "[ OK ] https" $OUT/self-http.log
+}
+
+# And its std programs, over the std built there, do what the system's
+# did (user/std/test.sh): threads, locks and thread-locals; files.
+self_built_std() {
+	/bin/std/thread && /bin/std/fs
+}
 
 # The --sync /etc/rc started in the background: done within two minutes.
 apps_synced() {
@@ -328,6 +345,8 @@ apps_synced() {
 FILE_TAGS=
 if [ "$MODE" = selfbuilt ]; then
 	t booted_self_built booted_self_built
+	t self_built_https self_built_https
+	t self_built_std self_built_std
 	echo "TESTS DONE $passed/$total"
 	exit 0
 fi

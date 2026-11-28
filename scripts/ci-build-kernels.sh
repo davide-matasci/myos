@@ -68,7 +68,7 @@ CURL_TLS_INPUTS="
   ports/libressl/port.env
   ports/libressl/build.sh
   ports/libressl/fetch.sh
-  ports/libressl/sources.py
+  ports/libressl/sources.sh
   ports/curl/versions.env
   ports/curl/config-myos.h
   ports/curl/build.sh

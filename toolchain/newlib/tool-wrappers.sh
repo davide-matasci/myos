@@ -31,15 +31,13 @@ exec clang --target=${elf} ${isa}-c \"\$@\"
   write_wrapper "${triple}-ld" "#!/bin/sh
 exec ${ld} \"\$@\"
 "
-  write_wrapper "${triple}-nm" "#!/bin/sh
-exec nm \"\$@\"
+  # The binutils, or LLVM's where there are no others (on myos).
+  for tool in nm objcopy objdump; do
+    write_wrapper "${triple}-${tool}" "#!/bin/sh
+command -v ${tool} >/dev/null 2>&1 || exec llvm-${tool} \"\$@\"
+exec ${tool} \"\$@\"
 "
-  write_wrapper "${triple}-objcopy" "#!/bin/sh
-exec objcopy \"\$@\"
-"
-  write_wrapper "${triple}-objdump" "#!/bin/sh
-exec objdump \"\$@\"
-"
+  done
   write_wrapper "${triple}-ranlib" "#!/bin/sh
 exec ranlib \"\$@\"
 "
@@ -54,6 +52,7 @@ LLVM_STRIP=\"\$SYSROOT/lib/rustlib/\$HOST/bin/llvm-strip\"
 if [ -x \"\$LLVM_STRIP\" ]; then
   exec \"\$LLVM_STRIP\" \"\$@\"
 fi
+command -v strip >/dev/null 2>&1 || exec llvm-strip \"\$@\"
 exec strip \"\$@\"
 "
   # Apple's BSD ar writes ELF archive symbol tables that rust-lld cannot

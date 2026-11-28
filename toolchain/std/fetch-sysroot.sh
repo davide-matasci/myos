@@ -14,6 +14,11 @@ if myos_sysroot_is_current; then
   exit 0
 fi
 
+# On myos (scripts/self-host.sh) it is built, from the tree.
+if myos_self_host; then
+  exec "$ROOT/toolchain/std/build-sysroot.sh"
+fi
+
 # Prefer GHCR by myos_sysroot_version_hash (scripts/ci-registry.sh port sysroot).
 if [ -x "$ROOT/scripts/ci-registry.sh" ]; then
   "$ROOT/scripts/ci-registry.sh" pull sysroot || true

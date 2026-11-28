@@ -110,3 +110,16 @@ sbase_printf() {
 	[ "$out" = -x- ] && [ "$(/bin/sbase/printf -- '--\n')" = -- ] && [ "$esc" = 'a%sb%' ]
 }
 t sbase_printf sbase_printf
+# xargs fills a command line to what an exec takes: sysconf(_SC_ARG_MAX),
+# the kernel's limit (libgloss; with no answer xargs has no room for one
+# argument). 1000 numbers are one echo (an exec takes 1024 arguments,
+# whatever their size: issue #813); -n and -P run several at once
+# (ports/libressl/build.sh compiles with them on myos).
+sbase_xargs() {
+	one=$(seq 1000 | xargs echo | wc -l)
+	many=$(seq 8 | xargs -n 2 -P 4 echo | wc -l)
+	nul=$(printf 'a b\0c\0' | xargs -0 -n 1 echo | wc -l)
+	echo "xargs: $one $many $nul lines"
+	[ "$one" -eq 1 ] && [ "$many" -eq 4 ] && [ "$nul" -eq 2 ]
+}
+t -t smoke sbase_xargs sbase_xargs

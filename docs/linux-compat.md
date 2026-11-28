@@ -163,8 +163,9 @@ there. The scratch disk needs a few GiB. The kernel it builds boots and
 passes `test-mini`. Under TCG a first run takes hours.
 
 Known gaps: the C programs the kernel embeds (the std demos, c-hello,
-oksh, getty, login) and `http` (LibreSSL over newlib: autotools, `make`,
-`python3`) are not built in myos. They are copied from the running
+oksh, getty, login) and `http` (LibreSSL over newlib, which the native
+build compiles with the llvm app's clang, `docs/userspace.md`) are not
+built under the layer. They are copied from the running
 system; `MYOS_PREBUILT=http` has `kernel/build.rs` take `http` as it is.
 
 ## How it works

@@ -157,3 +157,15 @@ sh_history() {
 	esac
 }
 t -t smoke shell_history sh_history
+# A comment inside $(...) is a comment (comsub.myos.patch): the quote and
+# the parenthesis in it are not the command's. The tree's scripts have
+# such comments (toolchain/std/lib.sh), and myos runs them
+# (scripts/self-host.sh). A `#` inside a word, or quoted, is a character.
+sh_comsub_comment() {
+	printf '%s\n' 'x=$(echo a # it'"'"'s one (' 'echo b#c "d # e")' 'echo "$x"' > /tmp/sh-comsub.sh
+	out=$(sh /tmp/sh-comsub.sh 2>&1)
+	echo "$out"
+	[ "$out" = "a
+b#c d # e" ]
+}
+t -t smoke shell_comsub_comment sh_comsub_comment

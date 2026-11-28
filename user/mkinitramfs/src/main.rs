@@ -2,12 +2,12 @@
 //!
 //! The initramfs of a system that rebuilt part of itself: the archive BASE
 //! (the running system's, `/proc/boot/initramfs`) with what a build of the
-//! tree SRC on myos made (`scripts/self-host.sh`: every module and every
-//! `no_std` program, under `SRC/target`) in place of the base's files of
-//! those names, written to OUT as the kernel takes a boot archive
+//! tree SRC on myos made (`scripts/self-host.sh`: every module, every
+//! `no_std` program and the `std` ones, under `SRC/target`) in place of
+//! the base's files of those names, written to OUT as the kernel takes a boot archive
 //! (`kernel/src/fs/zstd.rs`: one zstd frame with its size and a checksum).
-//! What myos does not build yet (the C programs, the `std` ones) is what
-//! the system runs, as the base has it.
+//! What myos does not build yet (the C programs, the ports) is what the
+//! system runs, as the base has it.
 //!
 //! A program of the system it packs: built by its own cargo for the arch
 //! it runs on (it builds on a Linux host too, where the launcher packs the

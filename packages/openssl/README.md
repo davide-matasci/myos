@@ -6,7 +6,7 @@ is the pin; `fetch.sh` extracts `apps/openssl` and the default
 configuration from that tarball), cross-built against those libraries
 for the three arches without LibreSSL's `configure` (`build.sh`: the
 source list from `apps/openssl/Makefile.am` through the port's
-`sources.py`, configure's findings for newlib + libgloss set by hand).
+`sources.sh`, configure's findings for newlib + libgloss set by hand).
 Keys, certificate requests and certificates, digests, base64, `s_client`
 and the rest of the subcommands; the acme package does its cryptography
 with it.

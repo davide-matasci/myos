@@ -2,7 +2,7 @@
 # Cross-build openssl(1), LibreSSL's command-line tool, for the three arches
 # against the libressl port's libraries (target/libressl-<arch>), the way
 # that port builds them: the source list from apps/openssl/Makefile.am
-# (ports/libressl/sources.py), what configure would find on newlib +
+# (ports/libressl/sources.sh), what configure would find on newlib +
 # libgloss set by hand, LibreSSL's compat headers for what newlib lacks
 # (err.h, readpassphrase.h, strtonum, freezero, pledge as a no-op).
 set -euo pipefail
@@ -82,7 +82,7 @@ build_arch() (
   done <<EOF
 $(
     # shellcheck disable=SC2086
-    python3 "$ROOT/ports/libressl/sources.py" "$SRC/Makefile.am" openssl_SOURCES $HAVE_CONDS \
+    sh "$ROOT/ports/libressl/sources.sh" "$SRC/Makefile.am" openssl_SOURCES $HAVE_CONDS \
       | sed "s|^|$SRC/|"
     echo "$HERE/myos_stubs.c"
   )

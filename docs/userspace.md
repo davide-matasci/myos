@@ -156,7 +156,8 @@ Programs not in the image (vim, git, `btm` from bottom, ...) are packages:
 - `user/lib` is the no-`std` library: syscalls, `brk` and a bump
   `GlobalAlloc`.
 - `std` programs link the prebuilt sysroot
-  (`toolchain/std/build-sysroot.sh`). The port has `std::fs` (no hard links
+  (`toolchain/std/build-sysroot.sh`; myos builds it too, "Building myos
+  on myos"). The port has `std::fs` (no hard links
   or permissions; `canonicalize` through the kernel's `realpath`),
   `std::thread` on native threads with futex locks on `wait_addr` /
   `wake_addr`, and dlmalloc on anonymous `mmap` regions as the heap.
@@ -312,24 +313,53 @@ flavour.
 
 ### Building myos on myos
 
-The kernel, the modules and the `no_std` programs build on myos, with
-that compiler, and myos boots what it built. The **myos-src** package
+The kernel, the modules, the Rust programs (`no_std` and `std`) and
+newlib build on myos, with that compiler and clang, and myos boots what
+it built. The **myos-src** package
 (`packages/myos-src/README.md`) is the source the system was built from,
 with every crate it is built of (`vendor/`), and `scripts/self-host.sh`
-in it runs the build:
+in it runs the build, offline, with no Linux layer:
 
 ```sh
 mkfs.ext2 /dev/nvme1n1/data && mount /dev/nvme1n1/data /mnt ext2
-get-myos -r /mnt/apps myos-src        # with rustc and llvm
+get-myos -r /mnt/apps myos-src        # with rustc, llvm, make, awk and python
 sh /mnt/apps/myos-src/src/myos/scripts/self-host.sh -r /mnt/apps
 ```
 
-It is `cargo build -p kernel` for the kernel's bare-metal target on the
-arch it runs on: the kernel, every module and every `no_std` program
-(`init`, `netd`, ...), offline, with no Linux layer. The rustc app has
+Its main step is `cargo build -p kernel` for the kernel's bare-metal
+target on the arch it runs on: the kernel, every module and every
+`no_std` program (`init`, `netd`, `http`, ...).
+
+One of them has C in it: `http`, whose TLS is LibreSSL (`user/tls`). The
+script compiles LibreSSL first, with the llvm app's clang and the port's
+own build script (`ports/libressl/build.sh`, for the one arch, from the
+source the package carries), against newlib.
+
+And before it newlib itself, with libgloss (`toolchain/newlib/build.sh`,
+for the one arch): newlib's own `configure` and `make all-target-newlib`,
+run by oksh, sbase's tools and three apps, GNU make, awk (`config.status`
+is an awk program) and python (the script's edits of the installed
+headers). The source is the package's (`target/newlib-src`, fetched and
+patched where the package was built); `configure` is told what it runs
+on (`--build`), which `config.guess` does not know.
+
+`MYOS_SELF_HOST` tells the tree's scripts they run on myos: a port is
+current when its outputs exist, since the cache keys of a build machine
+need its tools (GNU `sort` and `find`). The rustc app has
 `core` and `alloc` for the bare-metal targets; build scripts
 (`kernel/build.rs`, which runs the nested builds and the tree's `sh`
 scripts) and proc macros are myos programs.
+
+The `std` programs (`user/std`, `/bin/std`) come with their `std`:
+Rust's library with myos in it, built from source for
+`<arch>-unknown-myos` as on a build machine (`toolchain/std`, `cargo -Z
+build-std`). The source is the package's (`target/rust-std-patch`: the
+pinned nightly's library as `wire-myos.py` patches it, a Python script,
+run where the package is built), the crates `std` is built on are the
+ones that library vendors, and the sysroot the programs then link
+(`target/myos-sysroot`) is that source, the new rlibs and the rustc
+app's own libraries, which build scripts are compiled against. The
+`std` of the mlibc flavour is the rustc app's.
 
 The script then packs the initramfs, `target/initramfs-<arch>.cpio.zst`:
 the running system's (`/proc/boot/initramfs`) with every module and
@@ -345,10 +375,8 @@ cp target/x86_64-unknown-none/debug/kernel /boot/boot/a/kernel
 cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 ```
 
-Not built there yet: `http` (its TLS is LibreSSL over newlib; the script
-takes the running system's), the C userspace and the ports, and the std
-programs: the new initramfs has them as the system runs them. Nor the
-boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
+Not built there yet: mlibc, the C userspace and the ports: the new initramfs has them as the system runs them. Nor
+the boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
 the same kernel, through Alpine's toolchain under the Linux layer
 (`docs/linux-compat.md`).
 

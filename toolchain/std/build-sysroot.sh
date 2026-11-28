@@ -20,9 +20,11 @@ for triple in $MYOS_SYSROOT_TRIPLES; do
   myos_cargo_build_std "$triple" release
 done
 
-version="$(myos_sysroot_version_hash)"
-echo "$version" >"$MYOS_SYSROOT_VERSION"
-myos_write_sysroot_manifest "$version"
+if ! myos_self_host; then
+  version="$(myos_sysroot_version_hash)"
+  echo "$version" >"$MYOS_SYSROOT_VERSION"
+  myos_write_sysroot_manifest "$version"
+fi
 echo "myos sysroot ready at $MYOS_SYSROOT"
 
 # Touch for CI: ensure boot jobs run when sysroot path filter fires (skip-propagation).

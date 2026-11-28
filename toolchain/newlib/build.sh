@@ -11,8 +11,15 @@ if myos_newlib_is_current; then
   exit 0
 fi
 
-"$ROOT/toolchain/newlib/fetch.sh"
-"$ROOT/toolchain/newlib/patch.sh"
+# On myos (scripts/self-host.sh) the source is the tree's, the myos-src
+# package's: fetched and patched where the package was built.
+if myos_self_host; then
+  [ -f "$ROOT/target/newlib-src/libgloss/myos/hooks.c" ] \
+    || { echo "error: no patched newlib at target/newlib-src (the myos-src package's tree has it)" >&2; exit 1; }
+else
+  "$ROOT/toolchain/newlib/fetch.sh"
+  "$ROOT/toolchain/newlib/patch.sh"
+fi
 "$ROOT/toolchain/newlib/tool-wrappers.sh"
 
 export PATH="$ROOT/target/newlib-bin:$PATH"
@@ -39,6 +46,15 @@ TARGET_CFLAGS="-ffreestanding -fPIC -O2 -DHAVE_FCNTL -DHAVE_RENAME -DSIGNAL_PROV
 # none of, so it is answered here; the target configure, which make runs,
 # inherits it.
 export newlib_cv_initfinit_array=yes
+# On myos configure's search for a sed and a grep that take long lines
+# ends with none: it compares their output with diff, which myos has not.
+# The ones there are take them.
+if myos_self_host; then
+  ac_cv_path_SED="$(command -v sed)"
+  ac_cv_path_GREP="$(command -v grep)"
+  export ac_cv_path_SED ac_cv_path_GREP
+  export ac_cv_path_EGREP="$ac_cv_path_GREP -E" ac_cv_path_FGREP="$ac_cv_path_GREP -F"
+fi
 
 build_one() (
   arch="$1"
@@ -61,8 +77,15 @@ build_one() (
     set -- "$@" "ac_cv_path_$(echo "$tool" | tr a-z A-Z)_FOR_TARGET=$ROOT/target/newlib-bin/${triple}-${tool}"
   done
 
+  # What the build runs on is never guessed (config.guess): on myos it
+  # knows no such system, and the libraries are the target's either way.
+  if myos_self_host; then
+    set -- "$@" "--build=${arch}-pc-linux-gnu" "--host=${arch}-pc-linux-gnu"
+  else
+    set -- "$@" --host=x86_64-pc-linux-gnu
+  fi
+
   "$ROOT/target/newlib-src/configure" \
-    --host=x86_64-pc-linux-gnu \
     --target="$triple" \
     --prefix="$prefix" \
     --disable-multilib \
@@ -82,7 +105,7 @@ build_one() (
     "$@"
 
   # Portable core count: nproc is GNU coreutils and absent on macOS.
-  jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+  jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
   make -j"$jobs" all-target-newlib
   make install-target-newlib
   # libgloss defines the locks (pthread.c); libc's single-threaded defaults
@@ -92,6 +115,11 @@ build_one() (
   echo "newlib + libgloss -> $prefix"
 )
 
+# On myos, for the arch it runs on.
+if myos_self_host; then
+  build_one "$(uname -m)"
+  exit 0
+fi
 build_one x86_64
 build_one aarch64
 build_one riscv64

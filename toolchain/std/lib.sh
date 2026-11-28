@@ -7,6 +7,25 @@ set -euo pipefail
 MYOS_ROOT="${ROOT:-${MYOS_ROOT:?set ROOT to the checkout before sourcing this file}}"
 export MYOS_ROOT
 
+# A build on myos itself (scripts/self-host.sh sets MYOS_SELF_HOST), with
+# the rustc app's cargo and rustc, which are the pinned nightly's: std is
+# built for the arch myos runs on, from the patched library the myos-src
+# package carries (target/rust-std-patch), with no network. What is built
+# is current when it exists: the stamps' hashes are of the build
+# machine's tools (awk, GNU sort).
+myos_self_host() {
+  [ -n "${MYOS_SELF_HOST-}" ]
+}
+
+# cargo of the pinned nightly: rustup's, or on myos the one there is.
+myos_cargo() {
+  if myos_self_host; then
+    cargo "$@"
+  else
+    cargo "+$MYOS_NIGHTLY" "$@"
+  fi
+}
+
 myos_read_toolchain_channel() (
   file="$MYOS_ROOT/rust-toolchain.toml"
   if [ ! -f "$file" ]; then
@@ -28,6 +47,12 @@ MYOS_USER_TRIPLES="x86_64-unknown-myos aarch64-unknown-myos riscv64-unknown-myos
 MYOS_MLIBC_TRIPLES="x86_64-unknown-myos-mlibc aarch64-unknown-myos-mlibc riscv64-unknown-myos-mlibc"
 # The targets std is prebuilt for.
 MYOS_SYSROOT_TRIPLES="$MYOS_USER_TRIPLES $MYOS_MLIBC_TRIPLES"
+# On myos: the one of the arch, on the kernel's calls (the rustc app has
+# the std of its own target, the mlibc one).
+if myos_self_host; then
+  MYOS_USER_TRIPLES="$(uname -m)-unknown-myos"
+  MYOS_SYSROOT_TRIPLES="$MYOS_USER_TRIPLES"
+fi
 
 myos_sysroot_version_hash() (
   # Content + stable relative paths (checkout-independent). xargs -r avoids
@@ -52,9 +77,10 @@ myos_sysroot_version_hash() (
 )
 
 myos_sysroot_is_current() (
-  [ -f "$MYOS_SYSROOT_VERSION" ] \
-    && [ -f "$MYOS_SYSROOT_MANIFEST" ] \
-    && [ "$(cat "$MYOS_SYSROOT_VERSION")" = "$(myos_sysroot_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_SYSROOT_VERSION" ] \
+      && [ -f "$MYOS_SYSROOT_MANIFEST" ] \
+      && [ "$(cat "$MYOS_SYSROOT_VERSION")" = "$(myos_sysroot_version_hash)" ]; } \
     || return 1
   for triple in $MYOS_SYSROOT_TRIPLES; do
     [ -d "$MYOS_SYSROOT/lib/rustlib/$triple/lib" ] || return 1
@@ -91,7 +117,9 @@ myos_install_std_rlibs() (
     echo "error: no std rlibs in $deps_dir" >&2
     exit 1
   fi
-  cp -a "$@" "$dest/"
+  # Not `cp -a`: the owner is not this copy's to keep (myos's ext2 has
+  # no chown).
+  cp -R "$@" "$dest/"
   myos_install_target_spec "$triple"
 )
 
@@ -143,8 +171,14 @@ myos_cargo_build_std() {
       _cbs_features=compiler-builtins-mem,panic-unwind
       ;;
   esac
+  # On myos the crates std is built on are the library's own vendor/, in
+  # place of crates.io (on the build machine cargo fetches them).
+  _cbs_vendor=
+  if myos_self_host; then
+    _cbs_vendor="--config source.crates-io.replace-with=\"std-vendor\" --config source.std-vendor.directory=\"$MYOS_SYSROOT/lib/rustlib/src/rust/library/vendor\""
+  fi
   # shellcheck disable=SC2086
-  cargo "+$MYOS_NIGHTLY" build \
+  myos_cargo build $_cbs_vendor \
     -Z build-std="$_cbs_crates" \
     -Z build-std-features="$_cbs_features" \
     -Z unstable-options \
@@ -190,7 +224,7 @@ myos_cargo_build_app() {
   myos_export_toolchain_env
   myos_cargo_target_dir "$_cba_triple" "$_cba_target_dir"
   # shellcheck disable=SC2086
-  cargo "+$MYOS_NIGHTLY" build \
+  myos_cargo build \
     -Z unstable-options \
     -Z json-target-spec \
     --target "$_cba_target_json" \
@@ -223,8 +257,9 @@ myos_std_hello_version_hash() (
 )
 
 myos_std_hello_is_current() (
-  [ -f "$MYOS_STD_HELLO_VERSION" ] \
-    && [ "$(cat "$MYOS_STD_HELLO_VERSION")" = "$(myos_std_hello_version_hash)" ] \
+  myos_self_host \
+    || { [ -f "$MYOS_STD_HELLO_VERSION" ] \
+      && [ "$(cat "$MYOS_STD_HELLO_VERSION")" = "$(myos_std_hello_version_hash)" ]; } \
     || return 1
   for triple in $MYOS_USER_TRIPLES; do
     for name in hello cat echo bigalloc sleep fs thread alloc; do
