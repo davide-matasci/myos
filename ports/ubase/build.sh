@@ -53,8 +53,8 @@ compile() {
 is_elf() (
   f="$1"
   { [ -f "$f" ] && [ -s "$f" ]; } || return 1
-  mag="$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d ' \n')"
-  [ "$mag" = "7f454c46" ]
+  # dd, not od -N: sbase's od, which a build on myos runs, has no -N.
+  [ "$(dd if="$f" bs=1 skip=1 count=3 2>/dev/null)" = ELF ]
 )
 
 link_prog() (

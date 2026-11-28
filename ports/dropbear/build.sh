@@ -88,7 +88,9 @@ build_ltm() (
   cc="${triple}-cc"
   # The objects are the positional parameters.
   set --
-  for f in $(cd "$LTM" && find . -maxdepth 1 -name '*.c' | sort); do
+  # ls, not find -maxdepth: sbase's find, which a build on myos runs, has
+  # no such operand.
+  for f in $(cd "$LTM" && ls ./*.c | sort); do
     base="ltm_${arch}_$(echo "$f" | sed 's|^|L|; s|/|_|g; s|\.c$||')"
     o="$ROOT/target/${base}.o"
     if [ ! -f "$o" ]; then
@@ -230,6 +232,5 @@ done
 
 pack_dropbear_aliases
 
-hash="$(myos_dropbear_version_hash)"
-myos_self_host || printf '%s\n' "$hash" > "$ROOT/target/.myos-dropbear-version"
+myos_self_host || printf '%s\n' "$(myos_dropbear_version_hash)" > "$ROOT/target/.myos-dropbear-version"
 echo "dropbear -> target/dropbear-* + target/dbclient-* (stamp .myos-dropbear-version)"
