@@ -343,6 +343,11 @@ headers). The source is the package's (`target/newlib-src`, fetched and
 patched where the package was built); `configure` is told what it runs
 on (`--build`), which `config.guess` does not know.
 
+The C programs (`user/c`) are compiled against it right after
+(`scripts/build-c-smokes.sh`, for the one arch): `sec`, `play` and
+`battery` are in the new initramfs, and `sec` runs `/etc/rc` in the boot
+of it.
+
 `MYOS_SELF_HOST` tells the tree's scripts they run on myos: a port is
 current when its outputs exist, since the cache keys of a build machine
 need its tools (GNU `sort` and `find`). The rustc app has
@@ -375,7 +380,7 @@ cp target/x86_64-unknown-none/debug/kernel /boot/boot/a/kernel
 cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 ```
 
-Not built there yet: mlibc, the C userspace and the ports: the new initramfs has them as the system runs them. Nor
+Not built there yet: mlibc and what links it, and the ports: the new initramfs has them as the system runs them. Nor
 the boot disk itself (the ESP, Limine). `linux-compat/self-host.sh` is the older way to
 the same kernel, through Alpine's toolchain under the Linux layer
 (`docs/linux-compat.md`).

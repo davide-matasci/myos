@@ -39,7 +39,11 @@ case "$libc" in
 esac
 myos_ensure_llvm_bin
 
-for arch in x86_64 aarch64 riscv64; do
+# The newlib programs for the arches of the build (one on myos); the mlibc
+# ones for all three.
+arches="x86_64 aarch64 riscv64"
+[ "$libc" = newlib ] && arches="$MYOS_C_ARCHES"
+for arch in $arches; do
   triple="${arch}-unknown-myos"
   prefix="$ROOT/target/newlib-${arch}"
   inc="$prefix/${triple}/include"
@@ -94,7 +98,9 @@ for arch in x86_64 aarch64 riscv64; do
   fi
 done
 
-if [ "$libc" = newlib ]; then
+if myos_self_host; then
+  : # no stamp on myos: what is built there is current
+elif [ "$libc" = newlib ]; then
   myos_c_smokes_version_hash > "$MYOS_C_SMOKES_VERSION"
 else
   myos_c_smokes_mlibc_version_hash > "$MYOS_C_SMOKES_MLIBC_VERSION"

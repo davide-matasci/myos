@@ -18,8 +18,10 @@
 #
 # First newlib and libgloss (toolchain/newlib/build.sh: newlib's own
 # configure and make, with clang; the make, awk and python apps are for
-# it), the C library of the C userspace. Then LibreSSL against it
-# (ports/libressl/build.sh), which `http` links through user/tls.
+# it), the C library of the C userspace, and the C programs against it
+# (scripts/build-c-smokes.sh: user/c, /bin/etc/sec among them). Then
+# LibreSSL against it (ports/libressl/build.sh), which `http` links
+# through user/tls.
 #
 # Then the std programs (user/std/build.sh: /bin/std), and before them
 # the std they link: Rust's library with myos in it, built from source for
@@ -39,8 +41,8 @@
 #     cp target/<target>/debug/kernel /boot/boot/a/kernel
 #     cp target/initramfs-<arch>.cpio.zst /boot/boot/a/initramfs
 #
-# What is not built here is in that initramfs as the system runs it: the C
-# programs and libraries, the ports.
+# What is not built here is in that initramfs as the system runs it:
+# mlibc and what links it, the ports.
 set -euo pipefail
 
 apps=
@@ -89,6 +91,12 @@ echo "self-host: building newlib for $arch"
 sh toolchain/newlib/build.sh > target/newlib-build.log 2>&1 \
 	|| { tail -n 40 target/newlib-build.log >&2; exit 1; }
 echo "self-host: newlib built in $(($(date +%s) - t0)) s"
+
+echo "self-host: building the C programs for $arch"
+t1=$(date +%s)
+sh scripts/build-c-smokes.sh > target/c-smokes-build.log 2>&1 \
+	|| { tail -n 40 target/c-smokes-build.log >&2; exit 1; }
+echo "self-host: the C programs built in $(($(date +%s) - t1)) s"
 
 echo "self-host: building LibreSSL for $arch"
 t1=$(date +%s)

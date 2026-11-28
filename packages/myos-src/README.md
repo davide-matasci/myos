@@ -44,6 +44,9 @@ First newlib and libgloss, for the arch it runs on
 llvm app's clang, then libgloss/myos and the C both libcs share, to
 `target/newlib-<arch>`. The make, awk and python apps are for this step.
 
+Then the C programs against it (`scripts/build-c-smokes.sh`: `user/c`,
+`/bin/etc/sec`, `play` and `battery` among them).
+
 Then LibreSSL's three libraries, which `http` links: the port's build
 script (`ports/libressl/build.sh`) with clang, against that newlib.
 
@@ -81,7 +84,7 @@ cp target/initramfs-x86_64.cpio.zst /boot/boot/a/initramfs
 
 ## Limits
 
-- mlibc, the C programs and the ports are
+- mlibc, what links it and the ports are
   built on a build machine: the new initramfs has the running system's.
   So is the boot disk (the ESP with Limine).
 - Not the launcher: `vendor/` holds its crates too, but it is a program
